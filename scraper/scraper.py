@@ -10,7 +10,7 @@ import math
 import re
     
 ## Load configuration
-with open("config.json", 'r') as con_file:
+with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json", 'r') as con_file:
     config = json.load(con_file)
 
 ## Initialize client
@@ -167,7 +167,7 @@ def response_formatter(response):
     return data
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     papers = document_search('Lithium solid electrolyte')
     papers.to_csv('unscraped_papers.csv')
     for i, row in papers.iterrows():
