@@ -1,50 +1,20 @@
-from elsapy.elsclient import ElsClient
-from elsapy.elssearch import ElsSearch
-from elsapy.elsdoc import FullDoc
 import json
 import openai
-import os
 import pandas as pd
 import tiktoken
 import math
 import re
+import os
+from tqdm import tqdm
+from PyPDF2 import PdfReader
     
 ## Load configuration
 with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json", 'r') as con_file:
     config = json.load(con_file)
 
-## Initialize client
-client = ElsClient(config['elsevier_api_key'])
+## Get API key
 openai.api_key = config['gpt_api_key']
 
-
-## Initialize doc search object using ScienceDirect and execute search, retrieving all results
-def document_search(query, index='sciencedirect'):
-    doc_srch = ElsSearch(query, index)
-    doc_srch.execute(client, get_all = True)
-    print ("doc_srch has", len(doc_srch.results), "results.")
-
-    return doc_srch.results_df
-
-
-## ScienceDirect (full-text) documents using DOIs
-def retrieve_document(doi):
-    files = os.listdir('data')
-    for file in files:
-        os.remove('data/' + file)
-    doi_doc = FullDoc(doi = doi)
-    if doi_doc.read(client):
-        doi_doc.write()
-    else:
-        print ("Read document failed.")
-
-
-## Convert ScienceDirect (full-text) JSON to string
-def json_to_text(filepath):
-    with open(filepath, "r") as f:
-        doc = json.load(f)
-    text = doc["originalText"]
-    return text
 
 ## Split querys into smaller chunks
 def token_length(text):
@@ -68,10 +38,8 @@ def token_length(text):
 
 ## Search text using GPT 
 def gpt_query(text):
-    print ('Sending Query')
-
     response = openai.chat.completions.create(
-        model="gpt-4-0125-preview",
+        model='gpt-4-turbo-2024-04-09',
         messages=[
             {
                 "role": "system",
@@ -152,7 +120,6 @@ The keys you use should match those above exactly.
         temperature=0,
         max_tokens=4000,
     )
-    print ('Response Recieved')
     return response.choices[0].message.content
 
 
@@ -167,46 +134,59 @@ def response_formatter(response):
     return data
 
 
-if __name__ == '__main__':
-    papers = document_search('Lithium solid electrolyte')
-    papers.to_csv('unscraped_papers.csv')
-    for i, row in papers.iterrows():
-        print (i)
+def pdf_reader(pdf):
+        reader = PdfReader(pdf)
+        number_of_pages = len(reader.pages)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text(0)
+        return text
 
 
-
-        if i == 5:
-            break
-
-        if os.path.isfile('scraped_papers.txt'):
-            with open('scraped_papers.txt') as f:
-                if row['prism:doi'] in f.read():
-                    print('true')
-                    continue
-
-        retrieve_document(row['prism:doi'])
-        file = os.listdir('data')
-        text = json_to_text('data/' + file[0])
-        texts = token_length(text)
-        for text in texts:
-            response = gpt_query(text)
-            if response == 'None':
-                print(response)
-            else:
-                data = response_formatter(response)
-                print (data)
-                electrolytes = []
-                for electrolyte in data:
-                    electrolyte['doi'] = row['prism:doi']
-                    electrolyte['Publication date'] = row['prism:coverDate']
-                    electrolytes.append(electrolyte)
-                electrolytes_df = pd.DataFrame(electrolytes)
-                row_count=0
-                if os.path.isfile('electrolytes_GPT4_new.csv'):
-                    with open('electrolytes_GPT4_new.csv','r') as output_file:
-                        row_count = sum(1 for row in output_file)
-                electrolytes_df.index += row_count-1
-                electrolytes_df.to_csv('electrolytes_GPT4_new.csv', mode='a', header=not os.path.exists('electrolytes_GPT4_new.csv'))
-        with open('scraped_papers.txt','a') as scraped_papers:
-            scraped_papers.write(row['prism:doi']+'\n')
-    
+def scrape_papers(path):
+    files = os.listdir(path)
+    to_scrape = pd.read_csv('papers_to_scrape.csv',index_col=0)
+    if os.path.isfile('papers_scraped.csv'):
+        scraped_papers = pd.read_csv('papers_scraped.csv',index_col=0)
+    else:
+        scraped_papers = to_scrape.copy()
+        scraped_papers.drop(scraped_papers.index, inplace=True)
+    with tqdm(total=len(to_scrape), desc='Scraping Papers', colour='green') as pbar:
+        for i, row in to_scrape.iterrows():
+            scopus_id = row['dc:identifier'].split(':')[-1]
+            filenames = [file for file in files if scopus_id in file]
+            if filenames == []:
+                pbar.update(1)
+                continue
+            filename = path + '/' + filenames[0]
+            if filename.split('.')[-1] == 'txt':
+                with open(filename, 'r') as f:
+                    text = f.read()
+            elif filename.split('.')[-1] == 'pdf':
+                text = pdf_reader(filename)
+                index = text.lower().rfind('references')
+                text = text[:index]
+            texts = token_length(text)
+            for text in texts:
+                response = gpt_query(text)
+                if response == 'None':
+                    print(response)
+                else:
+                    data = response_formatter(response)
+                    electrolytes = []
+                    for electrolyte in data:
+                        electrolyte['Scopus id'] = row['dc:identifier']
+                        electrolyte['doi'] = row['prism:doi']
+                        electrolyte['Publication date'] = row['prism:coverDate']
+                        electrolytes.append(electrolyte)
+                    electrolytes_df = pd.DataFrame(electrolytes)
+                    row_count=0
+                    if os.path.isfile('electrolytes.csv'):
+                        with open('electrolytes.csv','r') as output_file:
+                            row_count = sum(1 for row in output_file)
+                    electrolytes_df.index += row_count-1
+                    electrolytes_df.to_csv('electrolytes.csv', mode='a', header=not os.path.exists('electrolytes.csv'))
+            scraped_papers.loc[len(scraped_papers)] = row
+            # REMOVE PAPER FROM TO SCRAPE
+            pbar.update(1)
+    scraped_papers.to_csv('papers_scraped.csv')

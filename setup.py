@@ -22,6 +22,8 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'paper_search=cli.paper_search:search_for_papers'
+            'ps_search=cli.cli:paper_search',
+            'ps_elsevier=cli.cli:elsevier_download',
+            'ps_scrape=cli.cli:scrape'
         ],
 })
