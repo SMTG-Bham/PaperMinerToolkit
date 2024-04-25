@@ -1,7 +1,7 @@
 import click
-from scraper.search import search_for_papers
-from scraper.download import elsevier_downloader
-from scraper.scrape import scrape_papers
+from paperscraper.search import search_for_papers
+from paperscraper.download import elsevier_downloader
+from paperscraper.scrape import scrape_papers
 
 
 @click.command()
