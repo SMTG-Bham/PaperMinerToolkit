@@ -136,7 +136,7 @@ def response_formatter(response):
 
 def pdf_reader(pdf):
         reader = PdfReader(pdf)
-        number_of_pages = len(reader.pages)
+        # number_of_pages = len(reader.pages)
         text = ""
         for page in reader.pages:
             text += page.extract_text(0)
