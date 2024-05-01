@@ -62,21 +62,20 @@ def search_for_papers(query, path='papers.csv'):
     if os.path.isfile(path):
         old_papers = pd.read_csv(path)
         num_old_papers = len(old_papers)
-        old_papers.append(new_papers, ignore_index=True)
-        old_papers.drop_duplicates(keep='first', inplace=True)
-        tot_num_papers = len(old_papers)
+        papers = pd.concat([old_papers, new_papers], ignore_index=True)
+        papers.drop_duplicates(keep='first', inplace=True)
+        tot_num_papers = len(papers)
         num_new_papers = tot_num_papers - num_old_papers
         print('Document search found', num_new_papers, 'new results.')
-        papers_df = old_papers
-        papers_df.to_csv(path)
+        papers.to_csv(path)
     else:
-        print('Document search found', len(new_papers), 'new results.')
-        papers_df = new_papers
-        papers_df.to_csv(path)
+        papers = new_papers
+        print('Document search found', len(papers), 'new results.')
+        papers.to_csv(path)
     if os.path.isfile('papers_to_scrape.csv'):
         papers_to_scrape = pd.read_csv('papers_to_scrape.csv')
-        papers_df.append(papers_to_scrape)
-        papers_df.drop_duplicates(keep='first', inplace=True)
-    papers_df.to_csv('papers_to_scrape.csv')
+        papers = pd.concat([papers, papers_to_scrape], ignore_index=True)
+        papers.drop_duplicates(keep='first', inplace=True)
+    papers.to_csv('papers_to_scrape.csv')
 
     # REMOVE PAPERS SCRAPED FROM TO SCRAPE
