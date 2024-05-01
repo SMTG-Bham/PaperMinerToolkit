@@ -145,9 +145,9 @@ def pdf_reader(pdf):
 
 def scrape_papers(path):
     files = os.listdir(path)
-    to_scrape = pd.read_csv('papers_to_scrape.csv',index_col=0)
+    to_scrape = pd.read_csv('papers_to_scrape.csv', index_col=0)
     if os.path.isfile('papers_scraped.csv'):
-        scraped_papers = pd.read_csv('papers_scraped.csv',index_col=0)
+        scraped_papers = pd.read_csv('papers_scraped.csv', index_col=0)
     else:
         scraped_papers = to_scrape.copy()
         scraped_papers.drop(scraped_papers.index, inplace=True)
@@ -187,6 +187,6 @@ def scrape_papers(path):
                     electrolytes_df.index += row_count-1
                     electrolytes_df.to_csv('electrolytes.csv', mode='a', header=not os.path.exists('electrolytes.csv'))
             scraped_papers.loc[len(scraped_papers)] = row
-            # REMOVE PAPER FROM TO SCRAPE
+            scraped_papers.drop(scraped_papers[scraped_papers['dc:identifier'] == row['dc:identifier']].index)
             pbar.update(1)
     scraped_papers.to_csv('papers_scraped.csv')
