@@ -51,18 +51,21 @@ def elsevier_downloader(papers_path='papers_to_scrape.csv', download_path='paper
 
         a=0
 
-        for paper in elsevier_papers.itertuples():
-            uri = paper[3].split("'")[-2]
+        for i, paper in elsevier_papers.iterrows():
+            filename = paper['dc:identifier'].split(':')[-1]
+            filepath = f'{download_path}/{filename}.txt'
+            if os.path.isfile(filepath):
+                pass
+            else:
+                uri = paper['link'].split("'")[-2]
+                retrieve_document(uri)
+                file = os.listdir('data')
+                file = 'data/' + file[0]
+                text = json_to_text(file)
+                formatted_text = elsevier_string_formatter(text)
+                with open(filepath,'w') as out_file:
+                    out_file.write(formatted_text)
             pbar.update(1)
-            retrieve_document(uri)
-            file = os.listdir('data')
-            file = 'data/' + file[0]
-            text = json_to_text(file)
-            formatted_text = elsevier_string_formatter(text)
-
-            filename = paper[5].split(':')[-1]
-            with open(f'{download_path}/{filename}.txt','w') as out_file:
-                out_file.write(formatted_text)
 
             a+=1
             if a == 10:
