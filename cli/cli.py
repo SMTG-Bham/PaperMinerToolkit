@@ -6,9 +6,9 @@ from paperscraper.scrape import scrape_papers
 
 @click.command()
 @click.argument('query', default='Lithium solid electrolyte', type=str)
-@click.argument('database', default='scopus', type=str)
-def paper_search(query: str, database: str):
-    search_for_papers(query, database)
+@click.argument('path', default='papers.csv', type=str)
+def paper_search(query: str, path: str):
+    search_for_papers(query, path)
 
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
