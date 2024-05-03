@@ -1,0 +1,146 @@
+{
+    "sse": {
+        "material type": "solid electrolyte",
+        "search fields": {
+            "Name": {
+                "prompt": "Name of electrolyte",
+                "example": "LLZO"
+            },
+            "Chemical formula": {
+                "prompt": "Formula",
+                "example": "Li7La3Zr2O12"
+            },
+            "Dopants": {
+                "prompt": "Dopants",
+                "example": "Al"
+            },
+            "Coatings": {
+                "prompt": "Coatings",
+                "example": "ZnO"
+            },
+            "Impurity phases": {
+                "prompt": "Impurity phases",
+                "example": "Amorphous Li2O"
+            },
+            "Structure type": {
+                "prompt": "Structure type",
+                "example": "Garnet"
+            },
+            "Space group": {
+                "prompt": "Space group",
+                "example": "I-43d"
+            },
+            "Electronic conductivity": {
+                "prompt": "Electronic conductivity",
+                "example": "5.5 × 10−8 S cm-1",
+                "unit": "S cm^-1"
+            },
+            "Ionic conductivity": {
+                "prompt": "Ionic conductivity (if multiple measurements were taken, provide a list separated by commas)",
+                "example": ["2.0 × 10−4 S cm−1","3.0 × 10−4 S cm−1"],
+                "unit": "S cm^-1"
+            },
+            "Activation energy": {
+                "prompt": "Activation energy for migration",
+                "example": "0.25 eV",
+                "unit": "eV"
+            },
+            "Hardness": {
+                "prompt": "Hardness",
+                "example": "9.1 GPa",
+                "unit": "GPa"
+            },
+            "Young’s modulus": {
+                "prompt": "Young’s modulus",
+                "example": "162.6 GPa",
+                "unit": "GPa"
+            },
+            "Shear modulus": {
+                "prompt": "Shear modulus",
+                "example": "64.6 GPa",
+                "unit": "GPa"
+            },
+            "Bulk modulus": {
+                "prompt": "Bulk modulus",
+                "example": "112.4 GPa",
+                "unit": "GPa"
+            },
+            "Crystal density": {
+                "prompt": "Crystal density",
+                "example": "None",
+                "unit": "kg/m^2"
+            },
+            "Surface area": {
+                "prompt": "Surface area",
+                "example": "None",
+                "unit": "mm^2"
+            },
+            "Porosity": {
+                "prompt": "Porosity",
+                "example": "None",
+                "unit": "GPa"
+            },
+            "Particle size": {
+                "prompt": "Particle size",
+                "example": "300 nm",
+                "unit": "nm"
+            },
+            "Temperature": {
+                "prompt": "Temperature the ionic conductivity was measured at (if multiple measurements were taken, list these in the same order as the conductivities)",
+                "example": ["30 °C", "60 °C"],
+                "unit": "K"
+            },
+            "Pressure": {
+                "prompt": "Pressure",
+                "example": "101 kPa",
+                "unit": "kPa"
+            },
+            "Pellet thickness": {
+                "prompt": "Pellet thickness",
+                "example": "0.5 mm",
+                "unit": "mm"
+            },
+            "Contact area": {
+                "prompt": "Contact area",
+                "example": "None",
+                "unit": "mm^2"
+            },
+            "Cell format": {
+                "prompt": "Cell format",
+                "example": "Prismatic"
+            },
+            "Pellet density": {
+                "prompt": "Pellet density",
+                "example": "0.5 mm",
+                "unit": "kg/m^2"
+            },
+            "Critical current density": {
+                "prompt": "Critical current density for plating/stripping",
+                "example": "mA cm^–2",
+                "unit": "cm^–2"
+            },
+            "Coulombic efficiency": {
+                "prompt": "Coulombic efficiency",
+                "example": "99%",
+                "unit": "%"
+            },
+            "Cycle life": {
+                "prompt": "Cycle life",
+                "example": "5000 cycles",
+                "unit": "unitless"
+            },
+            "AC frequency range": {
+                "prompt": "AC frequency range",
+                "example": "10 Hz to 4 kHz"
+            },
+            "Synthesis conditions": {
+                "prompt": "Synthesis conditions",
+                "example": "Ball milled, Calcined at 850 °C, Sintered at 1180 °C"
+            },
+            "Type of study": {
+                "prompt": "Type of study (experimental, computational, or both)",
+                "example": "Experimental"
+            }
+        }
+    }
+}

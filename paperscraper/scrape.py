@@ -7,6 +7,8 @@ import re
 import os
 from tqdm import tqdm
 from PyPDF2 import PdfReader
+from pathlib import Path
+from monty.serialization import loadfn
     
 ## Load configuration
 with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json", 'r') as con_file:
@@ -15,6 +17,24 @@ with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json
 ## Get API key
 openai.api_key = config['gpt_api_key']
 
+## Get module directory
+MODULE_DIR = Path(__file__).resolve().parent
+
+def load_recipe(recipe_name: str):
+    """
+    Load configuration information from a JSON file.
+
+    Args:
+        fname (str): The name of the JSON file to load.
+
+    Returns:
+        dict: A dictionary containing the configuration information.
+    """
+    # recipes = loadfn(str(MODULE_DIR / 'resources' / 'recipes.json'))
+    with open(str(MODULE_DIR / 'resources' / 'recipes.json'),'r') as f:
+        recipes = json.load(f)
+    recipe = recipes[recipe_name.lower()]
+    return recipe
 
 ## Split querys into smaller chunks
 def token_length(text):
@@ -37,86 +57,10 @@ def token_length(text):
         return texts
 
 ## Search text using GPT 
-def gpt_query(text):
+def gpt_query(messages):
     response = openai.chat.completions.create(
         model='gpt-4-turbo-2024-04-09',
-        messages=[
-            {
-                "role": "system",
-                "content": """
-Extract the following structured data for solid electrolytes from the user's paper:
-
-- Name of electrolyte
-- Chemical formula
-- Dopants
-- Coatings
-- Impurity phases
-- Structure type
-- Space group
-- Electronic conductivity
-- Ionic conductivity (if multiple measurements were taken, provide a list separated by commas)
-- Activation energy for migration
-- Hardness
-- Young’s modulus
-- Shear modulus
-- Bulk modulus
-- Crystal density
-- Surface area
-- Porosity
-- Particle size
-- Temperature (if multiple measurements were taken, list these in the same order as the conductivities)
-- Pressure
-- Pellet thickness
-- Contact area
-- Cell format
-- Pellet density
-- Critical current density for plating/stripping
-- Coulombic efficiency
-- Cycle life
-- AC frequency range
-- Synthesis conditions
-- Type of study (experimental, computational, or both)
-
-The output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional electrolyte found. If a field is not mentioned in the paper, set the value to "None". For example: 
-
-{
-    "Name": "LLZO",
-    "Formula": "Li7La3Zr2O12",
-    "Dopants": "Al",
-    "Coatings": "None",
-    "Impurity phases": "Amorphous Li2O",
-    "Structure type": "Garnet",
-    "Space group": " I-43d",
-    "Electronic conductivity": "None",
-    "Ionic conductivity": ["2.0 × 10−4 S cm−1","3.0 × 10−4 S cm−1"],
-    "Activation energy": "0.25 eV",
-    "Hardness": "9.1 GPa",
-    "Young's modulus": "162.6 GPa",
-    "Shear modulus": "64.6 GPa",
-    "Bulk modulus": "112.4 GPa",
-    "Crystal density": "None",
-    "Surface area": "None",
-    "Porosity": "None",
-    "Particle size": "300nm",
-    "Temperature": ["30 °C", "60 °C"],
-    "Pressure": "Ambient",
-    "Pellet thickness": "0.5 mm",
-    "Contact area": "None",
-    "Cell format": "None",
-    "Pellet density": "None",
-    "Critical current density": "None",
-    "Coulombic efficiency" "None",
-    "Cycle life": "None",
-    "AC frequency range": "None",
-    "Synthesis conditions": "Ball milled, Calcined at 850 °C, Sintered at 1180 °C",
-    "Type of study": "Experimental"
-}
-
-The keys you use should match those above exactly.
-"""
-            },
-            {"role": "user", "content": text},
-        ],
+        messages=messages,
         temperature=0,
         max_tokens=4000,
     )
@@ -142,8 +86,37 @@ def pdf_reader(pdf):
             text += page.extract_text(0)
         return text
 
+def gpt_scrape(text, recipe):
+    recipe = load_recipe(recipe)
+    material_type = recipe['material type']
+    search_fields = recipe['search fields']
+    prompt = f'Extract the following structured data for {material_type} materials from the user\'s paper:\n\n'
+    for field in search_fields:
+        desc = search_fields[field]['prompt']
+        prompt += f'- {desc}\n'
+    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. If a field is not mentioned in the paper, set the value to "None". For example:\n\n'
+    prompt += '{\n'
+    for key in search_fields.keys():
+        example = search_fields[key]['example']
+        if type(example) == str:
+            prompt += f'\t"{key}": "{example}"\n'
+        else:
+            prompt += f'\t"{key}": '+str(example)+'\n'
+    prompt += '}\n\nThe keys you use should match those above exactly.'
+    messages=[
+        {
+            'role': 'system',
+            'content': prompt
+        },
+        {'role': 'user', 'content': text},
+    ]
+    response = gpt_query(messages)
+    return response
 
-def scrape_papers(path):
+def gpt_unit_conversion():
+    pass
+
+def scrape_papers(path, recipe='sse'):
     files = os.listdir(path)
     to_scrape = pd.read_csv('papers_to_scrape.csv', index_col=0)
     if os.path.isfile('papers_scraped.csv'):
@@ -168,24 +141,24 @@ def scrape_papers(path):
                 text = text[:index]
             texts = token_length(text)
             for text in texts:
-                response = gpt_query(text)
+                response = gpt_scrape(text, recipe)
                 if response == 'None':
                     print(response)
                 else:
                     data = response_formatter(response)
-                    electrolytes = []
-                    for electrolyte in data:
-                        electrolyte['Scopus id'] = row['dc:identifier']
-                        electrolyte['doi'] = row['prism:doi']
-                        electrolyte['Publication date'] = row['prism:coverDate']
-                        electrolytes.append(electrolyte)
-                    electrolytes_df = pd.DataFrame(electrolytes)
+                    materials = []
+                    for material in data:
+                        material['Scopus id'] = row['dc:identifier']
+                        material['doi'] = row['prism:doi']
+                        material['Publication date'] = row['prism:coverDate']
+                        materials.append(material)
+                    materials_df = pd.DataFrame(materials)
                     row_count=0
-                    if os.path.isfile('electrolytes.csv'):
-                        with open('electrolytes.csv','r') as output_file:
+                    if os.path.isfile('materials.csv'):
+                        with open('materials.csv','r') as output_file:
                             row_count = sum(1 for row in output_file)
-                    electrolytes_df.index += row_count-1
-                    electrolytes_df.to_csv('electrolytes.csv', mode='a', header=not os.path.exists('electrolytes.csv'))
+                    materials_df.index += row_count-1
+                    materials_df.to_csv('materials.csv', mode='a', header=not os.path.exists('materials.csv'))
             scraped_papers.loc[len(scraped_papers)] = row
             scraped_papers.drop(scraped_papers[scraped_papers['dc:identifier'] == row['dc:identifier']].index)
             pbar.update(1)
