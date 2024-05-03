@@ -1,3 +1,4 @@
+from paperscraper import SETTINGS
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc
 import json
@@ -5,13 +6,8 @@ import os
 import pandas as pd
 from tqdm import tqdm
 
-## Load configuration
-with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json", 'r') as con_file:
-    config = json.load(con_file)
-
-## Initialize client
-client = ElsClient(config['elsevier_api_key'])
-
+## Get Elsevier API key and initialize client
+client = ElsClient(SETTINGS.get('elsevier_api_key'))
 
 ## ScienceDirect (full-text) documents using URIs
 def retrieve_document(uri):

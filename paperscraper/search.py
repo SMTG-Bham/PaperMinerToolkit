@@ -1,18 +1,13 @@
+from paperscraper import SETTINGS
 from elsapy.elsclient import ElsClient
 from elsapy.utils import recast_df
 from urllib.parse import quote_plus as url_encode
-import json
 import pandas as pd
 from tqdm import tqdm
 import os
     
-## Load configuration
-with open('/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json', 'r') as con_file:
-    config = json.load(con_file)
-
-## Initialize client
-client = ElsClient(config['elsevier_api_key'])
-
+## Get Elsevier API key and initialize client
+client = ElsClient(SETTINGS.get('elsevier_api_key'))
 
 ## Initialize doc search object using ScienceDirect and execute search, retrieving all results
 def document_search(query, 

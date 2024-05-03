@@ -1,3 +1,4 @@
+from paperscraper import SETTINGS
 import json
 import openai
 import pandas as pd
@@ -9,13 +10,9 @@ from tqdm import tqdm
 from PyPDF2 import PdfReader
 from pathlib import Path
 from monty.serialization import loadfn
-    
-## Load configuration
-with open("/rds/homes/o/ogs353/sse-project/JLR/experimental_database/config.json", 'r') as con_file:
-    config = json.load(con_file)
 
 ## Get API key
-openai.api_key = config['gpt_api_key']
+openai.api_key = SETTINGS.get('gpt_api_key')
 
 ## Get module directory
 MODULE_DIR = Path(__file__).resolve().parent
@@ -30,7 +27,6 @@ def load_recipe(recipe_name: str):
     Returns:
         dict: A dictionary containing the configuration information.
     """
-    # recipes = loadfn(str(MODULE_DIR / 'resources' / 'recipes.json'))
     with open(str(MODULE_DIR / 'resources' / 'recipes.json'),'r') as f:
         recipes = json.load(f)
     recipe = recipes[recipe_name.lower()]
