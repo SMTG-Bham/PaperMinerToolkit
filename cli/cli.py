@@ -2,6 +2,7 @@ import click
 from paperscraper.search import search_for_papers
 from paperscraper.download import elsevier_downloader
 from paperscraper.scrape import scrape_papers
+from paperscraper.store import store_results
 
 
 @click.command()
@@ -19,3 +20,9 @@ def elsevier_download(path: str):
 @click.argument('path', default='.', type=click.Path(exists=True))
 def scrape(path: str):
     scrape_papers(path)
+
+@click.command()
+@click.argument('in_file', default='.', type=click.Path(exists=True))
+@click.argument('out_file', default='.', type=click.Path(exists=True))
+def store(in_file: str, out_file: str):
+    store_results(in_file, out_file)

@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'ps_search=cli.cli:paper_search',
             'ps_elsevier=cli.cli:elsevier_download',
-            'ps_scrape=cli.cli:scrape'
+            'ps_scrape=cli.cli:scrape',
+            'ps_store=cli.cli:store'
         ],
 })
