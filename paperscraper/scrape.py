@@ -20,9 +20,16 @@ def load_recipe(recipe_name: str):
     Returns:
         dict: A dictionary containing the configuration information.
     """
-    with open(str(MODULE_DIR / 'resources' / 'recipes.json'),'r') as f:
-        recipes = json.load(f)
-    recipe = recipes[recipe_name.lower()]
+    try:
+        with open(str(MODULE_DIR / 'resources' / 'recipes.json'),'r') as f:
+            recipes = json.load(f)
+            recipe = recipes[recipe_name.lower()]
+    except FileNotFoundError:
+        raise FileNotFoundError('The recipes.json file is missing. Please reinstall PaperScraper.')
+    except KeyError:
+        raise KeyError(f'Recipe called "{recipe_name}" does not exist.')
+    except:
+        raise ValueError('The recipes.json file may be corrupted and cannot not be read. Please reinstall PaperScraper.')
     return recipe
 
 def pdf_reader(pdf):

@@ -6,7 +6,7 @@ import re
 import math
 
 ## Get API key
-openai.api_key = SETTINGS.get('gpt_api_key')
+openai.api_key = SETTINGS.get('openai_api_key')
 
 ## Get token length of prompt
 def token_length(prompt, model):
@@ -18,12 +18,37 @@ def token_length(prompt, model):
 
 ## Search text using GPT 
 def gpt_query(messages, model='gpt-4-turbo-2024-04-09'):
-    response = openai.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0,
-        max_tokens=4000,
-    )
+    try:
+        response = openai.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0,
+            max_tokens=4000,
+        )
+    except openai.BadRequestError as e:
+        # Handle error 400
+        raise(f'OpenAI Error 400: {e}')
+    except openai.AuthenticationError as e:
+        # Handle error 401
+        raise(f'OpenAI Error 401: {e}')
+    except openai.PermissionDeniedError as e:
+        # Handle error 403
+        raise(f'OpenAI Error 403: {e}')
+    except openai.NotFoundError as e:
+        # Handle error 404
+        raise(f'OpenAI Error 404: {e}')
+    except openai.UnprocessableEntityError as e:
+        # Handle error 422
+        raise(f'OpenAI Error 422: {e}')
+    except openai.RateLimitError as e:
+        # Handle error 429
+        raise(f'OpenAI Error 429: {e}')
+    except openai.InternalServerError as e:
+        # Handle error >=500
+        raise(f'OpenAI >=500: {e}')
+    except openai.APIConnectionError as e:
+        # Handle API connection error
+        raise(f'OpenAI API connection error: {e}')
     return response.choices[0].message.content
 
 def gpt_scrape(text, recipe):

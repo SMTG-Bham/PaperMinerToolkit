@@ -19,7 +19,6 @@ def store_results(in_filepath='temp_scraped_materials.csv', out_filepath='materi
             else:
                 columns.append(field)
         columns=columns
-
     out_data = pd.DataFrame()
     for series_name, series in in_file.items():
         matches = [field for field in columns if series_name in field]
@@ -48,7 +47,6 @@ def store_results(in_filepath='temp_scraped_materials.csv', out_filepath='materi
             raise RuntimeError(f'{series_name} did not match with a field in the recipe or output file.')
     temp_filename = 'temp_converted_materials.csv'
     out_data.to_csv(temp_filename)
-    # ask if user is happy with the conversions
     print(f'Output data has been saved to {temp_filename} temporarily. Are you happy with these conversions?')
     decision = input("Yes (Y)/ No (N): ")
     if decision.lower() in ["y", "yes"]:
@@ -56,6 +54,3 @@ def store_results(in_filepath='temp_scraped_materials.csv', out_filepath='materi
         out_data.to_csv('materials.csv', mode='a', header=not os.path.exists('materials.csv'))
         os.remove(in_filepath)
     os.remove(temp_filename)
-    
-    
-    
