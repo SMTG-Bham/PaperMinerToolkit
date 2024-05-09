@@ -25,6 +25,8 @@ setup(
             'ps_search=cli.cli:paper_search',
             'ps_elsevier=cli.cli:elsevier_download',
             'ps_scrape=cli.cli:scrape',
-            'ps_store=cli.cli:store'
+            'ps_store=cli.cli:store',
+            'ps_elsevier_key=cli.cli:update_elsevier_api_key',
+            'ps_openai_key=cli.cli:update_openai_api_key'
         ],
 })

@@ -3,6 +3,7 @@ from paperscraper.search import search_for_papers
 from paperscraper.download import elsevier_downloader
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
+from paperscraper.settings import update_elsevier_key, update_openai_key
 
 
 @click.command()
@@ -26,3 +27,9 @@ def scrape(path: str):
 @click.argument('out_file', default='.', type=click.Path(exists=True))
 def store(in_file: str, out_file: str):
     store_results(in_file, out_file)
+
+def update_elsevier_api_key():
+    update_elsevier_key()
+
+def update_openai_api_key():
+    update_openai_key()
