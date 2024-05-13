@@ -83,9 +83,10 @@ def gpt_scrape(text, recipe):
     return data
 
 def gpt_unit_conversion(values, field, unit):
-    prompt = f'Convert the following values of {field} to {unit}. Each value should be returned as a decimal on a separate line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If the given value is "None", return None'
+    prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If the given value is "None", return None'
     values_str = ''
     for value in values:
+        value = str(value)
         values_str += f'{value}\n'
     coeff = token_length(values_str, 'gpt-4')/120000
     if coeff <= 1:

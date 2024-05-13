@@ -23,10 +23,11 @@ def scrape(path: str):
     scrape_papers(path)
 
 @click.command()
-@click.argument('in_file', default='.', type=click.Path(exists=True))
-@click.argument('out_file', default='.', type=click.Path(exists=True))
-def store(in_file: str, out_file: str):
-    store_results(in_file, out_file)
+@click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path(exists=True))
+@click.argument('out_file', default='materials.csv', type=click.Path())
+@click.argument('recipe', default='sse', type=str)
+def store(in_file: str, out_file: str, recipe: str):
+    store_results(in_file, out_file, recipe)
 
 def update_elsevier_api_key():
     update_elsevier_key()

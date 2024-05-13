@@ -1,8 +1,10 @@
-from paperscraper import SETTINGS_FILE, SETTINGS
 from elsapy.elsclient import ElsClient
 import openai
 import requests
 import json
+import os
+
+SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.pscraperrc.json')
 
 def check_openai_api_key(api_key):
     client = openai.OpenAI(api_key=api_key)
@@ -13,7 +15,10 @@ def check_openai_api_key(api_key):
     else:
         return True
 
-def update_openai_key(settings=SETTINGS):
+def update_openai_key(settings=True):
+    if settings:
+        with open(SETTINGS_FILE, mode='r', encoding="utf-8") as json_file:
+            settings = json.load(json_file)
     api_key = input('Enter OpenAI API key: ')
     if check_openai_api_key(api_key):
         settings['openai_api_key'] = api_key
@@ -32,7 +37,10 @@ def check_elsevier_api_key(api_key):
     else:
         return True
 
-def update_elsevier_key(settings=SETTINGS):
+def update_elsevier_key(settings=True):
+    if settings:
+        with open(SETTINGS_FILE, mode='r', encoding="utf-8") as json_file:
+            settings = json.load(json_file)
     api_key = input('Enter Elsevier API key: ')
     if check_elsevier_api_key(api_key):
         settings['elsevier_api_key'] = api_key
