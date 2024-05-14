@@ -12,10 +12,10 @@ MODULE_DIR = Path(__file__).resolve().parent
 
 def load_recipe(recipe_name: str):
     """
-    Load configuration information from a JSON file.
+    Load configuration information from the recipes JSON file.
 
     Args:
-        fname (str): The name of the JSON file to load.
+        recipe_name (str): The name of the recipe to load.
 
     Returns:
         dict: A dictionary containing the configuration information.
@@ -32,18 +32,38 @@ def load_recipe(recipe_name: str):
         raise ValueError('The recipes.json file may be corrupted and cannot not be read. Please reinstall PaperScraper.')
     return recipe
 
-def pdf_reader(pdf):
-        reader = PdfReader(pdf)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text(0)
-        return text
+# Get text from PDF
+def pdf_reader(pdf_path: str):
+    """
+    Extract text from a PDF.
 
-def scrape_papers(path, recipe='sse'):
-    files = os.listdir(path)
-    to_scrape = pd.read_csv('papers_to_scrape.csv', index_col=0)
-    if os.path.isfile('papers_scraped.csv'):
-        scraped_papers = pd.read_csv('papers_scraped.csv', index_col=0)
+    Args:
+        pdf_path (str): The path of the PDF to read.
+
+    Returns:
+        str: A string containing the PDF's text.
+    """
+    reader = PdfReader(pdf_path)
+    text = ''
+    for page in reader.pages:
+        text += page.extract_text(0)
+    return text
+
+# Get materials from downloaded papers
+def scrape_papers(papers_path: str, in_file: str='papers_to_scrape.csv', out_file: str='papers_scraped.csv', recipe: str='sse'):
+    """
+    Scrape materials from downloaded papers.
+
+    Args:
+        papers_path (str): The path of the PDF to read.
+        in_file (str): Filepath of the 'to scrape' papers CSV.
+        out_file (str): Filepath of the scraped papers CSV.
+        recipe (str): Recipe to use for defining search parameters.
+    """
+    files = os.listdir(papers_path)
+    to_scrape = pd.read_csv(in_file, index_col=0)
+    if os.path.isfile(out_file):
+        scraped_papers = pd.read_csv(out_file, index_col=0)
     else:
         scraped_papers = to_scrape.copy()
         scraped_papers.drop(scraped_papers.index, inplace=True)
@@ -54,7 +74,7 @@ def scrape_papers(path, recipe='sse'):
             if filenames == []:
                 pbar.update(1)
                 continue
-            filename = path + '/' + filenames[0]
+            filename = papers_path + '/' + filenames[0]
             if filename.split('.')[-1] == 'txt':
                 with open(filename, 'r') as f:
                     text = f.read()
@@ -96,4 +116,4 @@ def scrape_papers(path, recipe='sse'):
             scraped_papers.loc[len(scraped_papers)] = row
             scraped_papers.drop(scraped_papers[scraped_papers['dc:identifier'] == row['dc:identifier']].index, inplace=True)
             pbar.update(1)
-    scraped_papers.to_csv('papers_scraped.csv')
+    scraped_papers.to_csv(out_file)
