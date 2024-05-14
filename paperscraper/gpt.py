@@ -17,7 +17,7 @@ def token_length(prompt, model):
     return num_tokens
 
 ## Search text using GPT 
-def gpt_query(messages, model='gpt-4-turbo-2024-04-09'):
+def gpt_query(messages, model='gpt-4o'):
     try:
         response = openai.chat.completions.create(
             model=model,
@@ -74,7 +74,7 @@ def gpt_scrape(text, recipe):
         },
         {'role': 'user', 'content': text},
     ]
-    response = gpt_query(messages, 'gpt-4-turbo-2024-04-09').replace('\n', '')
+    response = gpt_query(messages, 'gpt-4o').replace('\n', '')
     materials = re.findall(r'\{.*?\}', response)
     data = []
     for material_json in materials:
@@ -111,7 +111,7 @@ def gpt_unit_conversion(values, field, unit):
             },
             {'role': 'user', 'content': values_str},
         ]
-        converted_values = gpt_query(messages,'gpt-4-turbo-2024-04-09').splitlines()
+        converted_values = gpt_query(messages,'gpt-4o').splitlines()
         for value in converted_values:
             output.append(value)
     return output
