@@ -10,13 +10,25 @@ import os
 client = ElsClient(SETTINGS.get('elsevier_api_key'))
 
 ## Initialize doc search object using ScienceDirect and execute search, retrieving all results
-def document_search(query, 
-                    index='scopus', 
-                    count=200, 
-                    get_all=True, 
-                    search_fields='TITLE-ABS-KEY'
+def document_search(query: str, 
+                    index: str='scopus', 
+                    count: int=200, 
+                    get_all: bool=True, 
+                    search_fields: str='TITLE-ABS-KEY'
                     ):
-    '''REWRITTEN FROM ELSAPY'''
+    """
+    Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
+
+    Args:
+        query (str): Search query.
+        index (str): The database to search through.
+        count (int): The total number of papers to retrieve. If get_all=True, count is the number of papers retrieved at a time.
+        get_all (bool): Get all papers.
+        search_fields (str): Metadata fields to search through using the query.
+
+    Returns:
+        DataFrame: A dataframe containing the metadata for retrieved papers.
+    """
     base_url = u'https://api.elsevier.com/content/search/'
     index = index.lower()
     url = base_url + index
@@ -52,8 +64,22 @@ def document_search(query,
 
 
 ## Search for papers
-def search_for_papers(query, papers_path='papers.csv'):
+def search_for_papers(query: str, 
+                      papers_path: str='papers.csv', 
+                      papers_to_scrape_path: str='papers_to_scrape.csv', 
+                      scraped_papers_path: str='papers_scraped.csv'
+                      ):
+    """
+    Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
+
+    Args:
+        query (str): Search query.
+        papers_path (str): Path to the papers database.
+        papers_to_scrape_path (str): Path to the 'to scrape' papers database.
+        scraped_papers_path (str): Path to the scraped papers database.
+    """
     new_papers = document_search(query)
+    new_papers['status'] = 'retrieved'
     if os.path.isfile(papers_path):
         old_papers = pd.read_csv(papers_path, index_col=0)
         num_old_papers = len(old_papers)
@@ -67,12 +93,12 @@ def search_for_papers(query, papers_path='papers.csv'):
         papers = new_papers
         print('Document search found', len(papers), 'new results.')
         papers.to_csv(papers_path)
-    if os.path.isfile('papers_to_scrape.csv'):
-        papers_to_scrape = pd.read_csv('papers_to_scrape.csv', index_col=0)
+    if os.path.isfile(papers_to_scrape_path):
+        papers_to_scrape = pd.read_csv(papers_to_scrape_path, index_col=0)
         papers = pd.concat([papers, papers_to_scrape], ignore_index=True)
         papers.drop_duplicates(keep='first', inplace=True, ignore_index = True)
-    if os.path.isfile('papers_scraped.csv'):
-        papers_scraped = pd.read_csv('papers_scraped.csv', index_col=0)
+    if os.path.isfile(scraped_papers_path):
+        papers_scraped = pd.read_csv(scraped_papers_path, index_col=0)
         papers = pd.concat([papers, papers_scraped], ignore_index=True)
         papers.drop_duplicates(keep=False, inplace=True, ignore_index = True)
-    papers.to_csv('papers_to_scrape.csv')
+    papers.to_csv(papers_to_scrape_path)
