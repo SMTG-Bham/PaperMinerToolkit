@@ -3,7 +3,7 @@ from paperscraper.gpt import gpt_unit_conversion
 import pandas as pd
 import os
 
-def store_results(in_filepath='temp_scraped_materials.csv', out_filepath='materials.csv', unit_conversion=True, recipe='sse'):
+def store_results(papers_path='papers.csv', in_filepath='temp_scraped_materials.csv', out_filepath='materials.csv', unit_conversion=True, recipe='sse'):
     in_file = pd.read_csv(in_filepath, index_col=0)
     recipe = load_recipe(recipe)
     fields = recipe['search fields'].keys()
@@ -47,13 +47,19 @@ def store_results(in_filepath='temp_scraped_materials.csv', out_filepath='materi
                 converted_series = series
             out_data[matches[0]] = converted_series
             if not matches[0] in ['Scopus id', 'doi', 'Publication date']:
-                columns.remove(matches[0])
+                try:
+                    columns.remove(matches[0])
+                except:
+                    print(matches[0]) # add error message
     temp_filename = 'temp_converted_materials.csv'
     out_data.to_csv(temp_filename)
     print(f'\nOutput data has been saved to {temp_filename} temporarily. Are you happy with these conversions?')
-    decision = input("Yes (Y)/ No (N): ")
+    decision = input("Yes (Y) / No (N): ")
     if decision.lower() in ["y", "yes"]:
-        out_data = pd.read_csv(temp_filename)
+        out_data = pd.read_csv(temp_filename, index_col=0)
         out_data.to_csv('materials.csv', mode='a', header=not os.path.exists('materials.csv'))
         os.remove(in_filepath)
     os.remove(temp_filename)
+    papers_df = pd.read_csv(papers_path, index_col=0)
+    papers_df['status'].replace('scraped','stored',inplace=True)
+    papers_df.to_csv(papers_path)

@@ -50,31 +50,39 @@ def pdf_reader(pdf_path: str):
     return text
 
 # Get materials from downloaded papers
-def scrape_papers(papers_path: str, in_file: str='papers_to_scrape.csv', out_file: str='papers_scraped.csv', recipe: str='sse'):
+def scrape_papers(papers_dir: str, papers_path: str='papers.csv', recipe: str='sse'):
     """
     Scrape materials from downloaded papers.
 
     Args:
-        papers_path (str): The path of the PDF to read.
+        papers_dir (str): The path of the PDF to read.
         in_file (str): Filepath of the 'to scrape' papers CSV.
         out_file (str): Filepath of the scraped papers CSV.
         recipe (str): Recipe to use for defining search parameters.
     """
-    files = os.listdir(papers_path)
-    to_scrape = pd.read_csv(in_file, index_col=0)
-    if os.path.isfile(out_file):
-        scraped_papers = pd.read_csv(out_file, index_col=0)
-    else:
-        scraped_papers = to_scrape.copy()
-        scraped_papers.drop(scraped_papers.index, inplace=True)
-    with tqdm(total=len(to_scrape), desc='Scraping Papers', colour='green') as pbar:
-        for i, row in to_scrape.iterrows():
+    files = os.listdir(papers_dir)
+    papers_df = pd.read_csv(papers_path, index_col=0)
+    if 'scraped' in papers_df['status'].value_counts().keys():
+        print('Some scraped papers have not been stored. Would you like to re-scrape these?')
+        decision = input('Yes (Y)/ No (N): ')
+        if decision.lower() in ['y', 'yes']:
+            papers_df['status'].replace('scraped','retrieved',inplace=True)
+            os.remove('temp_scraped_materials.csv')
+        else:
+            print('Scrape cancelled: Please run ps_store before scraping.')
+            exit()
+    recipe = load_recipe(recipe)
+    first_material = True
+    with tqdm(total=papers_df['status'].value_counts()['retrieved'], desc='Scraping Papers', colour='green') as pbar:
+        for i, row in papers_df.iterrows():
+            if row['status'] == 'stored':
+                continue
             scopus_id = row['dc:identifier'].split(':')[-1]
             filenames = [file for file in files if scopus_id in file]
             if filenames == []:
                 pbar.update(1)
                 continue
-            filename = papers_path + '/' + filenames[0]
+            filename = papers_dir + '/' + filenames[0]
             if filename.split('.')[-1] == 'txt':
                 with open(filename, 'r') as f:
                     text = f.read()
@@ -94,11 +102,10 @@ def scrape_papers(papers_path: str, in_file: str='papers_to_scrape.csv', out_fil
                         texts.append(text[split*char_per_split:])
                     else:
                         texts.append(text[split*char_per_split:(split+1)*char_per_split])
-            recipe = load_recipe(recipe)
             for text in texts:
                 response = gpt_scrape(text, recipe)
                 if response == 'None':
-                    print(response)
+                    pass
                 else:
                     materials = []
                     for material in response:
@@ -106,14 +113,14 @@ def scrape_papers(papers_path: str, in_file: str='papers_to_scrape.csv', out_fil
                         material['doi'] = row['prism:doi']
                         material['Publication date'] = row['prism:coverDate']
                         materials.append(material)
-                    materials_df = pd.DataFrame(materials)
-                    row_count=0
-                    if os.path.isfile('temp_scraped_materials.csv'):
-                        with open('temp_scraped_materials.csv','r') as output_file:
-                            row_count = sum(1 for row in output_file)
-                    materials_df.index += row_count
-                    materials_df.to_csv('temp_scraped_materials.csv', mode='a', header=not os.path.exists('temp_scraped_materials.csv'))
-            scraped_papers.loc[len(scraped_papers)] = row
-            scraped_papers.drop(scraped_papers[scraped_papers['dc:identifier'] == row['dc:identifier']].index, inplace=True)
+                    if first_material:
+                        materials_df = pd.DataFrame(materials)
+                        first_material = False
+                    else:
+                        for material in materials:
+                            materials_df.loc[len(materials_df)] = material
+                            materials_df.reset_index(drop=True, inplace=True)
+                    materials_df.to_csv('temp_scraped_materials.csv')
+            papers_df.loc[i,'status'] = 'scraped'
+            papers_df.to_csv(papers_path)
             pbar.update(1)
-    scraped_papers.to_csv(out_file)

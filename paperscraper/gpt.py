@@ -27,22 +27,22 @@ def gpt_query(messages, model='gpt-4o'):
         )
     except openai.BadRequestError as e:
         # Handle error 400
-        raise(f'OpenAI Error 400: {e}')
+        raise Exception(f'OpenAI Error 400: {e}')
     except openai.AuthenticationError as e:
         # Handle error 401
-        raise(f'OpenAI Error 401: {e}')
+        raise Exception(f'OpenAI Error 401: {e}')
     except openai.PermissionDeniedError as e:
         # Handle error 403
-        raise(f'OpenAI Error 403: {e}')
+        raise Exception(f'OpenAI Error 403: {e}')
     except openai.NotFoundError as e:
         # Handle error 404
-        raise(f'OpenAI Error 404: {e}')
+        raise Exception(f'OpenAI Error 404: {e}')
     except openai.UnprocessableEntityError as e:
         # Handle error 422
-        raise(f'OpenAI Error 422: {e}')
+        raise Exception(f'OpenAI Error 422: {e}')
     except openai.RateLimitError as e:
         # Handle error 429
-        raise(f'OpenAI Error 429: {e}')
+        raise Exception(f'OpenAI Error 429: {e}')
     except openai.InternalServerError as e:
         # Handle error >=500
         raise(f'OpenAI >=500: {e}')
@@ -83,11 +83,16 @@ def gpt_scrape(text, recipe):
     return data
 
 def gpt_unit_conversion(values, field, unit):
-    prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If the given value is "None", return None'
+    prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None".'
     values_str = ''
+    memory = []
     for value in values:
-        value = str(value)
-        values_str += f'{value}\n'
+        if str(value) in ['nan',"['None']"]:
+            memory.append(0)
+        else:
+            memory.append(1)
+            value = str(value)
+            values_str += f'{value}\n'
     coeff = token_length(values_str, 'gpt-4')/120000
     if coeff <= 1:
         values_strs = [values_str]
@@ -103,15 +108,24 @@ def gpt_unit_conversion(values, field, unit):
             else:
                 values_strs.append(values_str[index:index_2])
     output = []
-    for values_str in values_strs:
-        messages=[
-            {
-                'role': 'system',
-                'content': prompt
-            },
-            {'role': 'user', 'content': values_str},
-        ]
-        converted_values = gpt_query(messages,'gpt-4o').splitlines()
-        for value in converted_values:
-            output.append(value)
+    temp = []
+    if values_strs[0] != '':
+        for values_str in values_strs:
+            messages=[
+                {
+                    'role': 'system',
+                    'content': prompt
+                },
+                {'role': 'user', 'content': values_str},
+            ]
+            converted_values = gpt_query(messages,'gpt-4o').splitlines()
+            for value in converted_values:
+                temp.append(value)
+    index = 0
+    for mem in memory:
+        if mem == 0:
+            output.append(None)
+        elif mem == 1:
+            output.append(temp[index])
+            index+=1
     return output

@@ -40,7 +40,9 @@ def elsevier_string_formatter(text):
 
 
 ## Download ScienceDirect (full-text) documents using URIs
-def elsevier_downloader(papers_path='papers_to_scrape.csv', download_path='papers'):
+def elsevier_downloader(papers_path='papers.csv', download_dir='papers'):
+    if not os.path.isdir(download_dir):
+        os.mkdir(download_dir)
     papers = pd.read_csv(papers_path)
     elsevier_papers = papers[papers['link'].str.contains('full-text')]
     with tqdm(total=len(elsevier_papers['link']), desc='Downloading Papers', colour='#A020F0') as pbar:
@@ -49,7 +51,7 @@ def elsevier_downloader(papers_path='papers_to_scrape.csv', download_path='paper
 
         for i, paper in elsevier_papers.iterrows():
             filename = paper['dc:identifier'].split(':')[-1]
-            filepath = f'{download_path}/{filename}.txt'
+            filepath = f'{download_dir}/{filename}.txt'
             if os.path.isfile(filepath):
                 pass
             else:
