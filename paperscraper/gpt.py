@@ -8,6 +8,9 @@ import math
 ## Get API key
 openai.api_key = SETTINGS.get('openai_api_key')
 
+## Set model (not implemented)
+model = 'gpt-5-mini'
+
 ## Get token length of prompt
 def token_length(prompt, model):
     if type(prompt) != str:
@@ -17,13 +20,14 @@ def token_length(prompt, model):
     return num_tokens
 
 ## Search text using GPT 
-def gpt_query(messages, model='gpt-4o'):
+def gpt_query(messages, model='gpt-5-mini'):
     try:
-        response = openai.chat.completions.create(
+        response = openai.responses.create(
             model=model,
-            messages=messages,
-            temperature=0,
-            max_tokens=4000,
+            input=messages,
+            max_output_tokens=10000,
+            service_tier='flex',
+            reasoning={'effort': 'medium'}
         )
     except openai.BadRequestError as e:
         # Handle error 400
@@ -49,16 +53,17 @@ def gpt_query(messages, model='gpt-4o'):
     except openai.APIConnectionError as e:
         # Handle API connection error
         raise(f'OpenAI API connection error: {e}')
-    return response.choices[0].message.content
+    return response.output[1].content[0].text
 
 def gpt_scrape(text, recipe):
     material_type = recipe['material type']
     search_fields = recipe['search fields']
+    additional_prompts = recipe['additional prompts']
     prompt = f'Extract the following structured data for {material_type} materials from the user\'s paper:\n\n'
     for field in search_fields:
         desc = search_fields[field]['prompt']
         prompt += f'- {desc}\n'
-    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. If a field is not mentioned in the paper, set the value to "None". For example:\n\n'
+    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. Be critical of your decisions and review your answers to make sure they reflect the information in the paper. If there are multiple materials or permutations of materials, make sure to scrape all of them. If a field is not mentioned in the paper, set the value to "None". Only put values in square brackets if multiple values are matched with the field. {additional_prompts} For example:\n\n'
     prompt += '{\n'
     for key in search_fields.keys():
         example = search_fields[key]['example']
@@ -74,7 +79,7 @@ def gpt_scrape(text, recipe):
         },
         {'role': 'user', 'content': text},
     ]
-    response = gpt_query(messages, 'gpt-4o').replace('\n', '')
+    response = gpt_query(messages, 'gpt-5-mini').replace('\n', '')
     materials = re.findall(r'\{.*?\}', response)
     data = []
     for material_json in materials:
@@ -82,8 +87,73 @@ def gpt_scrape(text, recipe):
         data.append(material)
     return data
 
+def gpt_pdf_scrape(filepath, recipe):
+    material_type = recipe['material type']
+    search_fields = recipe['search fields']
+    additional_prompts = recipe['additional prompts']
+    
+    client = openai.OpenAI()
+    
+    # Upload the file to OpenAI
+    with open(filepath, 'rb') as file:
+        uploaded_file = client.files.create(file=file, purpose='assistants')
+    
+    file_id = uploaded_file.id
+    
+    # Create an assistant
+    assistant = client.beta.assistants.create(
+        name='Material Data Extractor',
+        instructions=f'Extract the following structured data for {material_type} materials from the user\'s paper:\n\n',
+        model="gpt-5-mini"
+    )
+    
+    assistant_id = assistant.id
+    
+    # Create a thread
+    thread = client.beta.threads.create()
+    thread_id = thread.id
+    
+    # Create a message in the thread
+    message_content = "Extract material data based on the following fields: "
+    for field, details in search_fields.items():
+        message_content += f"{field}: {details['prompt']}\n"
+    message_content += additional_prompts
+    
+    client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=message_content,
+        file_ids=[file_id]
+    )
+    
+    # Run the assistant
+    run = client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id
+    )
+    
+    # Wait for completion
+    while run.status not in ["completed", "failed"]:
+        run = client.beta.threads.runs.retrieve(run.id)
+    
+    if run.status == "failed":
+        raise RuntimeError("Assistant processing failed")
+    
+    # Retrieve the response
+    messages = client.beta.threads.messages.list(thread_id=thread_id)
+    response = messages.data[0].content[0].text.value.replace('\n', '')
+    
+    materials = re.findall(r'\{.*?\}', response)
+    data = []
+    
+    for material_json in materials:
+        material = json.loads(material_json)
+        data.append(material)
+    
+    return data
+
 def gpt_unit_conversion(values, field, unit):
-    prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None".'
+    prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Only put values in square brackets if multiple values are provided on the line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None". Do not return the value as an addition. If text is given and cannot be meaningfully converted, return the same text. Convert "RT" or "Room temperature" to the equivalent of 298.15K. Do not use quotation marks. Make sure that there are as many output values as input.'
     values_str = ''
     memory = []
     for value in values:
@@ -93,7 +163,7 @@ def gpt_unit_conversion(values, field, unit):
             memory.append(1)
             value = str(value)
             values_str += f'{value}\n'
-    coeff = token_length(values_str, 'gpt-4')/120000
+    coeff = token_length(values_str, 'gpt-5-mini')/200000
     if coeff <= 1:
         values_strs = [values_str]
     else:
@@ -118,7 +188,7 @@ def gpt_unit_conversion(values, field, unit):
                 },
                 {'role': 'user', 'content': values_str},
             ]
-            converted_values = gpt_query(messages,'gpt-4o').splitlines()
+            converted_values = gpt_query(messages,'gpt-5-mini').splitlines()
             for value in converted_values:
                 temp.append(value)
     index = 0

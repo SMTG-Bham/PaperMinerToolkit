@@ -4,7 +4,7 @@ from paperscraper.download import elsevier_downloader
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
 from paperscraper.settings import update_elsevier_key, update_openai_key
-from paperscraper.utilities import reset, status
+from paperscraper.utilities import reset, status, sort, shuffle
 
 
 @click.command()
@@ -14,10 +14,10 @@ def paper_search(query: str, path: str):
     search_for_papers(query, path)
 
 @click.command()
-@click.argument('dir', default='papers', type=click.Path(exists=True))
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
-def elsevier_download(dir: str, path: str):
-    elsevier_downloader(dir, path)
+@click.argument('dir', default='papers', type=click.Path())
+def elsevier_download(path: str, dir: str):
+    elsevier_downloader(path, dir)
 
 @click.command()
 @click.argument('dir', default='papers', type=click.Path(exists=True))
@@ -49,3 +49,15 @@ def reset_scraper(path: str):
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 def scraper_status(path: str):
     status(path)
+
+@click.command()
+@click.argument('path', default='papers.csv', type=click.Path(exists=True))
+@click.argument('field', default='status', type=str)
+@click.option("--ascending", is_flag=True, show_default=True, default=True)
+def sort_df(path: str, field: str, ascending: bool):
+    sort(path, field, ascending)
+
+@click.command()
+@click.argument('path', default='papers.csv', type=click.Path(exists=True))
+def shuffle_papers(path: str):
+    shuffle(path)

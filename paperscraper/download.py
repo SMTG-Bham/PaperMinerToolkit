@@ -25,10 +25,12 @@ def json_to_text(filepath):
     with open(filepath, "r") as f:
         doc = json.load(f)
     text = doc["originalText"]
+    if type(text) == dict:
+        return 'failed'
     return text
 
 ## Remove unnecessary text from ScienceDirect (full-text) strings
-def elsevier_string_formatter(text):
+def elsevier_string_formatter(text: str):
     if text.count('Acknowledgements') == 2:
         text = text.split('Acknowledgements')[1]
     elif text.count('References') == 2:
@@ -58,6 +60,8 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers'):
                 uri = paper['link'].split("'")[-2]
                 retrieve_document(uri)
                 file = os.listdir('data')
+                if len(file) < 1:
+                    continue
                 file = 'data/' + file[0]
                 text = json_to_text(file)
                 formatted_text = elsevier_string_formatter(text)
@@ -66,5 +70,5 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers'):
             pbar.update(1)
 
             a+=1
-            if a == 10:
+            if a == 100:
                 break # remove when done testing

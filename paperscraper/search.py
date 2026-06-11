@@ -81,6 +81,7 @@ def search_for_papers(query: str,
         num_old_papers = len(old_papers)
         papers = pd.concat([old_papers, new_papers], ignore_index=True)
         papers.drop_duplicates(subset=range(1,11), keep='first', inplace=True, ignore_index = True)
+        papers.reset_index(drop=True, inplace=True)
         tot_num_papers = len(papers)
         num_new_papers = tot_num_papers - num_old_papers
         print('Document search found', num_new_papers, 'new results.')

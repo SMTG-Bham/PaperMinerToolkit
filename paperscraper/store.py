@@ -9,7 +9,7 @@ def store_results(papers_path='papers.csv', in_filepath='temp_scraped_materials.
     fields = recipe['search fields'].keys()
     if os.path.isfile(out_filepath):
         out_file = pd.read_csv(out_filepath, index_col=0)
-        columns=out_file.keys()
+        columns=list(out_file.keys())
     else:
         columns = []
         for field in fields:
@@ -18,7 +18,7 @@ def store_results(papers_path='papers.csv', in_filepath='temp_scraped_materials.
                 columns.append(f'{field} [{unit}]')
             else:
                 columns.append(field)
-        columns=columns
+        columns=list(columns)
     out_data = pd.DataFrame()
     for series_name, series in in_file.items():
         matches = [field for field in columns if series_name in field]
@@ -49,17 +49,23 @@ def store_results(papers_path='papers.csv', in_filepath='temp_scraped_materials.
             if not matches[0] in ['Scopus id', 'doi', 'Publication date']:
                 try:
                     columns.remove(matches[0])
-                except:
-                    print(matches[0]) # add error message
+                except Exception as e:
+                    print(matches[0], e) # add error message
     temp_filename = 'temp_converted_materials.csv'
     out_data.to_csv(temp_filename)
     print(f'\nOutput data has been saved to {temp_filename} temporarily. Are you happy with these conversions?')
     decision = input("Yes (Y) / No (N): ")
     if decision.lower() in ["y", "yes"]:
         out_data = pd.read_csv(temp_filename, index_col=0)
-        out_data.to_csv('materials.csv', mode='a', header=not os.path.exists('materials.csv'))
+        if os.path.isfile(out_filepath):
+            materials_df = pd.read_csv(out_filepath, index_col=0)
+            materials_df = pd.concat([materials_df, out_data], ignore_index=True)
+            materials_df.reset_index(drop=True, inplace=True)
+        else:
+            materials_df = out_data
+        materials_df.to_csv(out_filepath)
         os.remove(in_filepath)
+        papers_df = pd.read_csv(papers_path, index_col=0)
+        papers_df['status'].replace('scraped','stored',inplace=True)
+        papers_df.to_csv(papers_path)
     os.remove(temp_filename)
-    papers_df = pd.read_csv(papers_path, index_col=0)
-    papers_df['status'].replace('scraped','stored',inplace=True)
-    papers_df.to_csv(papers_path)

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scraper"
+version = "0.0.1"
+description = "A code which uses GPT in order to exctract unstructured information from papers."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "MIT" }
+dependencies = [
+  "click",
+]
+
+[project.scripts]
+ps_search = "cli.cli:paper_search"
+ps_elsevier = "cli.cli:elsevier_download"
+ps_scrape = "cli.cli:scrape"
+ps_store = "cli.cli:store"
+ps_elsevier_key = "cli.cli:update_elsevier_api_key"
+ps_openai_key = "cli.cli:update_openai_api_key"
+ps_reset = "cli.cli:reset_scraper"
+ps_status = "cli.cli:scraper_status"
+ps_sort = "cli.cli:sort_df"
+ps_shuffle = "cli.cli:shuffle_papers"
+
+[tool.setuptools.packages.find]
+# Uses the same behavior as find_packages()
+where = ["."]

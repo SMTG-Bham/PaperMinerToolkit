@@ -1,6 +1,7 @@
 {
     "sse": {
-        "material type": "solid electrolyte",
+        "material type": "lithium-conducting solid electrolyte",
+        "additional prompts": "Do not scrape ion conductors that transport anything other than lithium. Always fill the 'Name' field. If the paper is talking about a result from a previous paper, don't report that result.",
         "search fields": {
             "Name": {
                 "prompt": "Name of electrolyte",
@@ -19,8 +20,12 @@
                 "example": "ZnO"
             },
             "Impurity phases": {
-                "prompt": "Impurity phases",
+                "prompt": "Impurity phases (if water impurities are present, make sure to report them)",
                 "example": "Amorphous Li2O"
+            },
+            "Compound class": {
+                "prompt": "Compound class (Examples of these are halides, oxides, sulfides, nitrides and polymers. If multiple classes apply, report both. Do not classify polymers such as PEO as oxides. Do not classify Sulfates as Sulfides and Oxides.)",
+                "example": "Oxide"
             },
             "Structure type": {
                 "prompt": "Structure type",
@@ -70,14 +75,14 @@
                 "unit": "GPa"
             },
             "Crystal density": {
-                "prompt": "Crystal density",
+                "prompt": "Crystal density (Do not confuse this with % packing density)",
                 "example": "None",
                 "unit": "kg/m^2"
             },
             "Surface area": {
                 "prompt": "Surface area",
-                "example": "1 cm^2",
-                "unit": "mm^2"
+                "example": "10000 cm^2",
+                "unit": "m^2"
             },
             "Porosity": {
                 "prompt": "Porosity",
@@ -85,7 +90,7 @@
                 "unit": "GPa"
             },
             "Particle size": {
-                "prompt": "Particle size",
+                "prompt": "Particle size (not to be confused with grain size)",
                 "example": "300 nm",
                 "unit": "nm"
             },
@@ -114,7 +119,7 @@
                 "example": "Prismatic"
             },
             "Pellet density": {
-                "prompt": "Pellet density",
+                "prompt": "Pellet density (Do not confuse this with % packing density)",
                 "example": "0.5 mm",
                 "unit": "kg/m^2"
             },
@@ -122,6 +127,11 @@
                 "prompt": "Critical current density for plating/stripping",
                 "example": "3 mA cm^–2",
                 "unit": "mA cm^–2"
+            },
+            "": {
+                "prompt": "Electrochemical stability window (vs Li+/Li)",
+                "example": "0–6 V",
+                "unit": "V"
             },
             "Coulombic efficiency": {
                 "prompt": "Coulombic efficiency",

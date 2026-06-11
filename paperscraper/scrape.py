@@ -73,14 +73,17 @@ def scrape_papers(papers_dir: str, papers_path: str='papers.csv', recipe: str='s
             exit()
     recipe = load_recipe(recipe)
     first_material = True
-    with tqdm(total=papers_df['status'].value_counts()['retrieved'], desc='Scraping Papers', colour='green') as pbar:
+    retrieved_count = papers_df['status'].value_counts()['retrieved']
+    with tqdm(total=retrieved_count, desc='Scraping Papers', colour='green') as pbar:
         for i, row in papers_df.iterrows():
             if row['status'] == 'stored':
                 continue
             scopus_id = row['dc:identifier'].split(':')[-1]
             filenames = [file for file in files if scopus_id in file]
             if filenames == []:
-                pbar.update(1)
+                retrieved_count -= 1
+                pbar.total = retrieved_count
+                pbar.refresh()
                 continue
             filename = papers_dir + '/' + filenames[0]
             if filename.split('.')[-1] == 'txt':
@@ -90,7 +93,7 @@ def scrape_papers(papers_dir: str, papers_path: str='papers.csv', recipe: str='s
                 text = pdf_reader(filename)
                 index = text.lower().rfind('references')
                 text = text[:index]
-            coeff = token_length(text, 'gpt-4')/120000
+            coeff = token_length(text, 'gpt-5')/120000
             if coeff <= 1:
                 texts = [text]
             else:
@@ -105,7 +108,7 @@ def scrape_papers(papers_dir: str, papers_path: str='papers.csv', recipe: str='s
             for text in texts:
                 response = gpt_scrape(text, recipe)
                 if response == 'None':
-                    pass
+                    continue
                 else:
                     materials = []
                     for material in response:
@@ -113,6 +116,8 @@ def scrape_papers(papers_dir: str, papers_path: str='papers.csv', recipe: str='s
                         material['doi'] = row['prism:doi']
                         material['Publication date'] = row['prism:coverDate']
                         materials.append(material)
+                    if materials in [[],'','""',"''"]:
+                        continue
                     if first_material:
                         materials_df = pd.DataFrame(materials)
                         first_material = False

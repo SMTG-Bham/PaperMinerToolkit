@@ -29,6 +29,8 @@ setup(
             'ps_elsevier_key=cli.cli:update_elsevier_api_key',
             'ps_openai_key=cli.cli:update_openai_api_key',
             'ps_reset=cli.cli:reset_scraper',
-            'ps_status=cli.cli:scraper_status'
+            'ps_status=cli.cli:scraper_status',
+            'ps_sort=cli.cli:sort_df',
+            'ps_shuffle=cli.cli:shuffle_papers'
         ],
 })
