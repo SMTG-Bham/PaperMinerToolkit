@@ -1,35 +1,43 @@
-from paperscraper import SETTINGS
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc
+from paperscraper.settings import load_settings
+from urllib.parse import quote
 import json
 import os
 import pandas as pd
+import requests
 from tqdm import tqdm
 
-## Get Elsevier API key and initialize client
-client = ElsClient(SETTINGS.get('elsevier_api_key'))
+DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
 
-## ScienceDirect (full-text) documents using URIs
+
+def _elsevier_client():
+    api_key = load_settings().get('elsevier_api_key')
+    if not api_key:
+        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
+    return ElsClient(api_key)
+
+
 def retrieve_document(uri):
-    files = os.listdir('data')
-    for file in files:
-        os.remove('data/' + file)
+    os.makedirs('data', exist_ok=True)
+    for file in os.listdir('data'):
+        os.remove(os.path.join('data', file))
     doi_doc = FullDoc(uri=uri)
-    if doi_doc.read(client):
+    if doi_doc.read(_elsevier_client()):
         doi_doc.write()
     else:
-        print ("Read document failed.")
+        print('Read document failed.')
 
-## Convert ScienceDirect (full-text) JSON to string
+
 def json_to_text(filepath):
-    with open(filepath, "r") as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         doc = json.load(f)
-    text = doc["originalText"]
+    text = doc['originalText']
     if type(text) == dict:
         return 'failed'
     return text
 
-## Remove unnecessary text from ScienceDirect (full-text) strings
+
 def elsevier_string_formatter(text: str):
     if text.count('Acknowledgements') == 2:
         text = text.split('Acknowledgements')[1]
@@ -41,34 +49,93 @@ def elsevier_string_formatter(text: str):
     return text
 
 
-## Download ScienceDirect (full-text) documents using URIs
-def elsevier_downloader(papers_path='papers.csv', download_dir='papers'):
-    if not os.path.isdir(download_dir):
-        os.mkdir(download_dir)
+def _full_text_uri(paper):
+    link = paper.get('link')
+    if not isinstance(link, str) or 'full-text' not in link:
+        return None
+    parts = link.split("'")
+    if len(parts) >= 2:
+        return parts[-2]
+    return None
+
+
+def _download_text(paper, filepath):
+    uri = _full_text_uri(paper)
+    if not uri:
+        return False
+    retrieve_document(uri)
+    files = os.listdir('data')
+    if len(files) < 1:
+        return False
+    temp_file = os.path.join('data', files[0])
+    text = json_to_text(temp_file)
+    if text == 'failed':
+        return False
+    formatted_text = elsevier_string_formatter(text)
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(formatted_text)
+    return True
+
+
+def _pdf_urls(paper):
+    urls = []
+    doi = paper.get('prism:doi')
+    if pd.notna(doi) and str(doi).strip():
+        urls.append(f'https://api.elsevier.com/content/article/doi/{quote(str(doi), safe="")}')
+    pii = paper.get('pii') or paper.get('prism:pii')
+    if pd.notna(pii) and str(pii).strip():
+        urls.append(f'https://api.elsevier.com/content/article/pii/{quote(str(pii), safe="")}')
+    uri = _full_text_uri(paper)
+    if uri:
+        urls.append(uri)
+    return urls
+
+
+def _download_pdf(paper, filepath):
+    api_key = load_settings().get('elsevier_api_key')
+    if not api_key:
+        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
+    headers = {
+        'X-ELS-APIKey': api_key,
+        'Accept': 'application/pdf',
+    }
+    params = {'httpAccept': 'application/pdf'}
+    last_error = None
+    for url in _pdf_urls(paper):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=60)
+            if response.status_code >= 400:
+                last_error = f'{response.status_code} from {url}'
+                continue
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'pdf' in content_type or response.content.startswith(b'%PDF'):
+                with open(filepath, 'wb') as out_file:
+                    out_file.write(response.content)
+                return True
+            last_error = f'non-PDF response from {url}'
+        except requests.RequestException as e:
+            last_error = str(e)
+    if last_error:
+        print(f'PDF download failed for {paper.get("dc:identifier")}: {last_error}')
+    return False
+
+
+def elsevier_downloader(papers_path='papers.csv', download_dir='papers', download_format='text'):
+    download_format = download_format.lower()
+    if download_format not in DOWNLOAD_FORMATS:
+        raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
+    os.makedirs(download_dir, exist_ok=True)
     papers = pd.read_csv(papers_path)
-    elsevier_papers = papers[papers['link'].str.contains('full-text')]
+    elsevier_papers = papers[papers['link'].str.contains('full-text', na=False)]
     with tqdm(total=len(elsevier_papers['link']), desc='Downloading Papers', colour='#A020F0') as pbar:
-
-        a=0
-
-        for i, paper in elsevier_papers.iterrows():
+        for _, paper in elsevier_papers.iterrows():
             filename = paper['dc:identifier'].split(':')[-1]
-            filepath = f'{download_dir}/{filename}.txt'
-            if os.path.isfile(filepath):
-                pass
-            else:
-                uri = paper['link'].split("'")[-2]
-                retrieve_document(uri)
-                file = os.listdir('data')
-                if len(file) < 1:
-                    continue
-                file = 'data/' + file[0]
-                text = json_to_text(file)
-                formatted_text = elsevier_string_formatter(text)
-                with open(filepath,'w') as out_file:
-                    out_file.write(formatted_text)
+            if download_format in {'text', 'both'}:
+                text_filepath = os.path.join(download_dir, f'{filename}.txt')
+                if not os.path.isfile(text_filepath):
+                    _download_text(paper, text_filepath)
+            if download_format in {'pdf', 'both'}:
+                pdf_filepath = os.path.join(download_dir, f'{filename}.pdf')
+                if not os.path.isfile(pdf_filepath):
+                    _download_pdf(paper, pdf_filepath)
             pbar.update(1)
-
-            a+=1
-            if a == 100:
-                break # remove when done testing

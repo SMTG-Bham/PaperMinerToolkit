@@ -1,35 +1,29 @@
-from paperscraper import SETTINGS
 from elsapy.elsclient import ElsClient
 from elsapy.utils import recast_df
+from paperscraper.settings import load_settings
 from urllib.parse import quote_plus as url_encode
 import pandas as pd
 from tqdm import tqdm
 import os
-    
-## Get Elsevier API key and initialize client
-client = ElsClient(SETTINGS.get('elsevier_api_key'))
 
-## Initialize doc search object using ScienceDirect and execute search, retrieving all results
-def document_search(query: str, 
-                    index: str='scopus', 
-                    count: int=200, 
-                    get_all: bool=True, 
-                    search_fields: str='TITLE-ABS-KEY'
-                    ):
+
+def _elsevier_client():
+    api_key = load_settings().get('elsevier_api_key')
+    if not api_key:
+        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
+    return ElsClient(api_key)
+
+
+def document_search(query: str,
+                    index: str = 'scopus',
+                    count: int = 200,
+                    get_all: bool = True,
+                    search_fields: str = 'TITLE-ABS-KEY'):
     """
     Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
-
-    Args:
-        query (str): Search query.
-        index (str): The database to search through.
-        count (int): The total number of papers to retrieve. If get_all=True, count is the number of papers retrieved at a time.
-        get_all (bool): Get all papers.
-        search_fields (str): Metadata fields to search through using the query.
-
-    Returns:
-        DataFrame: A dataframe containing the metadata for retrieved papers.
     """
-    base_url = u'https://api.elsevier.com/content/search/'
+    client = _elsevier_client()
+    base_url = 'https://api.elsevier.com/content/search/'
     index = index.lower()
     url = base_url + index
     query = f'{search_fields}({query})'
@@ -41,7 +35,7 @@ def document_search(query: str,
     api_response = client.exec_request(url)
     results = api_response['search-results']['entry']
     tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
-    print ('Document search is retrieving', tot_num_res, 'results.')
+    print('Document search is retrieving', tot_num_res, 'results.')
     if get_all:
         with tqdm(range(tot_num_res), desc='Getting Results', colour='blue') as pbar:
             num_res = count
@@ -63,16 +57,9 @@ def document_search(query: str,
     return results_df
 
 
-## Search for papers
-def search_for_papers(query: str, 
-                      papers_path: str='papers.csv'
-                      ):
+def search_for_papers(query: str, papers_path: str = 'papers.csv'):
     """
-    Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
-
-    Args:
-        query (str): Search query.
-        papers_path (str): Path to the papers database.
+    Search for papers and append new results to the papers database.
     """
     new_papers = document_search(query)
     new_papers['status'] = 'retrieved'
@@ -80,7 +67,7 @@ def search_for_papers(query: str,
         old_papers = pd.read_csv(papers_path, index_col=0)
         num_old_papers = len(old_papers)
         papers = pd.concat([old_papers, new_papers], ignore_index=True)
-        papers.drop_duplicates(subset=range(1,11), keep='first', inplace=True, ignore_index = True)
+        papers.drop_duplicates(subset=range(1, 11), keep='first', inplace=True, ignore_index=True)
         papers.reset_index(drop=True, inplace=True)
         tot_num_papers = len(papers)
         num_new_papers = tot_num_papers - num_old_papers
