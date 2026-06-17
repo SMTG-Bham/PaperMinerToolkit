@@ -34,7 +34,7 @@ For a one-off scrape, override the configured model from the CLI:
 
 ## BlueBEAR example
 
-The examples folder contains a two-paper SLURM workflow for BlueBEAR using `Qwen/Qwen3.6-35B-A3B-FP8`:
+The examples folder contains a two-paper SLURM workflow for BlueBEAR using `Qwen/Qwen3-30B-A3B-FP8`:
 
 `sbatch examples/bluebear_qwen_two_papers.sbatch`
 

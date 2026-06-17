@@ -17,9 +17,43 @@ from paperscraper.search import document_search
 from paperscraper.store import store_results
 
 
+def _full_text_papers(papers: pd.DataFrame) -> pd.DataFrame:
+    if papers.empty or "link" not in papers.columns:
+        return pd.DataFrame()
+    return papers[papers["link"].astype(str).str.contains("full-text", na=False)].copy()
+
+
 def search_two_papers(query: str, papers_path: str):
-    papers = document_search(query, count=2, get_all=False)
-    papers = papers.head(2).copy()
+    queries = [
+        query,
+        "Li2NH lithium nitride hydride solid electrolyte",
+        "lithium nitride hydride solid electrolyte",
+        "lithium solid electrolyte AIMD",
+        "lithium solid electrolyte",
+    ]
+    selected = []
+    seen = set()
+    for search_query in queries:
+        papers = document_search(search_query, count=25, get_all=False)
+        candidates = _full_text_papers(papers)
+        for _, paper in candidates.iterrows():
+            identifier = paper.get("dc:identifier") or paper.get("prism:doi") or paper.get("title")
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+            selected.append(paper)
+            if len(selected) == 2:
+                break
+        if len(selected) == 2:
+            break
+
+    if len(selected) < 2:
+        raise RuntimeError(
+            f"Could only find {len(selected)} Elsevier full-text papers. "
+            "Try a broader --query or verify Elsevier API access/entitlements."
+        )
+
+    papers = pd.DataFrame(selected).reset_index(drop=True)
     papers["status"] = "retrieved"
     papers.to_csv(papers_path)
     print(f"Saved {len(papers)} papers to {papers_path}")
@@ -36,14 +70,9 @@ def main():
     parser.add_argument("--image-dir", default="examples/bluebear_images")
     parser.add_argument("--temp-results", default="temp_scraped_materials.csv")
     parser.add_argument("--out-file", default="examples/bluebear_materials.csv")
-    parser.add_argument("--base-url", default=os.environ.get("PAPERSCRAPER_MODEL_BASE_URL"))
-    parser.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B-FP8")
+    parser.add_argument("--base-url", default=os.environ.get("PAPERSCRAPER_MODEL_BASE_URL", "http://127.0.0.1:8000/v1"))
+    parser.add_argument("--model", default="Qwen/Qwen3-30B-A3B-FP8")
     args = parser.parse_args()
-
-    if not args.base_url:
-        raise ValueError(
-            "Set PAPERSCRAPER_MODEL_BASE_URL or pass --base-url for the BlueBEAR model endpoint."
-        )
 
     os.makedirs(os.path.dirname(args.papers_path), exist_ok=True)
     model_config = ModelConfig.from_settings(

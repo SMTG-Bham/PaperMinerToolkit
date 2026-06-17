@@ -126,7 +126,11 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers', downloa
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     os.makedirs(download_dir, exist_ok=True)
     papers = pd.read_csv(papers_path)
-    elsevier_papers = papers[papers['link'].str.contains('full-text', na=False)]
+    if 'link' not in papers.columns:
+        raise RuntimeError(f'{papers_path} does not contain a link column. Search returned no downloadable Elsevier results.')
+    elsevier_papers = papers[papers['link'].astype(str).str.contains('full-text', na=False)]
+    if elsevier_papers.empty:
+        raise RuntimeError(f'{papers_path} does not contain any Elsevier full-text links to download.')
     with tqdm(total=len(elsevier_papers['link']), desc='Downloading Papers', colour='#A020F0') as pbar:
         for _, paper in elsevier_papers.iterrows():
             filename = paper['dc:identifier'].split(':')[-1]

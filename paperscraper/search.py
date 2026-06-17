@@ -33,9 +33,11 @@ def document_search(query: str,
     if index == 'scopus':
         url += '&cursor=*'
     api_response = client.exec_request(url)
-    results = api_response['search-results']['entry']
     tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
     print('Document search is retrieving', tot_num_res, 'results.')
+    if tot_num_res == 0:
+        return pd.DataFrame()
+    results = api_response['search-results'].get('entry', [])
     if get_all:
         with tqdm(range(tot_num_res), desc='Getting Results', colour='blue') as pbar:
             num_res = count
