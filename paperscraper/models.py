@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import Any
+import base64
+import mimetypes
 
 import openai
 import requests
 
-from paperscraper.settings import load_settings
+from paperscraper.settings import get_model_profile, load_settings
 
 
 class ModelCapabilityError(ValueError):
@@ -20,18 +22,23 @@ class ModelConfig:
     capabilities: set[str] = field(default_factory=lambda: {'text'})
 
     @classmethod
-    def from_settings(cls, **overrides):
-        settings = load_settings()
-        capabilities = overrides.get('capabilities', settings.get('model_capabilities', ['text']))
+    def from_profile(cls, profile: str = 'text', **overrides):
+        configured = get_model_profile(profile)
+        capabilities = overrides.get('capabilities', configured.get('capabilities', ['text']))
         if isinstance(capabilities, str):
             capabilities = [cap.strip() for cap in capabilities.split(',') if cap.strip()]
+        settings = load_settings()
         return cls(
-            provider=overrides.get('provider') or settings.get('model_provider') or 'openai',
-            name=overrides.get('name') or overrides.get('model') or settings.get('model_name') or 'gpt-5-mini',
-            base_url=overrides.get('base_url') or settings.get('model_base_url'),
-            api_key=overrides.get('api_key') or settings.get('model_api_key') or settings.get('openai_api_key'),
+            provider=overrides.get('provider') or configured.get('provider') or 'openai',
+            name=overrides.get('name') or overrides.get('model') or configured.get('model') or 'gpt-5-mini',
+            base_url=overrides.get('base_url') or configured.get('base_url'),
+            api_key=overrides.get('api_key') or configured.get('api_key') or settings.get('openai_api_key'),
             capabilities=set(capabilities or ['text']),
         )
+
+    @classmethod
+    def from_settings(cls, **overrides):
+        return cls.from_profile(overrides.pop('profile', 'text'), **overrides)
 
     def require(self, capability: str):
         if capability not in self.capabilities:
@@ -41,11 +48,21 @@ class ModelConfig:
             )
 
 
+def image_to_data_url(path: str):
+    mime_type = mimetypes.guess_type(path)[0] or 'image/png'
+    with open(path, 'rb') as image_file:
+        encoded = base64.b64encode(image_file.read()).decode('ascii')
+    return f'data:{mime_type};base64,{encoded}'
+
+
 class BaseModelClient:
     def __init__(self, config: ModelConfig):
         self.config = config
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        raise NotImplementedError
+
+    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
         raise NotImplementedError
 
 
@@ -59,6 +76,16 @@ class OpenAIResponsesClient(BaseModelClient):
             kwargs['base_url'] = config.base_url
         self.client = openai.OpenAI(**kwargs)
 
+    def _response_text(self, response):
+        if getattr(response, 'output_text', None):
+            return response.output_text
+        for output in getattr(response, 'output', []):
+            for content in getattr(output, 'content', []):
+                text = getattr(content, 'text', None)
+                if text:
+                    return text
+        raise RuntimeError('Model response did not contain text output.')
+
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         self.config.require('text')
         try:
@@ -69,14 +96,24 @@ class OpenAIResponsesClient(BaseModelClient):
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI request failed: {e}') from e
-        if getattr(response, 'output_text', None):
-            return response.output_text
-        for output in getattr(response, 'output', []):
-            for content in getattr(output, 'content', []):
-                text = getattr(content, 'text', None)
-                if text:
-                    return text
-        raise RuntimeError('Model response did not contain text output.')
+        return self._response_text(response)
+
+    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        self.config.require('vision')
+        content = [{'type': 'input_text', 'text': prompt}]
+        if context:
+            content.append({'type': 'input_text', 'text': context})
+        for image_path in image_paths:
+            content.append({'type': 'input_image', 'image_url': image_to_data_url(image_path)})
+        try:
+            response = self.client.responses.create(
+                model=self.config.name,
+                input=[{'role': 'user', 'content': content}],
+                max_output_tokens=max_output_tokens,
+            )
+        except openai.OpenAIError as e:
+            raise RuntimeError(f'OpenAI vision request failed: {e}') from e
+        return self._response_text(response)
 
 
 class AnthropicMessagesClient(BaseModelClient):
@@ -94,6 +131,26 @@ class AnthropicMessagesClient(BaseModelClient):
                     'role': message.get('role', 'user'),
                     'content': message.get('content', ''),
                 })
+        return self._request(system, anthropic_messages, max_output_tokens)
+
+    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        self.config.require('vision')
+        content = [{'type': 'text', 'text': prompt}]
+        if context:
+            content.append({'type': 'text', 'text': context})
+        for image_path in image_paths:
+            mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
+            with open(image_path, 'rb') as image_file:
+                encoded = base64.b64encode(image_file.read()).decode('ascii')
+            content.append({
+                'type': 'image',
+                'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
+            })
+        return self._request('', [{'role': 'user', 'content': content}], max_output_tokens)
+
+    def _request(self, system, anthropic_messages, max_output_tokens):
+        if not self.config.api_key:
+            raise ValueError('Anthropic provider requires model_api_key in settings.')
         payload = {
             'model': self.config.name,
             'max_tokens': max_output_tokens,
@@ -127,6 +184,18 @@ class OpenAICompatibleChatClient(BaseModelClient):
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         self.config.require('text')
+        return self._chat(messages, max_output_tokens)
+
+    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        self.config.require('vision')
+        content = [{'type': 'text', 'text': prompt}]
+        if context:
+            content.append({'type': 'text', 'text': context})
+        for image_path in image_paths:
+            content.append({'type': 'image_url', 'image_url': {'url': image_to_data_url(image_path)}})
+        return self._chat([{'role': 'user', 'content': content}], max_output_tokens)
+
+    def _chat(self, messages, max_output_tokens):
         try:
             response = self.client.chat.completions.create(
                 model=self.config.name,
@@ -139,7 +208,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
 
 
 def get_model_client(config: ModelConfig | None = None):
-    config = config or ModelConfig.from_settings()
+    config = config or ModelConfig.from_profile('text')
     provider = config.provider.lower().replace('_', '-')
     if provider == 'openai':
         return OpenAIResponsesClient(config)
@@ -154,3 +223,7 @@ def get_model_client(config: ModelConfig | None = None):
 
 def query_text(messages: list[dict[str, Any]], config: ModelConfig | None = None, max_output_tokens: int = 10000) -> str:
     return get_model_client(config).query(messages, max_output_tokens=max_output_tokens)
+
+
+def query_images(prompt: str, image_paths: list[str], config: ModelConfig | None = None, context: str | None = None, max_output_tokens: int = 10000) -> str:
+    return get_model_client(config).query_with_images(prompt, image_paths, context=context, max_output_tokens=max_output_tokens)

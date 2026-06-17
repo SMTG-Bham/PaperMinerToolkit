@@ -4,7 +4,7 @@ import re
 
 import tiktoken
 
-from paperscraper.models import ModelConfig, query_text
+from paperscraper.models import ModelConfig, query_images, query_text
 
 
 DEFAULT_MODEL = 'gpt-5-mini'
@@ -18,6 +18,26 @@ def token_length(prompt, model=DEFAULT_MODEL):
         return len(enc.encode(prompt))
     except Exception:
         return max(1, math.ceil(len(prompt) / 4))
+
+
+def build_scrape_prompt(recipe, source='paper'):
+    material_type = recipe['material type']
+    search_fields = recipe['search fields']
+    additional_prompts = recipe['additional prompts']
+    prompt = f'Extract the following structured data for {material_type} materials from the user\'s {source}:\n\n'
+    for field in search_fields:
+        desc = search_fields[field]['prompt']
+        prompt += f'- {desc}\n'
+    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. Be critical of your decisions and review your answers to make sure they reflect the information in the {source}. If there are multiple materials or permutations of materials, make sure to scrape all of them. If a field is not mentioned, set the value to "None". Only put values in square brackets if multiple values are matched with the field. {additional_prompts} For example:\n\n'
+    prompt += '{\n'
+    for key in search_fields.keys():
+        example = search_fields[key]['example']
+        if type(example) == str:
+            prompt += f'\t"{key}": "{example}"\n'
+        else:
+            prompt += f'\t"{key}": ' + str(example) + '\n'
+    prompt += '}\n\nThe keys you use should match those above exactly. Return only JSON objects and no explanatory text.'
+    return prompt
 
 
 def gpt_query(messages, model=DEFAULT_MODEL, model_config=None, provider=None, base_url=None):
@@ -34,27 +54,19 @@ def _extract_json_objects(response):
 
 
 def gpt_scrape(text, recipe, model_config=None):
-    material_type = recipe['material type']
-    search_fields = recipe['search fields']
-    additional_prompts = recipe['additional prompts']
-    prompt = f'Extract the following structured data for {material_type} materials from the user\'s paper:\n\n'
-    for field in search_fields:
-        desc = search_fields[field]['prompt']
-        prompt += f'- {desc}\n'
-    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. Be critical of your decisions and review your answers to make sure they reflect the information in the paper. If there are multiple materials or permutations of materials, make sure to scrape all of them. If a field is not mentioned in the paper, set the value to "None". Only put values in square brackets if multiple values are matched with the field. {additional_prompts} For example:\n\n'
-    prompt += '{\n'
-    for key in search_fields.keys():
-        example = search_fields[key]['example']
-        if type(example) == str:
-            prompt += f'\t"{key}": "{example}"\n'
-        else:
-            prompt += f'\t"{key}": ' + str(example) + '\n'
-    prompt += '}\n\nThe keys you use should match those above exactly.'
+    prompt = build_scrape_prompt(recipe, source='paper')
     messages = [
         {'role': 'system', 'content': prompt},
         {'role': 'user', 'content': text},
     ]
     response = gpt_query(messages, model_config=model_config)
+    return _extract_json_objects(response)
+
+
+def gpt_image_scrape(image_paths, recipe, model_config=None, context=None):
+    config = model_config or ModelConfig.from_profile('vision')
+    prompt = build_scrape_prompt(recipe, source='paper image')
+    response = query_images(prompt, image_paths, config=config, context=context, max_output_tokens=10000)
     return _extract_json_objects(response)
 
 
@@ -74,7 +86,7 @@ def gpt_unit_conversion(values, field, unit, model_config=None):
         else:
             memory.append(1)
             values_str += f'{value}\n'
-    config = model_config or ModelConfig.from_settings()
+    config = model_config or ModelConfig.from_profile('text')
     coeff = token_length(values_str, config.name) / 200000
     if coeff <= 1:
         values_strs = [values_str]

@@ -1,7 +1,49 @@
 from paperscraper.scrape import load_recipe
 from paperscraper.gpt import gpt_unit_conversion
+from paperscraper.pipeline import ensure_pipeline_columns, write_papers
 import pandas as pd
 import os
+
+METADATA_FIELDS = ['Scopus id', 'doi', 'Publication date', 'Source', 'Source path']
+
+
+def _field_columns(recipe, existing_columns=None):
+    columns = list(existing_columns or [])
+    if not columns:
+        for field, config in recipe['search fields'].items():
+            if 'unit' in config:
+                columns.append(f'{field} [{config["unit"]}]')
+            else:
+                columns.append(field)
+        columns.extend(METADATA_FIELDS)
+    return columns
+
+
+def _aliases_for(recipe):
+    aliases = {}
+    for field, config in recipe['search fields'].items():
+        names = {field.lower()}
+        for alias in config.get('aliases', []):
+            names.add(alias.lower())
+        aliases[field] = names
+    for field in METADATA_FIELDS:
+        aliases[field] = {field.lower()}
+    return aliases
+
+
+def _canonical_match(series_name, columns, recipe):
+    raw_name = series_name.strip()
+    normalized = raw_name.lower()
+    aliases = _aliases_for(recipe)
+    for column in columns:
+        base = column.split(' [')[0]
+        if normalized in aliases.get(base, {base.lower()}):
+            return column
+    for column in columns:
+        base = column.split(' [')[0]
+        if normalized == base.lower():
+            return column
+    return None
 
 
 def store_results(
@@ -15,58 +57,35 @@ def store_results(
 ):
     in_file = pd.read_csv(in_filepath, index_col=0)
     recipe = load_recipe(recipe)
-    fields = recipe['search fields'].keys()
     if os.path.isfile(out_filepath):
         out_file = pd.read_csv(out_filepath, index_col=0)
         columns = list(out_file.keys())
     else:
-        columns = []
-        for field in fields:
-            if 'unit' in recipe['search fields'][field]:
-                unit = recipe['search fields'][field]['unit']
-                columns.append(f'{field} [{unit}]')
-            else:
-                columns.append(field)
-        columns = list(columns)
+        columns = _field_columns(recipe)
+
     out_data = pd.DataFrame()
     for series_name, series in in_file.items():
-        matches = [field for field in columns if series_name in field]
-        if len(matches) == 0:
-            matches = [string for string in ['Scopus id', 'doi', 'Publication date'] if string in series_name]
-            if len(matches) == 0:
-                raise RuntimeError(f'{series_name} did not match with a field in the recipe or output file.')
-        if len(matches) >= 2:
+        match = _canonical_match(series_name, columns, recipe)
+        if match is None:
             if assume_yes:
-                raise RuntimeError(f'{series_name} matched multiple fields in noninteractive mode: {matches}')
-            print(f'{series_name} matched with multiple fields:')
-            for i, match in enumerate(matches):
-                i += 1
-                print(f'{i})\t{match}')
-            decision = input('Select the correct field by typing the number, or type N if none of them match: ')
-            if decision.lower() in ['n', 'none']:
-                raise RuntimeError(f'{series_name} did not match with a field in the recipe or output file.')
-            index = int(decision) - 1
-            matches = [matches[index]]
-        if len(matches) == 1:
-            split_field = matches[0].split(' [')
-            if len(split_field) == 2 and unit_conversion:
-                print(f'{series_name} column was matched with {matches[0]} and will be converted.')
-                split_field[1] = split_field[1].replace(']', '')
-                converted_series = gpt_unit_conversion(
-                    series,
-                    field=split_field[0],
-                    unit=split_field[1],
-                    model_config=model_config,
-                )
-            else:
-                print(f'{series_name} column was matched with {matches[0]} and will not be converted.')
-                converted_series = series
-            out_data[matches[0]] = converted_series
-            if matches[0] not in ['Scopus id', 'doi', 'Publication date']:
-                try:
-                    columns.remove(matches[0])
-                except Exception as e:
-                    print(matches[0], e)
+                print(f'Skipping unmatched column in noninteractive mode: {series_name}')
+                continue
+            raise RuntimeError(f'{series_name} did not match with a field in the recipe or output file.')
+        split_field = match.split(' [')
+        if len(split_field) == 2 and unit_conversion:
+            print(f'{series_name} column was matched with {match} and will be converted.')
+            split_field[1] = split_field[1].replace(']', '')
+            converted_series = gpt_unit_conversion(
+                series,
+                field=split_field[0],
+                unit=split_field[1],
+                model_config=model_config,
+            )
+        else:
+            print(f'{series_name} column was matched with {match} and will not be converted.')
+            converted_series = series
+        out_data[match] = converted_series
+
     temp_filename = 'temp_converted_materials.csv'
     out_data.to_csv(temp_filename)
     if assume_yes:
@@ -84,7 +103,10 @@ def store_results(
             materials_df = out_data
         materials_df.to_csv(out_filepath)
         os.remove(in_filepath)
-        papers_df = pd.read_csv(papers_path, index_col=0)
-        papers_df['status'] = papers_df['status'].replace('scraped', 'stored')
-        papers_df.to_csv(papers_path)
+        papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
+        papers_df['store_status'] = papers_df['store_status'].where(
+            ~((papers_df['text_scrape_status'] == 'succeeded') | (papers_df['image_scrape_status'] == 'succeeded')),
+            'stored',
+        )
+        write_papers(papers_df, papers_path)
     os.remove(temp_filename)

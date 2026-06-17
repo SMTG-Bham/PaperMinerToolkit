@@ -1,41 +1,65 @@
 # PaperScraper
 
-PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts structured materials data from paper text with configurable language models.
+PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts structured materials data from papers with configurable text and vision models.
 
-## Model configuration
+## Model Profiles
 
-Run `ps_model_config` to set the default model provider, model name, optional base URL, API key, and declared capabilities.
+Configure separate model profiles for text and vision analysis:
 
-Supported providers:
+`ps_model_config text --provider hpc --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1`
 
-- `openai`: OpenAI Responses API.
-- `anthropic` or `claude`: Anthropic Messages API.
-- `openai-compatible`, `local`, or `hpc`: OpenAI-compatible chat endpoint, such as vLLM or another local/HPC inference server.
+`ps_model_config vision --provider hpc --model Qwen/Qwen2.5-VL-7B-Instruct --base-url http://127.0.0.1:8001/v1`
 
-For a one-off scrape, override the configured model from the CLI:
+Capabilities are inferred automatically from the profile and model name. Use `--capability` only as an override for unusual models.
 
-`ps_scrape papers papers.csv sse --provider local --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct`
+Inspect configured profiles:
 
-## Downloading papers
+`ps_model_status`
 
-`ps_elsevier papers.csv papers --format text` downloads Elsevier full text as text.
+Environment variables still work for batch jobs. `PAPERSCRAPER_MODEL_*` applies to the text profile, while `PAPERSCRAPER_VISION_MODEL_*` applies to the vision profile.
 
-`ps_elsevier papers.csv papers --format pdf` downloads PDF files when the Elsevier API and your entitlement allow it.
+## Workflow
 
-`ps_elsevier papers.csv papers --format both` downloads both formats.
+Search:
 
-## Scraping content
+`ps_search "Li2NH AIMD solid electrolyte" papers.csv`
 
-`ps_scrape papers papers.csv sse --content text` extracts structured data from text. This is the default.
+Download Elsevier content:
 
-`ps_scrape papers papers.csv sse --content images --image-dir paper_images` extracts embedded images from PDFs without sending them to a text model.
+`ps_elsevier papers.csv papers --format text`
 
-`ps_scrape papers papers.csv sse --content both` extracts PDF images and structured text data in one pass.
+`ps_elsevier papers.csv papers --format pdf`
 
-## BlueBEAR example
+`ps_elsevier papers.csv papers --format both`
 
-The examples folder contains a two-paper SLURM workflow for BlueBEAR using `Qwen/Qwen3-30B-A3B-FP8`:
+Scrape text only:
+
+`ps_scrape papers papers.csv sse --mode text`
+
+Analyze images with the vision profile:
+
+`ps_scrape papers papers.csv sse --mode images --vision-provider hpc --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`
+
+Analyze images with paper text as additional context:
+
+`ps_scrape papers papers.csv sse --mode text-images --image-context paper-text`
+
+Cleanup after successful scraping:
+
+`ps_scrape papers papers.csv sse --mode text --delete-papers-after`
+
+Store results:
+
+`ps_store papers.csv temp_scraped_materials.csv materials.csv sse --assume-yes`
+
+Check pipeline status:
+
+`ps_status papers.csv`
+
+## BlueBEAR Example
+
+The examples folder contains a two-paper SLURM workflow for BlueBEAR using `Qwen/Qwen3-30B-A3B-FP8` for text scraping:
 
 `sbatch examples/bluebear_qwen_two_papers.sbatch`
 
-Set `ELSEVIER_API_KEY` and `PAPERSCRAPER_MODEL_BASE_URL` in the job environment before submitting.
+Set `ELSEVIER_API_KEY` in the job environment before submitting. The script can start a local vLLM server, or you can set `PAPERSCRAPER_START_MODEL_SERVER=0` and provide `PAPERSCRAPER_MODEL_BASE_URL` yourself.

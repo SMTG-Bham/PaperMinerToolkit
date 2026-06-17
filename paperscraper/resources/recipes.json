@@ -5,97 +5,117 @@
         "search fields": {
             "Name": {
                 "prompt": "Name of electrolyte",
-                "example": "LLZO"
+                "example": "LLZO",
+                "aliases": []
             },
             "Chemical formula": {
                 "prompt": "Formula",
-                "example": "Li7La3Zr2O12"
+                "example": "Li7La3Zr2O12",
+                "aliases": []
             },
             "Dopants": {
                 "prompt": "Dopants",
-                "example": "Al"
+                "example": "Al",
+                "aliases": []
             },
             "Coatings": {
                 "prompt": "Coatings",
-                "example": "ZnO"
+                "example": "ZnO",
+                "aliases": []
             },
             "Impurity phases": {
                 "prompt": "Impurity phases (if water impurities are present, make sure to report them)",
-                "example": "Amorphous Li2O"
+                "example": "Amorphous Li2O",
+                "aliases": []
             },
             "Compound class": {
                 "prompt": "Compound class (Examples of these are halides, oxides, sulfides, nitrides and polymers. If multiple classes apply, report both. Do not classify polymers such as PEO as oxides. Do not classify Sulfates as Sulfides and Oxides.)",
-                "example": "Oxide"
+                "example": "Oxide",
+                "aliases": []
             },
             "Structure type": {
                 "prompt": "Structure type",
-                "example": "Garnet"
+                "example": "Garnet",
+                "aliases": []
             },
             "Space group": {
                 "prompt": "Space group",
-                "example": "I-43d"
+                "example": "I-43d",
+                "aliases": []
             },
             "Electronic conductivity": {
                 "prompt": "Electronic conductivity",
                 "example": "5.5 × 10−8 S cm-1",
-                "unit": "S cm^-1"
+                "unit": "S cm^-1",
+                "aliases": []
             },
             "Room temperature ionic conductivity": {
                 "prompt": "Room temperature ionic conductivity (provide the value taken closest to room temperature)",
                 "example": "2.0 × 10−4 S cm−1",
-                "unit": "S cm^-1"
+                "unit": "S cm^-1",
+                "aliases": []
             },
             "Ionic conductivity": {
                 "prompt": "Ionic conductivity (if multiple measurements were taken, provide a list separated by commas)",
                 "example": [
                     "2.0 × 10−4 S cm−1 at 25 °C",
                     "3.0 × 10−4 S cm−1 at 45 °C"
-                ]
+                ],
+                "aliases": []
             },
             "Activation energy": {
                 "prompt": "Activation energy for migration",
                 "example": "0.25 eV",
-                "unit": "eV"
+                "unit": "eV",
+                "aliases": []
             },
             "Hardness": {
                 "prompt": "Hardness",
                 "example": "9.1 GPa",
-                "unit": "GPa"
+                "unit": "GPa",
+                "aliases": []
             },
             "Young’s modulus": {
                 "prompt": "Young’s modulus",
                 "example": "162.6 GPa",
-                "unit": "GPa"
+                "unit": "GPa",
+                "aliases": []
             },
             "Shear modulus": {
                 "prompt": "Shear modulus",
                 "example": "64.6 GPa",
-                "unit": "GPa"
+                "unit": "GPa",
+                "aliases": []
             },
             "Bulk modulus": {
                 "prompt": "Bulk modulus",
                 "example": "112.4 GPa",
-                "unit": "GPa"
+                "unit": "GPa",
+                "aliases": []
             },
             "Crystal density": {
                 "prompt": "Crystal density (Do not confuse this with % packing density)",
                 "example": "None",
-                "unit": "kg/m^2"
+                "unit": "kg/m^2",
+                "aliases": []
             },
             "Surface area": {
                 "prompt": "Surface area",
                 "example": "10000 cm^2",
-                "unit": "m^2"
+                "unit": "m^2",
+                "aliases": []
             },
             "Porosity": {
                 "prompt": "Porosity",
                 "example": "None",
-                "unit": "GPa"
+                "unit": "GPa",
+                "aliases": []
             },
             "Particle size": {
                 "prompt": "Particle size (not to be confused with grain size)",
                 "example": "300 nm",
-                "unit": "nm"
+                "unit": "nm",
+                "aliases": []
             },
             "Temperature": {
                 "prompt": "Temperature the measurements were done at (if multiple measurements were taken, list these in the same order as the conductivities)",
@@ -103,62 +123,79 @@
                     "30 °C",
                     "60 °C"
                 ],
-                "unit": "K"
+                "unit": "K",
+                "aliases": []
             },
             "Pressure": {
                 "prompt": "Pressure",
                 "example": "101 kPa",
-                "unit": "kPa"
+                "unit": "kPa",
+                "aliases": []
             },
             "Pellet thickness": {
                 "prompt": "Pellet thickness",
                 "example": "0.5 mm",
-                "unit": "mm"
+                "unit": "mm",
+                "aliases": []
             },
             "Contact area": {
                 "prompt": "Contact area",
                 "example": "None",
-                "unit": "mm^2"
+                "unit": "mm^2",
+                "aliases": []
             },
             "Cell format": {
                 "prompt": "Cell format",
-                "example": "Prismatic"
+                "example": "Prismatic",
+                "aliases": []
             },
             "Pellet density": {
                 "prompt": "Pellet density (Do not confuse this with % packing density)",
                 "example": "0.5 mm",
-                "unit": "kg/m^2"
+                "unit": "kg/m^2",
+                "aliases": []
             },
             "Critical current density": {
                 "prompt": "Critical current density for plating/stripping",
                 "example": "3 mA cm^–2",
-                "unit": "mA cm^–2"
+                "unit": "mA cm^–2",
+                "aliases": []
             },
             "Coulombic efficiency": {
                 "prompt": "Coulombic efficiency",
                 "example": "99%",
-                "unit": "%"
+                "unit": "%",
+                "aliases": []
             },
             "Cycle life": {
                 "prompt": "Cycle life",
-                "example": "5000 cycles"
+                "example": "5000 cycles",
+                "aliases": []
             },
             "AC frequency range": {
                 "prompt": "AC frequency range",
-                "example": "10 Hz to 4 kHz"
+                "example": "10 Hz to 4 kHz",
+                "aliases": []
             },
             "Synthesis conditions": {
                 "prompt": "Synthesis conditions",
-                "example": "Ball milled, Calcined at 850 °C, Sintered at 1180 °C"
+                "example": "Ball milled, Calcined at 850 °C, Sintered at 1180 °C",
+                "aliases": []
             },
             "Type of study": {
                 "prompt": "Type of study (experimental, computational, or both)",
-                "example": "Experimental"
+                "example": "Experimental",
+                "aliases": []
             },
             "Electrochemical stability window": {
                 "prompt": "Electrochemical stability window (vs Li+/Li)",
                 "example": "0–6 V",
-                "unit": "V"
+                "unit": "V",
+                "aliases": [
+                    "Electrochemical stability",
+                    "Stability window",
+                    "ESW"
+                ]
             }
         }
     }

@@ -1,5 +1,6 @@
 from elsapy.elsclient import ElsClient
 from elsapy.utils import recast_df
+from paperscraper.pipeline import ensure_pipeline_columns, write_papers
 from paperscraper.settings import load_settings
 from urllib.parse import quote_plus as url_encode
 import pandas as pd
@@ -63,8 +64,11 @@ def search_for_papers(query: str, papers_path: str = 'papers.csv'):
     """
     Search for papers and append new results to the papers database.
     """
-    new_papers = document_search(query)
-    new_papers['status'] = 'retrieved'
+    new_papers = ensure_pipeline_columns(document_search(query))
+    if new_papers.empty:
+        print('Document search found 0 new results.')
+        return
+    new_papers['metadata_status'] = 'retrieved'
     if os.path.isfile(papers_path):
         old_papers = pd.read_csv(papers_path, index_col=0)
         num_old_papers = len(old_papers)
@@ -74,8 +78,8 @@ def search_for_papers(query: str, papers_path: str = 'papers.csv'):
         tot_num_papers = len(papers)
         num_new_papers = tot_num_papers - num_old_papers
         print('Document search found', num_new_papers, 'new results.')
-        papers.to_csv(papers_path)
+        write_papers(papers, papers_path)
     else:
         papers = new_papers
         print('Document search found', len(papers), 'new results.')
-        papers.to_csv(papers_path)
+        write_papers(papers, papers_path)

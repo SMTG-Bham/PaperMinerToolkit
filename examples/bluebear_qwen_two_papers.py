@@ -66,7 +66,7 @@ def main():
     parser.add_argument("--papers-dir", default="examples/bluebear_papers")
     parser.add_argument("--recipe", default="sse")
     parser.add_argument("--download-format", choices=["text", "pdf", "both"], default="both")
-    parser.add_argument("--content", choices=["text", "images", "both"], default="both")
+    parser.add_argument("--mode", choices=["text", "images", "text-images"], default="text")
     parser.add_argument("--image-dir", default="examples/bluebear_images")
     parser.add_argument("--temp-results", default="temp_scraped_materials.csv")
     parser.add_argument("--out-file", default="examples/bluebear_materials.csv")
@@ -87,7 +87,7 @@ def main():
         args.papers_dir,
         args.papers_path,
         args.recipe,
-        content_mode=args.content,
+        mode=args.mode,
         image_dir=args.image_dir,
         model=args.model,
         provider='hpc',

@@ -80,4 +80,4 @@ python examples/bluebear_qwen_two_papers.py \
   --model "${PAPERSCRAPER_MODEL_NAME}" \
   --base-url "${PAPERSCRAPER_MODEL_BASE_URL}" \
   --download-format both \
-  --content both
+  --mode text

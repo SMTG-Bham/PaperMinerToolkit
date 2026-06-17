@@ -3,7 +3,7 @@ from paperscraper.search import search_for_papers
 from paperscraper.download import elsevier_downloader
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
-from paperscraper.settings import update_elsevier_key, update_openai_key, update_model_settings
+from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_elsevier_key, update_openai_key, update_model_settings
 from paperscraper.utilities import reset, status, sort, shuffle
 
 
@@ -26,13 +26,49 @@ def elsevier_download(path: str, dir: str, download_format: str):
 @click.argument('dir', default='papers', type=click.Path(exists=True))
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
-@click.option('--content', 'content_mode', type=click.Choice(['text', 'images', 'both']), default='text', show_default=True)
+@click.option('--mode', type=click.Choice(['text', 'images', 'text-images']), default='text', show_default=True)
+@click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
-@click.option('--model', default=None, help='Model name override for this scrape run.')
-@click.option('--provider', default=None, help='Provider override: openai, anthropic, openai-compatible, local, or hpc.')
-@click.option('--base-url', default=None, help='OpenAI-compatible base URL for local/HPC models.')
-def scrape(dir: str, path: str, recipe: str, content_mode: str, image_dir: str, model: str | None, provider: str | None, base_url: str | None):
-    scrape_papers(dir, path, recipe, content_mode=content_mode, image_dir=image_dir, model=model, provider=provider, base_url=base_url)
+@click.option('--model', default=None, help='Text model name override for this scrape run.')
+@click.option('--provider', default=None, help='Text provider override: openai, anthropic, openai-compatible, local, or hpc.')
+@click.option('--base-url', default=None, help='Text model base URL override.')
+@click.option('--vision-model', default=None, help='Vision model name override for this scrape run.')
+@click.option('--vision-provider', default=None, help='Vision provider override.')
+@click.option('--vision-base-url', default=None, help='Vision model base URL override.')
+@click.option('--delete-images-after', is_flag=True, default=False, help='Delete extracted images after successful image analysis.')
+@click.option('--delete-papers-after', is_flag=True, default=False, help='Delete downloaded paper files after successful scraping.')
+def scrape(
+    dir: str,
+    path: str,
+    recipe: str,
+    mode: str,
+    image_context: str,
+    image_dir: str,
+    model: str | None,
+    provider: str | None,
+    base_url: str | None,
+    vision_model: str | None,
+    vision_provider: str | None,
+    vision_base_url: str | None,
+    delete_images_after: bool,
+    delete_papers_after: bool,
+):
+    scrape_papers(
+        dir,
+        path,
+        recipe,
+        mode=mode,
+        image_dir=image_dir,
+        image_context=image_context,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        vision_model=vision_model,
+        vision_provider=vision_provider,
+        vision_base_url=vision_base_url,
+        delete_images_after=delete_images_after,
+        delete_papers_after=delete_papers_after,
+    )
 
 
 @click.command()
@@ -53,8 +89,29 @@ def update_openai_api_key():
     update_openai_key()
 
 
+@click.command()
+@click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
+@click.option('--provider', prompt=True, help='Provider: openai, anthropic, openai-compatible, local, or hpc.')
+@click.option('--model', prompt=True, help='Model name.')
+@click.option('--base-url', default=None, help='Base URL for OpenAI-compatible/local/HPC providers.')
+@click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')
+@click.option('--capability', 'capabilities', multiple=True, help='Optional override. By default capabilities are inferred from profile/model name.')
+def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None, capabilities: tuple[str]):
+    caps = list(capabilities) or infer_model_capabilities(profile, model)
+    set_model_profile(profile, provider, model, base_url, api_key, caps)
+    click.echo(f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}]')
+
+
 def update_model_config():
     update_model_settings()
+
+
+@click.command()
+def model_status():
+    for profile in ['text', 'vision']:
+        config = get_model_profile(profile)
+        capabilities = ', '.join(config.get('capabilities', []))
+        click.echo(f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] base_url={config.get("base_url")}')
 
 
 @click.command()

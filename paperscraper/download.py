@@ -1,5 +1,6 @@
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc
+from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.settings import load_settings
 from urllib.parse import quote
 import json
@@ -125,21 +126,35 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers', downloa
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     os.makedirs(download_dir, exist_ok=True)
-    papers = pd.read_csv(papers_path)
+    papers = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
     if 'link' not in papers.columns:
         raise RuntimeError(f'{papers_path} does not contain a link column. Search returned no downloadable Elsevier results.')
     elsevier_papers = papers[papers['link'].astype(str).str.contains('full-text', na=False)]
     if elsevier_papers.empty:
         raise RuntimeError(f'{papers_path} does not contain any Elsevier full-text links to download.')
     with tqdm(total=len(elsevier_papers['link']), desc='Downloading Papers', colour='#A020F0') as pbar:
-        for _, paper in elsevier_papers.iterrows():
+        for index, paper in elsevier_papers.iterrows():
             filename = paper['dc:identifier'].split(':')[-1]
             if download_format in {'text', 'both'}:
                 text_filepath = os.path.join(download_dir, f'{filename}.txt')
-                if not os.path.isfile(text_filepath):
-                    _download_text(paper, text_filepath)
+                try:
+                    if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):
+                        papers.loc[index, 'text_path'] = text_filepath
+                        set_status(papers, index, 'text_download_status', 'succeeded')
+                    else:
+                        set_status(papers, index, 'text_download_status', 'failed', 'Elsevier text download failed')
+                except Exception as e:
+                    set_status(papers, index, 'text_download_status', 'failed', str(e))
             if download_format in {'pdf', 'both'}:
                 pdf_filepath = os.path.join(download_dir, f'{filename}.pdf')
-                if not os.path.isfile(pdf_filepath):
-                    _download_pdf(paper, pdf_filepath)
+                try:
+                    if os.path.isfile(pdf_filepath) or _download_pdf(paper, pdf_filepath):
+                        papers.loc[index, 'pdf_path'] = pdf_filepath
+                        set_status(papers, index, 'pdf_download_status', 'succeeded')
+                    else:
+                        set_status(papers, index, 'pdf_download_status', 'failed', 'Elsevier PDF download failed')
+                except Exception as e:
+                    set_status(papers, index, 'pdf_download_status', 'failed', str(e))
+            (papers)
+            write_papers(papers, papers_path)
             pbar.update(1)
