@@ -85,6 +85,6 @@ def store_results(
         materials_df.to_csv(out_filepath)
         os.remove(in_filepath)
         papers_df = pd.read_csv(papers_path, index_col=0)
-        papers_df['status'].replace('scraped', 'stored', inplace=True)
+        papers_df['status'] = papers_df['status'].replace('scraped', 'stored')
         papers_df.to_csv(papers_path)
     os.remove(temp_filename)
