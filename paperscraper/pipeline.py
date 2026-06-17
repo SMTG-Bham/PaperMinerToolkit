@@ -22,6 +22,23 @@ def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
     for column, default in PIPELINE_COLUMNS.items():
         if column not in df.columns:
             df[column] = default
+    string_columns = [
+        'metadata_status',
+        'text_download_status',
+        'pdf_download_status',
+        'text_scrape_status',
+        'image_scrape_status',
+        'store_status',
+        'text_path',
+        'pdf_path',
+        'image_dir',
+        'last_error',
+    ]
+    for column in string_columns:
+        df[column] = df[column].fillna('').astype('object')
+        if column.endswith('_status'):
+            df.loc[df[column] == '', column] = 'pending'
+    df['num_images'] = df['num_images'].fillna(0).astype('int64')
     return df
 
 
