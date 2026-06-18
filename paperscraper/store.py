@@ -1,52 +1,8 @@
-from paperscraper.scrape import load_recipe
-from paperscraper.gpt import gpt_unit_conversion
+from paperscraper.extract import convert_units
 from paperscraper.pipeline import ensure_pipeline_columns, write_papers
+from paperscraper.recipes import canonical_match, field_columns, load_recipe
 import pandas as pd
 import os
-
-METADATA_FIELDS = ['Scopus id', 'doi', 'Publication date', 'Source', 'Source path']
-
-
-def _field_columns(recipe, existing_columns=None):
-    columns = list(existing_columns or [])
-    if not columns:
-        for field, config in recipe['search fields'].items():
-            if 'unit' in config:
-                columns.append(f'{field} [{config["unit"]}]')
-            else:
-                columns.append(field)
-        columns.extend(METADATA_FIELDS)
-    return columns
-
-
-def _aliases_for(recipe):
-    aliases = {}
-    for field, config in recipe['search fields'].items():
-        names = {field.lower()}
-        prompt = config.get('prompt')
-        if prompt:
-            names.add(prompt.lower())
-        for alias in config.get('aliases', []):
-            names.add(alias.lower())
-        aliases[field] = names
-    for field in METADATA_FIELDS:
-        aliases[field] = {field.lower()}
-    return aliases
-
-
-def _canonical_match(series_name, columns, recipe):
-    raw_name = series_name.strip()
-    normalized = raw_name.lower()
-    aliases = _aliases_for(recipe)
-    for column in columns:
-        base = column.split(' [')[0]
-        if normalized in aliases.get(base, {base.lower()}):
-            return column
-    for column in columns:
-        base = column.split(' [')[0]
-        if normalized == base.lower():
-            return column
-    return None
 
 
 def store_results(
@@ -64,11 +20,11 @@ def store_results(
         out_file = pd.read_csv(out_filepath, index_col=0)
         columns = list(out_file.keys())
     else:
-        columns = _field_columns(recipe)
+        columns = field_columns(recipe)
 
     out_data = pd.DataFrame()
     for series_name, series in in_file.items():
-        match = _canonical_match(series_name, columns, recipe)
+        match = canonical_match(series_name, columns, recipe)
         if match is None:
             if assume_yes:
                 print(f'Skipping unmatched column in noninteractive mode: {series_name}')
@@ -78,7 +34,7 @@ def store_results(
         if len(split_field) == 2 and unit_conversion:
             print(f'{series_name} column was matched with {match} and will be converted.')
             split_field[1] = split_field[1].replace(']', '')
-            converted_series = gpt_unit_conversion(
+            converted_series = convert_units(
                 series,
                 field=split_field[0],
                 unit=split_field[1],
