@@ -28,6 +28,8 @@ def import_pdfs(papers_dir: str, papers_path: str = 'external_papers.csv', use_c
             'text_path': '',
             'image_dir': '',
             'num_images': 0,
+            'num_text_materials': 0,
+            'num_image_materials': 0,
             'last_error': metadata_error,
         }
         row.update({key: value for key, value in metadata.items() if value})

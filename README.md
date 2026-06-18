@@ -44,6 +44,14 @@ Scrape text only:
 
 `ps_scrape papers papers.csv sse --mode text`
 
+Use a named scrape output file for batch runs:
+
+`ps_scrape papers papers.csv sse --mode text --output scraped_materials.csv`
+
+By default, already successful scrape stages are skipped on rerun. Rescrape them with:
+
+`ps_scrape papers papers.csv sse --mode text --force`
+
 Analyze images with the vision profile:
 
 `ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`

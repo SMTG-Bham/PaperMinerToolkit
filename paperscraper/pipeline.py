@@ -13,6 +13,8 @@ PIPELINE_COLUMNS = {
     'pdf_path': '',
     'image_dir': '',
     'num_images': 0,
+    'num_text_materials': 0,
+    'num_image_materials': 0,
     'last_error': '',
 }
 
@@ -38,7 +40,8 @@ def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
         df[column] = df[column].fillna('').astype('object')
         if column.endswith('_status'):
             df.loc[df[column] == '', column] = 'pending'
-    df['num_images'] = df['num_images'].fillna(0).astype('int64')
+    for column in ['num_images', 'num_text_materials', 'num_image_materials']:
+        df[column] = pd.to_numeric(df[column], errors='coerce').fillna(0).astype('int64')
     return df
 
 

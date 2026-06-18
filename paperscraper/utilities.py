@@ -31,6 +31,10 @@ def status(papers_path: str = 'papers.csv'):
     for label, column, value in rows:
         count = int((papers_df[column] == value).sum()) if column in papers_df else 0
         print(f'{label}: {count}')
+    text_materials = int(papers_df['num_text_materials'].sum()) if 'num_text_materials' in papers_df else 0
+    image_materials = int(papers_df['num_image_materials'].sum()) if 'num_image_materials' in papers_df else 0
+    print(f'Text material rows extracted: {text_materials}')
+    print(f'Image material rows extracted: {image_materials}')
     print('---------------------------\n')
 
 

@@ -46,6 +46,8 @@ def elsevier_download(path: str, dir: str, download_format: str):
 @click.option('--vision-base-url', default=None, help='Vision model base URL override.')
 @click.option('--delete-images-after', is_flag=True, default=False, help='Delete extracted images after successful image analysis.')
 @click.option('--delete-papers-after', is_flag=True, default=False, help='Delete downloaded paper files after successful scraping.')
+@click.option('--output', 'output_path', default='temp_scraped_materials.csv', type=click.Path(), show_default=True, help='CSV file for newly scraped material rows.')
+@click.option('--force', is_flag=True, default=False, help='Rescrape stages even if their status is already succeeded.')
 def scrape(
     dir: str,
     path: str,
@@ -61,6 +63,8 @@ def scrape(
     vision_base_url: str | None,
     delete_images_after: bool,
     delete_papers_after: bool,
+    output_path: str,
+    force: bool,
 ):
     scrape_papers(
         dir,
@@ -77,6 +81,8 @@ def scrape(
         vision_base_url=vision_base_url,
         delete_images_after=delete_images_after,
         delete_papers_after=delete_papers_after,
+        output_path=output_path,
+        force=force,
     )
 
 
