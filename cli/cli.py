@@ -82,7 +82,7 @@ def scrape(
 
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
-@click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path(exists=True))
+@click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path())
 @click.argument('out_file', default='materials.csv', type=click.Path())
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False, help='Store converted results without an interactive confirmation prompt.')

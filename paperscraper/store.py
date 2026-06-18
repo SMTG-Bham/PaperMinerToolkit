@@ -14,7 +14,13 @@ def store_results(
     assume_yes=False,
     model_config=None,
 ):
+    if not os.path.isfile(in_filepath):
+        print(f'No scraped materials file found at {in_filepath}. Nothing new to store.')
+        return
     in_file = pd.read_csv(in_filepath, index_col=0)
+    if in_file.empty:
+        print(f'Scraped materials file {in_filepath} is empty. Nothing new to store.')
+        return
     recipe = load_recipe(recipe)
     if os.path.isfile(out_filepath):
         out_file = pd.read_csv(out_filepath, index_col=0)
