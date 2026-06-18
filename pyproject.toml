@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scraper"
+name = "paperscraper"
 version = "0.0.1"
 description = "A code which uses GPT in order to exctract unstructured information from papers."
 readme = { file = "README.md", content-type = "text/markdown" }
