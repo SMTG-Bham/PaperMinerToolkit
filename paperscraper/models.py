@@ -212,9 +212,9 @@ def get_model_client(config: ModelConfig | None = None):
     provider = config.provider.lower().replace('_', '-')
     if provider == 'openai':
         return OpenAIResponsesClient(config)
-    if provider in {'anthropic', 'claude'}:
+    if provider == 'anthropic':
         return AnthropicMessagesClient(config)
-    if provider in {'openai-compatible', 'local', 'hpc'}:
+    if provider == 'local':
         if not config.base_url:
             raise ValueError(f'Provider "{config.provider}" requires a base URL.')
         return OpenAICompatibleChatClient(config)

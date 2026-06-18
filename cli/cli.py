@@ -30,7 +30,7 @@ def elsevier_download(path: str, dir: str, download_format: str):
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--model', default=None, help='Text model name override for this scrape run.')
-@click.option('--provider', default=None, help='Text provider override: openai, anthropic, openai-compatible, local, or hpc.')
+@click.option('--provider', default=None, help='Text provider override: openai, anthropic, or local.')
 @click.option('--base-url', default=None, help='Text model base URL override.')
 @click.option('--vision-model', default=None, help='Vision model name override for this scrape run.')
 @click.option('--vision-provider', default=None, help='Vision provider override.')
@@ -91,7 +91,7 @@ def update_openai_api_key():
 
 @click.command()
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
-@click.option('--provider', prompt=True, help='Provider: openai, anthropic, openai-compatible, local, or hpc.')
+@click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
 @click.option('--model', prompt=True, help='Model name.')
 @click.option('--base-url', default=None, help='Base URL for OpenAI-compatible/local/HPC providers.')
 @click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')
@@ -128,7 +128,7 @@ def scraper_status(path: str):
 
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
-@click.argument('field', default='status', type=str)
+@click.argument('field', default='metadata_status', type=str)
 @click.option('--ascending', is_flag=True, show_default=True, default=True)
 def sort_df(path: str, field: str, ascending: bool):
     sort(path, field, ascending)

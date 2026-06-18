@@ -77,7 +77,7 @@ def main():
     os.makedirs(os.path.dirname(args.papers_path), exist_ok=True)
     model_config = ModelConfig.from_settings(
         name=args.model,
-        provider='hpc',
+        provider='local',
         base_url=args.base_url,
         capabilities=['text'],
     )
@@ -90,7 +90,7 @@ def main():
         mode=args.mode,
         image_dir=args.image_dir,
         model=args.model,
-        provider='hpc',
+        provider='local',
         base_url=args.base_url,
     )
 

@@ -193,7 +193,7 @@ def update_model_settings(settings=True):
     if settings:
         settings = load_settings()
     profile = input('Enter model profile [text/vision]: ').strip() or 'text'
-    provider = input('Enter model provider [openai/anthropic/openai-compatible/local/hpc]: ').strip() or 'openai'
+    provider = input('Enter model provider [openai/anthropic/local]: ').strip() or 'openai'
     model = input('Enter model name: ').strip()
     base_url = input('Enter base URL (leave blank for provider default): ').strip() or None
     api_key = input('Enter model API key (leave blank if not needed): ').strip() or None

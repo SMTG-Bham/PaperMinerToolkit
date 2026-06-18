@@ -6,9 +6,9 @@ PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts str
 
 Configure separate model profiles for text and vision analysis:
 
-`ps_model_config text --provider hpc --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1`
+`ps_model_config text --provider local --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1`
 
-`ps_model_config vision --provider hpc --model Qwen/Qwen2.5-VL-7B-Instruct --base-url http://127.0.0.1:8001/v1`
+`ps_model_config vision --provider local --model Qwen/Qwen2.5-VL-7B-Instruct --base-url http://127.0.0.1:8001/v1`
 
 Capabilities are inferred automatically from the profile and model name. Use `--capability` only as an override for unusual models.
 
@@ -38,7 +38,7 @@ Scrape text only:
 
 Analyze images with the vision profile:
 
-`ps_scrape papers papers.csv sse --mode images --vision-provider hpc --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`
+`ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`
 
 Analyze images with paper text as additional context:
 
