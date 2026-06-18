@@ -171,10 +171,14 @@ The text extractor and image extractor may describe the same material, compositi
 
 Rules:
 - Use the recipe schema keys exactly. Do not add extra keys.
+- Match records first by exact material name, formula, composition, stoichiometry, dopant, substitution level, composite/additive identity, and sample label when available.
+- Treat records as the same material only when their composition and experimental context are compatible. If one record is generic and another is specific, keep the specific record and copy generic fields only when they clearly apply.
+- Do not merge entries when compositions differ, dopant levels differ, one is a parent phase and the other is a doped/substituted phase, or one is a neat material and the other is a composite/additive mixture.
+- Do not merge entries only because they share a property value, measurement type, figure/table, or broad material class.
 - Prefer explicit non-None values over None.
 - If text and image records provide complementary properties for the same material, combine them into one record.
 - If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
-- Keep genuinely distinct materials, doped variants, compositions, or experimental entries as separate records.
+- Keep genuinely distinct materials, doped variants, compositions, samples, or experimental entries as separate records.
 - Do not invent values. If neither source supports a field, use "None".
 - Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
 
