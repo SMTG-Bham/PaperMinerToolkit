@@ -1,6 +1,7 @@
 import click
 from paperscraper.search import search_for_papers
 from paperscraper.download import elsevier_downloader
+from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
 from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_elsevier_key, update_openai_key, update_model_settings
@@ -12,6 +13,13 @@ from paperscraper.utilities import reset, status, sort, shuffle
 @click.argument('path', default='papers.csv', type=str)
 def paper_search(query: str, path: str):
     search_for_papers(query, path)
+
+
+@click.command()
+@click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
+@click.argument('path', default='external_papers.csv', type=click.Path())
+def import_pdf_folder(dir: str, path: str):
+    import_pdfs(dir, path)
 
 
 @click.command()
@@ -93,7 +101,7 @@ def update_openai_api_key():
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
 @click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
 @click.option('--model', prompt=True, help='Model name.')
-@click.option('--base-url', default=None, help='Base URL for OpenAI-compatible/local/HPC providers.')
+@click.option('--base-url', default=None, help='Base URL for local providers.')
 @click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')
 @click.option('--capability', 'capabilities', multiple=True, help='Optional override. By default capabilities are inferred from profile/model name.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None, capabilities: tuple[str]):

@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 ps_search = "cli.cli:paper_search"
 ps_elsevier = "cli.cli:elsevier_download"
+ps_import_pdfs = "cli.cli:import_pdf_folder"
 ps_scrape = "cli.cli:scrape"
 ps_store = "cli.cli:store"
 ps_elsevier_key = "cli.cli:update_elsevier_api_key"
