@@ -58,6 +58,8 @@ Analyze images with the vision profile:
 
 Image extraction defaults to `--image-extraction auto`: embedded PDF images are used when available, otherwise pages are rendered to PNGs for vision analysis. Use `--image-extraction pages` to always render pages, or `--image-extraction embedded` to disable the fallback.
 
+By default, image scraping sends one image per vision request. Use `--image-batch-size 4` for small batches or `--image-batch-size all` to send every extracted image for a paper in one request.
+
 Analyze images with paper text as additional context:
 
 `ps_scrape papers papers.csv sse --mode text-images --image-context paper-text`

@@ -40,6 +40,7 @@ def elsevier_download(path: str, dir: str, download_format: str):
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction', type=click.Choice(['auto', 'embedded', 'pages']), default='auto', show_default=True, help='How to turn PDFs into images for vision analysis.')
 @click.option('--image-dpi', default=200, type=int, show_default=True, help='DPI for rendered page images when page rendering is used.')
+@click.option('--image-batch-size', default='1', show_default=True, help='Number of images per vision request, or "all".')
 @click.option('--model', default=None, help='Text model name override for this scrape run.')
 @click.option('--provider', default=None, help='Text provider override: openai, anthropic, or local.')
 @click.option('--base-url', default=None, help='Text model base URL override.')
@@ -59,6 +60,7 @@ def scrape(
     image_dir: str,
     image_extraction: str,
     image_dpi: int,
+    image_batch_size: str,
     model: str | None,
     provider: str | None,
     base_url: str | None,
@@ -79,6 +81,7 @@ def scrape(
         image_context=image_context,
         image_extraction=image_extraction,
         image_dpi=image_dpi,
+        image_batch_size=image_batch_size,
         model=model,
         provider=provider,
         base_url=base_url,

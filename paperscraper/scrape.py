@@ -71,6 +71,19 @@ def _image_key_for_row(row, pdf_path):
     return _safe_path_part(identifier.split(':')[-1])
 
 
+def _image_batches(image_paths, batch_size):
+    batch_size = str(batch_size).strip().lower()
+    if batch_size == 'all':
+        return [image_paths]
+    try:
+        size = int(batch_size)
+    except (TypeError, ValueError) as e:
+        raise ValueError('image_batch_size must be a positive integer or "all"') from e
+    if size < 1:
+        raise ValueError('image_batch_size must be a positive integer or "all"')
+    return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
+
+
 def scrape_papers(
     papers_dir: str,
     papers_path: str = 'papers.csv',
@@ -80,6 +93,7 @@ def scrape_papers(
     image_context: str = 'none',
     image_extraction: str = 'auto',
     image_dpi: int = 200,
+    image_batch_size: str | int = 1,
     model: str | None = None,
     provider: str | None = None,
     base_url: str | None = None,
@@ -185,9 +199,10 @@ def scrape_papers(
                                 text = read_pdf_text(pdf_path)
                             context = text
                         image_materials = []
-                        for image_path in image_paths:
-                            response = analyze_images([image_path], recipe_data, model_config=vision_config, context=context)
-                            image_materials.extend(_append_materials(response, row, 'image', image_path))
+                        for image_batch in _image_batches(image_paths, image_batch_size):
+                            response = analyze_images(image_batch, recipe_data, model_config=vision_config, context=context)
+                            source_path = ';'.join(image_batch)
+                            image_materials.extend(_append_materials(response, row, 'image', source_path))
                         row_materials.extend(image_materials)
                         papers_df.loc[i, 'image_dir'] = paper_image_dir
                         papers_df.loc[i, 'num_images'] = len(image_paths)
