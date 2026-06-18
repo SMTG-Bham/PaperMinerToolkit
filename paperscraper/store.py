@@ -23,6 +23,9 @@ def _aliases_for(recipe):
     aliases = {}
     for field, config in recipe['search fields'].items():
         names = {field.lower()}
+        prompt = config.get('prompt')
+        if prompt:
+            names.add(prompt.lower())
         for alias in config.get('aliases', []):
             names.add(alias.lower())
         aliases[field] = names

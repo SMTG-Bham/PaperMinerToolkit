@@ -6,12 +6,17 @@
             "Name": {
                 "prompt": "Name of electrolyte",
                 "example": "LLZO",
-                "aliases": []
+                "aliases": [
+                    "Name of electrolyte",
+                    "Electrolyte name"
+                ]
             },
             "Chemical formula": {
                 "prompt": "Formula",
                 "example": "Li7La3Zr2O12",
-                "aliases": []
+                "aliases": [
+                    "Formula"
+                ]
             },
             "Dopants": {
                 "prompt": "Dopants",
@@ -53,7 +58,9 @@
                 "prompt": "Room temperature ionic conductivity (provide the value taken closest to room temperature)",
                 "example": "2.0 × 10−4 S cm−1",
                 "unit": "S cm^-1",
-                "aliases": []
+                "aliases": [
+                    "RT ionic conductivity"
+                ]
             },
             "Ionic conductivity": {
                 "prompt": "Ionic conductivity (if multiple measurements were taken, provide a list separated by commas)",
@@ -67,7 +74,9 @@
                 "prompt": "Activation energy for migration",
                 "example": "0.25 eV",
                 "unit": "eV",
-                "aliases": []
+                "aliases": [
+                    "Activation energy for migration"
+                ]
             },
             "Hardness": {
                 "prompt": "Hardness",
@@ -194,7 +203,8 @@
                 "aliases": [
                     "Electrochemical stability",
                     "Stability window",
-                    "ESW"
+                    "ESW",
+                    "Electrochemical stability window (vs Li+/Li)"
                 ]
             }
         }
