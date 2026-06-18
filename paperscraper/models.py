@@ -20,6 +20,8 @@ class ModelConfig:
     base_url: str | None = None
     api_key: str | None = None
     capabilities: set[str] = field(default_factory=lambda: {'text'})
+    temperature: float = 0
+    top_p: float = 1
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides):
@@ -34,11 +36,16 @@ class ModelConfig:
             base_url=overrides.get('base_url') or configured.get('base_url'),
             api_key=overrides.get('api_key') or configured.get('api_key') or settings.get('openai_api_key'),
             capabilities=set(capabilities or ['text']),
+            temperature=float(overrides.get('temperature', configured.get('temperature', 0))),
+            top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
         )
 
     @classmethod
     def from_settings(cls, **overrides):
         return cls.from_profile(overrides.pop('profile', 'text'), **overrides)
+
+    def generation_args(self):
+        return {'temperature': self.temperature, 'top_p': self.top_p}
 
     def require(self, capability: str):
         if capability not in self.capabilities:
@@ -93,6 +100,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 model=self.config.name,
                 input=messages,
                 max_output_tokens=max_output_tokens,
+                **self.config.generation_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI request failed: {e}') from e
@@ -110,6 +118,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 model=self.config.name,
                 input=[{'role': 'user', 'content': content}],
                 max_output_tokens=max_output_tokens,
+                **self.config.generation_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI vision request failed: {e}') from e
@@ -155,6 +164,7 @@ class AnthropicMessagesClient(BaseModelClient):
             'model': self.config.name,
             'max_tokens': max_output_tokens,
             'messages': anthropic_messages,
+            **self.config.generation_args(),
         }
         if system:
             payload['system'] = system
@@ -201,6 +211,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
                 model=self.config.name,
                 messages=messages,
                 max_tokens=max_output_tokens,
+                **self.config.generation_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI-compatible request failed: {e}') from e

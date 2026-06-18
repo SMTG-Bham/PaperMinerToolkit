@@ -6,11 +6,11 @@ PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts str
 
 Configure separate model profiles for text and vision analysis:
 
-`ps_model_config text --provider local --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1`
+`ps_model_config text --provider local --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1 --temperature 0 --top-p 1`
 
 `ps_model_config vision --provider local --model Qwen/Qwen2.5-VL-7B-Instruct --base-url http://127.0.0.1:8001/v1`
 
-Capabilities are inferred automatically from the profile and model name. Use `--capability` only as an override for unusual models.
+Capabilities are inferred automatically from the profile and model name. Use `--capability` only as an override for unusual models. Model requests default to `temperature=0` and `top_p=1` for deterministic extraction.
 
 Inspect configured profiles:
 

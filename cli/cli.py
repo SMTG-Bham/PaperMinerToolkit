@@ -105,10 +105,12 @@ def update_openai_api_key():
 @click.option('--base-url', default=None, help='Base URL for local providers.')
 @click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')
 @click.option('--capability', 'capabilities', multiple=True, help='Optional override. By default capabilities are inferred from profile/model name.')
-def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None, capabilities: tuple[str]):
+@click.option('--temperature', default=0.0, type=float, show_default=True, help='Sampling temperature for model requests.')
+@click.option('--top-p', default=1.0, type=float, show_default=True, help='Nucleus sampling probability mass for model requests.')
+def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None, capabilities: tuple[str], temperature: float, top_p: float):
     caps = list(capabilities) or infer_model_capabilities(profile, model)
-    set_model_profile(profile, provider, model, base_url, api_key, caps)
-    click.echo(f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}]')
+    set_model_profile(profile, provider, model, base_url, api_key, caps, temperature=temperature, top_p=top_p)
+    click.echo(f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p}')
 
 
 def update_model_config():
@@ -120,7 +122,7 @@ def model_status():
     for profile in ['text', 'vision']:
         config = get_model_profile(profile)
         capabilities = ', '.join(config.get('capabilities', []))
-        click.echo(f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] base_url={config.get("base_url")}')
+        click.echo(f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} base_url={config.get("base_url")}')
 
 
 @click.command()
