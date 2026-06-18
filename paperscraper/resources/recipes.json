@@ -1,7 +1,7 @@
 {
     "sse": {
         "material type": "lithium-conducting solid electrolyte",
-        "additional prompts": "Do not scrape ion conductors that transport anything other than lithium. Always fill the 'Name' field. If the paper is talking about a result from a previous paper, don't report that result.",
+        "additional prompts": "Do not scrape ion conductors that transport anything other than lithium. Always fill the 'Name' field using the reported name, formula, sample label, or composition; if the paper only reports a formula, use that formula as the name. If the paper is talking about a result from a previous paper, don't report that result.",
         "search fields": {
             "Name": {
                 "prompt": "Name of electrolyte",
@@ -50,13 +50,13 @@
             },
             "Electronic conductivity": {
                 "prompt": "Electronic conductivity",
-                "example": "5.5 × 10−8 S cm-1",
+                "example": "5.5 x 10^-8 S cm^-1",
                 "unit": "S cm^-1",
                 "aliases": []
             },
             "Room temperature ionic conductivity": {
                 "prompt": "Room temperature ionic conductivity (provide the value taken closest to room temperature)",
-                "example": "2.0 × 10−4 S cm−1",
+                "example": "2.0 x 10^-4 S cm^-1",
                 "unit": "S cm^-1",
                 "aliases": [
                     "RT ionic conductivity"
@@ -65,8 +65,8 @@
             "Ionic conductivity": {
                 "prompt": "Ionic conductivity (if multiple measurements were taken, provide a list separated by commas)",
                 "example": [
-                    "2.0 × 10−4 S cm−1 at 25 °C",
-                    "3.0 × 10−4 S cm−1 at 45 °C"
+                    "2.0 x 10^-4 S cm^-1 at 25 C",
+                    "3.0 x 10^-4 S cm^-1 at 45 C"
                 ],
                 "aliases": []
             },
@@ -105,19 +105,13 @@
             "Crystal density": {
                 "prompt": "Crystal density (Do not confuse this with % packing density)",
                 "example": "None",
-                "unit": "kg/m^2",
-                "aliases": []
-            },
-            "Surface area": {
-                "prompt": "Surface area",
-                "example": "10000 cm^2",
-                "unit": "m^2",
+                "unit": "kg/m^3",
                 "aliases": []
             },
             "Porosity": {
                 "prompt": "Porosity",
                 "example": "None",
-                "unit": "GPa",
+                "unit": "%",
                 "aliases": []
             },
             "Particle size": {
@@ -126,20 +120,14 @@
                 "unit": "nm",
                 "aliases": []
             },
-            "Temperature": {
-                "prompt": "Temperature the measurements were done at (if multiple measurements were taken, list these in the same order as the conductivities)",
-                "example": [
-                    "30 °C",
-                    "60 °C"
-                ],
-                "unit": "K",
-                "aliases": []
-            },
-            "Pressure": {
-                "prompt": "Pressure",
-                "example": "101 kPa",
-                "unit": "kPa",
-                "aliases": []
+            "Grain size": {
+                "prompt": "Grain size (not to be confused with particle size)",
+                "example": "2 um",
+                "unit": "nm",
+                "aliases": [
+                    "Average grain size",
+                    "Crystallite grain size"
+                ]
             },
             "Pellet thickness": {
                 "prompt": "Pellet thickness",
@@ -154,20 +142,24 @@
                 "aliases": []
             },
             "Cell format": {
-                "prompt": "Cell format",
-                "example": "Prismatic",
-                "aliases": []
+                "prompt": "Cell format or measurement cell configuration, such as blocking electrode, Li/SSE/Li symmetric cell, full cell, pellet, or thin film",
+                "example": "Li/SSE/Li symmetric cell",
+                "aliases": [
+                    "Cell configuration",
+                    "Cell type",
+                    "Measurement cell"
+                ]
             },
             "Pellet density": {
                 "prompt": "Pellet density (Do not confuse this with % packing density)",
-                "example": "0.5 mm",
-                "unit": "kg/m^2",
+                "example": "2500 kg/m^3",
+                "unit": "kg/m^3",
                 "aliases": []
             },
             "Critical current density": {
                 "prompt": "Critical current density for plating/stripping",
-                "example": "3 mA cm^–2",
-                "unit": "mA cm^–2",
+                "example": "3 mA cm^-2",
+                "unit": "mA cm^-2",
                 "aliases": []
             },
             "Coulombic efficiency": {
@@ -186,9 +178,18 @@
                 "example": "10 Hz to 4 kHz",
                 "aliases": []
             },
+            "Measurement method": {
+                "prompt": "Measurement method used for conductivity or electrochemical measurements, such as EIS, DC polarization, Hebb-Wagner polarization, chronoamperometry, or galvanostatic cycling",
+                "example": "EIS",
+                "aliases": [
+                    "Conductivity measurement method",
+                    "Electrochemical measurement method",
+                    "Method"
+                ]
+            },
             "Synthesis conditions": {
                 "prompt": "Synthesis conditions",
-                "example": "Ball milled, Calcined at 850 °C, Sintered at 1180 °C",
+                "example": "Ball milled, Calcined at 850 C, Sintered at 1180 C",
                 "aliases": []
             },
             "Type of study": {
@@ -198,13 +199,33 @@
             },
             "Electrochemical stability window": {
                 "prompt": "Electrochemical stability window (vs Li+/Li)",
-                "example": "0–6 V",
+                "example": "0-6 V",
                 "unit": "V",
                 "aliases": [
                     "Electrochemical stability",
                     "Stability window",
                     "ESW",
                     "Electrochemical stability window (vs Li+/Li)"
+                ]
+            },
+            "Atmosphere or stability condition": {
+                "prompt": "Atmosphere, exposure, or stability testing condition, such as dry air, humid air, argon, oxygen, water exposure, or storage duration",
+                "example": "Dry air exposure for 24 h",
+                "aliases": [
+                    "Atmosphere",
+                    "Stability condition",
+                    "Air stability",
+                    "Moisture stability"
+                ]
+            },
+            "Specific surface area": {
+                "prompt": "Specific surface area, usually BET surface area. Do not confuse this with geometric contact area.",
+                "example": "12 m^2/g",
+                "unit": "m^2/g",
+                "aliases": [
+                    "Surface area",
+                    "BET surface area",
+                    "Specific surface area"
                 ]
             }
         }
