@@ -4,12 +4,14 @@ from paperscraper.models import ModelConfig
 from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.recipes import load_recipe
 import pandas as pd
+import re
 import math
 import os
 from tqdm import tqdm
 
 SCRAPE_MODES = {'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
+IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
 
 
 def _text_chunks(text: str, model_name: str):
@@ -57,6 +59,18 @@ def _delete_file(path):
         os.remove(path)
 
 
+def _safe_path_part(value):
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '_', str(value or '').strip())
+    return safe.strip('._') or 'paper'
+
+
+def _image_key_for_row(row, pdf_path):
+    identifier = str(row.get('dc:identifier') or '')
+    if identifier.startswith('doi:') and pdf_path:
+        return _safe_path_part(os.path.splitext(os.path.basename(pdf_path))[0])
+    return _safe_path_part(identifier.split(':')[-1])
+
+
 def scrape_papers(
     papers_dir: str,
     papers_path: str = 'papers.csv',
@@ -64,6 +78,8 @@ def scrape_papers(
     mode: str = 'text',
     image_dir: str = 'paper_images',
     image_context: str = 'none',
+    image_extraction: str = 'auto',
+    image_dpi: int = 200,
     model: str | None = None,
     provider: str | None = None,
     base_url: str | None = None,
@@ -77,10 +93,13 @@ def scrape_papers(
 ):
     mode = mode.lower()
     image_context = image_context.lower()
+    image_extraction = image_extraction.lower()
     if mode not in SCRAPE_MODES:
         raise ValueError(f'mode must be one of: {", ".join(sorted(SCRAPE_MODES))}')
     if image_context not in IMAGE_CONTEXT_MODES:
         raise ValueError(f'image_context must be one of: {", ".join(sorted(IMAGE_CONTEXT_MODES))}')
+    if image_extraction not in IMAGE_EXTRACTION_MODES:
+        raise ValueError(f'image_extraction must be one of: {", ".join(sorted(IMAGE_EXTRACTION_MODES))}')
 
     should_scrape_text = mode in {'text', 'text-images'}
     should_scrape_images = mode in {'images', 'text-images'}
@@ -149,11 +168,17 @@ def scrape_papers(
                     try:
                         if not pdf_path:
                             raise FileNotFoundError('No downloaded PDF file found for image analysis.')
-                        scopus_id = row['dc:identifier'].split(':')[-1]
-                        paper_image_dir = os.path.join(image_dir, scopus_id)
-                        image_paths = extract_pdf_images(pdf_path, paper_image_dir, prefix=scopus_id)
+                        image_key = _image_key_for_row(row, pdf_path)
+                        paper_image_dir = os.path.join(image_dir, image_key)
+                        image_paths = extract_pdf_images(
+                            pdf_path,
+                            paper_image_dir,
+                            prefix=image_key,
+                            strategy=image_extraction,
+                            dpi=image_dpi,
+                        )
                         if not image_paths:
-                            raise RuntimeError('No embedded images were found in the PDF.')
+                            raise RuntimeError('No PDF images could be extracted or rendered.')
                         context = None
                         if image_context == 'paper-text':
                             if text is None:

@@ -38,6 +38,8 @@ def elsevier_download(path: str, dir: str, download_format: str):
 @click.option('--mode', type=click.Choice(['text', 'images', 'text-images']), default='text', show_default=True)
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
+@click.option('--image-extraction', type=click.Choice(['auto', 'embedded', 'pages']), default='auto', show_default=True, help='How to turn PDFs into images for vision analysis.')
+@click.option('--image-dpi', default=200, type=int, show_default=True, help='DPI for rendered page images when page rendering is used.')
 @click.option('--model', default=None, help='Text model name override for this scrape run.')
 @click.option('--provider', default=None, help='Text provider override: openai, anthropic, or local.')
 @click.option('--base-url', default=None, help='Text model base URL override.')
@@ -55,6 +57,8 @@ def scrape(
     mode: str,
     image_context: str,
     image_dir: str,
+    image_extraction: str,
+    image_dpi: int,
     model: str | None,
     provider: str | None,
     base_url: str | None,
@@ -73,6 +77,8 @@ def scrape(
         mode=mode,
         image_dir=image_dir,
         image_context=image_context,
+        image_extraction=image_extraction,
+        image_dpi=image_dpi,
         model=model,
         provider=provider,
         base_url=base_url,

@@ -56,6 +56,8 @@ Analyze images with the vision profile:
 
 `ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`
 
+Image extraction defaults to `--image-extraction auto`: embedded PDF images are used when available, otherwise pages are rendered to PNGs for vision analysis. Use `--image-extraction pages` to always render pages, or `--image-extraction embedded` to disable the fallback.
+
 Analyze images with paper text as additional context:
 
 `ps_scrape papers papers.csv sse --mode text-images --image-context paper-text`
