@@ -74,10 +74,7 @@ def scrape_papers(
     delete_papers_after: bool = False,
     output_path: str = 'temp_scraped_materials.csv',
     force: bool = False,
-    content_mode: str | None = None,
 ):
-    if content_mode is not None:
-        mode = {'both': 'text-images'}.get(content_mode, content_mode)
     mode = mode.lower()
     image_context = image_context.lower()
     if mode not in SCRAPE_MODES:

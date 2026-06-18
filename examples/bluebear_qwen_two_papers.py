@@ -1,7 +1,7 @@
 """End-to-end two-paper PaperScraper example for BlueBEAR.
 
 This script searches for two papers, downloads available Elsevier content,
-scrapes structured data with Qwen on an OpenAI-compatible endpoint, and stores
+scrapes structured data with Qwen on a local model endpoint, and stores
 the results.
 """
 
@@ -12,6 +12,7 @@ import pandas as pd
 
 from paperscraper.download import elsevier_downloader
 from paperscraper.models import ModelConfig
+from paperscraper.pipeline import ensure_pipeline_columns
 from paperscraper.scrape import scrape_papers
 from paperscraper.search import document_search
 from paperscraper.store import store_results
@@ -53,8 +54,8 @@ def search_two_papers(query: str, papers_path: str):
             "Try a broader --query or verify Elsevier API access/entitlements."
         )
 
-    papers = pd.DataFrame(selected).reset_index(drop=True)
-    papers["status"] = "retrieved"
+    papers = ensure_pipeline_columns(pd.DataFrame(selected).reset_index(drop=True))
+    papers["metadata_status"] = "retrieved"
     papers.to_csv(papers_path)
     print(f"Saved {len(papers)} papers to {papers_path}")
 
@@ -92,6 +93,7 @@ def main():
         model=args.model,
         provider='local',
         base_url=args.base_url,
+        output_path=args.temp_results,
     )
 
     if os.path.isfile(args.temp_results):

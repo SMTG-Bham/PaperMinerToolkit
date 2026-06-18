@@ -6,9 +6,8 @@ from json import JSONDecodeError
 import tiktoken
 
 from paperscraper.models import ModelConfig, query_images, query_text
+from paperscraper.settings import DEFAULT_MODEL
 
-
-DEFAULT_MODEL = 'gpt-5-mini'
 
 
 def token_length(prompt, model=DEFAULT_MODEL):
@@ -41,8 +40,8 @@ def build_scrape_prompt(recipe, source='paper'):
     return prompt
 
 
-def query_model(messages, model=DEFAULT_MODEL, model_config=None, provider=None, base_url=None):
-    config = model_config or ModelConfig.from_settings(name=model, provider=provider, base_url=base_url)
+def query_model(messages, model_config=None):
+    config = model_config or ModelConfig.from_profile('text')
     return query_text(messages, config=config, max_output_tokens=10000)
 
 

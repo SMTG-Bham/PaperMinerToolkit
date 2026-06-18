@@ -6,7 +6,7 @@ import mimetypes
 import openai
 import requests
 
-from paperscraper.settings import get_model_profile, load_settings
+from paperscraper.settings import DEFAULT_MODEL, get_model_profile, load_settings
 
 
 class ModelCapabilityError(ValueError):
@@ -16,7 +16,7 @@ class ModelCapabilityError(ValueError):
 @dataclass
 class ModelConfig:
     provider: str = 'openai'
-    name: str = 'gpt-5-mini'
+    name: str = DEFAULT_MODEL
     base_url: str | None = None
     api_key: str | None = None
     capabilities: set[str] = field(default_factory=lambda: {'text'})
@@ -30,11 +30,13 @@ class ModelConfig:
         if isinstance(capabilities, str):
             capabilities = [cap.strip() for cap in capabilities.split(',') if cap.strip()]
         settings = load_settings()
+        provider = overrides.get('provider') or configured.get('provider') or 'openai'
+        provider_key = f'{provider.lower()}_api_key'
         return cls(
-            provider=overrides.get('provider') or configured.get('provider') or 'openai',
-            name=overrides.get('name') or overrides.get('model') or configured.get('model') or 'gpt-5-mini',
+            provider=provider,
+            name=overrides.get('name') or overrides.get('model') or configured.get('model') or DEFAULT_MODEL,
             base_url=overrides.get('base_url') or configured.get('base_url'),
-            api_key=overrides.get('api_key') or configured.get('api_key') or settings.get('openai_api_key'),
+            api_key=overrides.get('api_key') or configured.get('api_key') or settings.get(provider_key),
             capabilities=set(capabilities or ['text']),
             temperature=float(overrides.get('temperature', configured.get('temperature', 0))),
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
@@ -129,7 +131,7 @@ class AnthropicMessagesClient(BaseModelClient):
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         self.config.require('text')
         if not self.config.api_key:
-            raise ValueError('Anthropic provider requires model_api_key in settings.')
+            raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
         system = ''
         anthropic_messages = []
         for message in messages:
@@ -159,7 +161,7 @@ class AnthropicMessagesClient(BaseModelClient):
 
     def _request(self, system, anthropic_messages, max_output_tokens):
         if not self.config.api_key:
-            raise ValueError('Anthropic provider requires model_api_key in settings.')
+            raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
         payload = {
             'model': self.config.name,
             'max_tokens': max_output_tokens,
@@ -214,7 +216,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
                 **self.config.generation_args(),
             )
         except openai.OpenAIError as e:
-            raise RuntimeError(f'OpenAI-compatible request failed: {e}') from e
+            raise RuntimeError(f'Local model request failed: {e}') from e
         return response.choices[0].message.content or ''
 
 

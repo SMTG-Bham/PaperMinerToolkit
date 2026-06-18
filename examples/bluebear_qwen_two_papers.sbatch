@@ -38,7 +38,7 @@ export PAPERSCRAPER_START_MODEL_SERVER="${PAPERSCRAPER_START_MODEL_SERVER:-1}"
 echo "Using model endpoint: ${PAPERSCRAPER_MODEL_BASE_URL}"
 
 if [[ "${PAPERSCRAPER_START_MODEL_SERVER}" == "1" ]]; then
-  echo "Starting vLLM OpenAI-compatible server for ${PAPERSCRAPER_MODEL_NAME}"
+  echo "Starting vLLM local model server for ${PAPERSCRAPER_MODEL_NAME}"
   python -m vllm.entrypoints.openai.api_server \
     --model "${PAPERSCRAPER_MODEL_NAME}" \
     --host "${PAPERSCRAPER_MODEL_HOST}" \

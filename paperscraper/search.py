@@ -73,7 +73,11 @@ def search_for_papers(query: str, papers_path: str = 'papers.csv'):
         old_papers = pd.read_csv(papers_path, index_col=0)
         num_old_papers = len(old_papers)
         papers = pd.concat([old_papers, new_papers], ignore_index=True)
-        papers.drop_duplicates(subset=range(1, 11), keep='first', inplace=True, ignore_index=True)
+        duplicate_column = next((column for column in ['dc:identifier', 'prism:doi', 'eid'] if column in papers.columns), None)
+        if duplicate_column:
+            papers.drop_duplicates(subset=[duplicate_column], keep='first', inplace=True, ignore_index=True)
+        else:
+            papers.drop_duplicates(keep='first', inplace=True, ignore_index=True)
         papers.reset_index(drop=True, inplace=True)
         tot_num_papers = len(papers)
         num_new_papers = tot_num_papers - num_old_papers

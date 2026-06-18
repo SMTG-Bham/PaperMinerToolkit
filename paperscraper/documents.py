@@ -55,14 +55,14 @@ def extract_pdf_images(pdf_path: str, output_dir: str, prefix: str | None = None
 
 
 def text_file_for_row(papers_dir, files, row):
-    return existing_path(row.get('text_path')) or legacy_file_for_extension(papers_dir, files, row, '.txt')
+    return existing_path(row.get('text_path')) or file_for_row_by_identifier(papers_dir, files, row, '.txt')
 
 
 def pdf_file_for_row(papers_dir, files, row):
-    return existing_path(row.get('pdf_path')) or legacy_file_for_extension(papers_dir, files, row, '.pdf')
+    return existing_path(row.get('pdf_path')) or file_for_row_by_identifier(papers_dir, files, row, '.pdf')
 
 
-def legacy_file_for_extension(papers_dir, files, row, extension):
+def file_for_row_by_identifier(papers_dir, files, row, extension):
     scopus_id = row['dc:identifier'].split(':')[-1]
     filenames = [file for file in files if scopus_id in file and file.lower().endswith(extension)]
     if filenames:
