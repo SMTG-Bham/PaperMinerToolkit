@@ -70,6 +70,7 @@ def build_text_extraction_prompt(recipe):
 def build_image_extraction_prompt(recipe, with_context=False):
     context_rule = '- You may use the supplied paper text as context, but values should still be tied to the image, caption, table, plot labels, legend, or nearby visual evidence.' if with_context else '- Use only information visible in the supplied image or images, including captions, tables, plot labels, axes, legends, annotations, and readable text.'
     source_rules = f'''{context_rule}
+- Actively inspect figures and tables in the image for the requested properties, including captions, table headers, table rows, plot axes, legends, labels, annotations, and inset text.
 - For plots, report values only when they can be read from labels, annotations, tables, or clearly interpretable plotted data.
 - If several images are supplied together, combine evidence across them only when they clearly describe the same material or experiment.
 - If the supplied image or images are decorative, unreadable, or irrelevant to the schema, return [].'''
@@ -160,6 +161,37 @@ def scrape_images(image_paths, recipe, model_config=None, context=None):
     config = model_config or ModelConfig.from_profile('vision')
     prompt = build_scrape_prompt(recipe, source='paper image', with_context=context is not None)
     response = query_images(prompt, image_paths, config=config, context=context, max_output_tokens=10000)
+    return _extract_json_objects(response)
+
+
+def combine_material_records(text_materials, image_materials, recipe, model_config=None):
+    prompt = f'''You reconcile structured materials data extracted from the same paper.
+
+The text extractor and image extractor may describe the same material, composition, sample, or experiment. Compare both sets and merge records that refer to the same material or clearly corresponding experimental entry.
+
+Rules:
+- Use the recipe schema keys exactly. Do not add extra keys.
+- Prefer explicit non-None values over None.
+- If text and image records provide complementary properties for the same material, combine them into one record.
+- If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
+- Keep genuinely distinct materials, doped variants, compositions, or experimental entries as separate records.
+- Do not invent values. If neither source supports a field, use "None".
+- Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
+
+Schema. Use these keys exactly and do not add extra keys:
+{_field_schema(recipe)}
+
+Example output shape:
+{_example_record(recipe)}'''
+    payload = {
+        'text_extracted_records': text_materials,
+        'image_extracted_records': image_materials,
+    }
+    messages = [
+        {'role': 'system', 'content': prompt},
+        {'role': 'user', 'content': json.dumps(payload, indent=2)},
+    ]
+    response = query_model(messages, model_config=model_config)
     return _extract_json_objects(response)
 
 

@@ -64,6 +64,8 @@ Analyze images with paper text as additional context:
 
 `ps_scrape papers papers.csv sse --mode text-images --image-context paper-text`
 
+When text and image scraping both produce records for a paper, PaperScraper asks the text model to reconcile them and merge matching materials into combined `text+image` rows.
+
 Cleanup after successful scraping:
 
 `ps_scrape papers papers.csv sse --mode text --delete-papers-after`

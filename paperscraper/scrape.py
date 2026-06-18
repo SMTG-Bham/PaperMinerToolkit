@@ -1,5 +1,5 @@
 from paperscraper.documents import extract_pdf_images, pdf_file_for_row, read_document_text, read_pdf_text, text_file_for_row
-from paperscraper.extract import scrape_images as analyze_images, scrape_text as analyze_text, token_length
+from paperscraper.extract import combine_material_records, scrape_images as analyze_images, scrape_text as analyze_text, token_length
 from paperscraper.models import ModelConfig
 from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.recipes import load_recipe
@@ -145,6 +145,10 @@ def scrape_papers(
         for i, row in papers_df.iterrows():
             summary['papers'] += 1
             row_materials = []
+            text_materials = []
+            image_materials = []
+            text_source_path = None
+            image_source_paths = []
             text = None
             text_stage_ran = False
             image_stage_ran = False
@@ -162,11 +166,10 @@ def scrape_papers(
                         if not source_path:
                             raise FileNotFoundError('No downloaded text or PDF file found for text scrape.')
                         text = read_document_text(source_path)
-                        text_materials = []
+                        text_source_path = source_path
                         for text_chunk in _text_chunks(text, text_config.name):
                             response = analyze_text(text_chunk, recipe_data, model_config=text_config)
-                            text_materials.extend(_append_materials(response, row, 'text', source_path))
-                        row_materials.extend(text_materials)
+                            text_materials.extend(response)
                         papers_df.loc[i, 'num_text_materials'] = len(text_materials)
                         set_status(papers_df, i, 'text_scrape_status', 'succeeded')
                     except Exception as e:
@@ -198,12 +201,10 @@ def scrape_papers(
                             if text is None:
                                 text = read_pdf_text(pdf_path)
                             context = text
-                        image_materials = []
                         for image_batch in _image_batches(image_paths, image_batch_size):
                             response = analyze_images(image_batch, recipe_data, model_config=vision_config, context=context)
-                            source_path = ';'.join(image_batch)
-                            image_materials.extend(_append_materials(response, row, 'image', source_path))
-                        row_materials.extend(image_materials)
+                            image_source_paths.extend(image_batch)
+                            image_materials.extend(response)
                         papers_df.loc[i, 'image_dir'] = paper_image_dir
                         papers_df.loc[i, 'num_images'] = len(image_paths)
                         papers_df.loc[i, 'num_image_materials'] = len(image_materials)
@@ -213,6 +214,23 @@ def scrape_papers(
                                 _delete_file(image_path)
                     except Exception as e:
                         set_status(papers_df, i, 'image_scrape_status', 'failed', str(e))
+
+            if text_materials and image_materials:
+                text_source = text_source_path or ''
+                image_source = ';'.join(image_source_paths)
+                try:
+                    combined_materials = combine_material_records(text_materials, image_materials, recipe_data, model_config=text_config)
+                    if not combined_materials:
+                        raise ValueError('reconciliation returned no material records')
+                    row_materials.extend(_append_materials(combined_materials, row, 'text+image', f'{text_source};{image_source}'.strip(';')))
+                except Exception as e:
+                    papers_df.loc[i, 'last_error'] = f'Combining text and image results failed: {e}'
+                    row_materials.extend(_append_materials(text_materials, row, 'text', text_source))
+                    row_materials.extend(_append_materials(image_materials, row, 'image', image_source))
+            elif text_materials:
+                row_materials.extend(_append_materials(text_materials, row, 'text', text_source_path))
+            elif image_materials:
+                row_materials.extend(_append_materials(image_materials, row, 'image', ';'.join(image_source_paths)))
 
             first_material, written_count = _write_materials(row_materials, first_material, output_path)
             summary['materials'] += written_count
