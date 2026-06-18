@@ -8,8 +8,6 @@ import tiktoken
 from paperscraper.models import ModelConfig, query_images, query_text
 from paperscraper.settings import DEFAULT_MODEL
 
-
-
 def token_length(prompt, model=DEFAULT_MODEL):
     if type(prompt) != str:
         return []
@@ -20,24 +18,68 @@ def token_length(prompt, model=DEFAULT_MODEL):
         return max(1, math.ceil(len(prompt) / 4))
 
 
-def build_scrape_prompt(recipe, source='paper'):
+def _field_schema(recipe):
+    lines = []
+    for field, config in recipe['search fields'].items():
+        lines.append(f'- "{field}": {config["prompt"]}')
+    return '\n'.join(lines)
+
+
+def _example_record(recipe):
+    record = {}
+    for field, config in recipe['search fields'].items():
+        record[field] = config['example']
+    return json.dumps([record], indent=2)
+
+
+def _base_extraction_prompt(recipe, source, source_rules):
     material_type = recipe['material type']
-    search_fields = recipe['search fields']
-    additional_prompts = recipe['additional prompts']
-    prompt = f"Extract the following structured data for {material_type} materials from the user's {source}:\n\n"
-    for field in search_fields:
-        desc = search_fields[field]['prompt']
-        prompt += f'- {desc}\n'
-    prompt += f'\nThe output should be in JSON format, with each field as a key and the extracted data as a value. Create a new JSON string for each additional {material_type} material found. Be critical of your decisions and review your answers to make sure they reflect the information in the {source}. If there are multiple materials or permutations of materials, make sure to scrape all of them. If a field is not mentioned, set the value to "None". Only put values in square brackets if multiple values are matched with the field. {additional_prompts} For example:\n\n'
-    prompt += '{\n'
-    for key in search_fields.keys():
-        example = search_fields[key]['example']
-        if type(example) == str:
-            prompt += f'\t"{key}": "{example}"\n'
-        else:
-            prompt += f'\t"{key}": ' + str(example) + '\n'
-    prompt += '}\n\nThe keys you use should match those above exactly. Return only JSON objects and no explanatory text.'
-    return prompt
+    additional_prompts = recipe.get('additional prompts', '')
+    return f'''You extract structured {material_type} materials data from a scientific {source}.
+
+Extraction rules:
+- Use only information supported by the provided {source}. Do not infer missing values from general domain knowledge.
+- Prefer explicit reported values over derived or assumed values. Preserve conditions such as temperature, pressure, composition, measurement method, and units when they are part of the reported value.
+- If multiple distinct {material_type} materials, doped variants, compositions, or experimental entries are reported, return one record per distinct entry. Do not duplicate records for repeated mentions of the same entry.
+- If a field is not supported by the provided {source}, set that field to "None".
+- Use lists only when multiple values are reported for the same field in the same record.
+- Keep values concise but complete enough to preserve scientific meaning.
+{source_rules}
+
+Schema. Use these keys exactly and do not add extra keys:
+{_field_schema(recipe)}
+
+Additional recipe instructions:
+{additional_prompts}
+
+Output contract:
+- Return a JSON array of objects. Return [] if no relevant material data is present.
+- Every object must contain every schema key exactly once.
+- Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+
+Example output shape:
+{_example_record(recipe)}'''
+
+
+def build_text_extraction_prompt(recipe):
+    source_rules = '''- Treat abstracts, captions, tables, experimental sections, results, and supporting text as valid evidence.
+- Do not use references, citations, or background discussion as evidence for the paper's own reported measurements unless the text clearly states the value belongs to this work.'''
+    return _base_extraction_prompt(recipe, 'paper text', source_rules)
+
+
+def build_image_extraction_prompt(recipe, with_context=False):
+    context_rule = '- You may use the supplied paper text as context, but values should still be tied to the image, caption, table, plot labels, legend, or nearby visual evidence.' if with_context else '- Use only information visible in the supplied image or images, including captions, tables, plot labels, axes, legends, annotations, and readable text.'
+    source_rules = f'''{context_rule}
+- For plots, report values only when they can be read from labels, annotations, tables, or clearly interpretable plotted data.
+- If several images are supplied together, combine evidence across them only when they clearly describe the same material or experiment.
+- If the supplied image or images are decorative, unreadable, or irrelevant to the schema, return [].'''
+    return _base_extraction_prompt(recipe, 'paper image', source_rules)
+
+
+def build_scrape_prompt(recipe, source='paper', with_context=False):
+    if source == 'paper image':
+        return build_image_extraction_prompt(recipe, with_context=with_context)
+    return build_text_extraction_prompt(recipe)
 
 
 def query_model(messages, model_config=None):
@@ -78,6 +120,17 @@ def _json_decoder_scan(response):
 
 def _extract_json_objects(response):
     response = _strip_fences(response)
+    try:
+        parsed = json.loads(response)
+    except JSONDecodeError:
+        parsed = None
+    if parsed == []:
+        return []
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        return [parsed]
+
     data = _json_decoder_scan(response)
     if data:
         return data
@@ -105,7 +158,7 @@ def scrape_text(text, recipe, model_config=None):
 
 def scrape_images(image_paths, recipe, model_config=None, context=None):
     config = model_config or ModelConfig.from_profile('vision')
-    prompt = build_scrape_prompt(recipe, source='paper image')
+    prompt = build_scrape_prompt(recipe, source='paper image', with_context=context is not None)
     response = query_images(prompt, image_paths, config=config, context=context, max_output_tokens=10000)
     return _extract_json_objects(response)
 
