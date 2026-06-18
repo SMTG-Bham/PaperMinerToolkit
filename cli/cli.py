@@ -18,8 +18,9 @@ def paper_search(query: str, path: str):
 @click.command()
 @click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
 @click.argument('path', default='external_papers.csv', type=click.Path())
-def import_pdf_folder(dir: str, path: str):
-    import_pdfs(dir, path)
+@click.option('--no-crossref', is_flag=True, default=False, help='Only scrape DOI from PDFs; skip Crossref metadata lookup.')
+def import_pdf_folder(dir: str, path: str, no_crossref: bool):
+    import_pdfs(dir, path, use_crossref=not no_crossref)
 
 
 @click.command()

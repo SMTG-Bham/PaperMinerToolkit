@@ -24,6 +24,14 @@ Search:
 
 `ps_search "Li2NH AIMD solid electrolyte" papers.csv`
 
+Import externally downloaded PDFs. This scans each PDF for a DOI and uses Crossref to fill metadata when possible:
+
+`ps_import_pdfs papers external_papers.csv`
+
+Skip Crossref lookup for offline runs while still trying to scrape the DOI from the PDF text:
+
+`ps_import_pdfs papers external_papers.csv --no-crossref`
+
 Download Elsevier content:
 
 `ps_elsevier papers.csv papers --format text`
