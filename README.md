@@ -1,5 +1,9 @@
 # PaperScraper
 
+<p align="center">
+  <img src="assets/Paper_Scraper.svg" alt="PaperScraper logo" width="220">
+</p>
+
 PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts structured materials data from papers with configurable text and vision models.
 
 ## Model Profiles
