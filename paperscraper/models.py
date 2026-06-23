@@ -1,3 +1,10 @@
+"""Model configuration and provider clients for text and vision requests.
+
+This module hides provider differences behind a small client interface used by
+the extraction code. It supports OpenAI Responses, Anthropic Messages, and
+OpenAI-compatible local chat servers.
+"""
+
 from dataclasses import dataclass, field
 from typing import Any
 import base64
@@ -10,11 +17,14 @@ from paperscraper.settings import DEFAULT_MODEL, get_model_profile, load_setting
 
 
 class ModelCapabilityError(ValueError):
+    """Raised when a configured model is asked to handle an unsupported input type."""
     pass
 
 
 @dataclass
 class ModelConfig:
+    """Configuration for one text or vision model profile."""
+
     provider: str = 'openai'
     name: str = DEFAULT_MODEL
     base_url: str | None = None
@@ -25,6 +35,7 @@ class ModelConfig:
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides):
+        """Build a model config from a named settings profile plus overrides."""
         configured = get_model_profile(profile)
         capabilities = overrides.get('capabilities', configured.get('capabilities', ['text']))
         if isinstance(capabilities, str):
@@ -44,12 +55,15 @@ class ModelConfig:
 
     @classmethod
     def from_settings(cls, **overrides):
+        """Backward-compatible constructor that delegates to ``from_profile``."""
         return cls.from_profile(overrides.pop('profile', 'text'), **overrides)
 
     def generation_args(self):
+        """Return provider generation parameters shared across request types."""
         return {'temperature': self.temperature, 'top_p': self.top_p}
 
     def require(self, capability: str):
+        """Raise when this config lacks the requested model capability."""
         if capability not in self.capabilities:
             caps = ', '.join(sorted(self.capabilities)) or 'none'
             raise ModelCapabilityError(
@@ -58,6 +72,7 @@ class ModelConfig:
 
 
 def image_to_data_url(path: str):
+    """Encode a local image as a data URL suitable for model API payloads."""
     mime_type = mimetypes.guess_type(path)[0] or 'image/png'
     with open(path, 'rb') as image_file:
         encoded = base64.b64encode(image_file.read()).decode('ascii')
@@ -65,18 +80,26 @@ def image_to_data_url(path: str):
 
 
 class BaseModelClient:
+    """Abstract interface implemented by concrete model provider clients."""
+
     def __init__(self, config: ModelConfig):
+        """Store the model configuration used for provider requests."""
         self.config = config
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text-only request and return the model text response."""
         raise NotImplementedError
 
     def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        """Send a vision request with local images and return the text response."""
         raise NotImplementedError
 
 
 class OpenAIResponsesClient(BaseModelClient):
+    """Client for OpenAI's Responses API."""
+
     def __init__(self, config: ModelConfig):
+        """Create an OpenAI SDK client using the supplied model config."""
         super().__init__(config)
         kwargs = {}
         if config.api_key:
@@ -86,6 +109,7 @@ class OpenAIResponsesClient(BaseModelClient):
         self.client = openai.OpenAI(**kwargs)
 
     def _response_text(self, response):
+        """Extract text from an OpenAI Responses API response object."""
         if getattr(response, 'output_text', None):
             return response.output_text
         for output in getattr(response, 'output', []):
@@ -96,6 +120,7 @@ class OpenAIResponsesClient(BaseModelClient):
         raise RuntimeError('Model response did not contain text output.')
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text prompt through OpenAI Responses."""
         self.config.require('text')
         try:
             response = self.client.responses.create(
@@ -109,6 +134,7 @@ class OpenAIResponsesClient(BaseModelClient):
         return self._response_text(response)
 
     def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        """Send image inputs through OpenAI Responses."""
         self.config.require('vision')
         content = [{'type': 'input_text', 'text': prompt}]
         if context:
@@ -128,7 +154,10 @@ class OpenAIResponsesClient(BaseModelClient):
 
 
 class AnthropicMessagesClient(BaseModelClient):
+    """Client for Anthropic's Messages API."""
+
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text prompt through Anthropic Messages."""
         self.config.require('text')
         if not self.config.api_key:
             raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
@@ -145,6 +174,7 @@ class AnthropicMessagesClient(BaseModelClient):
         return self._request(system, anthropic_messages, max_output_tokens)
 
     def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        """Send image inputs through Anthropic Messages."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
         if context:
@@ -160,6 +190,7 @@ class AnthropicMessagesClient(BaseModelClient):
         return self._request('', [{'role': 'user', 'content': content}], max_output_tokens)
 
     def _request(self, system, anthropic_messages, max_output_tokens):
+        """Post a prepared Anthropic Messages payload and return joined text."""
         if not self.config.api_key:
             raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
         payload = {
@@ -187,7 +218,10 @@ class AnthropicMessagesClient(BaseModelClient):
 
 
 class OpenAICompatibleChatClient(BaseModelClient):
+    """Client for local or third-party OpenAI-compatible chat servers."""
+
     def __init__(self, config: ModelConfig):
+        """Create an OpenAI-compatible SDK client from config values."""
         super().__init__(config)
         kwargs = {'api_key': config.api_key or 'not-needed'}
         if config.base_url:
@@ -195,10 +229,12 @@ class OpenAICompatibleChatClient(BaseModelClient):
         self.client = openai.OpenAI(**kwargs)
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text chat completion request."""
         self.config.require('text')
         return self._chat(messages, max_output_tokens)
 
     def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+        """Send image inputs as OpenAI-compatible chat content."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
         if context:
@@ -208,6 +244,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
         return self._chat([{'role': 'user', 'content': content}], max_output_tokens)
 
     def _chat(self, messages, max_output_tokens):
+        """Call the chat completions endpoint and return the first message text."""
         try:
             response = self.client.chat.completions.create(
                 model=self.config.name,
@@ -221,6 +258,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
 
 
 def get_model_client(config: ModelConfig | None = None):
+    """Return the concrete provider client for a model config."""
     config = config or ModelConfig.from_profile('text')
     provider = config.provider.lower().replace('_', '-')
     if provider == 'openai':
@@ -235,8 +273,10 @@ def get_model_client(config: ModelConfig | None = None):
 
 
 def query_text(messages: list[dict[str, Any]], config: ModelConfig | None = None, max_output_tokens: int = 10000) -> str:
+    """Send a text request through the configured model provider."""
     return get_model_client(config).query(messages, max_output_tokens=max_output_tokens)
 
 
 def query_images(prompt: str, image_paths: list[str], config: ModelConfig | None = None, context: str | None = None, max_output_tokens: int = 10000) -> str:
+    """Send an image request through the configured vision model provider."""
     return get_model_client(config).query_with_images(prompt, image_paths, context=context, max_output_tokens=max_output_tokens)

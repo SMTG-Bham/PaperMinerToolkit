@@ -1,3 +1,10 @@
+"""Run text and image scraping stages over downloaded papers.
+
+This module coordinates document lookup, text chunking, PDF image extraction,
+model calls, text/image reconciliation, status updates, and optional cleanup for
+the main ``ps_scrape`` command.
+"""
+
 from paperscraper.documents import extract_pdf_images, pdf_file_for_row, read_document_text, read_pdf_text, text_file_for_row
 from paperscraper.extract import combine_material_records, scrape_images as analyze_images, scrape_text as analyze_text, token_length
 from paperscraper.models import ModelConfig
@@ -15,6 +22,7 @@ IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
 
 
 def _text_chunks(text: str, model_name: str):
+    """Split long text into chunks sized for the configured model context."""
     coeff = token_length(text, model_name) / 120000
     if coeff <= 1:
         return [text]
@@ -30,6 +38,7 @@ def _text_chunks(text: str, model_name: str):
 
 
 def _append_materials(materials, row, source, source_path):
+    """Attach paper metadata and source provenance to extracted material rows."""
     output = []
     for material in materials:
         material['Paper id'] = row['paper_id']
@@ -42,6 +51,7 @@ def _append_materials(materials, row, source, source_path):
 
 
 def _write_materials(materials, first_material, output_path):
+    """Append extracted material rows to the scrape output CSV."""
     if not materials:
         return first_material, 0
     if first_material or not os.path.isfile(output_path):
@@ -55,16 +65,19 @@ def _write_materials(materials, first_material, output_path):
 
 
 def _delete_file(path):
+    """Delete a file path if it exists."""
     if path and os.path.isfile(path):
         os.remove(path)
 
 
 def _safe_path_part(value):
+    """Convert an arbitrary value into a safe path fragment."""
     safe = re.sub(r'[^A-Za-z0-9._-]+', '_', str(value or '').strip())
     return safe.strip('._') or 'paper'
 
 
 def _image_key_for_row(row, pdf_path):
+    """Choose a stable image-output key for a paper row."""
     identifier = str(row.get('paper_id') or '')
     if identifier.startswith('doi:') and pdf_path:
         return _safe_path_part(os.path.splitext(os.path.basename(pdf_path))[0])
@@ -72,6 +85,7 @@ def _image_key_for_row(row, pdf_path):
 
 
 def _image_batches(image_paths, batch_size):
+    """Group image paths into batches for vision model requests."""
     batch_size = str(batch_size).strip().lower()
     if batch_size == 'all':
         return [image_paths]
@@ -105,6 +119,7 @@ def scrape_papers(
     output_path: str = 'temp_scraped_materials.csv',
     force: bool = False,
 ):
+    """Scrape downloaded papers with text, images, or both and write material rows."""
     mode = mode.lower()
     image_context = image_context.lower()
     image_extraction = image_extraction.lower()

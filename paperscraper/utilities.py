@@ -1,9 +1,16 @@
+"""Small maintenance utilities for papers CSV files.
+
+These helpers back CLI commands for resetting pipeline status, printing a
+progress summary, sorting rows, and shuffling paper order.
+"""
+
 import pandas as pd
 
 from paperscraper.pipeline import PIPELINE_COLUMNS, ensure_pipeline_columns, write_papers
 
 
 def reset(papers_path: str = 'papers.csv'):
+    """Reset all pipeline columns in a papers CSV to their initial statuses."""
     papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
     for column, default in PIPELINE_COLUMNS.items():
         papers_df[column] = default
@@ -12,6 +19,7 @@ def reset(papers_path: str = 'papers.csv'):
 
 
 def status(papers_path: str = 'papers.csv'):
+    """Print a compact progress summary for a papers CSV."""
     papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
     print('\nPaperScraper Progress Summary')
     print('---------------------------')
@@ -39,6 +47,7 @@ def status(papers_path: str = 'papers.csv'):
 
 
 def sort(path: str = 'papers.csv', field: str = 'metadata_status', ascending: bool = True):
+    """Sort a papers CSV by one column and write it back in place."""
     papers_df = ensure_pipeline_columns(pd.read_csv(path, index_col=0))
     papers_df.sort_values(by=field, ascending=ascending, inplace=True)
     papers_df.reset_index(drop=True, inplace=True)
@@ -46,6 +55,7 @@ def sort(path: str = 'papers.csv', field: str = 'metadata_status', ascending: bo
 
 
 def shuffle(path: str = 'papers.csv'):
+    """Randomly shuffle paper rows and write the CSV back in place."""
     papers_df = ensure_pipeline_columns(pd.read_csv(path, index_col=0))
     papers_df = papers_df.sample(frac=1).reset_index(drop=True)
     write_papers(papers_df, path)

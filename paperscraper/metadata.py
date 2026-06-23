@@ -1,3 +1,9 @@
+"""Extract and enrich paper metadata from DOI text and Crossref.
+
+The helpers here read DOI values from raw text/PDFs, normalize them, and use
+Crossref to populate the public paper metadata fields used in ``papers.csv``.
+"""
+
 import re
 from urllib.parse import quote
 
@@ -11,11 +17,13 @@ TRAILING_PUNCTUATION = '.),;:]}'
 
 
 def clean_doi(value: str):
+    """Trim common trailing punctuation from a DOI string."""
     doi = value.strip().strip(TRAILING_PUNCTUATION)
     return doi.rstrip('.')
 
 
 def extract_doi_from_text(text: str):
+    """Find and clean the first DOI-like value in a block of text."""
     normalized = re.sub(r'\s+', ' ', text or '')
     match = DOI_PATTERN.search(normalized)
     if not match:
@@ -24,10 +32,12 @@ def extract_doi_from_text(text: str):
 
 
 def extract_doi_from_pdf(pdf_path: str):
+    """Extract the first DOI found in text read from a PDF file."""
     return extract_doi_from_text(read_pdf_text(pdf_path))
 
 
 def _date_from_parts(parts):
+    """Format Crossref date-parts arrays as ISO-like date strings."""
     if not parts:
         return ''
     date = parts[0]
@@ -41,6 +51,7 @@ def _date_from_parts(parts):
 
 
 def _published_date(message):
+    """Pick the best available publication date from a Crossref message."""
     for key in ['published-print', 'published-online', 'published', 'issued', 'created']:
         date = _date_from_parts(message.get(key, {}).get('date-parts'))
         if date:
@@ -49,6 +60,7 @@ def _published_date(message):
 
 
 def get_crossref_metadata(doi: str, timeout: int = 30):
+    """Fetch normalized paper metadata for a DOI from Crossref."""
     url = f'https://api.crossref.org/works/{quote(doi, safe="")}'
     headers = {'User-Agent': 'PaperScraper/0.0.1 (https://github.com/SMTG-Bham/PaperScraper)'}
     response = requests.get(url, headers=headers, timeout=timeout)
@@ -65,6 +77,7 @@ def get_crossref_metadata(doi: str, timeout: int = 30):
 
 
 def metadata_from_pdf(pdf_path: str, use_crossref: bool = True):
+    """Extract DOI metadata from a PDF and optionally enrich it with Crossref."""
     try:
         doi = extract_doi_from_pdf(pdf_path)
     except Exception as e:

@@ -1,3 +1,10 @@
+"""Define the papers CSV schema and shared helpers for pipeline state.
+
+This module keeps paper metadata columns small and user-facing, adds missing
+pipeline status columns, reads/writes normalized CSVs, and merges duplicate
+paper rows from multiple search or import sources.
+"""
+
 import os
 import re
 
@@ -36,10 +43,12 @@ PIPELINE_COLUMNS = {
 
 
 def _has_value(value) -> bool:
+    """Return whether a DataFrame cell contains a meaningful non-empty value."""
     return not pd.isna(value) and str(value).strip() != ''
 
 
 def _clean_doi(value):
+    """Normalize DOI-like values for reliable duplicate matching."""
     if not _has_value(value):
         return ''
     doi = str(value).strip()
@@ -51,12 +60,14 @@ def _clean_doi(value):
 
 
 def _title_key(value):
+    """Create a case-insensitive comparable key from a paper title."""
     if not _has_value(value):
         return ''
     return re.sub(r'\W+', ' ', str(value).lower()).strip()
 
 
 def _year(value):
+    """Extract a four-digit year from a date-like value."""
     if not _has_value(value):
         return ''
     match = re.search(r'\d{4}', str(value))
@@ -64,6 +75,7 @@ def _year(value):
 
 
 def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` with all pipeline status/path/count columns present."""
     df = df.copy()
     for column, default in PIPELINE_COLUMNS.items():
         if column not in df.columns:
@@ -90,6 +102,7 @@ def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_paper_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` with only public paper columns plus pipeline columns."""
     df = ensure_pipeline_columns(df)
     for column in PAPER_COLUMNS:
         if column not in df.columns:
@@ -99,6 +112,7 @@ def normalize_paper_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _merge_sources(current, incoming):
+    """Combine semicolon-separated source names while preserving first-seen order."""
     values = []
     for value in [current, incoming]:
         if not _has_value(value):
@@ -108,6 +122,7 @@ def _merge_sources(current, incoming):
 
 
 def _merge_row(target: pd.DataFrame, index, row: pd.Series):
+    """Merge non-empty values from ``row`` into an existing paper row."""
     for column, value in row.items():
         if column not in target.columns:
             target[column] = ''
@@ -128,6 +143,7 @@ def _merge_row(target: pd.DataFrame, index, row: pd.Series):
 
 
 def _matching_existing_index(papers_df: pd.DataFrame, row: pd.Series):
+    """Find the existing row that matches ``row`` by DOI, IDs, or title/year."""
     doi = _clean_doi(row.get('doi'))
     if doi and 'doi' in papers_df.columns:
         normalized = papers_df['doi'].map(_clean_doi)
@@ -155,6 +171,11 @@ def _matching_existing_index(papers_df: pd.DataFrame, row: pd.Series):
 
 
 def merge_paper_rows(existing: pd.DataFrame, incoming: pd.DataFrame):
+    """Merge incoming paper records into an existing papers table.
+
+    Returns the normalized merged DataFrame plus counts of added and updated
+    rows.
+    """
     papers = normalize_paper_columns(existing if existing is not None else pd.DataFrame())
     incoming = normalize_paper_columns(incoming if incoming is not None else pd.DataFrame())
     added = 0
@@ -171,14 +192,17 @@ def merge_paper_rows(existing: pd.DataFrame, incoming: pd.DataFrame):
 
 
 def read_papers(path: str) -> pd.DataFrame:
+    """Read a papers CSV and normalize it to the current schema."""
     return normalize_paper_columns(pd.read_csv(path, index_col=0))
 
 
 def write_papers(df: pd.DataFrame, path: str):
+    """Write a papers DataFrame using the current normalized CSV schema."""
     normalize_paper_columns(df).to_csv(path)
 
 
 def set_status(df: pd.DataFrame, index, column: str, status: str, error: str | None = None):
+    """Update a pipeline status column and optionally record or clear an error."""
     if column not in PIPELINE_COLUMNS:
         raise KeyError(f'Unknown pipeline status column: {column}')
     df.loc[index, column] = status
@@ -189,6 +213,7 @@ def set_status(df: pd.DataFrame, index, column: str, status: str, error: str | N
 
 
 def existing_path(value) -> str | None:
+    """Return ``value`` when it points to an existing file, otherwise ``None``."""
     if isinstance(value, str) and value and os.path.isfile(value):
         return value
     return None

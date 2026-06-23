@@ -1,3 +1,10 @@
+"""Load and validate extraction recipes.
+
+Recipes describe the material type, target fields, examples, aliases, and unit
+expectations used by scraping and storage. This module validates recipe shape
+and maps extracted columns back to canonical output columns.
+"""
+
 import json
 from pathlib import Path
 
@@ -8,6 +15,7 @@ METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path
 
 
 def _validate_recipe(recipe, source: str):
+    """Validate the minimum required structure for a recipe dictionary."""
     if not isinstance(recipe, dict):
         raise ValueError(f'Recipe in {source} must be a JSON object.')
     missing = [key for key in ['material type', 'search fields'] if key not in recipe]
@@ -20,6 +28,7 @@ def _validate_recipe(recipe, source: str):
 
 
 def _load_recipe_file(path: Path):
+    """Load a recipe from a standalone JSON file."""
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -37,6 +46,7 @@ def _load_recipe_file(path: Path):
 
 
 def load_recipe(recipe_name: str):
+    """Load a bundled recipe by name or a recipe JSON file by path."""
     recipe_path = Path(recipe_name).expanduser()
     if recipe_path.is_file():
         return _load_recipe_file(recipe_path)
@@ -56,6 +66,7 @@ def load_recipe(recipe_name: str):
 
 
 def field_columns(recipe, existing_columns=None):
+    """Return output columns for a recipe, including metadata fields."""
     columns = list(existing_columns or [])
     if columns:
         return columns
@@ -69,6 +80,7 @@ def field_columns(recipe, existing_columns=None):
 
 
 def aliases_for(recipe):
+    """Build lower-case aliases for recipe fields and metadata fields."""
     aliases = {}
     for field, config in recipe['search fields'].items():
         names = {field.lower()}
@@ -84,6 +96,7 @@ def aliases_for(recipe):
 
 
 def canonical_match(series_name, columns, recipe):
+    """Match an incoming column name to the canonical recipe/output column."""
     raw_name = series_name.strip()
     normalized = raw_name.lower()
     aliases = aliases_for(recipe)

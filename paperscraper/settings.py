@@ -1,3 +1,10 @@
+"""Load, save, and update PaperScraper API and model configuration.
+
+Settings are read from the user config file and environment variables. This
+module also provides interactive command helpers for storing API keys and model
+profiles used by search, download, and extraction workflows.
+"""
+
 from copy import deepcopy
 from elsapy.elsclient import ElsClient
 import openai
@@ -30,12 +37,14 @@ DEFAULT_SETTINGS = {
 
 
 def _float_setting(value, default):
+    """Convert an optional numeric setting to ``float`` with a default fallback."""
     if value is None or value == '':
         return default
     return float(value)
 
 
 def _capabilities(value, default=None):
+    """Normalize model capability settings into a list of capability names."""
     if value is None or value == '':
         return default or ['text']
     if isinstance(value, str):
@@ -44,6 +53,7 @@ def _capabilities(value, default=None):
 
 
 def _merge_profile(default, configured):
+    """Overlay a configured model profile on top of default profile values."""
     profile = default.copy()
     profile.update(configured or {})
     profile['capabilities'] = _capabilities(profile.get('capabilities'), default.get('capabilities'))
@@ -53,6 +63,7 @@ def _merge_profile(default, configured):
 
 
 def _env_profile(prefix):
+    """Collect model profile overrides from environment variables with ``prefix``."""
     env = {
         'provider': os.environ.get(f'{prefix}PROVIDER'),
         'model': os.environ.get(f'{prefix}NAME'),
@@ -66,6 +77,7 @@ def _env_profile(prefix):
 
 
 def load_settings():
+    """Load settings from disk and environment variables."""
     try:
         with open(SETTINGS_FILE, mode='r', encoding='utf-8') as json_file:
             settings = json.load(json_file)
@@ -114,12 +126,14 @@ def load_settings():
 
 
 def save_settings(settings):
+    """Persist settings to the PaperScraper user config file."""
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
     with open(SETTINGS_FILE, mode='w', encoding='utf-8') as json_file:
         json.dump(settings, json_file, indent=2)
 
 
 def get_model_profile(profile: str):
+    """Return a named model profile after applying defaults and environment overrides."""
     settings = load_settings()
     try:
         return settings['model_profiles'][profile]
@@ -128,6 +142,7 @@ def get_model_profile(profile: str):
 
 
 def infer_model_capabilities(profile: str, model: str):
+    """Infer whether a model profile should support text only or text plus vision."""
     model_lower = (model or '').lower()
     vision_markers = ['vl', 'vision', 'omni', 'llava', 'pixtral', 'molmo', 'internvl', 'qwen2.5-vl', 'qwen2-vl', 'qwen3-vl']
     if profile == 'vision' or any(marker in model_lower for marker in vision_markers):
@@ -136,6 +151,7 @@ def infer_model_capabilities(profile: str, model: str):
 
 
 def set_model_profile(profile: str, provider: str, model: str, base_url=None, api_key=None, capabilities=None, temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P):
+    """Store a model profile for later text or vision extraction runs."""
     settings = load_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
     settings.setdefault('model_profiles', {})[profile] = {
@@ -151,6 +167,7 @@ def set_model_profile(profile: str, provider: str, model: str, base_url=None, ap
 
 
 def check_openai_api_key(api_key):
+    """Return whether an OpenAI API key can authenticate against the models API."""
     client = openai.OpenAI(api_key=api_key)
     try:
         client.models.list()
@@ -161,6 +178,7 @@ def check_openai_api_key(api_key):
 
 
 def update_openai_key(settings=True):
+    """Prompt for and save an OpenAI API key after validating it."""
     if settings:
         settings = load_settings()
     api_key = input('Enter OpenAI API key: ')
@@ -172,6 +190,7 @@ def update_openai_key(settings=True):
 
 
 def check_elsevier_api_key(api_key):
+    """Return whether an Elsevier API key can run a minimal Scopus search."""
     client = ElsClient(api_key)
     try:
         url = 'https://api.elsevier.com/content/search/scopus?query=Test&count=1'
@@ -183,6 +202,7 @@ def check_elsevier_api_key(api_key):
 
 
 def update_elsevier_key(settings=True):
+    """Prompt for, validate, and save an Elsevier API key."""
     if settings:
         settings = load_settings()
     api_key = input('Enter Elsevier API key: ')
@@ -194,6 +214,7 @@ def update_elsevier_key(settings=True):
 
 
 def update_core_key(settings=True):
+    """Prompt for and save a CORE API key."""
     if settings:
         settings = load_settings()
     api_key = input('Enter CORE API key: ')
@@ -202,6 +223,7 @@ def update_core_key(settings=True):
 
 
 def update_unpaywall_email(settings=True):
+    """Prompt for and save the email address sent to Unpaywall."""
     if settings:
         settings = load_settings()
     email = input('Enter Unpaywall email: ').strip()
@@ -212,6 +234,7 @@ def update_unpaywall_email(settings=True):
 
 
 def update_model_settings(settings=True):
+    """Interactively update one text or vision model profile."""
     if settings:
         settings = load_settings()
     profile = input('Enter model profile [text/vision]: ').strip() or 'text'
