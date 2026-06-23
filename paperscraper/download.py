@@ -11,6 +11,7 @@ import re
 from tqdm import tqdm
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
+DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier'}
 
 
 def _elsevier_client():
@@ -130,9 +131,9 @@ def _safe_filename(paper):
     return 'paper'
 
 
-def _unpaywall_email():
-    settings = load_settings()
-    return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL') or 'paperscraper@example.com'
+def _unpaywall_email(settings=None):
+    settings = settings or load_settings()
+    return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL')
 
 
 def _download_url_to_pdf(url, filepath, headers=None):
@@ -158,7 +159,10 @@ def _download_unpaywall_pdf(paper, filepath):
         return False, 'missing DOI'
     api_url = f'https://api.unpaywall.org/v2/{quote(str(doi).strip(), safe="")}'
     try:
-        response = requests.get(api_url, params={'email': _unpaywall_email()}, timeout=60)
+        email = _unpaywall_email()
+        if not email:
+            return False, 'Unpaywall email is not configured. Run ps_unpaywall_email first.'
+        response = requests.get(api_url, params={'email': email}, timeout=60)
         if response.status_code >= 400:
             return False, f'{response.status_code} from Unpaywall'
         metadata = response.json()
@@ -203,17 +207,39 @@ def _download_core_pdf(paper, filepath):
     return False, last_error
 
 
-def _download_pdf_from_sources(paper, filepath):
+def _configured_sources(sources):
+    if not sources or 'all' in sources:
+        settings = load_settings()
+        enabled = []
+        if _unpaywall_email(settings):
+            enabled.append('unpaywall')
+        if settings.get('core_api_key') or os.environ.get('CORE_API_KEY'):
+            enabled.append('core')
+        if settings.get('elsevier_api_key'):
+            enabled.append('elsevier')
+        return enabled
+    invalid = set(sources) - DOWNLOAD_SOURCES
+    if invalid:
+        raise ValueError(f'download source must be one of: all, {", ".join(sorted(DOWNLOAD_SOURCES))}')
+    return list(dict.fromkeys(sources))
+
+
+def _elsevier_configured():
+    return bool(load_settings().get('elsevier_api_key'))
+
+
+def _download_pdf_from_sources(paper, filepath, sources):
     existing_source = paper.get('pdf_source')
     if os.path.isfile(filepath):
         return True, existing_source if pd.notna(existing_source) and str(existing_source).strip() else 'existing', ''
-    attempts = [
-        ('unpaywall', _download_unpaywall_pdf),
-        ('core', _download_core_pdf),
-        ('elsevier', lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed')),
-    ]
+    downloader_by_source = {
+        'unpaywall': _download_unpaywall_pdf,
+        'core': _download_core_pdf,
+        'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
+    }
     errors = []
-    for source, downloader in attempts:
+    for source in sources:
+        downloader = downloader_by_source[source]
         try:
             ok, detail = downloader(paper, filepath)
         except Exception as e:
@@ -229,16 +255,22 @@ def _should_try_elsevier_text(paper):
     return isinstance(link, str) and 'full-text' in link
 
 
-def elsevier_downloader(papers_path='papers.csv', download_dir='papers', download_format='text'):
+def download_papers(papers_path='papers.csv', download_dir='papers', download_format='text', sources=None):
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
+    sources = _configured_sources(sources or ['all'])
+    elsevier_text_available = _elsevier_configured()
+    if download_format == 'text' and not elsevier_text_available:
+        raise ValueError('Elsevier text download requires an Elsevier API key. Run ps_elsevier_key first.')
+    if download_format in {'pdf', 'both'} and not sources:
+        raise ValueError('No PDF download sources are configured. Set an Unpaywall email, CORE API key, or Elsevier API key.')
     os.makedirs(download_dir, exist_ok=True)
     papers = read_papers(papers_path)
     with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
         for index, paper in papers.iterrows():
             filename = _safe_filename(paper)
-            text_attempt_needed = download_format in {'text', 'both'} and _should_try_elsevier_text(paper)
+            text_attempt_needed = download_format in {'text', 'both'} and elsevier_text_available and _should_try_elsevier_text(paper)
             pdf_attempt_needed = download_format in {'pdf', 'both'}
             pdf_succeeded_from_oa = False
 
@@ -257,7 +289,7 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers', downloa
             if pdf_attempt_needed:
                 pdf_filepath = os.path.join(download_dir, f'{filename}.pdf')
                 try:
-                    ok, source_or_error, source_url = _download_pdf_from_sources(paper, pdf_filepath)
+                    ok, source_or_error, source_url = _download_pdf_from_sources(paper, pdf_filepath, sources)
                     if ok:
                         papers.loc[index, 'pdf_path'] = pdf_filepath
                         papers.loc[index, 'pdf_source'] = source_or_error
@@ -272,7 +304,7 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers', downloa
                 except Exception as e:
                     set_status(papers, index, 'pdf_download_status', 'failed', str(e))
 
-            if pdf_succeeded_from_oa and not text_attempt_needed and _should_try_elsevier_text(paper):
+            if pdf_succeeded_from_oa and not text_attempt_needed and elsevier_text_available and _should_try_elsevier_text(paper):
                 text_filepath = os.path.join(download_dir, f'{filename}.txt')
                 try:
                     if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):

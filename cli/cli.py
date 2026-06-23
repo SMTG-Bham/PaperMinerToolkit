@@ -1,6 +1,6 @@
 import click
 from paperscraper.search import search_for_papers
-from paperscraper.download import elsevier_downloader
+from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
@@ -28,9 +28,10 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 @click.argument('dir', default='papers', type=click.Path())
-@click.option('--format', 'download_format', type=click.Choice(['text', 'pdf', 'both']), default='text', show_default=True)
-def elsevier_download(path: str, dir: str, download_format: str):
-    elsevier_downloader(path, dir, download_format=download_format)
+@click.option('--format', 'download_format', type=click.Choice(['text', 'pdf', 'both']), default='both', show_default=True)
+@click.option('--source', 'sources', multiple=True, type=click.Choice(['all', 'unpaywall', 'core', 'elsevier']), default=('all',), show_default=True, help='PDF source to use. Repeat to choose more than one.')
+def download(path: str, dir: str, download_format: str, sources: tuple[str]):
+    download_papers(path, dir, download_format=download_format, sources=list(sources))
 
 
 @click.command()

@@ -1,6 +1,6 @@
 """End-to-end two-paper PaperScraper example for BlueBEAR.
 
-This script searches for two papers, downloads available Elsevier content,
+This script searches for two papers, downloads available paper content,
 scrapes structured data with Qwen on a local model endpoint, and stores
 the results.
 """
@@ -10,11 +10,11 @@ import os
 
 import pandas as pd
 
-from paperscraper.download import elsevier_downloader
+from paperscraper.download import download_papers
 from paperscraper.models import ModelConfig
-from paperscraper.pipeline import ensure_pipeline_columns
+from paperscraper.pipeline import write_papers
 from paperscraper.scrape import scrape_papers
-from paperscraper.search import document_search
+from paperscraper.search import _elsevier_rows, document_search
 from paperscraper.store import store_results
 
 
@@ -54,15 +54,15 @@ def search_two_papers(query: str, papers_path: str):
             "Try a broader --query or verify Elsevier API access/entitlements."
         )
 
-    papers = ensure_pipeline_columns(pd.DataFrame(selected).reset_index(drop=True))
+    papers = _elsevier_rows(pd.DataFrame(selected).reset_index(drop=True))
     papers["metadata_status"] = "retrieved"
-    papers.to_csv(papers_path)
+    write_papers(papers, papers_path)
     print(f"Saved {len(papers)} papers to {papers_path}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--query", default="Li2NH AIMD solid electrolyte")
+    parser.add_argument("--query", default="Lithium solid electrolyte")
     parser.add_argument("--papers-path", default="examples/bluebear_papers.csv")
     parser.add_argument("--papers-dir", default="examples/bluebear_papers")
     parser.add_argument("--recipe", default="sse")
@@ -83,7 +83,7 @@ def main():
         capabilities=['text'],
     )
     search_two_papers(args.query, args.papers_path)
-    elsevier_downloader(args.papers_path, args.papers_dir, download_format=args.download_format)
+    download_papers(args.papers_path, args.papers_dir, download_format=args.download_format)
     scrape_papers(
         args.papers_dir,
         args.papers_path,

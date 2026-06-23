@@ -31,7 +31,7 @@ flowchart TD
     A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.csv"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] -->|"target existing CSV"| B
     C -->|"target standalone CSV"| D[/"external_papers.csv"/]
-    B --> E["Download text/PDF<br/><b><code>ps_elsevier</code></b>"]
+    B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
     E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
     D --> F
     F --> G[/"temp_scraped_materials.csv"/]
@@ -52,11 +52,11 @@ Configure model profiles before scraping. The text profile is used for text extr
 
 Search Elsevier/Scopus and CORE and write streamlined metadata to a papers CSV:
 
-`ps_search "Li2NH AIMD solid electrolyte" papers.csv`
+`ps_search "Lithium solid electrolyte" papers.csv`
 
 Choose one source when needed:
 
-`ps_search "Li2NH AIMD solid electrolyte" papers.csv --source core --count 100`
+`ps_search "Lithium solid electrolyte" papers.csv --source core --count 100`
 
 CORE can use `CORE_API_KEY` from the environment or a saved key:
 
@@ -78,13 +78,13 @@ For offline runs, skip Crossref lookup while still trying to scrape the DOI from
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.
 
-`ps_elsevier papers.csv papers --format text`
+`ps_download papers.csv papers --format text`
 
-`ps_elsevier papers.csv papers --format pdf`
+`ps_download papers.csv papers --format pdf`
 
-`ps_elsevier papers.csv papers --format both`
+`ps_download papers.csv papers --format both`
 
-PDF downloads try Unpaywall first, then CORE, then Elsevier. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text. Set `UNPAYWALL_EMAIL` or run `ps_unpaywall_email` to identify Unpaywall API requests.
+PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.csv papers --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
 
 ### Choose A Recipe
 
