@@ -28,38 +28,43 @@ def document_search(query: str,
     Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
     """
     client = _elsevier_client()
+    max_results = max(int(count), 1)
+    page_size = min(max_results, 200)
     base_url = 'https://api.elsevier.com/content/search/'
     index = index.lower()
     url = base_url + index
     query = f'{search_fields}({query})'
     url += f'?query={url_encode(query)}'
-    count_str = str(count)
-    url += f'&count={count_str}'
+    url += f'&count={page_size}'
     if index == 'scopus':
         url += '&cursor=*'
     api_response = client.exec_request(url)
     tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
-    print('Document search is retrieving', tot_num_res, 'results.')
+    target_results = min(tot_num_res, max_results)
+    print('Document search is retrieving', target_results, 'of', tot_num_res, 'results.')
     if tot_num_res == 0:
         return pd.DataFrame()
     results = api_response['search-results'].get('entry', [])
     if get_all:
-        with tqdm(range(tot_num_res), desc='Getting Results', colour='blue') as pbar:
-            num_res = count
-            pbar.update(count)
+        with tqdm(total=target_results, desc='Getting Results', colour='blue') as pbar:
+            pbar.update(min(len(results), target_results))
             upper_limit_reached = False
-            while (num_res < tot_num_res) and not upper_limit_reached:
+            while (len(results) < target_results) and not upper_limit_reached:
+                next_url = None
                 for e in api_response['search-results']['link']:
                     if e['@ref'] == 'next':
                         next_url = e['@href']
+                if not next_url:
+                    break
                 api_response = client.exec_request(next_url)
-                results += api_response['search-results']['entry']
-                num_res += count
-                if num_res >= 5000 and index != 'scopus':
+                next_results = api_response['search-results'].get('entry', [])
+                remaining = target_results - len(results)
+                results += next_results[:remaining]
+                if len(results) >= 5000 and index != 'scopus':
                     upper_limit_reached = True
-                if num_res > tot_num_res:
-                    count = tot_num_res - num_res + count
-                pbar.update(count)
+                pbar.update(min(len(next_results), remaining))
+    else:
+        results = results[:target_results]
     results_df = recast_df(pd.DataFrame(results))
     return results_df
 
