@@ -95,8 +95,8 @@ def pdf_file_for_row(papers_dir, files, row):
 
 
 def file_for_row_by_identifier(papers_dir, files, row, extension):
-    scopus_id = row['dc:identifier'].split(':')[-1]
-    filenames = [file for file in files if scopus_id in file and file.lower().endswith(extension)]
+    paper_id = row['paper_id'].split(':')[-1]
+    filenames = [file for file in files if paper_id in file and file.lower().endswith(extension)]
     if filenames:
         return os.path.join(papers_dir, filenames[0])
     return None

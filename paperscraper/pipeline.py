@@ -1,6 +1,22 @@
 import os
+import re
 
 import pandas as pd
+
+PAPER_COLUMNS = [
+    'paper_id',
+    'doi',
+    'title',
+    'journal',
+    'publication_date',
+    'authors',
+    'sources',
+    'core_id',
+    'pdf_url',
+    'pdf_source',
+    'text_source',
+    'elsevier_link',
+]
 
 PIPELINE_COLUMNS = {
     'metadata_status': 'pending',
@@ -17,6 +33,34 @@ PIPELINE_COLUMNS = {
     'num_image_materials': 0,
     'last_error': '',
 }
+
+
+def _has_value(value) -> bool:
+    return not pd.isna(value) and str(value).strip() != ''
+
+
+def _clean_doi(value):
+    if not _has_value(value):
+        return ''
+    doi = str(value).strip()
+    if doi.lower().startswith('doi:'):
+        doi = doi[4:]
+    if doi.lower().startswith('https://doi.org/'):
+        doi = doi[16:]
+    return doi.strip().rstrip('.').lower()
+
+
+def _title_key(value):
+    if not _has_value(value):
+        return ''
+    return re.sub(r'\W+', ' ', str(value).lower()).strip()
+
+
+def _year(value):
+    if not _has_value(value):
+        return ''
+    match = re.search(r'\d{4}', str(value))
+    return match.group(0) if match else ''
 
 
 def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,12 +89,93 @@ def ensure_pipeline_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def normalize_paper_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = ensure_pipeline_columns(df)
+    for column in PAPER_COLUMNS:
+        if column not in df.columns:
+            df[column] = ''
+    ordered = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
+    return df[ordered].copy()
+
+
+def _merge_sources(current, incoming):
+    values = []
+    for value in [current, incoming]:
+        if not _has_value(value):
+            continue
+        values.extend(part.strip() for part in str(value).split(';') if part.strip())
+    return ';'.join(dict.fromkeys(values))
+
+
+def _merge_row(target: pd.DataFrame, index, row: pd.Series):
+    for column, value in row.items():
+        if column not in target.columns:
+            target[column] = ''
+        if not _has_value(value):
+            continue
+        current = target.at[index, column]
+        if column == 'sources':
+            target.at[index, column] = _merge_sources(current, value)
+        elif column.endswith('_status'):
+            if not _has_value(current) or current == 'pending':
+                target.at[index, column] = value
+        elif column == 'last_error':
+            if _has_value(value) and not _has_value(current):
+                target.at[index, column] = value
+        elif not _has_value(current):
+            target.at[index, column] = value
+    return target
+
+
+def _matching_existing_index(papers_df: pd.DataFrame, row: pd.Series):
+    doi = _clean_doi(row.get('doi'))
+    if doi and 'doi' in papers_df.columns:
+        normalized = papers_df['doi'].map(_clean_doi)
+        matches = papers_df.index[normalized == doi].tolist()
+        if matches:
+            return matches[0]
+
+    for column in ['paper_id', 'core_id']:
+        value = row.get(column)
+        if _has_value(value) and column in papers_df.columns:
+            matches = papers_df.index[papers_df[column].astype(str) == str(value)].tolist()
+            if matches:
+                return matches[0]
+
+    title = _title_key(row.get('title'))
+    year = _year(row.get('publication_date'))
+    if title and year and {'title', 'publication_date'}.issubset(papers_df.columns):
+        matches = papers_df.index[
+            (papers_df['title'].map(_title_key) == title)
+            & (papers_df['publication_date'].map(_year) == year)
+        ].tolist()
+        if matches:
+            return matches[0]
+    return None
+
+
+def merge_paper_rows(existing: pd.DataFrame, incoming: pd.DataFrame):
+    papers = normalize_paper_columns(existing if existing is not None else pd.DataFrame())
+    incoming = normalize_paper_columns(incoming if incoming is not None else pd.DataFrame())
+    added = 0
+    updated = 0
+    for _, row in incoming.iterrows():
+        match_index = _matching_existing_index(papers, row) if not papers.empty else None
+        if match_index is None:
+            papers = pd.concat([papers, pd.DataFrame([row])], ignore_index=True)
+            added += 1
+        else:
+            papers = _merge_row(papers, match_index, row)
+            updated += 1
+    return normalize_paper_columns(papers), added, updated
+
+
 def read_papers(path: str) -> pd.DataFrame:
-    return ensure_pipeline_columns(pd.read_csv(path, index_col=0))
+    return normalize_paper_columns(pd.read_csv(path, index_col=0))
 
 
 def write_papers(df: pd.DataFrame, path: str):
-    ensure_pipeline_columns(df).to_csv(path)
+    normalize_paper_columns(df).to_csv(path)
 
 
 def set_status(df: pd.DataFrame, index, column: str, status: str, error: str | None = None):

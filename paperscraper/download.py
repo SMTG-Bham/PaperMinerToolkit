@@ -1,12 +1,13 @@
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc
-from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
+from paperscraper.pipeline import read_papers, set_status, write_papers
 from paperscraper.settings import load_settings
 from urllib.parse import quote
 import json
 import os
 import pandas as pd
 import requests
+import re
 from tqdm import tqdm
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
@@ -51,7 +52,7 @@ def elsevier_string_formatter(text: str):
 
 
 def _full_text_uri(paper):
-    link = paper.get('link')
+    link = paper.get('elsevier_link')
     if not isinstance(link, str) or 'full-text' not in link:
         return None
     parts = link.split("'")
@@ -80,12 +81,9 @@ def _download_text(paper, filepath):
 
 def _pdf_urls(paper):
     urls = []
-    doi = paper.get('prism:doi')
+    doi = paper.get('doi')
     if pd.notna(doi) and str(doi).strip():
         urls.append(f'https://api.elsevier.com/content/article/doi/{quote(str(doi), safe="")}')
-    pii = paper.get('pii') or paper.get('prism:pii')
-    if pd.notna(pii) and str(pii).strip():
-        urls.append(f'https://api.elsevier.com/content/article/pii/{quote(str(pii), safe="")}')
     uri = _full_text_uri(paper)
     if uri:
         urls.append(uri)
@@ -117,8 +115,118 @@ def _download_pdf(paper, filepath):
         except requests.RequestException as e:
             last_error = str(e)
     if last_error:
-        print(f'PDF download failed for {paper.get("dc:identifier")}: {last_error}')
+        print(f'PDF download failed for {paper.get("paper_id")}: {last_error}')
     return False
+
+
+def _safe_filename(paper):
+    for column in ['doi', 'core_id', 'paper_id']:
+        value = paper.get(column)
+        if pd.notna(value) and str(value).strip():
+            safe = re.sub(r'[^A-Za-z0-9._-]+', '_', str(value).strip())
+            safe = safe.strip('._')
+            if safe:
+                return safe
+    return 'paper'
+
+
+def _unpaywall_email():
+    settings = load_settings()
+    return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL') or 'paperscraper@example.com'
+
+
+def _download_url_to_pdf(url, filepath, headers=None):
+    if not url:
+        return False, 'missing URL'
+    try:
+        response = requests.get(url, headers=headers or {}, timeout=60, allow_redirects=True)
+        if response.status_code >= 400:
+            return False, f'{response.status_code} from {url}'
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'pdf' not in content_type and not response.content.startswith(b'%PDF'):
+            return False, f'non-PDF response from {url}'
+        with open(filepath, 'wb') as out_file:
+            out_file.write(response.content)
+        return True, ''
+    except requests.RequestException as e:
+        return False, str(e)
+
+
+def _download_unpaywall_pdf(paper, filepath):
+    doi = paper.get('doi')
+    if pd.isna(doi) or not str(doi).strip():
+        return False, 'missing DOI'
+    api_url = f'https://api.unpaywall.org/v2/{quote(str(doi).strip(), safe="")}'
+    try:
+        response = requests.get(api_url, params={'email': _unpaywall_email()}, timeout=60)
+        if response.status_code >= 400:
+            return False, f'{response.status_code} from Unpaywall'
+        metadata = response.json()
+    except requests.RequestException as e:
+        return False, str(e)
+    candidates = []
+    best = metadata.get('best_oa_location') or {}
+    candidates.append(best.get('url_for_pdf'))
+    for location in metadata.get('oa_locations') or []:
+        candidates.append(location.get('url_for_pdf'))
+    for url in dict.fromkeys(url for url in candidates if url):
+        ok, error = _download_url_to_pdf(url, filepath)
+        if ok:
+            return True, url
+        last_error = error
+    return False, locals().get('last_error', 'no Unpaywall PDF URL found')
+
+
+def _core_headers():
+    settings = load_settings()
+    api_key = settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
+    headers = {'User-Agent': 'PaperScraper/0.0.1'}
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+    return headers
+
+
+def _download_core_pdf(paper, filepath):
+    urls = []
+    url = paper.get('pdf_url')
+    if pd.notna(url) and str(url).strip():
+        urls.append(str(url).strip())
+    core_id = paper.get('core_id')
+    if pd.notna(core_id) and str(core_id).strip():
+        urls.append(f'https://api.core.ac.uk/v3/works/{quote(str(core_id).strip(), safe="")}/download')
+    last_error = 'no CORE download URL found'
+    for candidate in dict.fromkeys(urls):
+        ok, error = _download_url_to_pdf(candidate, filepath, headers=_core_headers())
+        if ok:
+            return True, candidate
+        last_error = error
+    return False, last_error
+
+
+def _download_pdf_from_sources(paper, filepath):
+    existing_source = paper.get('pdf_source')
+    if os.path.isfile(filepath):
+        return True, existing_source if pd.notna(existing_source) and str(existing_source).strip() else 'existing', ''
+    attempts = [
+        ('unpaywall', _download_unpaywall_pdf),
+        ('core', _download_core_pdf),
+        ('elsevier', lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed')),
+    ]
+    errors = []
+    for source, downloader in attempts:
+        try:
+            ok, detail = downloader(paper, filepath)
+        except Exception as e:
+            ok, detail = False, str(e)
+        if ok:
+            return True, source, detail
+        errors.append(f'{source}: {detail}')
+    return False, '; '.join(errors), ''
+
+
+def _should_try_elsevier_text(paper):
+    link = paper.get('elsevier_link')
+    return isinstance(link, str) and 'full-text' in link
 
 
 def elsevier_downloader(papers_path='papers.csv', download_dir='papers', download_format='text'):
@@ -126,35 +234,54 @@ def elsevier_downloader(papers_path='papers.csv', download_dir='papers', downloa
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     os.makedirs(download_dir, exist_ok=True)
-    papers = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
-    if 'link' not in papers.columns:
-        raise RuntimeError(f'{papers_path} does not contain a link column. Search returned no downloadable Elsevier results.')
-    elsevier_papers = papers[papers['link'].astype(str).str.contains('full-text', na=False)]
-    if elsevier_papers.empty:
-        raise RuntimeError(f'{papers_path} does not contain any Elsevier full-text links to download.')
-    with tqdm(total=len(elsevier_papers['link']), desc='Downloading Papers', colour='#A020F0') as pbar:
-        for index, paper in elsevier_papers.iterrows():
-            filename = paper['dc:identifier'].split(':')[-1]
-            if download_format in {'text', 'both'}:
+    papers = read_papers(papers_path)
+    with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
+        for index, paper in papers.iterrows():
+            filename = _safe_filename(paper)
+            text_attempt_needed = download_format in {'text', 'both'} and _should_try_elsevier_text(paper)
+            pdf_attempt_needed = download_format in {'pdf', 'both'}
+            pdf_succeeded_from_oa = False
+
+            if text_attempt_needed:
                 text_filepath = os.path.join(download_dir, f'{filename}.txt')
                 try:
                     if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):
                         papers.loc[index, 'text_path'] = text_filepath
+                        papers.loc[index, 'text_source'] = 'elsevier'
                         set_status(papers, index, 'text_download_status', 'succeeded')
                     else:
                         set_status(papers, index, 'text_download_status', 'failed', 'Elsevier text download failed')
                 except Exception as e:
                     set_status(papers, index, 'text_download_status', 'failed', str(e))
-            if download_format in {'pdf', 'both'}:
+
+            if pdf_attempt_needed:
                 pdf_filepath = os.path.join(download_dir, f'{filename}.pdf')
                 try:
-                    if os.path.isfile(pdf_filepath) or _download_pdf(paper, pdf_filepath):
+                    ok, source_or_error, source_url = _download_pdf_from_sources(paper, pdf_filepath)
+                    if ok:
                         papers.loc[index, 'pdf_path'] = pdf_filepath
+                        papers.loc[index, 'pdf_source'] = source_or_error
+                        if source_or_error == 'unpaywall' and source_url:
+                            papers.loc[index, 'pdf_url'] = source_url
+                        if source_or_error == 'core' and source_url:
+                            papers.loc[index, 'pdf_url'] = source_url
                         set_status(papers, index, 'pdf_download_status', 'succeeded')
+                        pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'core'}
                     else:
-                        set_status(papers, index, 'pdf_download_status', 'failed', 'Elsevier PDF download failed')
+                        set_status(papers, index, 'pdf_download_status', 'failed', source_or_error)
                 except Exception as e:
                     set_status(papers, index, 'pdf_download_status', 'failed', str(e))
-            (papers)
+
+            if pdf_succeeded_from_oa and not text_attempt_needed and _should_try_elsevier_text(paper):
+                text_filepath = os.path.join(download_dir, f'{filename}.txt')
+                try:
+                    if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):
+                        papers.loc[index, 'text_path'] = text_filepath
+                        papers.loc[index, 'text_source'] = 'elsevier'
+                        set_status(papers, index, 'text_download_status', 'succeeded')
+                    elif download_format != 'pdf':
+                        set_status(papers, index, 'text_download_status', 'failed', 'Elsevier text download failed')
+                except Exception as e:
+                    set_status(papers, index, 'text_download_status', 'failed', str(e))
             write_papers(papers, papers_path)
             pbar.update(1)

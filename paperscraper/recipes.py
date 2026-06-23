@@ -4,7 +4,7 @@ from pathlib import Path
 
 MODULE_DIR = Path(__file__).resolve().parent
 RECIPES_PATH = MODULE_DIR / 'resources' / 'recipes.json'
-METADATA_FIELDS = ['Scopus id', 'doi', 'Publication date', 'Source', 'Source path']
+METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
 
 
 def _validate_recipe(recipe, source: str):

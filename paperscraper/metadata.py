@@ -55,10 +55,10 @@ def get_crossref_metadata(doi: str, timeout: int = 30):
     response.raise_for_status()
     message = response.json().get('message', {})
     return {
-        'prism:doi': message.get('DOI', doi),
-        'prism:coverDate': _published_date(message),
-        'dc:title': (message.get('title') or [''])[0],
-        'prism:publicationName': (message.get('container-title') or [''])[0],
+        'doi': message.get('DOI', doi),
+        'publication_date': _published_date(message),
+        'title': (message.get('title') or [''])[0],
+        'journal': (message.get('container-title') or [''])[0],
         'crossref_type': message.get('type', ''),
         'crossref_publisher': message.get('publisher', ''),
     }
@@ -71,7 +71,7 @@ def metadata_from_pdf(pdf_path: str, use_crossref: bool = True):
         return {}, 'imported', f'Could not read PDF metadata text: {e}'
     if not doi:
         return {}, 'imported', 'No DOI found in PDF text.'
-    metadata = {'prism:doi': doi}
+    metadata = {'doi': doi}
     if not use_crossref:
         return metadata, 'doi_found', ''
     try:

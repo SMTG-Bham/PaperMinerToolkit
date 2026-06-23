@@ -75,7 +75,7 @@ def load_settings():
         raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
 
     merged = deepcopy(DEFAULT_SETTINGS)
-    for key in ['elsevier_api_key', 'openai_api_key', 'anthropic_api_key']:
+    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openai_api_key', 'anthropic_api_key']:
         if key in settings:
             merged[key] = settings[key]
 
@@ -92,6 +92,12 @@ def load_settings():
     anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
     if anthropic_api_key:
         merged['anthropic_api_key'] = anthropic_api_key
+    core_api_key = os.environ.get('CORE_API_KEY')
+    if core_api_key:
+        merged['core_api_key'] = core_api_key
+    unpaywall_email = os.environ.get('UNPAYWALL_EMAIL')
+    if unpaywall_email:
+        merged['unpaywall_email'] = unpaywall_email
 
     text_env = _env_profile('PAPERSCRAPER_MODEL_')
     if text_env:
@@ -185,6 +191,24 @@ def update_elsevier_key(settings=True):
         save_settings(settings)
     else:
         raise ValueError('Elsevier API key is invalid.')
+
+
+def update_core_key(settings=True):
+    if settings:
+        settings = load_settings()
+    api_key = input('Enter CORE API key: ')
+    settings['core_api_key'] = api_key
+    save_settings(settings)
+
+
+def update_unpaywall_email(settings=True):
+    if settings:
+        settings = load_settings()
+    email = input('Enter Unpaywall email: ').strip()
+    if '@' not in email:
+        raise ValueError('Unpaywall email must be a valid email address.')
+    settings['unpaywall_email'] = email
+    save_settings(settings)
 
 
 def update_model_settings(settings=True):

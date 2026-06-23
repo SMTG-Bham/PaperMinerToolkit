@@ -32,9 +32,9 @@ def _text_chunks(text: str, model_name: str):
 def _append_materials(materials, row, source, source_path):
     output = []
     for material in materials:
-        material['Scopus id'] = row['dc:identifier']
-        material['doi'] = row.get('prism:doi')
-        material['Publication date'] = row.get('prism:coverDate')
+        material['Paper id'] = row['paper_id']
+        material['doi'] = row.get('doi')
+        material['Publication date'] = row.get('publication_date')
         material['Source'] = source
         material['Source path'] = source_path
         output.append(material)
@@ -65,7 +65,7 @@ def _safe_path_part(value):
 
 
 def _image_key_for_row(row, pdf_path):
-    identifier = str(row.get('dc:identifier') or '')
+    identifier = str(row.get('paper_id') or '')
     if identifier.startswith('doi:') and pdf_path:
         return _safe_path_part(os.path.splitext(os.path.basename(pdf_path))[0])
     return _safe_path_part(identifier.split(':')[-1])

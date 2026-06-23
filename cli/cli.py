@@ -4,15 +4,17 @@ from paperscraper.download import elsevier_downloader
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
-from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_elsevier_key, update_openai_key, update_model_settings
+from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_core_key, update_elsevier_key, update_openai_key, update_unpaywall_email, update_model_settings
 from paperscraper.utilities import reset, status, sort, shuffle
 
 
 @click.command()
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('path', default='papers.csv', type=str)
-def paper_search(query: str, path: str):
-    search_for_papers(query, path)
+@click.option('--source', type=click.Choice(['all', 'elsevier', 'core']), default='all', show_default=True, help='Search source to use.')
+@click.option('--count', default=200, type=int, show_default=True, help='Maximum results to request from each selected source.')
+def paper_search(query: str, path: str, source: str, count: int):
+    search_for_papers(query, path, source=source, count=count)
 
 
 @click.command()
@@ -107,6 +109,14 @@ def store(path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool)
 
 def update_elsevier_api_key():
     update_elsevier_key()
+
+
+def update_core_api_key():
+    update_core_key()
+
+
+def update_unpaywall_api_email():
+    update_unpaywall_email()
 
 
 def update_openai_api_key():

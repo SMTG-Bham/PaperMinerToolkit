@@ -4,7 +4,7 @@
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
 </p>
 
-PaperScraper searches Elsevier/Scopus, downloads paper content, and extracts structured materials data from papers with configurable text and vision models.
+PaperScraper searches Elsevier/Scopus and CORE, downloads paper content through Elsevier, Unpaywall, and CORE, and extracts structured materials data from papers with configurable text and vision models.
 
 ## Model Profiles
 
@@ -24,14 +24,14 @@ Environment variables still work for batch jobs. `PAPERSCRAPER_MODEL_*` applies 
 
 ## Workflow
 
-PaperScraper can start from an Elsevier/Scopus search, PDFs you have already downloaded, or a mixture of both. Imported PDFs can be added to an existing Scopus `papers.csv`; matching DOI rows are updated with the local PDF path, and unmatched PDFs are appended as external rows.
+PaperScraper can start from an Elsevier/Scopus or CORE search, PDFs you have already downloaded, or a mixture of both. Matching DOI, source ID, and title/year rows are merged into one `papers.csv` entry so the same paper is not scraped twice.
 
 ```mermaid
 flowchart TD
-    A["Search Scopus<br/><b><code>ps_search</code></b>"] --> B[/"papers.csv"/]
+    A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.csv"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] -->|"target existing CSV"| B
     C -->|"target standalone CSV"| D[/"external_papers.csv"/]
-    B --> E["Download Elsevier text/PDF<br/><b><code>ps_elsevier</code></b>"]
+    B --> E["Download text/PDF<br/><b><code>ps_elsevier</code></b>"]
     E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
     D --> F
     F --> G[/"temp_scraped_materials.csv"/]
@@ -50,9 +50,17 @@ Configure model profiles before scraping. The text profile is used for text extr
 
 ### Build A Papers CSV
 
-Search Elsevier/Scopus and write metadata to a papers CSV:
+Search Elsevier/Scopus and CORE and write streamlined metadata to a papers CSV:
 
 `ps_search "Li2NH AIMD solid electrolyte" papers.csv`
+
+Choose one source when needed:
+
+`ps_search "Li2NH AIMD solid electrolyte" papers.csv --source core --count 100`
+
+CORE can use `CORE_API_KEY` from the environment or a saved key:
+
+`ps_core_key`
 
 Or import externally downloaded PDFs. This scans each PDF for a DOI and uses Crossref to fill metadata when possible. If the target CSV already exists, matching DOI rows are updated with the local PDF path and unmatched PDFs are appended:
 
@@ -66,7 +74,7 @@ For offline runs, skip Crossref lookup while still trying to scrape the DOI from
 
 `ps_import_pdfs papers external_papers.csv --no-crossref`
 
-### Download Elsevier Content
+### Download Paper Content
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.
 
@@ -75,6 +83,8 @@ Use this step for papers discovered by search. External PDF imports already poin
 `ps_elsevier papers.csv papers --format pdf`
 
 `ps_elsevier papers.csv papers --format both`
+
+PDF downloads try Unpaywall first, then CORE, then Elsevier. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text. Set `UNPAYWALL_EMAIL` or run `ps_unpaywall_email` to identify Unpaywall API requests.
 
 ### Choose A Recipe
 
