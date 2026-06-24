@@ -10,9 +10,9 @@ PaperScraper searches Elsevier/Scopus and CORE, downloads paper content through 
 
 Configure separate model profiles for text and vision analysis:
 
-`ps_model_config text --provider local --model Qwen/Qwen3-30B-A3B-FP8 --base-url http://127.0.0.1:8000/v1 --temperature 0 --top-p 1`
+`ps_model_config text --provider local --model Qwen/Qwen3-VL-30B-A3B-Instruct --base-url http://127.0.0.1:8000/v1 --temperature 0 --top-p 1`
 
-`ps_model_config vision --provider local --model Qwen/Qwen2.5-VL-7B-Instruct --base-url http://127.0.0.1:8001/v1`
+`ps_model_config vision --provider local --model Qwen/Qwen3-VL-30B-A3B-Instruct --base-url http://127.0.0.1:8000/v1`
 
 Capabilities are inferred automatically from the profile and model name. Use `--capability` only as an override for unusual models. Model requests default to `temperature=0` and `top_p=1` for deterministic extraction.
 
@@ -104,7 +104,7 @@ Scrape text only:
 
 Scrape images with the vision profile:
 
-`ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen2.5-VL-7B-Instruct --vision-base-url http://127.0.0.1:8001/v1`
+`ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen3-VL-30B-A3B-Instruct --vision-base-url http://127.0.0.1:8000/v1`
 
 Scrape text and images together, using paper text as image context:
 
@@ -144,10 +144,10 @@ Check pipeline status:
 
 `ps_status papers.csv`
 
-## BlueBEAR Example
+## Local vLLM Notebook
 
-The examples folder contains a two-paper SLURM workflow for BlueBEAR using `Qwen/Qwen3-30B-A3B-FP8` for text scraping:
+The examples folder contains a notebook with explained bash cells that start a local vLLM OpenAI-compatible server, configure PaperScraper text and vision profiles, then run search, download, and scrape:
 
-`sbatch examples/bluebear_qwen_two_papers.sbatch`
+`examples/qwen_vllm_workflow.ipynb`
 
-Set `ELSEVIER_API_KEY` in the job environment before submitting. The script can start a local vLLM server, or you can set `PAPERSCRAPER_START_MODEL_SERVER=0` and provide `PAPERSCRAPER_MODEL_BASE_URL` yourself.
+Before running it, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The notebook assumes it is running in the Python environment where PaperScraper and vLLM are installed.
