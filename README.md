@@ -144,10 +144,12 @@ Check pipeline status:
 
 `ps_status papers.csv`
 
-## Local vLLM Notebook
+## Example Notebooks
 
-The examples folder contains a notebook with explained bash cells that start a local vLLM OpenAI-compatible server, configure PaperScraper text and vision profiles, then run search, download, and scrape:
+The examples folder contains notebooks with explained bash cells for common model providers:
 
-`examples/qwen_vllm_workflow.ipynb`
+- `examples/qwen_vllm_workflow.ipynb` starts a local vLLM OpenAI-compatible server, configures text and vision profiles, then runs search, download, and scrape.
+- `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
+- `examples/anthropic_api_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
-Before running it, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The notebook assumes it is running in the Python environment where PaperScraper and vLLM are installed.
+Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
