@@ -10,7 +10,7 @@ from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
-from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_core_key, update_elsevier_key, update_openai_key, update_unpaywall_email, update_model_settings
+from paperscraper.settings import get_model_profile, infer_model_capabilities, set_model_profile, update_anthropic_key, update_core_key, update_elsevier_key, update_openai_key, update_unpaywall_email, update_model_settings
 from paperscraper.utilities import reset, status, sort, shuffle
 
 
@@ -137,6 +137,11 @@ def update_unpaywall_api_email():
 def update_openai_api_key():
     """Prompt for and save an OpenAI API key."""
     update_openai_key()
+
+
+def update_anthropic_api_key():
+    """Prompt for and save an Anthropic API key."""
+    update_anthropic_key()
 
 
 @click.command()

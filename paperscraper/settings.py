@@ -189,6 +189,15 @@ def update_openai_key(settings=True):
         raise ValueError('OpenAI API key is invalid.')
 
 
+def update_anthropic_key(settings=True):
+    """Prompt for and save an Anthropic API key."""
+    if settings:
+        settings = load_settings()
+    api_key = input('Enter Anthropic API key: ')
+    settings['anthropic_api_key'] = api_key
+    save_settings(settings)
+
+
 def check_elsevier_api_key(api_key):
     """Return whether an Elsevier API key can run a minimal Scopus search."""
     client = ElsClient(api_key)
