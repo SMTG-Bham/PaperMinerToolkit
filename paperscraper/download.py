@@ -1,3 +1,10 @@
+"""Download paper text and PDFs from configured open-access and publisher sources.
+
+This module powers ``ps_download``. It can fetch Elsevier full text when
+available, try PDFs from Unpaywall, CORE, and Elsevier, and update per-paper
+download status in the papers CSV after each row.
+"""
+
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc
 from paperscraper.pipeline import read_papers, set_status, write_papers
@@ -15,6 +22,7 @@ DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier'}
 
 
 def _elsevier_client():
+    """Build an Elsevier client from the configured API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
         raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
@@ -22,6 +30,7 @@ def _elsevier_client():
 
 
 def retrieve_document(uri):
+    """Retrieve an Elsevier full-text document into the temporary ``data`` folder."""
     os.makedirs('data', exist_ok=True)
     for file in os.listdir('data'):
         os.remove(os.path.join('data', file))
@@ -33,6 +42,7 @@ def retrieve_document(uri):
 
 
 def json_to_text(filepath):
+    """Read an Elsevier JSON document and return its original text content."""
     with open(filepath, 'r', encoding='utf-8') as f:
         doc = json.load(f)
     text = doc['originalText']
@@ -42,6 +52,7 @@ def json_to_text(filepath):
 
 
 def elsevier_string_formatter(text: str):
+    """Clean common wrapper artifacts from Elsevier originalText output."""
     if text.count('Acknowledgements') == 2:
         text = text.split('Acknowledgements')[1]
     elif text.count('References') == 2:
@@ -53,6 +64,7 @@ def elsevier_string_formatter(text: str):
 
 
 def _full_text_uri(paper):
+    """Extract an Elsevier full-text URI from a normalized paper row."""
     link = paper.get('elsevier_link')
     if not isinstance(link, str) or 'full-text' not in link:
         return None
@@ -63,6 +75,7 @@ def _full_text_uri(paper):
 
 
 def _download_text(paper, filepath):
+    """Download Elsevier full text for one paper row to ``filepath``."""
     uri = _full_text_uri(paper)
     if not uri:
         return False
@@ -81,6 +94,7 @@ def _download_text(paper, filepath):
 
 
 def _pdf_urls(paper):
+    """Build Elsevier PDF endpoint candidates for a normalized paper row."""
     urls = []
     doi = paper.get('doi')
     if pd.notna(doi) and str(doi).strip():
@@ -92,6 +106,7 @@ def _pdf_urls(paper):
 
 
 def _download_pdf(paper, filepath):
+    """Try to download an Elsevier PDF for one paper row."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
         raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
@@ -121,6 +136,7 @@ def _download_pdf(paper, filepath):
 
 
 def _safe_filename(paper):
+    """Create a filesystem-safe filename stem for a paper row."""
     for column in ['doi', 'core_id', 'paper_id']:
         value = paper.get(column)
         if pd.notna(value) and str(value).strip():
@@ -132,11 +148,13 @@ def _safe_filename(paper):
 
 
 def _unpaywall_email(settings=None):
+    """Return the configured email address used for Unpaywall requests."""
     settings = settings or load_settings()
     return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL')
 
 
 def _download_url_to_pdf(url, filepath, headers=None):
+    """Fetch a URL and save it only when the response appears to be a PDF."""
     if not url:
         return False, 'missing URL'
     try:
@@ -154,6 +172,7 @@ def _download_url_to_pdf(url, filepath, headers=None):
 
 
 def _download_unpaywall_pdf(paper, filepath):
+    """Use Unpaywall metadata to locate and download an open-access PDF."""
     doi = paper.get('doi')
     if pd.isna(doi) or not str(doi).strip():
         return False, 'missing DOI'
@@ -182,6 +201,7 @@ def _download_unpaywall_pdf(paper, filepath):
 
 
 def _core_headers():
+    """Build request headers for CORE downloads."""
     settings = load_settings()
     api_key = settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
     headers = {'User-Agent': 'PaperScraper/0.0.1'}
@@ -191,6 +211,7 @@ def _core_headers():
 
 
 def _download_core_pdf(paper, filepath):
+    """Download a PDF through CORE using a stored PDF URL or CORE work ID."""
     urls = []
     url = paper.get('pdf_url')
     if pd.notna(url) and str(url).strip():
@@ -208,6 +229,7 @@ def _download_core_pdf(paper, filepath):
 
 
 def _configured_sources(sources):
+    """Resolve requested PDF sources, expanding ``all`` to configured providers."""
     if not sources or 'all' in sources:
         settings = load_settings()
         enabled = []
@@ -225,10 +247,12 @@ def _configured_sources(sources):
 
 
 def _elsevier_configured():
+    """Return whether an Elsevier API key is available for downloads."""
     return bool(load_settings().get('elsevier_api_key'))
 
 
 def _download_pdf_from_sources(paper, filepath, sources):
+    """Try configured PDF sources in order and return success/source details."""
     existing_source = paper.get('pdf_source')
     if os.path.isfile(filepath):
         return True, existing_source if pd.notna(existing_source) and str(existing_source).strip() else 'existing', ''
@@ -251,11 +275,13 @@ def _download_pdf_from_sources(paper, filepath, sources):
 
 
 def _should_try_elsevier_text(paper):
+    """Return whether a paper row advertises Elsevier full text."""
     link = paper.get('elsevier_link')
     return isinstance(link, str) and 'full-text' in link
 
 
 def download_papers(papers_path='papers.csv', download_dir='papers', download_format='text', sources=None):
+    """Download requested paper assets and update the papers CSV in place."""
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')

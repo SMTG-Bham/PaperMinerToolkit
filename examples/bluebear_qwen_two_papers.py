@@ -1,4 +1,4 @@
-"""End-to-end two-paper PaperScraper example for BlueBEAR.
+"""Run an end-to-end two-paper PaperScraper example on BlueBEAR.
 
 This script searches for two papers, downloads available paper content,
 scrapes structured data with Qwen on a local model endpoint, and stores
@@ -19,12 +19,14 @@ from paperscraper.store import store_results
 
 
 def _full_text_papers(papers: pd.DataFrame) -> pd.DataFrame:
+    """Filter raw Elsevier search results to records with full-text links."""
     if papers.empty or "link" not in papers.columns:
         return pd.DataFrame()
     return papers[papers["link"].astype(str).str.contains("full-text", na=False)].copy()
 
 
 def search_two_papers(query: str, papers_path: str):
+    """Search Elsevier with fallback queries and save two full-text paper rows."""
     queries = [
         query,
         "Li2NH lithium nitride hydride solid electrolyte",
@@ -61,6 +63,7 @@ def search_two_papers(query: str, papers_path: str):
 
 
 def main():
+    """Parse arguments and run the BlueBEAR demonstration workflow."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", default="Lithium solid electrolyte")
     parser.add_argument("--papers-path", default="examples/bluebear_papers.csv")

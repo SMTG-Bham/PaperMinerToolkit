@@ -1,3 +1,9 @@
+"""Command-line entry points for PaperScraper workflows.
+
+This module maps installed ``ps_*`` commands to the underlying search, import,
+download, scrape, store, configuration, and maintenance functions.
+"""
+
 import click
 from paperscraper.search import search_for_papers
 from paperscraper.download import download_papers
@@ -14,6 +20,7 @@ from paperscraper.utilities import reset, status, sort, shuffle
 @click.option('--source', type=click.Choice(['all', 'elsevier', 'core']), default='all', show_default=True, help='Search source to use.')
 @click.option('--count', default=200, type=int, show_default=True, help='Maximum results to request from each selected source.')
 def paper_search(query: str, path: str, source: str, count: int):
+    """Search configured paper sources and merge results into a papers CSV."""
     search_for_papers(query, path, source=source, count=count)
 
 
@@ -22,6 +29,7 @@ def paper_search(query: str, path: str, source: str, count: int):
 @click.argument('path', default='external_papers.csv', type=click.Path())
 @click.option('--no-crossref', is_flag=True, default=False, help='Only scrape DOI from PDFs; skip Crossref metadata lookup.')
 def import_pdf_folder(dir: str, path: str, no_crossref: bool):
+    """Import local PDFs into a papers CSV, optionally skipping Crossref lookup."""
     import_pdfs(dir, path, use_crossref=not no_crossref)
 
 
@@ -31,6 +39,7 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
 @click.option('--format', 'download_format', type=click.Choice(['text', 'pdf', 'both']), default='both', show_default=True)
 @click.option('--source', 'sources', multiple=True, type=click.Choice(['all', 'unpaywall', 'core', 'elsevier']), default=('all',), show_default=True, help='PDF source to use. Repeat to choose more than one.')
 def download(path: str, dir: str, download_format: str, sources: tuple[str]):
+    """Download text and/or PDFs for rows in a papers CSV."""
     download_papers(path, dir, download_format=download_format, sources=list(sources))
 
 
@@ -75,6 +84,7 @@ def scrape(
     output_path: str,
     force: bool,
 ):
+    """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
         dir,
         path,
@@ -105,22 +115,27 @@ def scrape(
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False, help='Store converted results without an interactive confirmation prompt.')
 def store(path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool):
+    """Store temporary scrape results in the final materials CSV."""
     store_results(path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
 def update_elsevier_api_key():
+    """Prompt for and save an Elsevier API key."""
     update_elsevier_key()
 
 
 def update_core_api_key():
+    """Prompt for and save a CORE API key."""
     update_core_key()
 
 
 def update_unpaywall_api_email():
+    """Prompt for and save an Unpaywall email address."""
     update_unpaywall_email()
 
 
 def update_openai_api_key():
+    """Prompt for and save an OpenAI API key."""
     update_openai_key()
 
 
@@ -134,17 +149,20 @@ def update_openai_api_key():
 @click.option('--temperature', default=0.0, type=float, show_default=True, help='Sampling temperature for model requests.')
 @click.option('--top-p', default=1.0, type=float, show_default=True, help='Nucleus sampling probability mass for model requests.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None, capabilities: tuple[str], temperature: float, top_p: float):
+    """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
     set_model_profile(profile, provider, model, base_url, api_key, caps, temperature=temperature, top_p=top_p)
     click.echo(f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p}')
 
 
 def update_model_config():
+    """Run the interactive model configuration prompt."""
     update_model_settings()
 
 
 @click.command()
 def model_status():
+    """Print configured text and vision model profiles."""
     for profile in ['text', 'vision']:
         config = get_model_profile(profile)
         capabilities = ', '.join(config.get('capabilities', []))
@@ -154,12 +172,14 @@ def model_status():
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 def reset_scraper(path: str):
+    """Reset pipeline statuses in a papers CSV."""
     reset(path)
 
 
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 def scraper_status(path: str):
+    """Print pipeline progress for a papers CSV."""
     status(path)
 
 
@@ -168,10 +188,12 @@ def scraper_status(path: str):
 @click.argument('field', default='metadata_status', type=str)
 @click.option('--ascending', is_flag=True, show_default=True, default=True)
 def sort_df(path: str, field: str, ascending: bool):
+    """Sort a papers CSV by a selected field."""
     sort(path, field, ascending)
 
 
 @click.command()
 @click.argument('path', default='papers.csv', type=click.Path(exists=True))
 def shuffle_papers(path: str):
+    """Shuffle paper rows in a papers CSV."""
     shuffle(path)

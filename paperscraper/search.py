@@ -1,3 +1,10 @@
+"""Search Elsevier/Scopus and CORE, then merge results into papers CSV files.
+
+The functions here translate provider-specific API responses into PaperScraper's
+small public paper schema and append or update rows without duplicating papers
+that appear in multiple sources.
+"""
+
 from elsapy.elsclient import ElsClient
 from elsapy.utils import recast_df
 from paperscraper.pipeline import merge_paper_rows, normalize_paper_columns, read_papers, write_papers
@@ -13,6 +20,7 @@ SEARCH_SOURCES = {'elsevier', 'core', 'all'}
 
 
 def _elsevier_client():
+    """Build an Elsevier client from the configured API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
         raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
@@ -25,7 +33,10 @@ def document_search(query: str,
                     get_all: bool = True,
                     search_fields: str = 'TITLE-ABS-KEY'):
     """
-    Complete a search for papers. (This was rewritten from the Elsapy package to fix some bugs)
+    Search Elsevier/Scopus and return at most ``count`` raw provider records.
+
+    This is a small replacement for the Elsapy search helper so PaperScraper can
+    control pagination and treat ``count`` as a hard result cap.
     """
     client = _elsevier_client()
     max_results = max(int(count), 1)
@@ -70,12 +81,14 @@ def document_search(query: str,
 
 
 def _first(value):
+    """Return the first item from a list-like provider value, or the value itself."""
     if isinstance(value, list):
         return value[0] if value else ''
     return value or ''
 
 
 def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
+    """Convert raw Elsevier search records into normalized paper rows."""
     rows = []
     for _, paper in results.iterrows():
         rows.append({
@@ -93,11 +106,13 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def _core_api_key():
+    """Return the configured CORE API key, if one is available."""
     settings = load_settings()
     return settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
 
 
 def _core_headers():
+    """Build request headers for CORE API calls."""
     api_key = _core_api_key()
     headers = {'User-Agent': 'PaperScraper/0.0.1'}
     if api_key:
@@ -106,6 +121,7 @@ def _core_headers():
 
 
 def _core_download_url(work):
+    """Return the best CORE PDF download URL for a work record."""
     download_url = work.get('downloadUrl') or work.get('download_url')
     if download_url:
         return download_url
@@ -116,6 +132,7 @@ def _core_download_url(work):
 
 
 def _core_authors(work):
+    """Format CORE author data as a semicolon-separated author string."""
     authors = work.get('authors') or []
     names = []
     for author in authors:
@@ -127,6 +144,7 @@ def _core_authors(work):
 
 
 def _core_journal(work):
+    """Extract a journal or publisher name from a CORE work record."""
     journal = work.get('journal') or work.get('publisher') or ''
     if isinstance(journal, dict):
         return journal.get('title') or journal.get('name') or ''
@@ -134,10 +152,12 @@ def _core_journal(work):
 
 
 def _core_date(work):
+    """Extract the best available publication date/year from a CORE work record."""
     return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get('year') or ''
 
 
 def _core_rows(works) -> pd.DataFrame:
+    """Convert CORE work records into normalized paper rows."""
     rows = []
     for work in works:
         core_id = work.get('id') or ''
@@ -160,7 +180,7 @@ def _core_rows(works) -> pd.DataFrame:
 
 def core_search(query: str, count: int = 200):
     """
-    Search CORE works and return normalized paper rows.
+    Search CORE works and return at most ``count`` normalized paper rows.
     """
     url = 'https://api.core.ac.uk/v3/search/works'
     limit = min(max(int(count), 1), 100)
@@ -188,7 +208,7 @@ def core_search(query: str, count: int = 200):
 
 def search_for_papers(query: str, papers_path: str = 'papers.csv', source: str = 'all', count: int = 200):
     """
-    Search for papers and append new results to the papers database.
+    Search the selected source(s) and merge results into ``papers_path``.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:

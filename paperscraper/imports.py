@@ -1,3 +1,10 @@
+"""Import local PDFs into a PaperScraper papers CSV.
+
+The import flow scans each PDF for DOI metadata, optionally enriches rows with
+Crossref, and merges imported files with existing paper rows so local PDFs can
+join the same downstream scraping pipeline as searched papers.
+"""
+
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +14,7 @@ from paperscraper.pipeline import ensure_pipeline_columns, merge_paper_rows, nor
 
 
 def import_pdfs(papers_dir: str, papers_path: str = 'external_papers.csv', use_crossref: bool = True):
+    """Import all PDFs in ``papers_dir`` into ``papers_path``."""
     pdf_dir = Path(papers_dir)
     if not pdf_dir.is_dir():
         raise NotADirectoryError(f'{papers_dir} is not a directory.')

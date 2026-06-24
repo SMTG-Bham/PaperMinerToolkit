@@ -1,3 +1,10 @@
+"""Build extraction prompts, call models, parse JSON, and convert units.
+
+This module turns paper text or images into structured material records using a
+recipe schema. It also reconciles text/image results and normalizes extracted
+units before records are stored.
+"""
+
 import json
 import math
 import re
@@ -9,6 +16,7 @@ from paperscraper.models import ModelConfig, query_images, query_text
 from paperscraper.settings import DEFAULT_MODEL
 
 def token_length(prompt, model=DEFAULT_MODEL):
+    """Estimate token length for text, falling back to a character heuristic."""
     if type(prompt) != str:
         return []
     try:
@@ -19,6 +27,7 @@ def token_length(prompt, model=DEFAULT_MODEL):
 
 
 def _field_schema(recipe):
+    """Render recipe fields as a prompt-readable schema list."""
     lines = []
     for field, config in recipe['search fields'].items():
         lines.append(f'- "{field}": {config["prompt"]}')
@@ -26,6 +35,7 @@ def _field_schema(recipe):
 
 
 def _example_record(recipe):
+    """Build a JSON example record from recipe example values."""
     record = {}
     for field, config in recipe['search fields'].items():
         record[field] = config['example']
@@ -33,6 +43,7 @@ def _example_record(recipe):
 
 
 def _base_extraction_prompt(recipe, source, source_rules):
+    """Build the shared extraction prompt for text or image sources."""
     material_type = recipe['material type']
     additional_prompts = recipe.get('additional prompts', '')
     return f'''You extract structured {material_type} materials data from a scientific {source}.
@@ -62,12 +73,14 @@ Example output shape:
 
 
 def build_text_extraction_prompt(recipe):
+    """Build the prompt used for extraction from paper text."""
     source_rules = '''- Treat abstracts, captions, tables, experimental sections, results, and supporting text as valid evidence.
 - Do not use references, citations, or background discussion as evidence for the paper's own reported measurements unless the text clearly states the value belongs to this work.'''
     return _base_extraction_prompt(recipe, 'paper text', source_rules)
 
 
 def build_image_extraction_prompt(recipe, with_context=False):
+    """Build the prompt used for extraction from PDF images or rendered pages."""
     context_rule = '- You may use the supplied paper text as context, but values should still be tied to the image, caption, table, plot labels, legend, or nearby visual evidence.' if with_context else '- Use only information visible in the supplied image or images, including captions, tables, plot labels, axes, legends, annotations, and readable text.'
     source_rules = f'''{context_rule}
 - Actively inspect figures and tables in the image for the requested properties, including captions, table headers, table rows, plot axes, legends, labels, annotations, and inset text.
@@ -78,17 +91,20 @@ def build_image_extraction_prompt(recipe, with_context=False):
 
 
 def build_scrape_prompt(recipe, source='paper', with_context=False):
+    """Select the appropriate extraction prompt for a text or image source."""
     if source == 'paper image':
         return build_image_extraction_prompt(recipe, with_context=with_context)
     return build_text_extraction_prompt(recipe)
 
 
 def query_model(messages, model_config=None):
+    """Send extraction messages to the configured text model."""
     config = model_config or ModelConfig.from_profile('text')
     return query_text(messages, config=config, max_output_tokens=10000)
 
 
 def _strip_fences(response):
+    """Remove surrounding Markdown code fences from a model response."""
     response = response.strip()
     fence = chr(96) * 3
     if response.startswith(fence):
@@ -98,6 +114,7 @@ def _strip_fences(response):
 
 
 def _json_decoder_scan(response):
+    """Scan a messy response for JSON objects or arrays."""
     decoder = json.JSONDecoder()
     data = []
     index = 0
@@ -120,6 +137,7 @@ def _json_decoder_scan(response):
 
 
 def _extract_json_objects(response):
+    """Parse model output into a list of JSON object records."""
     response = _strip_fences(response)
     try:
         parsed = json.loads(response)
@@ -148,6 +166,7 @@ def _extract_json_objects(response):
 
 
 def scrape_text(text, recipe, model_config=None):
+    """Extract structured material records from paper text."""
     prompt = build_scrape_prompt(recipe, source='paper')
     messages = [
         {'role': 'system', 'content': prompt},
@@ -158,6 +177,7 @@ def scrape_text(text, recipe, model_config=None):
 
 
 def scrape_images(image_paths, recipe, model_config=None, context=None):
+    """Extract structured material records from one or more paper images."""
     config = model_config or ModelConfig.from_profile('vision')
     prompt = build_scrape_prompt(recipe, source='paper image', with_context=context is not None)
     response = query_images(prompt, image_paths, config=config, context=context, max_output_tokens=10000)
@@ -165,6 +185,7 @@ def scrape_images(image_paths, recipe, model_config=None, context=None):
 
 
 def combine_material_records(text_materials, image_materials, recipe, model_config=None):
+    """Ask the text model to reconcile text-derived and image-derived records."""
     prompt = f'''You reconcile structured materials data extracted from the same paper.
 
 The text extractor and image extractor may describe the same material, composition, sample, or experiment. Compare both sets and merge records that refer to the same material or clearly corresponding experimental entry.
@@ -200,12 +221,14 @@ Example output shape:
 
 
 def scrape_pdf(filepath, recipe, model_config=None):
+    """Extract material records from text read directly from a PDF file."""
     from paperscraper.documents import read_pdf_text
 
     return scrape_text(read_pdf_text(filepath), recipe, model_config=model_config)
 
 
 def convert_units(values, field, unit, model_config=None):
+    """Use the text model to convert extracted values into a target unit."""
     prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Only put values in square brackets if multiple values are provided on the line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None". Do not return the value as an addition. If text is given and cannot be meaningfully converted, return the same text. Convert "RT" or "Room temperature" to the equivalent of 298.15K. Do not use quotation marks. Make sure that there are as many output values as input.'
     values_str = ''
     memory = []

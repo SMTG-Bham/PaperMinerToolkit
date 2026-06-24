@@ -1,3 +1,10 @@
+"""Store scraped material rows into the final materials CSV.
+
+The storage step maps temporary scrape columns to recipe fields, optionally
+converts units, appends accepted rows to the output file, and marks papers as
+stored once their scrape results have been persisted.
+"""
+
 from paperscraper.extract import convert_units
 from paperscraper.pipeline import ensure_pipeline_columns, write_papers
 from paperscraper.recipes import canonical_match, field_columns, load_recipe
@@ -14,6 +21,7 @@ def store_results(
     assume_yes=False,
     model_config=None,
 ):
+    """Convert and append temporary scrape results to the materials database."""
     if not os.path.isfile(in_filepath):
         print(f'No scraped materials file found at {in_filepath}. Nothing new to store.')
         return
