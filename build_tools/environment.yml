@@ -1,0 +1,22 @@
+name: paperscraper
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python>=3.14.*
+  - pip
+  - pytest
+  - pandas
+  - numpy
+  - matplotlib
+  - click
+  - elsapy
+  - openai
+  - pymupdf
+  - PyPDF2
+  - requests
+  - tiktoken
+  - tqdm
+
