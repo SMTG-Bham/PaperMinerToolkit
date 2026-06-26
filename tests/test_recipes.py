@@ -219,7 +219,7 @@ def test_aliases_for_includes_fields_prompts_aliases_and_metadata_fields():
     assert aliases['doi'] == {'doi'}
 
 
-def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns():
+def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns(monkeypatch):
     """
     Test canonical matching of incoming scrape columns.
 
@@ -240,5 +240,6 @@ def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns():
 
     assert recipes.canonical_match(' sigma ', columns, recipe) == 'Conductivity [S cm^-1]'
     assert recipes.canonical_match('doi', columns, recipe) == 'doi'
+    monkeypatch.setattr(recipes, 'aliases_for', lambda _: {'Extra Column': {'different alias'}})
     assert recipes.canonical_match('extra column', ['Extra Column [kg]'], recipe) == 'Extra Column [kg]'
     assert recipes.canonical_match('Unknown field', columns, recipe) is None
