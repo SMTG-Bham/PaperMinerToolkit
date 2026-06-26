@@ -155,7 +155,7 @@ Install the test dependencies and run the default test suite with:
 
 `pytest`
 
-Unit tests live in `tests/unit/` and should be split by source file, for example `tests/unit/test_pipeline.py` covers `paperscraper/pipeline.py`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
+Unit tests live in `tests/` and should be split by source file, for example `tests/test_pipeline.py` covers `paperscraper/pipeline.py`. If test data files are needed, put them in `tests/data/`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
 
 ## Example Notebooks
 
