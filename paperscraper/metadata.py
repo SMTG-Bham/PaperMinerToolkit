@@ -8,6 +8,8 @@ import re
 import requests
 from urllib.parse import quote
 
+from PyPDF2 import PdfReader
+
 from paperscraper.documents import read_pdf_text
 
 DOI_PATTERN = re.compile(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', re.IGNORECASE)
@@ -29,8 +31,39 @@ def extract_doi_from_text(text: str):
     return clean_doi(match.group(0))
 
 
+def extract_doi_from_pdf_metadata(pdf_path: str):
+    """Extract a DOI from embedded PDF metadata fields when available."""
+    reader = PdfReader(pdf_path)
+    metadata = reader.metadata or {}
+    preferred_fields = [
+        '/WPS-ARTICLEDOI',
+        '/prism:doi',
+        '/doi',
+        '/DOI',
+        '/dc:identifier',
+        '/Subject',
+    ]
+    for field in preferred_fields:
+        value = metadata.get(field)
+        if not value:
+            continue
+        doi = extract_doi_from_text(str(value))
+        if doi and '(issn)' not in doi.lower():
+            return doi
+    for key, value in metadata.items():
+        if 'journaldoi' in str(key).lower():
+            continue
+        doi = extract_doi_from_text(str(value))
+        if doi and '(issn)' not in doi.lower():
+            return doi
+    return None
+
+
 def extract_doi_from_pdf(pdf_path: str):
-    """Extract the first DOI found in text read from a PDF file."""
+    """Extract a DOI from PDF metadata first, then fall back to page text."""
+    doi = extract_doi_from_pdf_metadata(pdf_path)
+    if doi:
+        return doi
     return extract_doi_from_text(read_pdf_text(pdf_path))
 
 
@@ -81,7 +114,7 @@ def metadata_from_pdf(pdf_path: str, use_crossref: bool = True):
     except Exception as e:
         return {}, 'imported', f'Could not read PDF metadata text: {e}'
     if not doi:
-        return {}, 'imported', 'No DOI found in PDF text.'
+        return {}, 'imported', 'No DOI found in PDF metadata or text.'
     metadata = {'doi': doi}
     if not use_crossref:
         return metadata, 'doi_found', ''
