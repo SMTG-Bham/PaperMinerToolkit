@@ -14,6 +14,7 @@ from paperscraper.pipeline import (
     PIPELINE_COLUMNS,
     _clean_doi,
     _has_value,
+    _merge_row,
     _merge_sources,
     _title_key,
     _year,
@@ -337,6 +338,53 @@ def test_merge_paper_rows_adds_new_rows_when_no_match_exists():
     assert added == 1
     assert updated == 0
     assert len(merged) == 2
+
+
+def test_merge_row_adds_unknown_incoming_columns_to_existing_rows():
+    """
+    Test row-level merging when an incoming row contains a new column.
+
+    This function performs the following steps:
+    1. Creates an existing row without a provider-specific column.
+    2. Creates an incoming row series that includes a new provider-specific column.
+    3. Merges the incoming row directly with `_merge_row`.
+
+    Asserts:
+        - The previously unknown column is added to the target DataFrame.
+        - The incoming value is copied into the matched row.
+    """
+    target = pd.DataFrame([{'paper_id': 'paper:1', 'doi': '10.1/shared'}])
+    incoming = pd.Series({'paper_id': 'paper:2', 'doi': '10.1/shared', 'provider_note': 'new detail'})
+
+    merged = _merge_row(target, 0, incoming)
+
+    assert 'provider_note' in merged.columns
+    assert merged.loc[0, 'provider_note'] == 'new detail'
+
+
+def test_merge_paper_rows_copies_last_error_only_when_current_error_is_empty():
+    """
+    Test special merge handling for `last_error`.
+
+    This function performs the following steps:
+    1. Merges an incoming duplicate row with `last_error` into a row with no existing error.
+    2. Merges another incoming duplicate row with `last_error` into a row that already has an error.
+    3. Compares the resulting error values.
+
+    Asserts:
+        - Incoming `last_error` is copied when the current row has no error.
+        - Existing `last_error` is preserved when it already contains a value.
+    """
+    empty_error = pd.DataFrame([{'paper_id': 'paper:1', 'doi': '10.1/shared', 'last_error': ''}])
+    incoming_error = pd.DataFrame([{'paper_id': 'paper:2', 'doi': '10.1/shared', 'last_error': 'incoming error'}])
+
+    merged_empty, _, _ = merge_paper_rows(empty_error, incoming_error)
+
+    existing_error = pd.DataFrame([{'paper_id': 'paper:1', 'doi': '10.1/shared', 'last_error': 'existing error'}])
+    merged_existing, _, _ = merge_paper_rows(existing_error, incoming_error)
+
+    assert merged_empty.loc[0, 'last_error'] == 'incoming error'
+    assert merged_existing.loc[0, 'last_error'] == 'existing error'
 
 
 def test_read_and_write_papers_round_trip_normalized_schema(tmp_path):
