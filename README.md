@@ -1,5 +1,8 @@
 # PaperScraper
 
+[![Tests](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml/badge.svg?branch=dev)](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml)
+[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperScraper/branch/dev/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperScraper)
+
 <p align="center">
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
 </p>
@@ -144,12 +147,22 @@ Check pipeline status:
 
 `ps_status papers.csv`
 
+## Testing
+
+Install the test dependencies and run the default test suite with:
+
+`pip install -e ".[test]"`
+
+`pytest`
+
+Unit tests live in `tests/unit/` and should be split by source file, for example `tests/unit/test_pipeline.py` covers `paperscraper/pipeline.py`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
+
 ## Example Notebooks
 
 The examples folder contains notebooks with explained bash cells for common model providers:
 
 - `examples/qwen_vllm_workflow.ipynb` starts a local vLLM OpenAI-compatible server, configures text and vision profiles, then runs search, download, and scrape.
 - `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
-- `examples/anthropic_api_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
+- `examples/anthropic_claude_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
 Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.

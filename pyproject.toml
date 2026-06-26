@@ -20,6 +20,12 @@ dependencies = [
   "tqdm",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "pytest-cov",
+]
+
 [project.scripts]
 ps_search = "cli.cli:paper_search"
 ps_download = "cli.cli:download"
@@ -40,3 +46,20 @@ ps_shuffle = "cli.cli:shuffle_papers"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "network: tests that call live external services and require credentials",
+]
+addopts = [
+  "-m",
+  "not network",
+]
+
+[tool.coverage.run]
+source = ["paperscraper", "cli"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
