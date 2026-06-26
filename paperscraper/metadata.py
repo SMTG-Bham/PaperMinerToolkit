@@ -8,7 +8,7 @@ import re
 import requests
 from urllib.parse import quote
 
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 from paperscraper.documents import read_pdf_text
 
