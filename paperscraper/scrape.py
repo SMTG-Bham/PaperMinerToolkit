@@ -5,16 +5,22 @@ model calls, text/image reconciliation, status updates, and optional cleanup for
 the main ``ps_scrape`` command.
 """
 
-from paperscraper.documents import extract_pdf_images, pdf_file_for_row, read_document_text, read_pdf_text, text_file_for_row
-from paperscraper.extract import combine_material_records, scrape_images as analyze_images, scrape_text as analyze_text, token_length
+import math
+import os
+import pandas as pd
+import re
+from tqdm import tqdm
+
+from paperscraper.documents import (extract_pdf_images,
+                                    pdf_file_for_row,
+                                    read_document_text,
+                                    read_pdf_text,
+                                    text_file_for_row)
+from paperscraper.extract import combine_material_records, scrape_images as analyze_images, scrape_text as analyze_text, \
+    token_length
 from paperscraper.models import ModelConfig
 from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.recipes import load_recipe
-import pandas as pd
-import re
-import math
-import os
-from tqdm import tqdm
 
 SCRAPE_MODES = {'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
@@ -98,27 +104,26 @@ def _image_batches(image_paths, batch_size):
     return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
 
 
-def scrape_papers(
-    papers_dir: str,
-    papers_path: str = 'papers.csv',
-    recipe: str = 'sse',
-    mode: str = 'text',
-    image_dir: str = 'paper_images',
-    image_context: str = 'none',
-    image_extraction: str = 'auto',
-    image_dpi: int = 200,
-    image_batch_size: str | int = 1,
-    model: str | None = None,
-    provider: str | None = None,
-    base_url: str | None = None,
-    vision_model: str | None = None,
-    vision_provider: str | None = None,
-    vision_base_url: str | None = None,
-    delete_images_after: bool = False,
-    delete_papers_after: bool = False,
-    output_path: str = 'temp_scraped_materials.csv',
-    force: bool = False,
-):
+def scrape_papers(papers_dir: str,
+                  papers_path: str = 'papers.csv',
+                  recipe: str = 'sse',
+                  mode: str = 'text',
+                  image_dir: str = 'paper_images',
+                  image_context: str = 'none',
+                  image_extraction: str = 'auto',
+                  image_dpi: int = 200,
+                  image_batch_size: str | int = 1,
+                  model: str | None = None,
+                  provider: str | None = None,
+                  base_url: str | None = None,
+                  vision_model: str | None = None,
+                  vision_provider: str | None = None,
+                  vision_base_url: str | None = None,
+                  delete_images_after: bool = False,
+                  delete_papers_after: bool = False,
+                  output_path: str = 'temp_scraped_materials.csv',
+                  force: bool = False,
+                  ):
     """Scrape downloaded papers with text, images, or both and write material rows."""
     mode = mode.lower()
     image_context = image_context.lower()
@@ -217,7 +222,10 @@ def scrape_papers(
                                 text = read_pdf_text(pdf_path)
                             context = text
                         for image_batch in _image_batches(image_paths, image_batch_size):
-                            response = analyze_images(image_batch, recipe_data, model_config=vision_config, context=context)
+                            response = analyze_images(image_batch,
+                                                      recipe_data,
+                                                      model_config=vision_config,
+                                                      context=context)
                             image_source_paths.extend(image_batch)
                             image_materials.extend(response)
                         papers_df.loc[i, 'image_dir'] = paper_image_dir
@@ -234,10 +242,12 @@ def scrape_papers(
                 text_source = text_source_path or ''
                 image_source = ';'.join(image_source_paths)
                 try:
-                    combined_materials = combine_material_records(text_materials, image_materials, recipe_data, model_config=text_config)
+                    combined_materials = combine_material_records(text_materials, image_materials, recipe_data,
+                                                                  model_config=text_config)
                     if not combined_materials:
                         raise ValueError('reconciliation returned no material records')
-                    row_materials.extend(_append_materials(combined_materials, row, 'text+image', f'{text_source};{image_source}'.strip(';')))
+                    row_materials.extend(_append_materials(combined_materials, row, 'text+image',
+                                                           f'{text_source};{image_source}'.strip(';')))
                 except Exception as e:
                     papers_df.loc[i, 'last_error'] = f'Combining text and image results failed: {e}'
                     row_materials.extend(_append_materials(text_materials, row, 'text', text_source))

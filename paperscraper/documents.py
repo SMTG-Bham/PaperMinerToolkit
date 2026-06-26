@@ -6,9 +6,8 @@ for figure or page-level model analysis.
 """
 
 import os
-from pathlib import Path
-
 from PyPDF2 import PdfReader
+from pathlib import Path
 
 from paperscraper.pipeline import existing_path
 
@@ -83,7 +82,11 @@ def _render_pdf_pages(fitz, doc, output_dir: str, prefix: str, dpi: int = 200):
     return saved
 
 
-def extract_pdf_images(pdf_path: str, output_dir: str, prefix: str | None = None, strategy: str = 'auto', dpi: int = 200):
+def extract_pdf_images(pdf_path: str,
+                       output_dir: str,
+                       prefix: str | None = None,
+                       strategy: str = 'auto',
+                       dpi: int = 200):
     """Extract embedded images or rendered pages from a PDF for vision scraping."""
     if strategy not in {'auto', 'embedded', 'pages'}:
         raise ValueError('Image extraction strategy must be one of: auto, embedded, pages')

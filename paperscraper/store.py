@@ -5,22 +5,22 @@ converts units, appends accepted rows to the output file, and marks papers as
 stored once their scrape results have been persisted.
 """
 
+import os
+import pandas as pd
+
 from paperscraper.extract import convert_units
 from paperscraper.pipeline import ensure_pipeline_columns, write_papers
 from paperscraper.recipes import canonical_match, field_columns, load_recipe
-import pandas as pd
-import os
 
 
-def store_results(
-    papers_path='papers.csv',
-    in_filepath='temp_scraped_materials.csv',
-    out_filepath='materials.csv',
-    unit_conversion=True,
-    recipe='sse',
-    assume_yes=False,
-    model_config=None,
-):
+def store_results(papers_path='papers.csv',
+                  in_filepath='temp_scraped_materials.csv',
+                  out_filepath='materials.csv',
+                  unit_conversion=True,
+                  recipe='sse',
+                  assume_yes=False,
+                  model_config=None,
+                  ):
     """Convert and append temporary scrape results to the materials database."""
     if not os.path.isfile(in_filepath):
         print(f'No scraped materials file found at {in_filepath}. Nothing new to store.')

@@ -8,7 +8,6 @@ and maps extracted columns back to canonical output columns.
 import json
 from pathlib import Path
 
-
 MODULE_DIR = Path(__file__).resolve().parent
 RECIPES_PATH = MODULE_DIR / 'resources' / 'recipes.json'
 METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
@@ -62,7 +61,8 @@ def load_recipe(recipe_name: str):
     try:
         return _validate_recipe(recipes[recipe_name.lower()], recipe_name)
     except KeyError as e:
-        raise KeyError(f'Recipe called "{recipe_name}" does not exist, and no recipe file was found at that path.') from e
+        raise KeyError(
+            f'Recipe called "{recipe_name}" does not exist, and no recipe file was found at that path.') from e
 
 
 def field_columns(recipe, existing_columns=None):

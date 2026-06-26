@@ -5,13 +5,12 @@ the extraction code. It supports OpenAI Responses, Anthropic Messages, and
 OpenAI-compatible local chat servers.
 """
 
-from dataclasses import dataclass, field
-from typing import Any
 import base64
 import mimetypes
-
 import openai
 import requests
+from dataclasses import dataclass, field
+from typing import Any
 
 from paperscraper.settings import DEFAULT_MODEL, get_model_profile, load_settings
 
@@ -90,7 +89,11 @@ class BaseModelClient:
         """Send a text-only request and return the model text response."""
         raise NotImplementedError
 
-    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000) -> str:
         """Send a vision request with local images and return the text response."""
         raise NotImplementedError
 
@@ -133,7 +136,11 @@ class OpenAIResponsesClient(BaseModelClient):
             raise RuntimeError(f'OpenAI request failed: {e}') from e
         return self._response_text(response)
 
-    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000) -> str:
         """Send image inputs through OpenAI Responses."""
         self.config.require('vision')
         content = [{'type': 'input_text', 'text': prompt}]
@@ -173,7 +180,11 @@ class AnthropicMessagesClient(BaseModelClient):
                 })
         return self._request(system, anthropic_messages, max_output_tokens)
 
-    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000) -> str:
         """Send image inputs through Anthropic Messages."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
@@ -233,7 +244,11 @@ class OpenAICompatibleChatClient(BaseModelClient):
         self.config.require('text')
         return self._chat(messages, max_output_tokens)
 
-    def query_with_images(self, prompt: str, image_paths: list[str], context: str | None = None, max_output_tokens: int = 10000) -> str:
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000) -> str:
         """Send image inputs as OpenAI-compatible chat content."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
@@ -272,11 +287,18 @@ def get_model_client(config: ModelConfig | None = None):
     raise ValueError(f'Unknown model provider: {config.provider}')
 
 
-def query_text(messages: list[dict[str, Any]], config: ModelConfig | None = None, max_output_tokens: int = 10000) -> str:
+def query_text(messages: list[dict[str, Any]],
+               config: ModelConfig | None = None,
+               max_output_tokens: int = 10000) -> str:
     """Send a text request through the configured model provider."""
     return get_model_client(config).query(messages, max_output_tokens=max_output_tokens)
 
 
-def query_images(prompt: str, image_paths: list[str], config: ModelConfig | None = None, context: str | None = None, max_output_tokens: int = 10000) -> str:
+def query_images(prompt: str,
+                 image_paths: list[str],
+                 config: ModelConfig | None = None,
+                 context: str | None = None,
+                 max_output_tokens: int = 10000) -> str:
     """Send an image request through the configured vision model provider."""
-    return get_model_client(config).query_with_images(prompt, image_paths, context=context, max_output_tokens=max_output_tokens)
+    return get_model_client(config).query_with_images(prompt, image_paths, context=context,
+                                                      max_output_tokens=max_output_tokens)

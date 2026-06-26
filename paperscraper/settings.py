@@ -5,12 +5,12 @@ module also provides interactive command helpers for storing API keys and model
 profiles used by search, download, and extraction workflows.
 """
 
+import json
+import openai
+import os
+import requests
 from copy import deepcopy
 from elsapy.elsclient import ElsClient
-import openai
-import requests
-import json
-import os
 
 SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.pscraperrc.json')
 DEFAULT_MODEL = 'gpt-5.4-mini'
@@ -144,13 +144,23 @@ def get_model_profile(profile: str):
 def infer_model_capabilities(profile: str, model: str):
     """Infer whether a model profile should support text only or text plus vision."""
     model_lower = (model or '').lower()
-    vision_markers = ['vl', 'vision', 'omni', 'llava', 'pixtral', 'molmo', 'internvl', 'qwen2.5-vl', 'qwen2-vl', 'qwen3-vl']
+    vision_markers = ['vl',
+                      'vision',
+                      'omni',
+                      'llava',
+                      'pixtral',
+                      'molmo',
+                      'internvl',
+                      'qwen2.5-vl',
+                      'qwen2-vl',
+                      'qwen3-vl']
     if profile == 'vision' or any(marker in model_lower for marker in vision_markers):
         return ['text', 'vision']
     return ['text']
 
 
-def set_model_profile(profile: str, provider: str, model: str, base_url=None, api_key=None, capabilities=None, temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P):
+def set_model_profile(profile: str, provider: str, model: str, base_url=None, api_key=None, capabilities=None,
+                      temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P):
     """Store a model profile for later text or vision extraction runs."""
     settings = load_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
@@ -256,4 +266,5 @@ def update_model_settings(settings=True):
     top_p = input('Enter top_p [1]: ').strip() or DEFAULT_TOP_P
     if not model:
         raise ValueError('Model name is required.')
-    set_model_profile(profile, provider, model, base_url, api_key, capabilities or None, temperature=temperature, top_p=top_p)
+    set_model_profile(profile, provider, model, base_url, api_key, capabilities or None, temperature=temperature,
+                      top_p=top_p)
