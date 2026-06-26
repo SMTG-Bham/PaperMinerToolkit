@@ -8,12 +8,12 @@ units before records are stored.
 import json
 import math
 import re
-from json import JSONDecodeError
-
 import tiktoken
+from json import JSONDecodeError
 
 from paperscraper.models import ModelConfig, query_images, query_text
 from paperscraper.settings import DEFAULT_MODEL
+
 
 def token_length(prompt, model=DEFAULT_MODEL):
     """Estimate token length for text, falling back to a character heuristic."""

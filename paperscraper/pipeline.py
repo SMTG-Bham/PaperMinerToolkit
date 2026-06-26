@@ -6,9 +6,8 @@ paper rows from multiple search or import sources.
 """
 
 import os
-import re
-
 import pandas as pd
+import re
 
 PAPER_COLUMNS = [
     'paper_id',
@@ -164,7 +163,7 @@ def _matching_existing_index(papers_df: pd.DataFrame, row: pd.Series):
         matches = papers_df.index[
             (papers_df['title'].map(_title_key) == title)
             & (papers_df['publication_date'].map(_year) == year)
-        ].tolist()
+            ].tolist()
         if matches:
             return matches[0]
     return None
@@ -201,7 +200,11 @@ def write_papers(df: pd.DataFrame, path: str):
     normalize_paper_columns(df).to_csv(path)
 
 
-def set_status(df: pd.DataFrame, index, column: str, status: str, error: str | None = None):
+def set_status(df: pd.DataFrame,
+               index,
+               column: str,
+               status: str,
+               error: str | None = None):
     """Update a pipeline status column and optionally record or clear an error."""
     if column not in PIPELINE_COLUMNS:
         raise KeyError(f'Unknown pipeline status column: {column}')

@@ -5,12 +5,10 @@ Crossref to populate the public paper metadata fields used in ``papers.csv``.
 """
 
 import re
+import requests
 from urllib.parse import quote
 
-import requests
-
 from paperscraper.documents import read_pdf_text
-
 
 DOI_PATTERN = re.compile(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', re.IGNORECASE)
 TRAILING_PUNCTUATION = '.),;:]}'

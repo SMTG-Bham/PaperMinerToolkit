@@ -5,16 +5,16 @@ small public paper schema and append or update rows without duplicating papers
 that appear in multiple sources.
 """
 
+import os
+import pandas as pd
+import requests
 from elsapy.elsclient import ElsClient
 from elsapy.utils import recast_df
+from tqdm import tqdm
+from urllib.parse import quote_plus as url_encode
+
 from paperscraper.pipeline import merge_paper_rows, normalize_paper_columns, read_papers, write_papers
 from paperscraper.settings import load_settings
-from urllib.parse import quote_plus as url_encode
-import pandas as pd
-from tqdm import tqdm
-import os
-import requests
-
 
 SEARCH_SOURCES = {'elsevier', 'core', 'all'}
 
@@ -153,7 +153,8 @@ def _core_journal(work):
 
 def _core_date(work):
     """Extract the best available publication date/year from a CORE work record."""
-    return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get('year') or ''
+    return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get(
+        'year') or ''
 
 
 def _core_rows(works) -> pd.DataFrame:

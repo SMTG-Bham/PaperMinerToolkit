@@ -5,17 +5,18 @@ available, try PDFs from Unpaywall, CORE, and Elsevier, and update per-paper
 download status in the papers CSV after each row.
 """
 
-from elsapy.elsclient import ElsClient
-from elsapy.elsdoc import FullDoc
-from paperscraper.pipeline import read_papers, set_status, write_papers
-from paperscraper.settings import load_settings
-from urllib.parse import quote
 import json
 import os
 import pandas as pd
-import requests
 import re
+import requests
+from elsapy.elsclient import ElsClient
+from elsapy.elsdoc import FullDoc
 from tqdm import tqdm
+from urllib.parse import quote
+
+from paperscraper.pipeline import read_papers, set_status, write_papers
+from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier'}
@@ -280,7 +281,10 @@ def _should_try_elsevier_text(paper):
     return isinstance(link, str) and 'full-text' in link
 
 
-def download_papers(papers_path='papers.csv', download_dir='papers', download_format='text', sources=None):
+def download_papers(papers_path='papers.csv',
+                    download_dir='papers',
+                    download_format='text',
+                    sources=None):
     """Download requested paper assets and update the papers CSV in place."""
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
@@ -290,13 +294,16 @@ def download_papers(papers_path='papers.csv', download_dir='papers', download_fo
     if download_format == 'text' and not elsevier_text_available:
         raise ValueError('Elsevier text download requires an Elsevier API key. Run ps_elsevier_key first.')
     if download_format in {'pdf', 'both'} and not sources:
-        raise ValueError('No PDF download sources are configured. Set an Unpaywall email, CORE API key, or Elsevier API key.')
+        raise ValueError(
+            'No PDF download sources are configured. Set an Unpaywall email, CORE API key, or Elsevier API key.')
     os.makedirs(download_dir, exist_ok=True)
     papers = read_papers(papers_path)
     with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
         for index, paper in papers.iterrows():
             filename = _safe_filename(paper)
-            text_attempt_needed = download_format in {'text', 'both'} and elsevier_text_available and _should_try_elsevier_text(paper)
+            text_attempt_needed = download_format in {'text',
+                                                      'both'} and elsevier_text_available and _should_try_elsevier_text(
+                paper)
             pdf_attempt_needed = download_format in {'pdf', 'both'}
             pdf_succeeded_from_oa = False
 
@@ -330,7 +337,8 @@ def download_papers(papers_path='papers.csv', download_dir='papers', download_fo
                 except Exception as e:
                     set_status(papers, index, 'pdf_download_status', 'failed', str(e))
 
-            if pdf_succeeded_from_oa and not text_attempt_needed and elsevier_text_available and _should_try_elsevier_text(paper):
+            if pdf_succeeded_from_oa and not text_attempt_needed and elsevier_text_available and _should_try_elsevier_text(
+                    paper):
                 text_filepath = os.path.join(download_dir, f'{filename}.txt')
                 try:
                     if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):

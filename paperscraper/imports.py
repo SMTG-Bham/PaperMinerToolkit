@@ -5,9 +5,8 @@ Crossref, and merges imported files with existing paper rows so local PDFs can
 join the same downstream scraping pipeline as searched papers.
 """
 
-from pathlib import Path
-
 import pandas as pd
+from pathlib import Path
 
 from paperscraper.metadata import metadata_from_pdf
 from paperscraper.pipeline import ensure_pipeline_columns, merge_paper_rows, normalize_paper_columns, write_papers
