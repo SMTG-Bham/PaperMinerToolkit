@@ -52,11 +52,6 @@ class ModelConfig:
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
         )
 
-    @classmethod
-    def from_settings(cls, **overrides):
-        """Backward-compatible constructor that delegates to ``from_profile``."""
-        return cls.from_profile(overrides.pop('profile', 'text'), **overrides)
-
     def generation_args(self):
         """Return provider generation parameters shared across request types."""
         return {'temperature': self.temperature, 'top_p': self.top_p}
