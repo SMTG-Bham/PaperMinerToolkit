@@ -4,13 +4,12 @@ This module tests the small CSV maintenance helpers used by the command-line
 interface to reset pipeline state, print progress, sort rows, and shuffle rows.
 """
 
-import importlib
 
 import pandas as pd
 
 from paperscraper.pipeline import PIPELINE_COLUMNS
 
-utilities = importlib.import_module('paperscraper.utilities')
+import paperscraper.utilities as utilities
 
 
 def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path):

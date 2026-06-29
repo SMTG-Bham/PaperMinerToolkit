@@ -15,8 +15,7 @@ dependencies:
   - elsapy
   - openai
   - pymupdf
-  - PyPDF2
+  - pypdf
   - requests
   - tiktoken
   - tqdm
-

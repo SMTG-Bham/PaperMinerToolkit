@@ -7,5 +7,5 @@ from paperscraper.settings import (load_settings,
                                    update_openai_key,
                                    update_model_settings)
 
-settings = load_settings()
-locals().update(settings)
+SETTINGS = load_settings()
+locals().update(SETTINGS)

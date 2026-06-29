@@ -6,7 +6,7 @@ for figure or page-level model analysis.
 """
 
 import os
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from pathlib import Path
 
 from paperscraper.pipeline import existing_path

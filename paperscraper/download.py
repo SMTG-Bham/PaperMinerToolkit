@@ -345,8 +345,6 @@ def download_papers(papers_path='papers.csv',
                         papers.loc[index, 'text_path'] = text_filepath
                         papers.loc[index, 'text_source'] = 'elsevier'
                         set_status(papers, index, 'text_download_status', 'succeeded')
-                    elif download_format != 'pdf':
-                        set_status(papers, index, 'text_download_status', 'failed', 'Elsevier text download failed')
                 except Exception as e:
                     set_status(papers, index, 'text_download_status', 'failed', str(e))
             write_papers(papers, papers_path)

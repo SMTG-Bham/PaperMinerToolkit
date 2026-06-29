@@ -246,13 +246,15 @@ def convert_units(values, field, unit, model_config=None):
         coeff = math.ceil(coeff)
         char_per_split = math.ceil(len(values_str) / coeff)
         values_strs = []
-        for split in range(coeff):
-            index = values_str.find('\n', split * char_per_split) + 2
-            index_2 = values_str.find('\n', (split + 1) * char_per_split) + 2
-            if index_2 >= len(values_str):
-                values_strs.append(values_str[index:])
-            else:
-                values_strs.append(values_str[index:index_2])
+        current = ''
+        for line in values_str.splitlines():
+            line = f'{line}\n'
+            if current and len(current) + len(line) > char_per_split:
+                values_strs.append(current)
+                current = ''
+            current += line
+        if current:
+            values_strs.append(current)
     output = []
     temp = []
     if values_strs[0] != '':
