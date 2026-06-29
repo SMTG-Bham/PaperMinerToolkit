@@ -412,6 +412,39 @@ def test_read_and_write_papers_round_trip_normalized_schema(tmp_path):
     assert list(reloaded.columns) == PAPER_COLUMNS + list(PIPELINE_COLUMNS)
 
 
+def test_merge_paper_rows_updates_empty_public_columns_after_csv_round_trip(tmp_path):
+    """
+    Test merging into empty public paper columns after a CSV round trip.
+
+    This function performs the following steps:
+    1. Writes a papers CSV with an empty public metadata column.
+    2. Reads the CSV back through `read_papers`.
+    3. Merges an incoming row that fills the empty metadata column.
+
+    Asserts:
+        - Empty public metadata columns can be filled after CSV loading.
+        - The merge updates the existing row instead of adding a duplicate.
+    """
+    papers_path = tmp_path / 'papers.csv'
+    write_papers(pd.DataFrame([{
+        'paper_id': 'paper:1',
+        'doi': '10.1234/example',
+        'title': 'Existing title',
+        'journal': '',
+    }]), str(papers_path))
+    existing = read_papers(str(papers_path))
+    incoming = pd.DataFrame([{
+        'doi': '10.1234/example',
+        'journal': 'Updated Journal',
+    }])
+
+    merged, added, updated = merge_paper_rows(existing, incoming)
+
+    assert added == 0
+    assert updated == 1
+    assert merged.loc[0, 'journal'] == 'Updated Journal'
+
+
 def test_set_status_records_errors_and_clears_success_errors():
     """
     Test status updates with failure and success transitions.

@@ -106,6 +106,7 @@ def normalize_paper_columns(df: pd.DataFrame) -> pd.DataFrame:
     for column in PAPER_COLUMNS:
         if column not in df.columns:
             df[column] = ''
+        df[column] = df[column].fillna('').astype('object')
     ordered = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
     return df[ordered].copy()
 
