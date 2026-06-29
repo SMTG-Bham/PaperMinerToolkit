@@ -884,3 +884,91 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
     assert papers.loc[0, 'text_download_status'] == 'succeeded'
     assert papers.loc[0, 'text_source'] == 'elsevier'
     assert os.path.isfile(papers.loc[0, 'text_path'])
+
+
+@pytest.mark.network
+def test_download_unpaywall_pdf_uses_real_api(tmp_path):
+    """
+    Test real Unpaywall metadata lookup and PDF download.
+
+    This function performs the following steps:
+    1. Loads the user's configured Unpaywall email.
+    2. Calls `_download_unpaywall_pdf` for a known open-access DOI.
+    3. Reads the downloaded file header.
+
+    Asserts:
+        - An Unpaywall email is configured.
+        - The Unpaywall API locates and downloads a PDF.
+        - The downloaded file starts with a PDF header.
+    """
+    assert download._unpaywall_email(), (
+        'Set unpaywall_email in ~/.config/.pscraperrc.json or UNPAYWALL_EMAIL before running network tests.'
+    )
+    pdf_path = tmp_path / 'unpaywall.pdf'
+
+    ok, detail = download._download_unpaywall_pdf({'doi': '10.1371/journal.pone.0000308'}, str(pdf_path))
+
+    assert ok, detail
+    assert pdf_path.read_bytes().startswith(b'%PDF')
+
+
+@pytest.mark.network
+def test_download_core_pdf_uses_real_api_when_configured(tmp_path):
+    """
+    Test real CORE search and PDF download.
+
+    This function performs the following steps:
+    1. Verifies that a CORE API key is configured.
+    2. Uses CORE search to find a small set of candidate works.
+    3. Attempts to download the first available PDF candidate through `_download_core_pdf`.
+
+    Asserts:
+        - A CORE API key is configured.
+        - At least one CORE candidate can be downloaded as a PDF.
+        - The downloaded file starts with a PDF header.
+    """
+    assert download._core_headers().get('Authorization'), (
+        'Set core_api_key in ~/.config/.pscraperrc.json or CORE_API_KEY before running network tests.'
+    )
+    from paperscraper.search import core_search
+
+    candidates = core_search('solid electrolyte', count=5)
+    last_error = 'no CORE candidates were returned'
+    for _, paper in candidates.iterrows():
+        pdf_path = tmp_path / f'{download._safe_filename(paper)}.pdf'
+        ok, detail = download._download_core_pdf(paper, str(pdf_path))
+        if ok:
+            assert pdf_path.read_bytes().startswith(b'%PDF')
+            return
+        last_error = detail
+    pytest.fail(f'No CORE PDF candidate downloaded successfully: {last_error}')
+
+
+@pytest.mark.network
+def test_download_elsevier_pdf_uses_real_api_when_entitled(tmp_path):
+    """
+    Test real Elsevier PDF download when the configured account is entitled.
+
+    This function performs the following steps:
+    1. Verifies that an Elsevier API key is configured.
+    2. Attempts to download a known Elsevier article PDF.
+    3. Checks the downloaded file when the account has PDF entitlement.
+
+    Asserts:
+        - An Elsevier API key is configured.
+        - Entitled accounts download a valid PDF.
+    """
+    assert download.load_settings().get('elsevier_api_key'), (
+        'Set elsevier_api_key in ~/.config/.pscraperrc.json or ELSEVIER_API_KEY before running network tests.'
+    )
+    pdf_path = tmp_path / 'elsevier.pdf'
+    paper = {
+        'paper_id': 'elsevier-live',
+        'doi': '10.1016/j.ssi.2012.10.014',
+        'elsevier_link': '',
+    }
+
+    ok = download._download_pdf(paper, str(pdf_path))
+    if not ok:
+        pytest.skip('Elsevier API key is configured, but this account/DOI did not return a PDF entitlement.')
+    assert pdf_path.read_bytes().startswith(b'%PDF')
