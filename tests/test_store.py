@@ -5,13 +5,12 @@ materials CSV, including missing inputs, empty inputs, column matching, optional
 unit conversion, append behavior, user confirmation, and paper status updates.
 """
 
-import importlib
 import os
 
 import pandas as pd
 import pytest
 
-store = importlib.import_module('paperscraper.store')
+import paperscraper.store as store
 
 
 def sample_recipe():

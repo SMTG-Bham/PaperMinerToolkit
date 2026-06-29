@@ -5,14 +5,13 @@ folder validation, empty-folder handling, metadata mapping, and merging imported
 PDFs with existing paper rows.
 """
 
-import importlib
 import shutil
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-imports = importlib.import_module('paperscraper.imports')
+import paperscraper.imports as imports
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'

@@ -5,10 +5,9 @@ PDF page text fallback, Crossref date formatting, and Crossref metadata
 normalization.
 """
 
-import importlib
 from pathlib import Path
 
-metadata = importlib.import_module('paperscraper.metadata')
+import paperscraper.metadata as metadata
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'

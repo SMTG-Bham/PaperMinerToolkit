@@ -7,11 +7,10 @@ when explicitly requested.
 """
 
 import json
-import importlib
 
 import pytest
 
-settings = importlib.import_module('paperscraper.settings')
+import paperscraper.settings as settings
 
 
 API_ENV_KEYS = [

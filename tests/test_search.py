@@ -5,12 +5,11 @@ normalization, pagination behavior, request headers, and merging search results
 into the papers CSV.
 """
 
-import importlib
 
 import pandas as pd
 import pytest
 
-search = importlib.import_module('paperscraper.search')
+import paperscraper.search as search
 
 
 def test_elsevier_client_requires_configured_api_key(monkeypatch):

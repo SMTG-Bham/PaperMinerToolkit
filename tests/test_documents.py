@@ -4,14 +4,13 @@ This module tests text extraction from PDF/TXT inputs, PDF image extraction and
 page rendering helpers, and lookup of text/PDF files associated with paper rows.
 """
 
-import importlib
 import os
 import sys
 import types
 
 import pytest
 
-documents = importlib.import_module('paperscraper.documents')
+import paperscraper.documents as documents
 
 
 def test_read_pdf_text_concatenates_page_text(monkeypatch):

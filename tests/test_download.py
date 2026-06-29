@@ -5,14 +5,13 @@ Elsevier text/PDF helpers, open-access PDF source selection, filename creation,
 configured source resolution, and papers CSV status updates.
 """
 
-import importlib
 import json
 import os
 
 import pandas as pd
 import pytest
 
-download = importlib.import_module('paperscraper.download')
+import paperscraper.download as download
 
 
 def test_elsevier_client_requires_and_uses_configured_api_key(monkeypatch):

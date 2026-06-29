@@ -4,12 +4,11 @@ This module tests recipe validation, loading bundled and file-based recipes,
 building output columns, alias collection, and canonical column matching.
 """
 
-import importlib
 import json
 
 import pytest
 
-recipes = importlib.import_module('paperscraper.recipes')
+import paperscraper.recipes as recipes
 
 
 def sample_recipe():
