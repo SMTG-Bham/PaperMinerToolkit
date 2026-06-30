@@ -10,11 +10,10 @@ import os
 import pandas as pd
 import re
 import requests
-from elsapy.elsclient import ElsClient
-from elsapy.elsdoc import FullDoc
 from tqdm import tqdm
 from urllib.parse import quote
 
+from paperscraper import elsevier
 from paperscraper.pipeline import read_papers, set_status, write_papers
 from paperscraper.settings import load_settings
 
@@ -22,12 +21,12 @@ DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier'}
 
 
-def _elsevier_client():
-    """Build an Elsevier client from the configured API key."""
+def _elsevier_api_key():
+    """Return the configured Elsevier API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
         raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    return ElsClient(api_key)
+    return api_key
 
 
 def retrieve_document(uri):
@@ -35,21 +34,30 @@ def retrieve_document(uri):
     os.makedirs('data', exist_ok=True)
     for file in os.listdir('data'):
         os.remove(os.path.join('data', file))
-    doi_doc = FullDoc(uri=uri)
-    if doi_doc.read(_elsevier_client()):
-        doi_doc.write()
-    else:
+    try:
+        response = elsevier.get_content(
+            _elsevier_api_key(),
+            uri,
+            accept='application/json',
+            params={'httpAccept': 'application/json'},
+        )
+    except requests.RequestException:
         print('Read document failed.')
+        return
+    with open(os.path.join('data', 'elsevier_document.json'), 'w', encoding='utf-8') as out_file:
+        json.dump(response.json(), out_file)
 
 
 def json_to_text(filepath):
     """Read an Elsevier JSON document and return its original text content."""
     with open(filepath, 'r', encoding='utf-8') as f:
         doc = json.load(f)
-    text = doc['originalText']
+    text = doc.get('originalText')
+    if text is None:
+        text = (doc.get('full-text-retrieval-response') or {}).get('originalText')
     if type(text) == dict:
         return 'failed'
-    return text
+    return text or 'failed'
 
 
 def elsevier_string_formatter(text: str):
@@ -99,7 +107,7 @@ def _pdf_urls(paper):
     urls = []
     doi = paper.get('doi')
     if pd.notna(doi) and str(doi).strip():
-        urls.append(f'https://api.elsevier.com/content/article/doi/{quote(str(doi), safe="")}')
+        urls.append(elsevier.article_url_from_doi(str(doi)))
     uri = _full_text_uri(paper)
     if uri:
         urls.append(uri)
@@ -108,27 +116,22 @@ def _pdf_urls(paper):
 
 def _download_pdf(paper, filepath):
     """Try to download an Elsevier PDF for one paper row."""
-    api_key = load_settings().get('elsevier_api_key')
-    if not api_key:
-        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    headers = {
-        'X-ELS-APIKey': api_key,
-        'Accept': 'application/pdf',
-    }
+    api_key = _elsevier_api_key()
     params = {'httpAccept': 'application/pdf'}
     last_error = None
     for url in _pdf_urls(paper):
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=60)
-            if response.status_code >= 400:
-                last_error = f'{response.status_code} from {url}'
-                continue
+            response = elsevier.get_content(api_key, url, accept='application/pdf', params=params)
             content_type = response.headers.get('Content-Type', '').lower()
             if 'pdf' in content_type or response.content.startswith(b'%PDF'):
                 with open(filepath, 'wb') as out_file:
                     out_file.write(response.content)
                 return True
             last_error = f'non-PDF response from {url}'
+        except requests.HTTPError as e:
+            response = getattr(e, 'response', None)
+            status_code = response.status_code if response is not None else 'HTTP error'
+            last_error = f'{status_code} from {url}'
         except requests.RequestException as e:
             last_error = str(e)
     if last_error:

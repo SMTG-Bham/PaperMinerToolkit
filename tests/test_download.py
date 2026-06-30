@@ -14,31 +14,25 @@ import pytest
 import paperscraper.download as download
 
 
-def test_elsevier_client_requires_and_uses_configured_api_key(monkeypatch):
+def test_elsevier_api_key_requires_and_uses_configured_api_key(monkeypatch):
     """
-    Test Elsevier client construction from settings.
+    Test Elsevier API key lookup from settings.
 
     This function performs the following steps:
     1. Replaces settings loading with no Elsevier API key.
-    2. Calls `_elsevier_client` and captures the expected error.
-    3. Replaces settings loading and `ElsClient` with configured local fakes.
+    2. Calls `_elsevier_api_key` and captures the expected error.
+    3. Replaces settings loading with a configured Elsevier API key.
 
     Asserts:
         - Missing Elsevier API keys raise `ValueError`.
-        - Configured Elsevier API keys are passed to `ElsClient`.
+        - Configured Elsevier API keys are returned.
     """
-
-    class FakeElsClient:
-        def __init__(self, api_key):
-            self.api_key = api_key
-
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     with pytest.raises(ValueError, match='Elsevier API key is not configured'):
-        download._elsevier_client()
+        download._elsevier_api_key()
 
     monkeypatch.setattr(download, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
-    monkeypatch.setattr(download, 'ElsClient', FakeElsClient)
-    assert download._elsevier_client().api_key == 'elsevier-key'
+    assert download._elsevier_api_key() == 'elsevier-key'
 
 
 def test_retrieve_document_clears_data_folder_and_writes_successful_document(tmp_path, monkeypatch):
@@ -47,7 +41,7 @@ def test_retrieve_document_clears_data_folder_and_writes_successful_document(tmp
 
     This function performs the following steps:
     1. Creates an existing file in a temporary data folder.
-    2. Replaces `FullDoc` and the Elsevier client with local fakes.
+    2. Replaces the Elsevier content request helper with a local fake.
     3. Calls `retrieve_document`.
 
     Asserts:
@@ -59,24 +53,24 @@ def test_retrieve_document_clears_data_folder_and_writes_successful_document(tmp
     data_dir.mkdir()
     (data_dir / 'old.json').write_text('old')
 
-    class FakeFullDoc:
-        def __init__(self, uri):
-            self.uri = uri
+    class FakeResponse:
+        def json(self):
+            return {'originalText': 'new'}
 
-        def read(self, client):
-            assert client == 'client'
-            return True
+    def fake_get_content(api_key, uri, accept, params):
+        assert api_key == 'elsevier-key'
+        assert uri == 'full-text-uri'
+        assert accept == 'application/json'
+        assert params == {'httpAccept': 'application/json'}
+        return FakeResponse()
 
-        def write(self):
-            (data_dir / 'new.json').write_text('new')
-
-    monkeypatch.setattr(download, 'FullDoc', FakeFullDoc)
-    monkeypatch.setattr(download, '_elsevier_client', lambda: 'client')
+    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(download.elsevier, 'get_content', fake_get_content)
 
     download.retrieve_document('full-text-uri')
 
     assert not (data_dir / 'old.json').exists()
-    assert (data_dir / 'new.json').read_text() == 'new'
+    assert json.loads((data_dir / 'elsevier_document.json').read_text()) == {'originalText': 'new'}
 
 
 def test_json_to_text_and_elsevier_string_formatter(tmp_path):
@@ -84,8 +78,8 @@ def test_json_to_text_and_elsevier_string_formatter(tmp_path):
     Test Elsevier JSON text extraction and wrapper cleanup.
 
     This function performs the following steps:
-    1. Writes JSON files containing valid text and a failed text dictionary.
-    2. Reads both files with `json_to_text`.
+    1. Writes JSON files containing valid text, nested valid text, and a failed text dictionary.
+    2. Reads the files with `json_to_text`.
     3. Formats Elsevier text with duplicate section wrappers and an AWS URL wrapper.
 
     Asserts:
@@ -94,11 +88,14 @@ def test_json_to_text_and_elsevier_string_formatter(tmp_path):
         - Duplicate wrapper sections and AWS prefixes are removed.
     """
     text_path = tmp_path / 'text.json'
+    nested_text_path = tmp_path / 'nested_text.json'
     failed_path = tmp_path / 'failed.json'
     text_path.write_text(json.dumps({'originalText': 'paper text'}))
+    nested_text_path.write_text(json.dumps({'full-text-retrieval-response': {'originalText': 'nested text'}}))
     failed_path.write_text(json.dumps({'originalText': {'bad': 'text'}}))
 
     assert download.json_to_text(str(text_path)) == 'paper text'
+    assert download.json_to_text(str(nested_text_path)) == 'nested text'
     assert download.json_to_text(str(failed_path)) == 'failed'
     assert download.elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
     assert download.elsevier_string_formatter('A References clean References') == ' clean '
@@ -156,10 +153,7 @@ def test_pdf_urls_and_safe_filename_build_expected_values():
     """
     paper = {'doi': '10.1234/a b', 'elsevier_link': "x 'uri' full-text"}
 
-    assert download._pdf_urls(paper) == [
-        'https://api.elsevier.com/content/article/doi/10.1234%2Fa%20b',
-        'uri',
-    ]
+    assert download._pdf_urls(paper) == ['https://api.elsevier.com/content/article/doi/10.1234%2Fa+b', 'uri']
     assert download._safe_filename({'doi': '10.1234/a b'}) == '10.1234_a_b'
     assert download._safe_filename({'doi': '', 'core_id': 'core/1'}) == 'core_1'
     assert download._safe_filename({'doi': '', 'core_id': '', 'paper_id': 'paper:1'}) == 'paper_1'
@@ -476,7 +470,7 @@ def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
     Test Elsevier document retrieval when the provider read fails.
 
     This function performs the following steps:
-    1. Replaces `FullDoc` with a fake document whose read call fails.
+    1. Replaces the Elsevier content request helper with a fake request failure.
     2. Calls `retrieve_document`.
     3. Captures the printed output.
 
@@ -484,16 +478,12 @@ def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
         - A failed document read prints a failure message.
     """
     monkeypatch.chdir(tmp_path)
-
-    class FakeFullDoc:
-        def __init__(self, uri):
-            self.uri = uri
-
-        def read(self, _):
-            return False
-
-    monkeypatch.setattr(download, 'FullDoc', FakeFullDoc)
-    monkeypatch.setattr(download, '_elsevier_client', lambda: 'client')
+    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(
+        download.elsevier,
+        'get_content',
+        lambda *_, **__: (_ for _ in ()).throw(download.requests.RequestException('read failed')),
+    )
 
     download.retrieve_document('full-text-uri')
 
@@ -553,20 +543,29 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(tmp_path, mo
     monkeypatch.setattr(download, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
     monkeypatch.setattr(download, '_pdf_urls', lambda _: ['bad-status', 'bad-request', 'bad-content', 'good-pdf'])
 
-    def fake_get(url, **_):
+    def fake_get_content(api_key, url, accept, params):
+        assert api_key == 'elsevier-key'
+        assert accept == 'application/pdf'
+        assert params == {'httpAccept': 'application/pdf'}
         if url == 'bad-status':
-            return FakeResponse(status_code=403)
+            error = download.requests.HTTPError('forbidden')
+            error.response = FakeResponse(status_code=403)
+            raise error
         if url == 'bad-request':
             raise download.requests.RequestException('network down')
         if url == 'bad-content':
             return FakeResponse(content=b'html', content_type='text/html')
         return FakeResponse()
 
-    monkeypatch.setattr(download.requests, 'get', fake_get)
+    monkeypatch.setattr(download.elsevier, 'get_content', fake_get_content)
     assert download._download_pdf({'paper_id': 'paper-1'}, str(out_path)) is True
     assert out_path.read_bytes() == b'%PDF data'
 
-    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: FakeResponse(content=b'html', content_type='text/html'))
+    monkeypatch.setattr(
+        download.elsevier,
+        'get_content',
+        lambda *_, **__: FakeResponse(content=b'html', content_type='text/html'),
+    )
     assert download._download_pdf({'paper_id': 'paper-1'}, str(out_path)) is False
     assert 'non-PDF response' in capsys.readouterr().out
 
