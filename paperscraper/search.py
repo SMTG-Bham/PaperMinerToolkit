@@ -8,23 +8,32 @@ that appear in multiple sources.
 import os
 import pandas as pd
 import requests
-from elsapy.elsclient import ElsClient
-from elsapy.utils import recast_df
 from tqdm import tqdm
-from urllib.parse import quote_plus as url_encode
 
+from paperscraper import elsevier
 from paperscraper.pipeline import merge_paper_rows, normalize_paper_columns, read_papers, write_papers
 from paperscraper.settings import load_settings
 
 SEARCH_SOURCES = {'elsevier', 'core', 'all'}
 
 
-def _elsevier_client():
-    """Build an Elsevier client from the configured API key."""
+def _elsevier_api_key():
+    """Return the configured Elsevier API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
         raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    return ElsClient(api_key)
+    return api_key
+
+
+def _recast_elsevier_records(records) -> pd.DataFrame:
+    """Flatten common one-item Elsevier list fields into scalar DataFrame values."""
+    rows = []
+    for record in records:
+        row = {}
+        for key, value in record.items():
+            row[key] = _first(value)
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def document_search(query: str,
@@ -38,18 +47,12 @@ def document_search(query: str,
     This is a small replacement for the Elsapy search helper so PaperScraper can
     control pagination and treat ``count`` as a hard result cap.
     """
-    client = _elsevier_client()
+    api_key = _elsevier_api_key()
     max_results = max(int(count), 1)
     page_size = min(max_results, 200)
-    base_url = 'https://api.elsevier.com/content/search/'
     index = index.lower()
-    url = base_url + index
-    query = f'{search_fields}({query})'
-    url += f'?query={url_encode(query)}'
-    url += f'&count={page_size}'
-    if index == 'scopus':
-        url += '&cursor=*'
-    api_response = client.exec_request(url)
+    url = elsevier.search_url(index, query, page_size, search_fields)
+    api_response = elsevier.get_json(api_key, url)
     tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
     target_results = min(tot_num_res, max_results)
     print('Document search is retrieving', target_results, 'of', tot_num_res, 'results.')
@@ -67,7 +70,7 @@ def document_search(query: str,
                         next_url = e['@href']
                 if not next_url:
                     break
-                api_response = client.exec_request(next_url)
+                api_response = elsevier.get_json(api_key, next_url)
                 next_results = api_response['search-results'].get('entry', [])
                 remaining = target_results - len(results)
                 results += next_results[:remaining]
@@ -76,8 +79,7 @@ def document_search(query: str,
                 pbar.update(min(len(next_results), remaining))
     else:
         results = results[:target_results]
-    results_df = recast_df(pd.DataFrame(results))
-    return results_df
+    return _recast_elsevier_records(results)
 
 
 def _first(value):

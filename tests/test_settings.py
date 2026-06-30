@@ -513,24 +513,25 @@ def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch):
     Test successful Elsevier API key validation without calling the live API.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a local fake client.
+    1. Replaces the Elsevier JSON request helper with a local fake.
     2. Calls `check_elsevier_api_key` with a placeholder key.
     3. Checks the validation result.
 
     Asserts:
         - A client whose request succeeds returns `True`.
     """
+    calls = {}
 
-    class FakeElsClient:
-        def __init__(self, api_key):
-            self.api_key = api_key
+    def fake_get_json(api_key, url):
+        calls['api_key'] = api_key
+        calls['url'] = url
+        return {'ok': True}
 
-        def exec_request(self, url):
-            return {'url': url}
-
-    monkeypatch.setattr(settings, 'ElsClient', FakeElsClient)
+    monkeypatch.setattr(settings.elsevier, 'get_json', fake_get_json)
 
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is True
+    assert calls['api_key'] == 'placeholder-elsevier-key'
+    assert 'content/search/scopus' in calls['url']
 
 
 def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
@@ -538,22 +539,18 @@ def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
     Test failed Elsevier API key validation without calling the live API.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a local fake client that raises an HTTP error.
+    1. Replaces the Elsevier JSON request helper with a local fake that raises an HTTP error.
     2. Calls `check_elsevier_api_key` with a placeholder key.
     3. Checks the validation result.
 
     Asserts:
         - A client whose request raises an HTTP error returns `False`.
     """
-
-    class FakeElsClient:
-        def __init__(self, api_key):
-            self.api_key = api_key
-
-        def exec_request(self, url):
-            raise settings.requests.HTTPError('invalid key')
-
-    monkeypatch.setattr(settings, 'ElsClient', FakeElsClient)
+    monkeypatch.setattr(
+        settings.elsevier,
+        'get_json',
+        lambda *_, **__: (_ for _ in ()).throw(settings.requests.HTTPError('invalid key')),
+    )
 
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is False
 

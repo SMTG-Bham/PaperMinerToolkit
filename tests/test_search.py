@@ -12,13 +12,13 @@ import pytest
 import paperscraper.search as search
 
 
-def test_elsevier_client_requires_configured_api_key(monkeypatch):
+def test_elsevier_api_key_requires_configured_api_key(monkeypatch):
     """
-    Test Elsevier client creation without a configured API key.
+    Test Elsevier API key lookup without a configured API key.
 
     This function performs the following steps:
     1. Replaces settings loading with an empty settings dictionary.
-    2. Calls `_elsevier_client`.
+    2. Calls `_elsevier_api_key`.
     3. Captures the expected exception.
 
     Asserts:
@@ -27,34 +27,23 @@ def test_elsevier_client_requires_configured_api_key(monkeypatch):
     monkeypatch.setattr(search, 'load_settings', lambda: {})
 
     with pytest.raises(ValueError, match='Elsevier API key is not configured'):
-        search._elsevier_client()
+        search._elsevier_api_key()
 
 
-def test_elsevier_client_uses_configured_api_key(monkeypatch):
+def test_elsevier_api_key_returns_configured_api_key(monkeypatch):
     """
-    Test Elsevier client creation with a configured API key.
+    Test Elsevier API key lookup with a configured API key.
 
     This function performs the following steps:
     1. Replaces settings loading with an Elsevier API key.
-    2. Replaces `ElsClient` with a fake client class.
-    3. Calls `_elsevier_client`.
+    2. Calls `_elsevier_api_key`.
 
     Asserts:
-        - The configured API key is passed to `ElsClient`.
-        - The created client is returned.
+        - The configured API key is returned.
     """
-
-    class FakeElsClient:
-        def __init__(self, api_key):
-            self.api_key = api_key
-
     monkeypatch.setattr(search, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
-    monkeypatch.setattr(search, 'ElsClient', FakeElsClient)
 
-    client = search._elsevier_client()
-
-    assert isinstance(client, FakeElsClient)
-    assert client.api_key == 'elsevier-key'
+    assert search._elsevier_api_key() == 'elsevier-key'
 
 
 def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
@@ -62,8 +51,8 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
     Test Elsevier document search pagination and count limiting.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a fake paginated client.
-    2. Replaces tqdm and recast helpers with simple local helpers.
+    1. Replaces the Elsevier JSON request helper with a fake paginated response.
+    2. Replaces tqdm with a simple local helper.
     3. Calls `document_search` with a count lower than total available results.
 
     Asserts:
@@ -72,27 +61,26 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
         - The next page is requested.
     """
 
-    class FakeClient:
-        def __init__(self):
-            self.urls = []
+    urls = []
 
-        def exec_request(self, url):
-            self.urls.append(url)
-            if len(self.urls) == 1:
-                return {
-                    'search-results': {
-                        'opensearch:totalResults': '3',
-                        'entry': [{'dc:title': 'first'}],
-                        'link': [{'@ref': 'next', '@href': 'next-url'}],
-                    }
-                }
+    def fake_get_json(api_key, url):
+        assert api_key == 'elsevier-key'
+        urls.append(url)
+        if len(urls) == 1:
             return {
                 'search-results': {
                     'opensearch:totalResults': '3',
-                    'entry': [{'dc:title': 'second'}, {'dc:title': 'third'}],
-                    'link': [],
+                    'entry': [{'dc:title': 'first'}],
+                    'link': [{'@ref': 'next', '@href': 'next-url'}],
                 }
             }
+        return {
+            'search-results': {
+                'opensearch:totalResults': '3',
+                'entry': [{'dc:title': 'second'}, {'dc:title': 'third'}],
+                'link': [],
+            }
+        }
 
     class FakeTqdm:
         def __init__(self, *args, **kwargs):
@@ -107,18 +95,17 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
         def update(self, value):
             self.updates.append(value)
 
-    client = FakeClient()
-    monkeypatch.setattr(search, '_elsevier_client', lambda: client)
+    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(search, 'recast_df', lambda df: df)
 
     results = search.document_search('solid electrolyte', count=2, get_all=True)
 
     output = capsys.readouterr().out
     assert results['dc:title'].tolist() == ['first', 'second']
     assert 'retrieving 2 of 3 results' in output
-    assert '&count=2' in client.urls[0]
-    assert client.urls[1] == 'next-url'
+    assert '&count=2' in urls[0]
+    assert urls[1] == 'next-url'
 
 
 def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
@@ -126,7 +113,7 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
     Test Elsevier document search with no provider results.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a fake client returning zero total results.
+    1. Replaces the Elsevier JSON request helper with a fake response returning zero total results.
     2. Calls `document_search`.
     3. Checks the returned DataFrame.
 
@@ -134,11 +121,12 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
         - Zero provider results return an empty DataFrame.
     """
 
-    class FakeClient:
-        def exec_request(self, _):
-            return {'search-results': {'opensearch:totalResults': '0', 'entry': [], 'link': []}}
-
-    monkeypatch.setattr(search, '_elsevier_client', lambda: FakeClient())
+    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(
+        search.elsevier,
+        'get_json',
+        lambda *_: {'search-results': {'opensearch:totalResults': '0', 'entry': [], 'link': []}},
+    )
 
     assert search.document_search('missing').empty
 
@@ -148,26 +136,25 @@ def test_document_search_without_get_all_returns_first_page_slice(monkeypatch):
     Test Elsevier document search without pagination.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a fake first-page response.
-    2. Replaces recasting with an identity helper.
-    3. Calls `document_search` with `get_all=False`.
+    1. Replaces the Elsevier JSON request helper with a fake first-page response.
+    2. Calls `document_search` with `get_all=False`.
 
     Asserts:
         - Only the requested number of first-page results are returned.
     """
 
-    class FakeClient:
-        def exec_request(self, _):
-            return {
-                'search-results': {
-                    'opensearch:totalResults': '3',
-                    'entry': [{'dc:title': 'first'}, {'dc:title': 'second'}, {'dc:title': 'third'}],
-                    'link': [],
-                }
+    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(
+        search.elsevier,
+        'get_json',
+        lambda *_: {
+            'search-results': {
+                'opensearch:totalResults': '3',
+                'entry': [{'dc:title': 'first'}, {'dc:title': 'second'}, {'dc:title': 'third'}],
+                'link': [],
             }
-
-    monkeypatch.setattr(search, '_elsevier_client', lambda: FakeClient())
-    monkeypatch.setattr(search, 'recast_df', lambda df: df)
+        },
+    )
 
     results = search.document_search('solid electrolyte', count=2, get_all=False)
 
@@ -179,7 +166,7 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
     Test Elsevier document search pagination when the provider omits a next link.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a fake response containing fewer results than requested.
+    1. Replaces the Elsevier JSON request helper with a fake response containing fewer results than requested.
     2. Omits a next-page link from the fake response.
     3. Calls `document_search` with pagination enabled.
 
@@ -188,19 +175,17 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
         - Search stops without requesting another page.
     """
 
-    class FakeClient:
-        def __init__(self):
-            self.calls = 0
+    calls = []
 
-        def exec_request(self, _):
-            self.calls += 1
-            return {
-                'search-results': {
-                    'opensearch:totalResults': '3',
-                    'entry': [{'dc:title': 'first'}],
-                    'link': [],
-                }
+    def fake_get_json(*_):
+        calls.append(True)
+        return {
+            'search-results': {
+                'opensearch:totalResults': '3',
+                'entry': [{'dc:title': 'first'}],
+                'link': [],
             }
+        }
 
     class FakeTqdm:
         def __init__(self, *args, **kwargs):
@@ -215,15 +200,14 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
         def update(self, _):
             return None
 
-    client = FakeClient()
-    monkeypatch.setattr(search, '_elsevier_client', lambda: client)
+    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(search, 'recast_df', lambda df: df)
 
     results = search.document_search('solid electrolyte', count=3, get_all=True)
 
     assert results['dc:title'].tolist() == ['first']
-    assert client.calls == 1
+    assert len(calls) == 1
 
 
 def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch):
@@ -231,7 +215,7 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
     Test Elsevier document search stop behavior for non-Scopus indexes.
 
     This function performs the following steps:
-    1. Replaces the Elsevier client with a fake non-Scopus paginated response.
+    1. Replaces the Elsevier JSON request helper with a fake non-Scopus paginated response.
     2. Starts with 4,999 results and returns two more results on the next page.
     3. Calls `document_search` for a non-Scopus index.
 
@@ -242,27 +226,25 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
 
     first_page = [{'dc:title': f'paper {index}'} for index in range(4999)]
 
-    class FakeClient:
-        def __init__(self):
-            self.calls = 0
+    calls = []
 
-        def exec_request(self, _):
-            self.calls += 1
-            if self.calls == 1:
-                return {
-                    'search-results': {
-                        'opensearch:totalResults': '6000',
-                        'entry': first_page,
-                        'link': [{'@ref': 'next', '@href': 'next-url'}],
-                    }
-                }
+    def fake_get_json(*_):
+        calls.append(True)
+        if len(calls) == 1:
             return {
                 'search-results': {
                     'opensearch:totalResults': '6000',
-                    'entry': [{'dc:title': 'paper 4999'}, {'dc:title': 'paper 5000'}],
-                    'link': [{'@ref': 'next', '@href': 'unused-next-url'}],
+                    'entry': first_page,
+                    'link': [{'@ref': 'next', '@href': 'next-url'}],
                 }
             }
+        return {
+            'search-results': {
+                'opensearch:totalResults': '6000',
+                'entry': [{'dc:title': 'paper 4999'}, {'dc:title': 'paper 5000'}],
+                'link': [{'@ref': 'next', '@href': 'unused-next-url'}],
+            }
+        }
 
     class FakeTqdm:
         def __init__(self, *args, **kwargs):
@@ -277,15 +259,14 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
         def update(self, _):
             return None
 
-    client = FakeClient()
-    monkeypatch.setattr(search, '_elsevier_client', lambda: client)
+    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(search, 'recast_df', lambda df: df)
 
     results = search.document_search('solid electrolyte', index='article', count=6000, get_all=True)
 
     assert len(results) == 5001
-    assert client.calls == 2
+    assert len(calls) == 2
 
 
 def test_first_returns_first_list_item_or_scalar_value():
