@@ -364,6 +364,9 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.filterwarnings('ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning')
+@pytest.mark.filterwarnings('ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning')
+@pytest.mark.filterwarnings('ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning')
 def test_compress_content_uses_real_headroom_universal_compressor():
     """
     Test real Headroom universal compression through the PaperScraper wrapper.
