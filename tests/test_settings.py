@@ -103,7 +103,13 @@ def test_merge_profile_applies_defaults_and_coerces_types():
     """
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
-        {'model': 'custom-model', 'capabilities': 'text,vision', 'temperature': '0.2', 'top_p': '0.9'},
+        {
+            'model': 'custom-model',
+            'capabilities': 'text,vision',
+            'temperature': '0.2',
+            'top_p': '0.9',
+            'input_token_limit': '64000',
+        },
     )
 
     assert merged['provider'] == 'openai'
@@ -111,6 +117,27 @@ def test_merge_profile_applies_defaults_and_coerces_types():
     assert merged['capabilities'] == ['text', 'vision']
     assert merged['temperature'] == 0.2
     assert merged['top_p'] == 0.9
+    assert merged['input_token_limit'] == 64000
+
+
+def test_merge_profile_defaults_missing_input_token_limit():
+    """
+    Test defaulting of missing model input token limits.
+
+    This function performs the following steps:
+    1. Defines a configured profile with an empty input token limit.
+    2. Merges it with the default model profile.
+    3. Reads the normalized input token limit from the merged profile.
+
+    Asserts:
+        - Empty input token limits are replaced with the package default.
+    """
+    merged = settings._merge_profile(
+        settings.DEFAULT_MODEL_PROFILE,
+        {'input_token_limit': ''},
+    )
+
+    assert merged['input_token_limit'] == settings.DEFAULT_INPUT_TOKEN_LIMIT
 
 
 def test_env_profile_collects_only_defined_values(monkeypatch):
@@ -128,10 +155,11 @@ def test_env_profile_collects_only_defined_values(monkeypatch):
     """
     monkeypatch.setenv('PAPERSCRAPER_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERSCRAPER_MODEL_NAME', 'qwen')
+    monkeypatch.setenv('PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT', '120000')
 
     profile = settings._env_profile('PAPERSCRAPER_MODEL_')
 
-    assert profile == {'provider': 'local', 'model': 'qwen'}
+    assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000'}
 
 
 def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file):
@@ -266,6 +294,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_CAPABILITIES', 'text,vision')
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_TEMPERATURE', '0.4')
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_TOP_P', '0.7')
+    monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_INPUT_TOKEN_LIMIT', '96000')
 
     profile = settings.load_settings()['model_profiles']['vision']
 
@@ -276,6 +305,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     assert profile['capabilities'] == ['text', 'vision']
     assert profile['temperature'] == 0.4
     assert profile['top_p'] == 0.7
+    assert profile['input_token_limit'] == 96000
 
 
 def test_save_settings_writes_json_to_config_file(isolated_settings_file):
@@ -356,6 +386,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file):
         capabilities=['text'],
         temperature=0.3,
         top_p=0.8,
+        input_token_limit=120000,
     )
 
     loaded = settings.load_settings()
@@ -368,6 +399,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file):
     assert profile['capabilities'] == ['text']
     assert profile['temperature'] == 0.3
     assert profile['top_p'] == 0.8
+    assert profile['input_token_limit'] == 120000
 
 
 def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monkeypatch):
@@ -624,7 +656,7 @@ def test_update_model_settings_prompts_and_saves_profile(isolated_settings_file,
     Test the interactive model profile update flow.
 
     This function performs the following steps:
-    1. Supplies prompt responses for profile, provider, model, base URL, API key, capabilities, temperature, and top-p.
+    1. Supplies prompt responses for profile, provider, model, base URL, API key, capabilities, temperature, top-p, and input token limit.
     2. Calls `update_model_settings`.
     3. Reloads the saved model profile.
 
@@ -640,6 +672,7 @@ def test_update_model_settings_prompts_and_saves_profile(isolated_settings_file,
         'text,vision',
         '0.2',
         '0.95',
+        '120000',
     ])
     monkeypatch.setattr('builtins.input', lambda _: next(responses))
 
@@ -653,6 +686,7 @@ def test_update_model_settings_prompts_and_saves_profile(isolated_settings_file,
     assert profile['capabilities'] == ['text', 'vision']
     assert profile['temperature'] == 0.2
     assert profile['top_p'] == 0.95
+    assert profile['input_token_limit'] == 120000
 
 
 def test_update_model_settings_rejects_missing_model_name(isolated_settings_file, monkeypatch):
@@ -670,6 +704,7 @@ def test_update_model_settings_rejects_missing_model_name(isolated_settings_file
     responses = iter([
         'text',
         'openai',
+        '',
         '',
         '',
         '',

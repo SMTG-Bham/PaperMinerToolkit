@@ -6,11 +6,13 @@ download, scrape, store, configuration, and maintenance functions.
 
 import click
 from paperscraper.search import search_for_papers
+from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
 from paperscraper.settings import (get_model_profile,
+                                   DEFAULT_INPUT_TOKEN_LIMIT,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -110,6 +112,24 @@ def download(path: str, dir: str, download_format: str, sources: tuple[str]):
               is_flag=True,
               default=False,
               help='Rescrape stages even if their status is already succeeded.')
+@click.option('--compression-scope',
+              type=click.Choice(sorted(COMPRESSION_SCOPES)),
+              default='none',
+              show_default=True,
+              help='Inputs to compress with Headroom.')
+@click.option('--compression-mode',
+              type=click.Choice(sorted(COMPRESSION_MODES)),
+              default='auto',
+              show_default=True,
+              help='When to compress selected inputs.')
+@click.option('--compression-ratio',
+              default='auto',
+              show_default=True,
+              help='Target compression ratio, or "auto" to fit the configured input token budget.')
+@click.option('--compression-content-detection/--no-compression-content-detection',
+              default=True,
+              show_default=True,
+              help='Use Headroom content detection when compressing inputs.')
 def scrape(
         dir: str,
         path: str,
@@ -130,6 +150,10 @@ def scrape(
         delete_papers_after: bool,
         output_path: str,
         force: bool,
+        compression_scope: str,
+        compression_mode: str,
+        compression_ratio: str,
+        compression_content_detection: bool,
 ):
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
@@ -152,6 +176,10 @@ def scrape(
         delete_papers_after=delete_papers_after,
         output_path=output_path,
         force=force,
+        compression_scope=compression_scope,
+        compression_mode=compression_mode,
+        compression_ratio=compression_ratio,
+        compression_content_detection=compression_content_detection,
     )
 
 
@@ -211,13 +239,28 @@ def update_anthropic_api_key():
               type=float,
               show_default=True,
               help='Nucleus sampling probability mass for model requests.')
+@click.option('--input-token-limit',
+              default=DEFAULT_INPUT_TOKEN_LIMIT,
+              type=int,
+              show_default=True,
+              help='Maximum input tokens to send to the model before chunking.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
-                 capabilities: tuple[str], temperature: float, top_p: float):
+                 capabilities: tuple[str], temperature: float, top_p: float, input_token_limit: int):
     """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
-    set_model_profile(profile, provider, model, base_url, api_key, caps, temperature=temperature, top_p=top_p)
+    set_model_profile(
+        profile,
+        provider,
+        model,
+        base_url,
+        api_key,
+        caps,
+        temperature=temperature,
+        top_p=top_p,
+        input_token_limit=input_token_limit,
+    )
     click.echo(
-        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p}')
+        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
 
 def update_model_config():
@@ -232,7 +275,7 @@ def model_status():
         config = get_model_profile(profile)
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
-            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} base_url={config.get("base_url")}')
+            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
 @click.command()

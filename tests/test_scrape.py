@@ -77,11 +77,34 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
         - Short text is returned as one chunk.
         - Long text is split into the expected number of ordered chunks.
     """
-    monkeypatch.setattr(scrape, 'token_length', lambda text, model_name: 120000)
-    assert scrape._text_chunks('short text', 'model') == ['short text']
+    text_config = FakeModelConfig('text', name='model')
+    reserve_calls = []
 
-    monkeypatch.setattr(scrape, 'token_length', lambda text, model_name: 240001)
-    chunks = scrape._text_chunks('abcdef', 'model')
+    def fake_reserve(prompt, model_config=None, buffer_tokens=500):
+        reserve_calls.append({
+            'prompt': prompt,
+            'model_config': model_config,
+            'buffer_tokens': buffer_tokens,
+        })
+        return 750
+
+    def fake_limit(model_config=None, reserve_tokens=2000):
+        assert reserve_tokens == 750
+        return 120000
+
+    def short_count(text, model_config=None):
+        return 120000
+
+    monkeypatch.setattr(scrape, 'prompt_token_reserve', fake_reserve)
+    monkeypatch.setattr(scrape, 'usable_input_token_limit', fake_limit)
+    monkeypatch.setattr(scrape, 'token_length', short_count)
+    assert scrape._text_chunks('short text', text_config, prompt='extract prompt') == ['short text']
+    assert reserve_calls == [{'prompt': 'extract prompt', 'model_config': text_config, 'buffer_tokens': 500}]
+
+    monkeypatch.setattr(scrape, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: 500)
+    monkeypatch.setattr(scrape, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=2000: 120000)
+    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 240001)
+    chunks = scrape._text_chunks('abcdef', text_config)
     assert chunks == ['ab', 'cd', 'ef']
 
 
@@ -169,6 +192,12 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path):
         scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), image_context='bad')
     with pytest.raises(ValueError, match='image_extraction must be one of'):
         scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), image_extraction='bad')
+    with pytest.raises(ValueError, match='compression_scope must be one of'):
+        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_scope='bad')
+    with pytest.raises(ValueError, match='compression_mode must be one of'):
+        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_mode='bad')
+    with pytest.raises(ValueError, match='compression_ratio must be'):
+        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_ratio='1.5')
 
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_deletes_source(tmp_path, monkeypatch, capsys):
@@ -204,15 +233,16 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_deletes_sou
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_name: ['chunk one', 'chunk two'])
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk one', 'chunk two'])
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: f'read {os.path.basename(path)}')
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_analyze_text(text, recipe, model_config=None):
         calls.setdefault('chunks', []).append(text)
         calls.setdefault('configs', []).append(model_config)
         return [{'Name': f'material from {text}'}]
 
-    monkeypatch.setattr(scrape, 'analyze_text', fake_analyze_text)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_analyze_text)
 
     scrape.scrape_papers(
         str(papers_dir),
@@ -282,6 +312,79 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, mo
     assert 'No new scraped material rows were written' in output
 
 
+def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
+    """
+    Test scrape-time text compression before chunking and analysis.
+
+    This function performs the following steps:
+    1. Writes a papers CSV and matching text file for one pending paper.
+    2. Replaces compression, chunking, and text analysis helpers with local fakes.
+    3. Calls `scrape_papers` with text compression enabled.
+    4. Reads the values recorded by the fake helpers.
+
+    Asserts:
+        - Text compression receives the full paper text and extraction prompt.
+        - Chunking receives the compressed text.
+        - Text analysis receives chunks made from the compressed text.
+    """
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    (papers_dir / 'paper-1.txt').write_text('paper text')
+    papers_path = tmp_path / 'papers.csv'
+    output_path = tmp_path / 'scraped.csv'
+    write_papers_csv(papers_path, [{'paper_id': 'paper-1'}])
+    calls = {}
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'full paper text')
+
+    def fake_compress(text, prompt, model_config, config):
+        calls['compress'] = {
+            'text': text,
+            'prompt_contains': 'paper text' in prompt,
+            'scope': config.scope,
+            'mode': config.mode,
+            'ratio': config.ratio,
+            'content_detection': config.content_detection,
+        }
+        return 'compressed paper text'
+
+    def fake_chunks(text, model_config, prompt=''):
+        calls['chunk_text'] = text
+        return ['compressed chunk']
+
+    def fake_scrape_text(text, recipe, model_config=None):
+        calls['analyzed_text'] = text
+        return [{'Name': 'compressed material'}]
+
+    monkeypatch.setattr(scrape, 'maybe_compress_text', fake_compress)
+    monkeypatch.setattr(scrape, '_text_chunks', fake_chunks)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
+
+    scrape.scrape_papers(
+        str(papers_dir),
+        papers_path=str(papers_path),
+        output_path=str(output_path),
+        compression_scope='text',
+        compression_mode='always',
+        compression_ratio='0.4',
+        compression_content_detection=False,
+    )
+
+    assert calls['compress'] == {
+        'text': 'full paper text',
+        'prompt_contains': True,
+        'scope': 'text',
+        'mode': 'always',
+        'ratio': 0.4,
+        'content_detection': False,
+    }
+    assert calls['chunk_text'] == 'compressed paper text'
+    assert calls['analyzed_text'] == 'compressed chunk'
+
+
 def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, monkeypatch):
     """
     Test combined text and image scraping.
@@ -316,7 +419,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_name: ['single chunk'])
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['single chunk'])
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text context')
 
     def fake_extract_pdf_images(pdf_path_arg, output_dir, prefix, strategy, dpi):
@@ -337,9 +440,10 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
         calls['text'] = text
         return [{'Name': 'text LLZO'}]
 
-    def fake_analyze_images(image_paths, recipe, model_config=None, context=None):
+    def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
         calls.setdefault('image_batches', []).append(image_paths)
         calls.setdefault('contexts', []).append(context)
+        calls.setdefault('image_compression', []).append(compression_config)
         return [{'Name': f'image {len(image_paths)}'}]
 
     def fake_combine(text_materials, image_materials, recipe, model_config=None):
@@ -347,8 +451,8 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
         return [{'Name': 'combined LLZO'}]
 
     monkeypatch.setattr(scrape, 'extract_pdf_images', fake_extract_pdf_images)
-    monkeypatch.setattr(scrape, 'analyze_text', fake_analyze_text)
-    monkeypatch.setattr(scrape, 'analyze_images', fake_analyze_images)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_analyze_text)
+    monkeypatch.setattr(scrape, 'scrape_images', fake_analyze_images)
     monkeypatch.setattr(scrape, 'combine_material_records', fake_combine)
 
     scrape.scrape_papers(
@@ -381,6 +485,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     assert FakeModelConfig.required == ['vision']
     assert calls['text'] == 'single chunk'
     assert calls['contexts'] == ['text context', 'text context']
+    assert [config.scope for config in calls['image_compression']] == ['none', 'none']
     assert calls['combine'][0] == [{'Name': 'text LLZO'}]
     assert calls['combine'][1] == [{'Name': 'image 1'}, {'Name': 'image 1'}]
     assert calls['image_extract']['strategy'] == 'pages'
@@ -423,11 +528,11 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_name: ['chunk'])
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk'])
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text')
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
-    monkeypatch.setattr(scrape, 'analyze_text', lambda *_, **__: [{'Name': 'text material'}])
-    monkeypatch.setattr(scrape, 'analyze_images', lambda *_, **__: [{'Name': 'image material'}])
+    monkeypatch.setattr(scrape, 'scrape_text', lambda *_, **__: [{'Name': 'text material'}])
+    monkeypatch.setattr(scrape, 'scrape_images', lambda *_, **__: [{'Name': 'image material'}])
 
     monkeypatch.setattr(scrape, 'combine_material_records', lambda *_, **__: [])
 
@@ -480,12 +585,13 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_deletes_pd
     monkeypatch.setattr(scrape, 'read_pdf_text', lambda path: f'context from {os.path.basename(path)}')
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
 
-    def fake_analyze_images(image_paths, recipe, model_config=None, context=None):
+    def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
         calls['image_paths'] = image_paths
         calls['context'] = context
+        calls['compression_config'] = compression_config
         return [{'Name': 'image-only material'}]
 
-    monkeypatch.setattr(scrape, 'analyze_images', fake_analyze_images)
+    monkeypatch.setattr(scrape, 'scrape_images', fake_analyze_images)
 
     scrape.scrape_papers(
         str(papers_dir),
@@ -500,6 +606,7 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_deletes_pd
     papers = pd.read_csv(papers_path, index_col=0)
     assert calls['image_paths'] == [str(image_path)]
     assert calls['context'] == 'context from paper-1.pdf'
+    assert calls['compression_config'].scope == 'none'
     assert materials['Name'].tolist() == ['image-only material']
     assert materials['Source'].tolist() == ['image']
     assert materials['Source path'].tolist() == [str(image_path)]

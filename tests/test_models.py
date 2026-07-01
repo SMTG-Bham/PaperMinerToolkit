@@ -9,6 +9,7 @@ import types
 
 import pytest
 
+from paperscraper.compression import CompressionConfig
 import paperscraper.models as models
 
 
@@ -48,6 +49,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
         'capabilities': 'text, vision',
         'temperature': '0.1',
         'top_p': '0.8',
+        'input_token_limit': '64000',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -60,6 +62,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
     assert config.capabilities == {'text', 'vision'}
     assert config.temperature == 0.3
     assert config.top_p == 0.8
+    assert config.input_token_limit == 64000
 
 
 def test_model_config_generation_args_and_require():
@@ -209,6 +212,60 @@ def test_openai_responses_client_queries_text_and_images(monkeypatch, tmp_path):
         client.query([{'role': 'user', 'content': 'hello'}])
     with pytest.raises(RuntimeError, match='OpenAI vision request failed'):
         client.query_with_images('look', [str(image_path)])
+
+
+def test_openai_vision_client_applies_image_compression_config(monkeypatch, tmp_path):
+    """
+    Test OpenAI vision requests apply configured image compression.
+
+    This function performs the following steps:
+    1. Replaces the OpenAI SDK and image compression helper with local fakes.
+    2. Sends a vision request with image compression enabled.
+    3. Reads the payload passed to the fake OpenAI client.
+
+    Asserts:
+        - The image compression helper receives the generated image message payload.
+        - The compressed message payload is sent to the provider.
+        - The selected compression config is passed through unchanged.
+    """
+    calls = {}
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            calls['request'] = kwargs
+            return types.SimpleNamespace(output_text='model text')
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponses()
+
+    def fake_compress(messages, image_paths, prompt, context, model_config, compression_config):
+        calls['compression'] = {
+            'messages': messages,
+            'image_paths': image_paths,
+            'prompt': prompt,
+            'context': context,
+            'model_config': model_config,
+            'compression_config': compression_config,
+        }
+        return [{'role': 'user', 'content': [{'type': 'compressed_image'}]}]
+
+    monkeypatch.setattr(models.openai, 'OpenAI', FakeOpenAI)
+    monkeypatch.setattr(models, 'maybe_compress_image_messages', fake_compress)
+    image_path = tmp_path / 'image.png'
+    image_path.write_bytes(b'image bytes')
+    config = text_config(capabilities={'text', 'vision'})
+    compression_config = CompressionConfig(scope='images', mode='always')
+    client = models.OpenAIResponsesClient(config)
+
+    assert client.query_with_images('look', [str(image_path)], context='context',
+                                    compression_config=compression_config) == 'model text'
+    assert calls['request']['input'] == [{'role': 'user', 'content': [{'type': 'compressed_image'}]}]
+    assert calls['compression']['image_paths'] == [str(image_path)]
+    assert calls['compression']['prompt'] == 'look'
+    assert calls['compression']['context'] == 'context'
+    assert calls['compression']['model_config'] is config
+    assert calls['compression']['compression_config'] is compression_config
 
 
 def test_anthropic_messages_client_queries_text_and_images(monkeypatch, tmp_path):
@@ -396,11 +453,12 @@ def test_query_helpers_delegate_to_selected_client(monkeypatch):
             assert max_output_tokens == 5
             return 'text result'
 
-        def query_with_images(self, prompt, image_paths, context, max_output_tokens):
+        def query_with_images(self, prompt, image_paths, context, max_output_tokens, compression_config=None):
             assert prompt == 'look'
             assert image_paths == ['image.png']
             assert context == 'context'
             assert max_output_tokens == 7
+            assert compression_config is None
             return 'image result'
 
     monkeypatch.setattr(models, 'get_model_client', lambda config=None: FakeClient())

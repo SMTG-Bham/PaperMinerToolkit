@@ -17,6 +17,7 @@ SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.pscraperrc.js
 DEFAULT_MODEL = 'gpt-5.4-mini'
 DEFAULT_TEMPERATURE = 0
 DEFAULT_TOP_P = 1
+DEFAULT_INPUT_TOKEN_LIMIT = 32000
 DEFAULT_MODEL_PROFILE = {
     'provider': 'openai',
     'model': DEFAULT_MODEL,
@@ -25,6 +26,7 @@ DEFAULT_MODEL_PROFILE = {
     'capabilities': ['text'],
     'temperature': DEFAULT_TEMPERATURE,
     'top_p': DEFAULT_TOP_P,
+    'input_token_limit': DEFAULT_INPUT_TOKEN_LIMIT,
 }
 DEFAULT_SETTINGS = {
     'model_profiles': {
@@ -60,6 +62,10 @@ def _merge_profile(default, configured):
     profile['capabilities'] = _capabilities(profile.get('capabilities'), default.get('capabilities'))
     profile['temperature'] = _float_setting(profile.get('temperature'), DEFAULT_TEMPERATURE)
     profile['top_p'] = _float_setting(profile.get('top_p'), DEFAULT_TOP_P)
+    input_token_limit = profile.get('input_token_limit')
+    if input_token_limit is None or input_token_limit == '':
+        input_token_limit = DEFAULT_INPUT_TOKEN_LIMIT
+    profile['input_token_limit'] = int(input_token_limit)
     return profile
 
 
@@ -73,6 +79,7 @@ def _env_profile(prefix):
         'capabilities': os.environ.get(f'{prefix}CAPABILITIES'),
         'temperature': os.environ.get(f'{prefix}TEMPERATURE'),
         'top_p': os.environ.get(f'{prefix}TOP_P'),
+        'input_token_limit': os.environ.get(f'{prefix}INPUT_TOKEN_LIMIT'),
     }
     return {key: value for key, value in env.items() if value is not None and value != ''}
 
@@ -161,7 +168,8 @@ def infer_model_capabilities(profile: str, model: str):
 
 
 def set_model_profile(profile: str, provider: str, model: str, base_url=None, api_key=None, capabilities=None,
-                      temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P):
+                      temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P,
+                      input_token_limit=DEFAULT_INPUT_TOKEN_LIMIT):
     """Store a model profile for later text or vision extraction runs."""
     settings = load_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
@@ -173,6 +181,7 @@ def set_model_profile(profile: str, provider: str, model: str, base_url=None, ap
         'capabilities': capabilities,
         'temperature': float(temperature),
         'top_p': float(top_p),
+        'input_token_limit': int(input_token_limit),
     }
     save_settings(settings)
 
@@ -264,7 +273,9 @@ def update_model_settings(settings=True):
     capabilities = input('Enter capabilities as comma-separated values [text,vision]: ').strip()
     temperature = input('Enter temperature [0]: ').strip() or DEFAULT_TEMPERATURE
     top_p = input('Enter top_p [1]: ').strip() or DEFAULT_TOP_P
+    input_token_limit = input(f'Enter input token limit [{DEFAULT_INPUT_TOKEN_LIMIT}]: ').strip()
+    input_token_limit = input_token_limit or DEFAULT_INPUT_TOKEN_LIMIT
     if not model:
         raise ValueError('Model name is required.')
     set_model_profile(profile, provider, model, base_url, api_key, capabilities or None, temperature=temperature,
-                      top_p=top_p)
+                      top_p=top_p, input_token_limit=input_token_limit)

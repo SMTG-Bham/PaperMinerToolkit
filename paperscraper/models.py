@@ -12,7 +12,8 @@ import requests
 from dataclasses import dataclass, field
 from typing import Any
 
-from paperscraper.settings import DEFAULT_MODEL, get_model_profile, load_settings
+from paperscraper.compression import CompressionConfig, maybe_compress_image_messages
+from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
 
 
 class ModelCapabilityError(ValueError):
@@ -31,6 +32,7 @@ class ModelConfig:
     capabilities: set[str] = field(default_factory=lambda: {'text'})
     temperature: float = 0
     top_p: float = 1
+    input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides):
@@ -50,6 +52,9 @@ class ModelConfig:
             capabilities=set(capabilities or ['text']),
             temperature=float(overrides.get('temperature', configured.get('temperature', 0))),
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
+            input_token_limit=int(
+                overrides.get('input_token_limit', configured.get('input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT))
+            ),
         )
 
     def generation_args(self):
@@ -88,7 +93,8 @@ class BaseModelClient:
                           prompt: str,
                           image_paths: list[str],
                           context: str | None = None,
-                          max_output_tokens: int = 10000) -> str:
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None) -> str:
         """Send a vision request with local images and return the text response."""
         raise NotImplementedError
 
@@ -135,7 +141,8 @@ class OpenAIResponsesClient(BaseModelClient):
                           prompt: str,
                           image_paths: list[str],
                           context: str | None = None,
-                          max_output_tokens: int = 10000) -> str:
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None) -> str:
         """Send image inputs through OpenAI Responses."""
         self.config.require('vision')
         content = [{'type': 'input_text', 'text': prompt}]
@@ -143,10 +150,19 @@ class OpenAIResponsesClient(BaseModelClient):
             content.append({'type': 'input_text', 'text': context})
         for image_path in image_paths:
             content.append({'type': 'input_image', 'image_url': image_to_data_url(image_path)})
+        messages = [{'role': 'user', 'content': content}]
+        messages = maybe_compress_image_messages(
+            messages,
+            image_paths,
+            prompt,
+            context,
+            self.config,
+            compression_config,
+        )
         try:
             response = self.client.responses.create(
                 model=self.config.name,
-                input=[{'role': 'user', 'content': content}],
+                input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
             )
@@ -179,7 +195,8 @@ class AnthropicMessagesClient(BaseModelClient):
                           prompt: str,
                           image_paths: list[str],
                           context: str | None = None,
-                          max_output_tokens: int = 10000) -> str:
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None) -> str:
         """Send image inputs through Anthropic Messages."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
@@ -193,7 +210,16 @@ class AnthropicMessagesClient(BaseModelClient):
                 'type': 'image',
                 'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
             })
-        return self._request('', [{'role': 'user', 'content': content}], max_output_tokens)
+        messages = [{'role': 'user', 'content': content}]
+        messages = maybe_compress_image_messages(
+            messages,
+            image_paths,
+            prompt,
+            context,
+            self.config,
+            compression_config,
+        )
+        return self._request('', messages, max_output_tokens)
 
     def _request(self, system, anthropic_messages, max_output_tokens):
         """Post a prepared Anthropic Messages payload and return joined text."""
@@ -243,7 +269,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
                           prompt: str,
                           image_paths: list[str],
                           context: str | None = None,
-                          max_output_tokens: int = 10000) -> str:
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None) -> str:
         """Send image inputs as OpenAI-compatible chat content."""
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
@@ -251,7 +278,16 @@ class OpenAICompatibleChatClient(BaseModelClient):
             content.append({'type': 'text', 'text': context})
         for image_path in image_paths:
             content.append({'type': 'image_url', 'image_url': {'url': image_to_data_url(image_path)}})
-        return self._chat([{'role': 'user', 'content': content}], max_output_tokens)
+        messages = [{'role': 'user', 'content': content}]
+        messages = maybe_compress_image_messages(
+            messages,
+            image_paths,
+            prompt,
+            context,
+            self.config,
+            compression_config,
+        )
+        return self._chat(messages, max_output_tokens)
 
     def _chat(self, messages, max_output_tokens):
         """Call the chat completions endpoint and return the first message text."""
@@ -293,7 +329,9 @@ def query_images(prompt: str,
                  image_paths: list[str],
                  config: ModelConfig | None = None,
                  context: str | None = None,
-                 max_output_tokens: int = 10000) -> str:
+                 max_output_tokens: int = 10000,
+                 compression_config: CompressionConfig | None = None) -> str:
     """Send an image request through the configured vision model provider."""
     return get_model_client(config).query_with_images(prompt, image_paths, context=context,
-                                                      max_output_tokens=max_output_tokens)
+                                                      max_output_tokens=max_output_tokens,
+                                                      compression_config=compression_config)

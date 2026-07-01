@@ -160,6 +160,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         '--delete-papers-after',
         '--output', 'scraped.csv',
         '--force',
+        '--compression-scope', 'both',
+        '--compression-mode', 'always',
+        '--compression-ratio', 'auto',
+        '--no-compression-content-detection',
     ])
 
     assert result.exit_code == 0
@@ -181,6 +185,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         'delete_papers_after': True,
         'output_path': 'scraped.csv',
         'force': True,
+        'compression_scope': 'both',
+        'compression_mode': 'always',
+        'compression_ratio': 'auto',
+        'compression_content_detection': False,
     }
 
 
@@ -273,7 +281,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
     monkeypatch.setattr(
         cli,
         'set_model_profile',
-        lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p: calls.update({
+        lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit: calls.update({
             'profile': profile,
             'provider': provider,
             'model': model,
@@ -282,6 +290,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
             'capabilities': capabilities,
             'temperature': temperature,
             'top_p': top_p,
+            'input_token_limit': input_token_limit,
         }),
     )
 
@@ -291,6 +300,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         '--model', 'gpt-test',
         '--temperature', '0.2',
         '--top-p', '0.9',
+        '--input-token-limit', '64000',
     ])
 
     assert result.exit_code == 0
@@ -303,8 +313,9 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         'capabilities': ['text'],
         'temperature': 0.2,
         'top_p': 0.9,
+        'input_token_limit': 64000,
     }
-    assert 'Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9' in result.output
+    assert 'Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000' in result.output
 
 
 def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
@@ -329,8 +340,9 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
     monkeypatch.setattr(
         cli,
         'set_model_profile',
-        lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p: calls.update({
+        lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit: calls.update({
             'capabilities': capabilities,
+            'input_token_limit': input_token_limit,
         }),
     )
 
@@ -346,6 +358,7 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
 
     assert result.exit_code == 0
     assert calls['capabilities'] == ['text', 'vision']
+    assert calls['input_token_limit'] == cli.DEFAULT_INPUT_TOKEN_LIMIT
 
 
 def test_model_status_prints_text_and_vision_profiles(monkeypatch):
@@ -367,6 +380,7 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
             'capabilities': ['text'],
             'temperature': 0.0,
             'top_p': 1.0,
+            'input_token_limit': 32000,
             'base_url': None,
         },
         'vision': {
@@ -375,6 +389,7 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
             'capabilities': ['text', 'vision'],
             'temperature': 0.1,
             'top_p': 0.8,
+            'input_token_limit': 120000,
             'base_url': 'http://localhost:8000/v1',
         },
     }
@@ -383,8 +398,8 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
     result = CliRunner().invoke(cli.model_status)
 
     assert result.exit_code == 0
-    assert 'text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 base_url=None' in result.output
-    assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8' in result.output
+    assert 'text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 input_token_limit=32000 base_url=None' in result.output
+    assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000' in result.output
 
 
 def test_update_model_config_calls_interactive_settings_helper(monkeypatch):
