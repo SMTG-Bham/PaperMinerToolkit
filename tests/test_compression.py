@@ -316,7 +316,7 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
     Test Headroom universal compressor integration.
 
     This function performs the following steps:
-    1. Installs a fake `headroom` module in `sys.modules`.
+    1. Installs fake `headroom` and `headroom.compression` modules in `sys.modules`.
     2. Calls `compress_content` with a prompt context.
     3. Reads the fake compressor calls.
 
@@ -336,15 +336,16 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
         def __init__(self, config):
             calls['compressor_config'] = config
 
-        def compress(self, content, context=None):
+        def compress(self, content):
             calls['content'] = content
-            calls['context'] = context
             return types.SimpleNamespace(compressed='compressed content')
 
     fake_headroom = types.ModuleType('headroom')
-    fake_headroom.UniversalCompressor = FakeUniversalCompressor
-    fake_headroom.UniversalCompressorConfig = FakeUniversalCompressorConfig
+    fake_headroom_compression = types.ModuleType('headroom.compression')
+    fake_headroom_compression.UniversalCompressor = FakeUniversalCompressor
+    fake_headroom_compression.UniversalCompressorConfig = FakeUniversalCompressorConfig
     monkeypatch.setitem(sys.modules, 'headroom', fake_headroom)
+    monkeypatch.setitem(sys.modules, 'headroom.compression', fake_headroom_compression)
 
     assert compression.compress_content(
         'full paper text',
@@ -360,7 +361,6 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
     }
     assert calls['compressor_config'].kwargs == calls['config']
     assert calls['content'] == 'full paper text'
-    assert calls['context'] == 'extract materials'
 
 
 @pytest.mark.slow
@@ -377,8 +377,8 @@ def test_compress_content_uses_real_headroom_universal_compressor():
         - The real Headroom integration returns a non-empty string.
         - The returned value is not longer than the original input text.
     """
-    headroom = pytest.importorskip('headroom')
-    if not hasattr(headroom, 'UniversalCompressor'):
+    headroom_compression = pytest.importorskip('headroom.compression')
+    if not hasattr(headroom_compression, 'UniversalCompressor'):
         pytest.skip('Headroom universal compressor is not installed.')
     text = (
         'Lithium solid electrolyte conductivity was measured at room temperature. '

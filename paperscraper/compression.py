@@ -158,7 +158,7 @@ def _compressed_content(result):
 def _universal_compressor(compression_ratio=0.5, content_detection=True):
     """Create a Headroom universal compressor with PaperScraper safety defaults."""
     try:
-        from headroom import UniversalCompressor, UniversalCompressorConfig
+        from headroom.compression import UniversalCompressor, UniversalCompressorConfig
     except ImportError as e:
         raise RuntimeError('Headroom universal compression requires the headroom-ai package.') from e
     config = UniversalCompressorConfig(
@@ -176,7 +176,7 @@ def compress_content(content, prompt='', compression_ratio=0.5, content_detectio
         compression_ratio=compression_ratio,
         content_detection=content_detection,
     )
-    result = compressor.compress(content, context=prompt or None)
+    result = compressor.compress(content)
     compressed = _compressed_content(result)
     return compressed if compressed else content
 
