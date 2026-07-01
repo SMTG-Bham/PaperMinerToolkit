@@ -139,37 +139,46 @@ def estimate_image_tokens(image_paths, model_config=None):
     return total
 
 
-def _compressed_text(result):
-    """Extract compressed text from common Headroom result shapes."""
-    if isinstance(result, str):
+def _compressed_content(result):
+    """Extract compressed content from common Headroom result shapes."""
+    if isinstance(result, (str, list, tuple)):
         return result
-    for name in ['compressed', 'text', 'output']:
+    for name in ['compressed', 'content', 'text', 'output']:
         value = getattr(result, name, None)
-        if isinstance(value, str):
+        if value is not None:
             return value
     if isinstance(result, dict):
-        for name in ['compressed', 'text', 'output']:
+        for name in ['compressed', 'content', 'text', 'output']:
             value = result.get(name)
-            if isinstance(value, str):
+            if value is not None:
                 return value
     return str(result)
 
 
-def compress_text(text, prompt='', compression_ratio=0.5, content_detection=True):
-    """Compress text with Headroom's general-purpose text compressor."""
+def _universal_compressor(compression_ratio=0.5, content_detection=True):
+    """Create a Headroom universal compressor with PaperScraper safety defaults."""
     try:
-        from headroom.transforms import TextCompressor
+        from headroom import UniversalCompressor, UniversalCompressorConfig
     except ImportError as e:
-        raise RuntimeError('Headroom text compression requires the headroom-ai package.') from e
-    result = TextCompressor().compress(
-        text,
-        context=prompt or None,
+        raise RuntimeError('Headroom universal compression requires the headroom-ai package.') from e
+    config = UniversalCompressorConfig(
         compression_ratio_target=compression_ratio,
         use_magika=content_detection,
         use_entropy_preservation=True,
+        ccr_enabled=False,
     )
-    compressed = _compressed_text(result)
-    return compressed if compressed else text
+    return UniversalCompressor(config)
+
+
+def compress_content(content, prompt='', compression_ratio=0.5, content_detection=True):
+    """Compress text or provider-shaped message payloads with Headroom's universal compressor."""
+    compressor = _universal_compressor(
+        compression_ratio=compression_ratio,
+        content_detection=content_detection,
+    )
+    result = compressor.compress(content, context=prompt or None)
+    compressed = _compressed_content(result)
+    return compressed if compressed else content
 
 
 def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
@@ -178,27 +187,11 @@ def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
         input_tokens = count_text_tokens(text, model_config=model_config)
         token_budget = _request_token_budget(prompt, model_config)
         ratio = ideal_compression_ratio(input_tokens, token_budget, config)
-        return compress_text(text,
-                             prompt=prompt,
-                             compression_ratio=ratio,
-                             content_detection=config.content_detection)
+        return compress_content(text,
+                                prompt=prompt,
+                                compression_ratio=ratio,
+                                content_detection=config.content_detection)
     return text
-
-
-def compress_image_messages(messages, provider='openai', compression_ratio=0.5, content_detection=True):
-    """Compress provider-shaped image messages with Headroom's image compressor."""
-    try:
-        from headroom.image import ImageCompressor
-    except ImportError as e:
-        raise RuntimeError('Headroom image compression requires the headroom-ai image dependencies.') from e
-    result = ImageCompressor().compress(
-        messages,
-        provider=(provider or 'openai').lower(),
-        compression_ratio_target=compression_ratio,
-        use_magika=content_detection,
-        use_entropy_preservation=True,
-    )
-    return result
 
 
 def maybe_compress_image_messages(messages,
@@ -216,7 +209,7 @@ def maybe_compress_image_messages(messages,
     )
     token_budget = _request_token_budget(prompt, model_config)
     ratio = ideal_compression_ratio(input_tokens, token_budget, config)
-    return compress_image_messages(messages,
-                                   provider=getattr(model_config, 'provider', 'openai'),
-                                   compression_ratio=ratio,
-                                   content_detection=config.content_detection)
+    return compress_content(messages,
+                            prompt=prompt,
+                            compression_ratio=ratio,
+                            content_detection=config.content_detection)

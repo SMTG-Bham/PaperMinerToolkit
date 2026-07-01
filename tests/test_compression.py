@@ -311,59 +311,65 @@ def test_image_size_returns_none_for_readable_non_png_files(tmp_path):
     assert compression._image_size(str(text_path)) is None
 
 
-def test_compress_text_uses_headroom_text_compressor(monkeypatch):
+def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
     """
-    Test Headroom text compressor integration.
+    Test Headroom universal compressor integration.
 
     This function performs the following steps:
-    1. Installs a fake `headroom.transforms` module in `sys.modules`.
-    2. Calls `compress_text` with a prompt context.
+    1. Installs a fake `headroom` module in `sys.modules`.
+    2. Calls `compress_content` with a prompt context.
     3. Reads the fake compressor calls.
 
     Asserts:
-        - Headroom's `TextCompressor` is instantiated and called.
-        - The compressed text from the Headroom result is returned.
-        - Prompt text is passed as compression context.
+        - Headroom's `UniversalCompressorConfig` is built with PaperScraper options.
+        - Headroom's `UniversalCompressor` is instantiated and called.
+        - The compressed content from the Headroom result is returned.
     """
     calls = {}
 
-    class FakeTextCompressor:
-        def compress(self, text, context=None, **kwargs):
-            calls['text'] = text
+    class FakeUniversalCompressorConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            calls['config'] = kwargs
+
+    class FakeUniversalCompressor:
+        def __init__(self, config):
+            calls['compressor_config'] = config
+
+        def compress(self, content, context=None):
+            calls['content'] = content
             calls['context'] = context
-            calls['kwargs'] = kwargs
-            return types.SimpleNamespace(compressed='compressed paper text')
+            return types.SimpleNamespace(compressed='compressed content')
 
     fake_headroom = types.ModuleType('headroom')
-    fake_transforms = types.ModuleType('headroom.transforms')
-    fake_transforms.TextCompressor = FakeTextCompressor
+    fake_headroom.UniversalCompressor = FakeUniversalCompressor
+    fake_headroom.UniversalCompressorConfig = FakeUniversalCompressorConfig
     monkeypatch.setitem(sys.modules, 'headroom', fake_headroom)
-    monkeypatch.setitem(sys.modules, 'headroom.transforms', fake_transforms)
 
-    assert compression.compress_text(
+    assert compression.compress_content(
         'full paper text',
         prompt='extract materials',
         compression_ratio=0.5,
         content_detection=False,
-    ) == 'compressed paper text'
-    assert calls == {
-        'text': 'full paper text',
-        'context': 'extract materials',
-        'kwargs': {
-            'compression_ratio_target': 0.5,
-            'use_magika': False,
-            'use_entropy_preservation': True,
-        },
+    ) == 'compressed content'
+    assert calls['config'] == {
+        'compression_ratio_target': 0.5,
+        'use_magika': False,
+        'use_entropy_preservation': True,
+        'ccr_enabled': False,
     }
+    assert calls['compressor_config'].kwargs == calls['config']
+    assert calls['content'] == 'full paper text'
+    assert calls['context'] == 'extract materials'
 
 
 @pytest.mark.slow
-def test_compress_text_uses_real_headroom_text_compressor():
+def test_compress_content_uses_real_headroom_universal_compressor():
     """
-    Test real Headroom text compression through the PaperScraper wrapper.
+    Test real Headroom universal compression through the PaperScraper wrapper.
 
     This function performs the following steps:
-    1. Skips the test when Headroom's text compressor is not installed.
+    1. Skips the test when Headroom's universal compressor is not installed.
     2. Compresses a small repetitive paper-like text with the real Headroom compressor.
     3. Reads the returned compressed text.
 
@@ -371,38 +377,42 @@ def test_compress_text_uses_real_headroom_text_compressor():
         - The real Headroom integration returns a non-empty string.
         - The returned value is not longer than the original input text.
     """
-    pytest.importorskip('headroom.transforms')
+    headroom = pytest.importorskip('headroom')
+    if not hasattr(headroom, 'UniversalCompressor'):
+        pytest.skip('Headroom universal compressor is not installed.')
     text = (
         'Lithium solid electrolyte conductivity was measured at room temperature. '
         'The lithium solid electrolyte conductivity was reported as 1e-3 S cm^-1. '
         'The same lithium solid electrolyte sample was tested repeatedly under identical conditions. '
     ) * 6
 
-    compressed = compression.compress_text(text, prompt='Extract lithium solid electrolyte materials data.')
+    compressed = compression.compress_content(text, prompt='Extract lithium solid electrolyte materials data.')
 
     assert isinstance(compressed, str)
     assert compressed.strip()
     assert len(compressed) <= len(text)
 
 
-def test_compressed_text_handles_common_result_shapes():
+def test_compressed_content_handles_common_result_shapes():
     """
-    Test compressed text extraction from Headroom result shapes.
+    Test compressed content extraction from Headroom result shapes.
 
     This function performs the following steps:
-    1. Passes string, object, dictionary, and fallback values to `_compressed_text`.
-    2. Reads the extracted text value from each result shape.
+    1. Passes string, list, object, dictionary, and fallback values to `_compressed_content`.
+    2. Reads the extracted content value from each result shape.
     3. Compares the outputs to expected strings.
 
     Asserts:
-        - Strings are returned unchanged.
-        - Object and dictionary compressed fields are preferred.
+        - Strings and lists are returned unchanged.
+        - Object and dictionary compressed/content fields are preferred.
         - Unknown result shapes are converted to strings.
     """
-    assert compression._compressed_text('already compressed') == 'already compressed'
-    assert compression._compressed_text(types.SimpleNamespace(text='object text')) == 'object text'
-    assert compression._compressed_text({'output': 'dict output'}) == 'dict output'
-    assert compression._compressed_text(42) == '42'
+    message_payload = [{'role': 'user', 'content': []}]
+    assert compression._compressed_content('already compressed') == 'already compressed'
+    assert compression._compressed_content(message_payload) == message_payload
+    assert compression._compressed_content(types.SimpleNamespace(content='object content')) == 'object content'
+    assert compression._compressed_content({'output': 'dict output'}) == 'dict output'
+    assert compression._compressed_content(42) == '42'
 
 
 def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
@@ -433,7 +443,7 @@ def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 200)
     monkeypatch.setattr(
         compression,
-        'compress_text',
+        'compress_content',
         lambda text, prompt='', compression_ratio=0.5, content_detection=True: (
             f'compressed {text} with {prompt} ratio={compression_ratio} detection={content_detection}'
         ),
@@ -443,76 +453,29 @@ def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
     )
 
 
-def test_compress_text_reports_missing_headroom_package(monkeypatch):
+def test_compress_content_reports_missing_headroom_package(monkeypatch):
     """
-    Test missing Headroom text dependency errors.
+    Test missing Headroom universal dependency errors.
 
     This function performs the following steps:
-    1. Replaces Python imports with a fake that raises for `headroom.transforms`.
-    2. Calls `compress_text`.
+    1. Replaces Python imports with a fake that raises for `headroom`.
+    2. Calls `compress_content`.
     3. Captures the expected exception.
 
     Asserts:
-        - Missing Headroom text dependencies raise `RuntimeError`.
+        - Missing Headroom universal dependencies raise `RuntimeError`.
     """
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == 'headroom.transforms':
+        if name == 'headroom':
             raise ImportError('missing headroom')
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, '__import__', fake_import)
 
-    with pytest.raises(RuntimeError, match='Headroom text compression requires'):
-        compression.compress_text('paper text')
-
-
-def test_compress_image_messages_uses_headroom_image_compressor(monkeypatch):
-    """
-    Test Headroom image compressor integration.
-
-    This function performs the following steps:
-    1. Installs a fake `headroom.image` module in `sys.modules`.
-    2. Calls `compress_image_messages` with provider-shaped messages.
-    3. Reads the fake compressor calls.
-
-    Asserts:
-        - Headroom's `ImageCompressor` is instantiated and called.
-        - Provider names are normalized before being passed to Headroom.
-        - The compressed message payload is returned.
-    """
-    calls = {}
-    messages = [{'role': 'user', 'content': [{'type': 'image_url'}]}]
-
-    class FakeImageCompressor:
-        def compress(self, payload, provider='openai', **kwargs):
-            calls['messages'] = payload
-            calls['provider'] = provider
-            calls['kwargs'] = kwargs
-            return [{'role': 'user', 'content': [{'type': 'compressed_image'}]}]
-
-    fake_headroom = types.ModuleType('headroom')
-    fake_image = types.ModuleType('headroom.image')
-    fake_image.ImageCompressor = FakeImageCompressor
-    monkeypatch.setitem(sys.modules, 'headroom', fake_headroom)
-    monkeypatch.setitem(sys.modules, 'headroom.image', fake_image)
-
-    compressed = compression.compress_image_messages(messages,
-                                                     provider='OpenAI',
-                                                     compression_ratio=0.25,
-                                                     content_detection=False)
-
-    assert compressed == [{'role': 'user', 'content': [{'type': 'compressed_image'}]}]
-    assert calls == {
-        'messages': messages,
-        'provider': 'openai',
-        'kwargs': {
-            'compression_ratio_target': 0.25,
-            'use_magika': False,
-            'use_entropy_preservation': True,
-        },
-    }
+    with pytest.raises(RuntimeError, match='Headroom universal compression requires'):
+        compression.compress_content('paper text')
 
 
 def test_maybe_compress_image_messages_returns_original_or_compressed_payload(monkeypatch):
@@ -540,41 +503,16 @@ def test_maybe_compress_image_messages_returns_original_or_compressed_payload(mo
     monkeypatch.setattr(compression, 'count_text_tokens', lambda text, model_config=None: 100)
     monkeypatch.setattr(compression, 'estimate_image_tokens', lambda image_paths, model_config=None: 300)
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 200)
-    monkeypatch.setattr(compression, 'compress_image_messages', lambda payload, provider='openai',
+    monkeypatch.setattr(compression, 'compress_content', lambda payload, prompt='',
                         compression_ratio=0.5, content_detection=True: [{
-        'provider': provider,
         'payload': payload,
+        'prompt': prompt,
         'ratio': compression_ratio,
         'content_detection': content_detection,
     }])
     assert compression.maybe_compress_image_messages(messages, ['image.png'], 'prompt', '', cfg, policy) == [{
-        'provider': 'openai',
         'payload': messages,
+        'prompt': 'prompt',
         'ratio': 0.475,
         'content_detection': True,
     }]
-
-
-def test_compress_image_messages_reports_missing_headroom_package(monkeypatch):
-    """
-    Test missing Headroom image dependency errors.
-
-    This function performs the following steps:
-    1. Replaces Python imports with a fake that raises for `headroom.image`.
-    2. Calls `compress_image_messages`.
-    3. Captures the expected exception.
-
-    Asserts:
-        - Missing Headroom image dependencies raise `RuntimeError`.
-    """
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == 'headroom.image':
-            raise ImportError('missing headroom image')
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, '__import__', fake_import)
-
-    with pytest.raises(RuntimeError, match='Headroom image compression requires'):
-        compression.compress_image_messages([])
