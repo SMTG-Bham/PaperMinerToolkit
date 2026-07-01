@@ -10,6 +10,7 @@ readme = { file = "README.md", content-type = "text/markdown" }
 license = { text = "MIT" }
 dependencies = [
   "click",
+  "headroom-ai[image,ml]",
   "openai",
   "pandas",
   "pymupdf",
@@ -52,10 +53,11 @@ where = ["."]
 testpaths = ["tests"]
 markers = [
   "network: tests that call live external services and require credentials",
+  "slow: tests that run slower local integrations such as real compression backends",
 ]
 addopts = [
   "-m",
-  "not network",
+  "not network and not slow",
 ]
 
 [tool.coverage.run]

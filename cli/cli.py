@@ -6,6 +6,7 @@ download, scrape, store, configuration, and maintenance functions.
 
 import click
 from paperscraper.search import search_for_papers
+from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
@@ -111,6 +112,24 @@ def download(path: str, dir: str, download_format: str, sources: tuple[str]):
               is_flag=True,
               default=False,
               help='Rescrape stages even if their status is already succeeded.')
+@click.option('--compression-scope',
+              type=click.Choice(sorted(COMPRESSION_SCOPES)),
+              default='none',
+              show_default=True,
+              help='Inputs to compress with Headroom.')
+@click.option('--compression-mode',
+              type=click.Choice(sorted(COMPRESSION_MODES)),
+              default='auto',
+              show_default=True,
+              help='When to compress selected inputs.')
+@click.option('--compression-ratio',
+              default='auto',
+              show_default=True,
+              help='Target compression ratio, or "auto" to fit the configured input token budget.')
+@click.option('--compression-content-detection/--no-compression-content-detection',
+              default=True,
+              show_default=True,
+              help='Use Headroom content detection when compressing inputs.')
 def scrape(
         dir: str,
         path: str,
@@ -131,6 +150,10 @@ def scrape(
         delete_papers_after: bool,
         output_path: str,
         force: bool,
+        compression_scope: str,
+        compression_mode: str,
+        compression_ratio: str,
+        compression_content_detection: bool,
 ):
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
@@ -153,6 +176,10 @@ def scrape(
         delete_papers_after=delete_papers_after,
         output_path=output_path,
         force=force,
+        compression_scope=compression_scope,
+        compression_mode=compression_mode,
+        compression_ratio=compression_ratio,
+        compression_content_detection=compression_content_detection,
     )
 
 

@@ -160,6 +160,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         '--delete-papers-after',
         '--output', 'scraped.csv',
         '--force',
+        '--compression-scope', 'both',
+        '--compression-mode', 'always',
+        '--compression-ratio', 'auto',
+        '--no-compression-content-detection',
     ])
 
     assert result.exit_code == 0
@@ -181,6 +185,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         'delete_papers_after': True,
         'output_path': 'scraped.csv',
         'force': True,
+        'compression_scope': 'both',
+        'compression_mode': 'always',
+        'compression_ratio': 'auto',
+        'compression_content_detection': False,
     }
 
 

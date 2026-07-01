@@ -11,6 +11,7 @@ import pandas as pd
 import re
 from tqdm import tqdm
 
+from paperscraper.compression import compression_config, maybe_compress_text
 from paperscraper.documents import (extract_pdf_images,
                                     pdf_file_for_row,
                                     read_document_text,
@@ -125,11 +126,19 @@ def scrape_papers(papers_dir: str,
                   delete_papers_after: bool = False,
                   output_path: str = 'temp_scraped_materials.csv',
                   force: bool = False,
+                  compression_scope: str = 'none',
+                  compression_mode: str = 'auto',
+                  compression_ratio: float | str = 'auto',
+                  compression_content_detection: bool = True,
                   ):
     """Scrape downloaded papers with text, images, or both and write material rows."""
     mode = mode.lower()
     image_context = image_context.lower()
     image_extraction = image_extraction.lower()
+    compression = compression_config(compression_scope,
+                                     compression_mode,
+                                     ratio=compression_ratio,
+                                     content_detection=compression_content_detection)
     if mode not in SCRAPE_MODES:
         raise ValueError(f'mode must be one of: {", ".join(sorted(SCRAPE_MODES))}')
     if image_context not in IMAGE_CONTEXT_MODES:
@@ -189,7 +198,8 @@ def scrape_papers(papers_dir: str,
                             raise FileNotFoundError('No downloaded text or PDF file found for text scrape.')
                         text = read_document_text(source_path)
                         text_source_path = source_path
-                        prompt = build_scrape_prompt(recipe_data, source='paper')
+                        prompt = build_scrape_prompt(recipe_data, source='text')
+                        text = maybe_compress_text(text, prompt, text_config, compression)
                         for text_chunk in _text_chunks(text, text_config, prompt=prompt):
                             response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                             text_materials.extend(response)
@@ -223,12 +233,15 @@ def scrape_papers(papers_dir: str,
                         if image_context == 'paper-text':
                             if text is None:
                                 text = read_pdf_text(pdf_path)
+                            prompt = build_scrape_prompt(recipe_data, source='image', with_context=True)
+                            text = maybe_compress_text(text, prompt, vision_config, compression)
                             context = text
                         for image_batch in _image_batches(image_paths, image_batch_size):
                             response = scrape_images(image_batch,
                                                      recipe_data,
                                                      model_config=vision_config,
-                                                     context=context)
+                                                     context=context,
+                                                     compression_config=compression)
                             image_source_paths.extend(image_batch)
                             image_materials.extend(response)
                         papers_df.loc[i, 'image_dir'] = paper_image_dir

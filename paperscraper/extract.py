@@ -86,9 +86,9 @@ def build_image_extraction_prompt(recipe, with_context=False):
     return _base_extraction_prompt(recipe, 'paper image', source_rules)
 
 
-def build_scrape_prompt(recipe, source='paper', with_context=False):
+def build_scrape_prompt(recipe, source='text', with_context=False):
     """Select the appropriate extraction prompt for a text or image source."""
-    if source == 'paper image':
+    if source == 'image':
         return build_image_extraction_prompt(recipe, with_context=with_context)
     return build_text_extraction_prompt(recipe)
 
@@ -163,7 +163,7 @@ def _extract_json_objects(response):
 
 def scrape_text(text, recipe, model_config=None):
     """Extract structured material records from paper text."""
-    prompt = build_scrape_prompt(recipe, source='paper')
+    prompt = build_scrape_prompt(recipe, source='text')
     messages = [
         {'role': 'system', 'content': prompt},
         {'role': 'user', 'content': text},
@@ -172,11 +172,16 @@ def scrape_text(text, recipe, model_config=None):
     return _extract_json_objects(response)
 
 
-def scrape_images(image_paths, recipe, model_config=None, context=None):
+def scrape_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
     """Extract structured material records from one or more paper images."""
     config = model_config or ModelConfig.from_profile('vision')
-    prompt = build_scrape_prompt(recipe, source='paper image', with_context=context is not None)
-    response = query_images(prompt, image_paths, config=config, context=context, max_output_tokens=10000)
+    prompt = build_scrape_prompt(recipe, source='image', with_context=context is not None)
+    response = query_images(prompt,
+                            image_paths,
+                            config=config,
+                            context=context,
+                            max_output_tokens=10000,
+                            compression_config=compression_config)
     return _extract_json_objects(response)
 
 

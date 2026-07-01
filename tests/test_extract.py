@@ -70,8 +70,8 @@ def test_prompt_builders_include_recipe_schema_examples_and_source_rules():
     assert 'Do not use references' in text_prompt
     assert 'Use only information visible' in image_prompt
     assert 'supplied paper text as context' in contextual_image_prompt
-    assert extract.build_scrape_prompt(recipe, source='paper') == text_prompt
-    assert extract.build_scrape_prompt(recipe, source='paper image') == image_prompt
+    assert extract.build_scrape_prompt(recipe, source='text') == text_prompt
+    assert extract.build_scrape_prompt(recipe, source='image') == image_prompt
 
 
 def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch):
@@ -192,12 +192,13 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
             calls['vision_profile'] = profile
             return {'profile': profile}
 
-    def fake_query_images(prompt, image_paths, config, context, max_output_tokens):
+    def fake_query_images(prompt, image_paths, config, context, max_output_tokens, compression_config=None):
         calls['image_prompt'] = prompt
         calls['image_paths'] = image_paths
         calls['image_config'] = config
         calls['image_context'] = context
         calls['image_tokens'] = max_output_tokens
+        calls['image_compression'] = compression_config
         return '[{"Name": "image LLZO"}]'
 
     monkeypatch.setattr(extract, 'query_model', fake_query_model)
@@ -215,6 +216,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_config'] == {'profile': 'vision'}
     assert calls['image_context'] == 'nearby text'
     assert calls['image_tokens'] == 10000
+    assert calls['image_compression'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
 
     import paperscraper.documents as documents
