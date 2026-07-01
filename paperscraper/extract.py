@@ -8,22 +8,18 @@ units before records are stored.
 import json
 import math
 import re
-import tiktoken
 from json import JSONDecodeError
 
 from paperscraper.models import ModelConfig, query_images, query_text
 from paperscraper.settings import DEFAULT_MODEL
+from paperscraper.tokenizer import count_text_tokens, prompt_token_reserve, usable_input_token_limit
 
 
-def token_length(prompt, model=DEFAULT_MODEL):
+def token_length(prompt, model=DEFAULT_MODEL, model_config=None, provider=None):
     """Estimate token length for text, falling back to a character heuristic."""
     if type(prompt) != str:
         return []
-    try:
-        enc = tiktoken.encoding_for_model(model)
-        return len(enc.encode(prompt))
-    except Exception:
-        return max(1, math.ceil(len(prompt) / 4))
+    return count_text_tokens(prompt, model_config=model_config, model=model, provider=provider)
 
 
 def _field_schema(recipe):
@@ -239,7 +235,9 @@ def convert_units(values, field, unit, model_config=None):
             memory.append(1)
             values_str += f'{value}\n'
     config = model_config or ModelConfig.from_profile('text')
-    coeff = token_length(values_str, config.name) / 200000
+    reserve_tokens = prompt_token_reserve(prompt, model_config=config, buffer_tokens=500)
+    token_budget = usable_input_token_limit(config, reserve_tokens=reserve_tokens)
+    coeff = token_length(values_str, model_config=config) / token_budget
     if coeff <= 1:
         values_strs = [values_str]
     else:

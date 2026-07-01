@@ -11,6 +11,7 @@ from paperscraper.imports import import_pdfs
 from paperscraper.scrape import scrape_papers
 from paperscraper.store import store_results
 from paperscraper.settings import (get_model_profile,
+                                   DEFAULT_INPUT_TOKEN_LIMIT,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -211,13 +212,28 @@ def update_anthropic_api_key():
               type=float,
               show_default=True,
               help='Nucleus sampling probability mass for model requests.')
+@click.option('--input-token-limit',
+              default=DEFAULT_INPUT_TOKEN_LIMIT,
+              type=int,
+              show_default=True,
+              help='Maximum input tokens to send to the model before chunking.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
-                 capabilities: tuple[str], temperature: float, top_p: float):
+                 capabilities: tuple[str], temperature: float, top_p: float, input_token_limit: int):
     """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
-    set_model_profile(profile, provider, model, base_url, api_key, caps, temperature=temperature, top_p=top_p)
+    set_model_profile(
+        profile,
+        provider,
+        model,
+        base_url,
+        api_key,
+        caps,
+        temperature=temperature,
+        top_p=top_p,
+        input_token_limit=input_token_limit,
+    )
     click.echo(
-        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p}')
+        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
 
 def update_model_config():
@@ -232,7 +248,7 @@ def model_status():
         config = get_model_profile(profile)
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
-            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} base_url={config.get("base_url")}')
+            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
 @click.command()

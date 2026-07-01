@@ -16,20 +16,22 @@ from paperscraper.documents import (extract_pdf_images,
                                     read_document_text,
                                     read_pdf_text,
                                     text_file_for_row)
-from paperscraper.extract import combine_material_records, scrape_images as analyze_images, scrape_text as analyze_text, \
-    token_length
+from paperscraper.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
 from paperscraper.models import ModelConfig
 from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.recipes import load_recipe
+from paperscraper.tokenizer import prompt_token_reserve, usable_input_token_limit
 
 SCRAPE_MODES = {'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
 IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
 
 
-def _text_chunks(text: str, model_name: str):
+def _text_chunks(text: str, model_config, prompt: str = ''):
     """Split long text into chunks sized for the configured model context."""
-    coeff = token_length(text, model_name) / 120000
+    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
+    token_budget = usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
+    coeff = token_length(text, model_config=model_config) / token_budget
     if coeff <= 1:
         return [text]
     coeff = math.ceil(coeff)
@@ -187,8 +189,9 @@ def scrape_papers(papers_dir: str,
                             raise FileNotFoundError('No downloaded text or PDF file found for text scrape.')
                         text = read_document_text(source_path)
                         text_source_path = source_path
-                        for text_chunk in _text_chunks(text, text_config.name):
-                            response = analyze_text(text_chunk, recipe_data, model_config=text_config)
+                        prompt = build_scrape_prompt(recipe_data, source='paper')
+                        for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                            response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                             text_materials.extend(response)
                         papers_df.loc[i, 'num_text_materials'] = len(text_materials)
                         set_status(papers_df, i, 'text_scrape_status', 'succeeded')
@@ -222,10 +225,10 @@ def scrape_papers(papers_dir: str,
                                 text = read_pdf_text(pdf_path)
                             context = text
                         for image_batch in _image_batches(image_paths, image_batch_size):
-                            response = analyze_images(image_batch,
-                                                      recipe_data,
-                                                      model_config=vision_config,
-                                                      context=context)
+                            response = scrape_images(image_batch,
+                                                     recipe_data,
+                                                     model_config=vision_config,
+                                                     context=context)
                             image_source_paths.extend(image_batch)
                             image_materials.extend(response)
                         papers_df.loc[i, 'image_dir'] = paper_image_dir

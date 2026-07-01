@@ -15,8 +15,10 @@ dependencies = [
   "pymupdf",
   "pypdf",
   "requests",
-  "tiktoken",
+  "sentencepiece",
+  "tiktoken>=0.13.0",
   "tqdm",
+  "transformers",
 ]
 
 [project.optional-dependencies]

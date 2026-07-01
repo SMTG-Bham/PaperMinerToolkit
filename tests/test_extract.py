@@ -28,28 +28,18 @@ def test_token_length_handles_non_strings_model_encodings_and_fallbacks(monkeypa
 
     This function performs the following steps:
     1. Checks that non-string prompts return the historical empty-list value.
-    2. Replaces the tokenizer lookup with a deterministic fake tokenizer.
-    3. Replaces the tokenizer lookup with a failing fake tokenizer.
+    2. Replaces provider-aware token counting with a deterministic fake.
+    3. Calls `token_length` with both a model name and a model config.
 
     Asserts:
         - Non-string prompts return an empty list.
-        - Token counts come from the tokenizer when it is available.
-        - Character-based estimates are used when tokenizer lookup fails.
+        - String prompts delegate to the provider-aware token counter.
     """
 
-    class FakeEncoding:
-        def encode(self, prompt):
-            return prompt.split()
-
     assert extract.token_length(None) == []
-    monkeypatch.setattr(extract.tiktoken, 'encoding_for_model', lambda _: FakeEncoding())
+    monkeypatch.setattr(extract, 'count_text_tokens', lambda prompt, model_config=None, model=None, provider=None: 3)
     assert extract.token_length('one two three', model='test-model') == 3
-
-    def fail_encoding(_):
-        raise KeyError('unknown model')
-
-    monkeypatch.setattr(extract.tiktoken, 'encoding_for_model', fail_encoding)
-    assert extract.token_length('abcdefghij', model='unknown') == 3
+    assert extract.token_length('one two three', model_config={'provider': 'test'}) == 3
 
 
 def test_prompt_builders_include_recipe_schema_examples_and_source_rules():
@@ -305,7 +295,7 @@ def test_convert_units_preserves_missing_values_and_queries_only_real_values(mon
         return '0.001\n0.002'
 
     monkeypatch.setattr(extract, 'ModelConfig', FakeConfig)
-    monkeypatch.setattr(extract, 'token_length', lambda prompt, model: 1)
+    monkeypatch.setattr(extract, 'token_length', lambda prompt, model_config=None, model=None, provider=None: 1)
     monkeypatch.setattr(extract, 'query_model', fake_query_model)
 
     values = ['1e-3 S cm^-1', 'nan', "['None']", '2e-3 S cm^-1']
@@ -341,19 +331,33 @@ def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypa
             return cls()
 
     chunks = []
+    reserve_calls = []
 
     def fake_query_model(messages, model_config=None):
         chunk = messages[1]['content']
         chunks.append(chunk)
         return '\n'.join(f'converted {value}' for value in chunk.splitlines())
 
+    def fake_reserve(prompt, model_config=None, buffer_tokens=500):
+        reserve_calls.append({
+            'prompt': prompt,
+            'model_config': model_config,
+            'buffer_tokens': buffer_tokens,
+        })
+        return 500
+
     monkeypatch.setattr(extract, 'ModelConfig', FakeConfig)
-    monkeypatch.setattr(extract, 'token_length', lambda prompt, model: 600000)
+    monkeypatch.setattr(extract, 'prompt_token_reserve', fake_reserve)
+    monkeypatch.setattr(extract, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: 200000)
+    monkeypatch.setattr(extract, 'token_length', lambda prompt, model_config=None, model=None, provider=None: 600000)
     monkeypatch.setattr(extract, 'query_model', fake_query_model)
 
     output = extract.convert_units(['alpha', 'beta', 'gamma'], 'Conductivity', 'S cm^-1')
 
     assert len(chunks) > 1
+    assert reserve_calls[0]['model_config'].name == 'fake-text-model'
+    assert reserve_calls[0]['buffer_tokens'] == 500
+    assert 'Convert the following values of Conductivity to S cm^-1' in reserve_calls[0]['prompt']
     assert ''.join(chunks) == 'alpha\nbeta\ngamma\n'
     assert all(chunk.endswith('\n') for chunk in chunks)
     assert output == ['converted alpha', 'converted beta', 'converted gamma']

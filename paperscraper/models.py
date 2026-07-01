@@ -12,7 +12,7 @@ import requests
 from dataclasses import dataclass, field
 from typing import Any
 
-from paperscraper.settings import DEFAULT_MODEL, get_model_profile, load_settings
+from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
 
 
 class ModelCapabilityError(ValueError):
@@ -31,6 +31,7 @@ class ModelConfig:
     capabilities: set[str] = field(default_factory=lambda: {'text'})
     temperature: float = 0
     top_p: float = 1
+    input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides):
@@ -50,6 +51,9 @@ class ModelConfig:
             capabilities=set(capabilities or ['text']),
             temperature=float(overrides.get('temperature', configured.get('temperature', 0))),
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
+            input_token_limit=int(
+                overrides.get('input_token_limit', configured.get('input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT))
+            ),
         )
 
     def generation_args(self):

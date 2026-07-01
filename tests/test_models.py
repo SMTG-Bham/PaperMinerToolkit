@@ -48,6 +48,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
         'capabilities': 'text, vision',
         'temperature': '0.1',
         'top_p': '0.8',
+        'input_token_limit': '64000',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -60,6 +61,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
     assert config.capabilities == {'text', 'vision'}
     assert config.temperature == 0.3
     assert config.top_p == 0.8
+    assert config.input_token_limit == 64000
 
 
 def test_model_config_generation_args_and_require():
