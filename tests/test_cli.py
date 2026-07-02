@@ -81,7 +81,7 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     Test the download command delegates to the download workflow.
 
     This function performs the following steps:
-    1. Creates a temporary papers CSV accepted by Click path validation.
+    1. Creates a temporary corpus database accepted by Click path validation.
     2. Replaces `download_papers` with a local fake that records its inputs.
     3. Runs the command with explicit format and repeated source options.
 
@@ -90,26 +90,24 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
         - Download format and source choices are passed through.
     """
     calls = {}
-    papers_path = tmp_path / 'papers.csv'
-    papers_path.write_text('paper_id\n')
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, directory, download_format, sources: calls.update({
-            'path': path,
-            'directory': directory,
+        lambda path, download_format, sources: calls.update({
+            'db_path': path,
             'download_format': download_format,
             'sources': sources,
         }),
     )
 
-    result = CliRunner().invoke(cli.download, [str(papers_path), 'papers', '--format', 'pdf', '--source', 'core',
+    result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'pdf', '--source', 'core',
                                                '--source', 'unpaywall'])
 
     assert result.exit_code == 0
     assert calls == {
-        'path': str(papers_path),
-        'directory': 'papers',
+        'db_path': str(db_path),
         'download_format': 'pdf',
         'sources': ['core', 'unpaywall'],
     }

@@ -31,7 +31,7 @@ def _recast_elsevier_records(records) -> pd.DataFrame:
     for record in records:
         row = {}
         for key, value in record.items():
-            row[key] = _first(value)
+            row[key] = value if key == 'link' else _first(value)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -89,6 +89,21 @@ def _first(value):
     return value or ''
 
 
+def _elsevier_link(value):
+    """Return the full-text Elsevier link when present, otherwise the first link value."""
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                ref = str(item.get('@ref') or item.get('ref') or '').lower()
+                href = item.get('@href') or item.get('href') or ''
+                if href and ('full-text' in ref or 'full-text' in str(href).lower()):
+                    return href
+        return _elsevier_link(_first(value))
+    if isinstance(value, dict):
+        return value.get('@href') or value.get('href') or value.get('url') or ''
+    return value or ''
+
+
 def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     """Convert raw Elsevier search records into normalized paper rows."""
     rows = []
@@ -101,7 +116,7 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
             'publication_date': paper.get('prism:coverDate') or '',
             'authors': paper.get('dc:creator') or paper.get('creator') or '',
             'sources': 'elsevier',
-            'elsevier_link': paper.get('link') or '',
+            'elsevier_link': _elsevier_link(paper.get('link')),
             'metadata_status': 'retrieved',
         })
     normalized = [normalize_paper(row) for row in rows]

@@ -310,7 +310,10 @@ def test_elsevier_rows_normalizes_provider_records():
         'prism:publicationName': 'Journal',
         'prism:coverDate': '2024-01-01',
         'dc:creator': 'Author',
-        'link': 'full-text-link',
+        'link': [
+            {'@ref': 'self', '@href': 'self-link'},
+            {'@ref': 'full-text', '@href': 'full-text-link'},
+        ],
     }])
 
     rows = search._elsevier_rows(raw)
@@ -324,6 +327,32 @@ def test_elsevier_rows_normalizes_provider_records():
     assert row['sources'] == 'elsevier'
     assert row['elsevier_link'] == 'full-text-link'
     assert row['metadata_status'] == 'retrieved'
+
+
+def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
+    """
+    Test Elsevier record recasting keeps link lists intact.
+
+    This function performs the following steps:
+    1. Builds a raw Elsevier record with list-valued DOI and link fields.
+    2. Recasts the record into a DataFrame.
+    3. Converts the recast DataFrame to normalized paper rows.
+
+    Asserts:
+        - Non-link list fields are flattened to scalar values.
+        - Link lists are preserved long enough to select the full-text link.
+    """
+    recast = search._recast_elsevier_records([{
+        'prism:doi': ['10.1234/example'],
+        'link': [
+            {'@ref': 'self', '@href': 'self-link'},
+            {'@ref': 'full-text', '@href': 'full-text-link'},
+        ],
+    }])
+    rows = search._elsevier_rows(recast)
+
+    assert recast.loc[0, 'prism:doi'] == '10.1234/example'
+    assert rows.loc[0, 'elsevier_link'] == 'full-text-link'
 
 
 def test_core_headers_include_optional_authorization(monkeypatch):

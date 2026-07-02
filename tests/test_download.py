@@ -2,16 +2,29 @@
 
 This module tests download helper behavior without calling live APIs, including
 Elsevier text/PDF helpers, open-access PDF source selection, filename creation,
-configured source resolution, and papers CSV status updates.
+configured source resolution, and corpus status updates.
 """
 
 import json
 import os
 
-import pandas as pd
 import pytest
 
+import paperscraper.corpus as corpus
 import paperscraper.download as download
+
+
+def write_corpus(db_path, rows):
+    """Write paper rows to a temporary test corpus."""
+    with corpus.connect(db_path) as conn:
+        for row in rows:
+            corpus.upsert_paper(conn, row)
+
+
+def read_corpus(db_path):
+    """Read paper rows from a temporary test corpus."""
+    with corpus.connect(db_path) as conn:
+        return corpus.paper_rows(conn)
 
 
 def test_elsevier_api_key_requires_and_uses_configured_api_key(monkeypatch):
@@ -121,6 +134,24 @@ def test_full_text_uri_and_download_text_success_and_failure(tmp_path, monkeypat
     paper = {'elsevier_link': "some 'full-text-uri' full-text"}
     assert download._full_text_uri(paper) == 'full-text-uri'
     assert download._full_text_uri({'elsevier_link': 'abstract-only'}) is None
+    assert download._full_text_uri({
+        'elsevier_link': 'https://api.elsevier.com/content/article/eid/1-s2.0-S1005030226004123',
+    }) == 'https://api.elsevier.com/content/article/eid/1-s2.0-S1005030226004123'
+    assert download._full_text_uri({
+        'elsevier_link': 'https://api.elsevier.com/content/abstract/scopus_id/105042507561',
+    }) is None
+    assert download._full_text_uri({'doi': '10.1234/a b', 'elsevier_link': 'abstract-only'}) == (
+        'https://api.elsevier.com/content/article/doi/10.1234%2Fa+b'
+    )
+    assert download._full_text_uri({
+        'elsevier_link': [
+            {'@ref': 'self', '@href': 'self-link'},
+            {'@ref': 'full-text', '@href': 'full-text-link'},
+        ],
+    }) == 'full-text-link'
+    assert download._full_text_uri({
+        'elsevier_link': '[{"@ref": "full-text", "@href": "json-full-text-link"}]',
+    }) == 'json-full-text-link'
 
     def fake_retrieve_document(_):
         os.makedirs('data', exist_ok=True)
@@ -337,20 +368,15 @@ def test_download_pdf_from_sources_handles_existing_success_and_failures(tmp_pat
     Test trying PDF download sources in order.
 
     This function performs the following steps:
-    1. Checks the existing-file shortcut.
-    2. Replaces source downloaders with failing and successful local helpers.
-    3. Calls `_download_pdf_from_sources`.
+    1. Replaces source downloaders with failing and successful local helpers.
+    2. Calls `_download_pdf_from_sources`.
+    3. Replaces all source downloaders with failing helpers.
 
     Asserts:
-        - Existing files return success without downloading.
         - Sources are tried until one succeeds.
         - Errors are collected when all sources fail.
     """
     pdf_path = tmp_path / 'paper.pdf'
-    pdf_path.write_bytes(b'%PDF existing')
-    assert download._download_pdf_from_sources({'pdf_source': 'core'}, str(pdf_path), ['core']) == (True, 'core', '')
-
-    pdf_path.unlink()
     monkeypatch.setattr(download, '_download_unpaywall_pdf', lambda *_: (False, 'no oa pdf'))
     monkeypatch.setattr(download, '_download_core_pdf', lambda *_: (True, 'https://core/pdf'))
     assert download._download_pdf_from_sources({}, str(pdf_path), ['unpaywall', 'core']) == (
@@ -372,14 +398,18 @@ def test_should_try_elsevier_text_detects_full_text_links():
     Test detection of Elsevier full-text availability.
 
     This function performs the following steps:
-    1. Checks a row with a full-text Elsevier link.
+    1. Checks rows with a full-text Elsevier link and DOI fallback.
     2. Checks rows with abstract-only and missing links.
 
     Asserts:
-        - Full-text links return True.
+        - Full-text links and DOI rows return True.
         - Missing or non-full-text links return False.
     """
-    assert download._should_try_elsevier_text({'elsevier_link': 'has full-text link'}) is True
+    assert download._should_try_elsevier_text({'elsevier_link': "has 'full-text-link' full-text"}) is True
+    assert download._should_try_elsevier_text({
+        'elsevier_link': 'https://api.elsevier.com/content/article/eid/1-s2.0-S1005030226004123',
+    }) is True
+    assert download._should_try_elsevier_text({'doi': '10.1234/example', 'elsevier_link': 'abstract only'}) is True
     assert download._should_try_elsevier_text({'elsevier_link': 'abstract only'}) is False
     assert download._should_try_elsevier_text({'elsevier_link': None}) is False
 
@@ -398,34 +428,35 @@ def test_download_papers_validates_configuration(tmp_path, monkeypatch):
         - Text downloads require an Elsevier API key.
         - PDF downloads require at least one configured PDF source.
     """
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([{'paper_id': 'paper-1'}]).to_csv(papers_path)
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'paper-1'}])
 
     with pytest.raises(ValueError, match='download_format must be one of'):
-        download.download_papers(str(papers_path), download_format='bad')
+        download.download_papers(str(db_path), download_format='bad')
 
     monkeypatch.setattr(download, '_configured_sources', lambda _: [])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     with pytest.raises(ValueError, match='Elsevier text download requires'):
-        download.download_papers(str(papers_path), download_format='text')
+        download.download_papers(str(db_path), download_format='text')
 
     with pytest.raises(ValueError, match='No PDF download sources are configured'):
-        download.download_papers(str(papers_path), download_format='pdf')
+        download.download_papers(str(db_path), download_format='pdf')
 
 
 def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch):
     """
-    Test downloading text and PDFs for papers in a CSV.
+    Test downloading text and PDFs for papers in a corpus database.
 
     This function performs the following steps:
-    1. Writes a papers CSV with one Elsevier full-text row.
+    1. Writes a corpus database with one Elsevier full-text row.
     2. Replaces configured source checks and download helpers with local fakes.
     3. Calls `download_papers` for both text and PDF downloads.
 
     Asserts:
-        - Text and PDF paths are written.
+        - Text and PDF paths are left empty because corpus storage is authoritative.
         - Text and PDF statuses are marked as succeeded.
         - PDF source URL details are copied back to `pdf_url`.
+        - Downloaded text and PDF files are stored as corpus assets.
     """
 
     class FakeTqdm:
@@ -441,28 +472,45 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch):
         def update(self, _):
             return None
 
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([{
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{
         'paper_id': 'paper:1',
         'doi': '10.1234/example',
         'elsevier_link': 'has full-text link',
-    }]).to_csv(papers_path)
+    }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(download, '_download_text', lambda paper, filepath: open(filepath, 'w').write('text') or True)
-    monkeypatch.setattr(download, '_download_pdf_from_sources', lambda paper, filepath, sources: (True, 'unpaywall', 'https://oa/pdf'))
 
-    download.download_papers(str(papers_path), download_dir=str(tmp_path / 'downloads'), download_format='both')
+    def fake_download_text(paper, filepath):
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write('text')
+        return True
 
-    papers = pd.read_csv(papers_path, index_col=0)
-    assert papers.loc[0, 'text_download_status'] == 'succeeded'
-    assert papers.loc[0, 'pdf_download_status'] == 'succeeded'
-    assert papers.loc[0, 'text_source'] == 'elsevier'
-    assert papers.loc[0, 'pdf_source'] == 'unpaywall'
-    assert papers.loc[0, 'pdf_url'] == 'https://oa/pdf'
-    assert os.path.isfile(papers.loc[0, 'text_path'])
-    assert papers.loc[0, 'pdf_path'].endswith('.pdf')
+    def fake_download_pdf_from_sources(paper, filepath, sources):
+        with open(filepath, 'wb') as f:
+            f.write(b'%PDF text')
+        return True, 'unpaywall', 'https://oa/pdf'
+
+    monkeypatch.setattr(download, '_download_text', fake_download_text)
+    monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
+
+    download.download_papers(str(db_path), download_format='both')
+
+    papers = read_corpus(db_path)
+    with corpus.connect(db_path) as conn:
+        text_asset = corpus.get_asset(conn, 'paper:1', 'text')
+        pdf_asset = corpus.get_asset(conn, 'paper:1', 'pdf')
+    assert papers[0]['text_download_status'] == 'succeeded'
+    assert papers[0]['pdf_download_status'] == 'succeeded'
+    assert papers[0]['text_source'] == 'elsevier'
+    assert papers[0]['pdf_source'] == 'unpaywall'
+    assert papers[0]['pdf_url'] == 'https://oa/pdf'
+    assert papers[0]['text_path'] == ''
+    assert papers[0]['pdf_path'] == ''
+    assert not (tmp_path / 'downloads').exists()
+    assert text_asset['content'] == b'text'
+    assert pdf_asset['content'].startswith(b'%PDF')
 
 
 def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
@@ -684,7 +732,7 @@ def test_download_papers_records_text_and_pdf_failures(tmp_path, monkeypatch):
     Test failed text and PDF downloads in the main download loop.
 
     This function performs the following steps:
-    1. Writes a papers CSV with one Elsevier full-text row.
+    1. Writes a corpus database with one Elsevier full-text row.
     2. Replaces download helpers with failing local helpers.
     3. Calls `download_papers` for both text and PDF downloads.
 
@@ -706,24 +754,24 @@ def test_download_papers_records_text_and_pdf_failures(tmp_path, monkeypatch):
         def update(self, _):
             return None
 
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([{
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{
         'paper_id': 'paper:1',
         'doi': '10.1234/example',
         'elsevier_link': 'has full-text link',
-    }]).to_csv(papers_path)
+    }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(download, '_download_text', lambda *_: False)
     monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (False, 'no pdf', ''))
 
-    download.download_papers(str(papers_path), download_dir=str(tmp_path / 'downloads'), download_format='both')
+    download.download_papers(str(db_path), download_format='both')
 
-    papers = pd.read_csv(papers_path, index_col=0)
-    assert papers.loc[0, 'text_download_status'] == 'failed'
-    assert papers.loc[0, 'pdf_download_status'] == 'failed'
-    assert papers.loc[0, 'last_error'] == 'no pdf'
+    papers = read_corpus(db_path)
+    assert papers[0]['text_download_status'] == 'failed'
+    assert papers[0]['pdf_download_status'] == 'failed'
+    assert papers[0]['last_error'] == 'no pdf'
 
 
 def test_download_papers_records_initial_text_download_exception(tmp_path, monkeypatch):
@@ -731,7 +779,7 @@ def test_download_papers_records_initial_text_download_exception(tmp_path, monke
     Test exception handling during the initial Elsevier text download attempt.
 
     This function performs the following steps:
-    1. Writes a papers CSV with one Elsevier full-text row.
+    1. Writes a corpus database with one Elsevier full-text row.
     2. Replaces text downloading with a helper that raises an exception.
     3. Calls `download_papers` for text downloads.
 
@@ -753,22 +801,22 @@ def test_download_papers_records_initial_text_download_exception(tmp_path, monke
         def update(self, _):
             return None
 
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([{
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{
         'paper_id': 'paper:text-error',
         'doi': '10.1234/text-error',
         'elsevier_link': 'has full-text link',
-    }]).to_csv(papers_path)
+    }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: [])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(download, '_download_text', lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')))
 
-    download.download_papers(str(papers_path), download_dir=str(tmp_path / 'downloads'), download_format='text')
+    download.download_papers(str(db_path), download_format='text')
 
-    papers = pd.read_csv(papers_path, index_col=0)
-    assert papers.loc[0, 'text_download_status'] == 'failed'
-    assert papers.loc[0, 'last_error'] == 'text exploded'
+    papers = read_corpus(db_path)
+    assert papers[0]['text_download_status'] == 'failed'
+    assert papers[0]['last_error'] == 'text exploded'
 
 
 def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_pdf(tmp_path, monkeypatch):
@@ -776,7 +824,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     Test exception handling and Elsevier text retrieval after an open-access PDF succeeds.
 
     This function performs the following steps:
-    1. Writes papers covering text exception, PDF exception, and OA PDF success rows.
+    1. Writes corpus rows covering text exception, PDF exception, and OA PDF success rows.
     2. Replaces download helpers with local helpers that raise or succeed by row.
     3. Calls `download_papers` for PDF downloads.
 
@@ -799,11 +847,11 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
         def update(self, _):
             return None
 
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [
         {'paper_id': 'paper:pdf-error', 'doi': '10.1234/pdf-error'},
         {'paper_id': 'paper:oa-text', 'doi': '10.1234/oa-text', 'elsevier_link': 'has full-text link'},
-    ]).to_csv(papers_path)
+    ])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
@@ -811,6 +859,8 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     def fake_download_pdf_from_sources(paper, filepath, sources):
         if paper['paper_id'] == 'paper:pdf-error':
             raise RuntimeError('pdf exploded')
+        with open(filepath, 'wb') as f:
+            f.write(b'%PDF data')
         return True, 'core', 'https://core/pdf'
 
     def fake_download_text(paper, filepath):
@@ -819,14 +869,14 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
     monkeypatch.setattr(download, '_download_text', fake_download_text)
 
-    download.download_papers(str(papers_path), download_dir=str(tmp_path / 'downloads'), download_format='pdf')
+    download.download_papers(str(db_path), download_format='pdf')
 
-    papers = pd.read_csv(papers_path, index_col=0)
-    assert papers.loc[0, 'pdf_download_status'] == 'failed'
-    assert papers.loc[0, 'last_error'] == 'pdf exploded'
-    assert papers.loc[1, 'pdf_download_status'] == 'succeeded'
-    assert papers.loc[1, 'text_download_status'] == 'failed'
-    assert papers.loc[1, 'last_error'] == 'text exploded'
+    papers = read_corpus(db_path)
+    assert papers[0]['pdf_download_status'] == 'failed'
+    assert papers[0]['last_error'] == 'pdf exploded'
+    assert papers[1]['pdf_download_status'] == 'succeeded'
+    assert papers[1]['text_download_status'] == 'failed'
+    assert papers[1]['last_error'] == 'text exploded'
 
 
 def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, monkeypatch):
@@ -834,14 +884,14 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
     Test successful Elsevier text retrieval after an open-access PDF download.
 
     This function performs the following steps:
-    1. Writes a papers CSV with one Elsevier full-text row.
+    1. Writes a corpus database with one Elsevier full-text row.
     2. Replaces PDF and text download helpers with successful local helpers.
     3. Calls `download_papers` for PDF downloads.
 
     Asserts:
         - The PDF download is marked succeeded.
         - The follow-up Elsevier text download is marked succeeded.
-        - The text file path and source are recorded.
+        - The text source is recorded while the file path remains empty.
     """
 
     class FakeTqdm:
@@ -857,16 +907,22 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
         def update(self, _):
             return None
 
-    papers_path = tmp_path / 'papers.csv'
-    pd.DataFrame([{
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{
         'paper_id': 'paper:oa-text',
         'doi': '10.1234/oa-text',
         'elsevier_link': 'has full-text link',
-    }]).to_csv(papers_path)
+    }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (True, 'core', 'https://core/pdf'))
+
+    def fake_download_pdf_from_sources(paper, filepath, sources):
+        with open(filepath, 'wb') as f:
+            f.write(b'%PDF data')
+        return True, 'core', 'https://core/pdf'
+
+    monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
     def fake_download_text(paper, filepath):
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -875,13 +931,13 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
 
     monkeypatch.setattr(download, '_download_text', fake_download_text)
 
-    download.download_papers(str(papers_path), download_dir=str(tmp_path / 'downloads'), download_format='pdf')
+    download.download_papers(str(db_path), download_format='pdf')
 
-    papers = pd.read_csv(papers_path, index_col=0)
-    assert papers.loc[0, 'pdf_download_status'] == 'succeeded'
-    assert papers.loc[0, 'text_download_status'] == 'succeeded'
-    assert papers.loc[0, 'text_source'] == 'elsevier'
-    assert os.path.isfile(papers.loc[0, 'text_path'])
+    papers = read_corpus(db_path)
+    assert papers[0]['pdf_download_status'] == 'succeeded'
+    assert papers[0]['text_download_status'] == 'succeeded'
+    assert papers[0]['text_source'] == 'elsevier'
+    assert papers[0]['text_path'] == ''
 
 
 @pytest.mark.network

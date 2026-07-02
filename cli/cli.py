@@ -56,8 +56,7 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
 
 
 @click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-@click.argument('dir', default='papers', type=click.Path())
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
               type=click.Choice(['text', 'pdf', 'both']),
               default='both',
@@ -68,9 +67,9 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
               default=('all',),
               show_default=True,
               help='PDF source to use. Repeat to choose more than one.')
-def download(path: str, dir: str, download_format: str, sources: tuple[str]):
-    """Download text and/or PDFs for rows in a papers CSV."""
-    download_papers(path, dir, download_format=download_format, sources=list(sources))
+def download(db_path: str, download_format: str, sources: tuple[str]):
+    """Download text and/or PDFs for rows in the paper corpus."""
+    download_papers(db_path, download_format=download_format, sources=list(sources))
 
 
 @click.command()
