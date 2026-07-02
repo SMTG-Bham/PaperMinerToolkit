@@ -242,19 +242,28 @@ def test_estimate_image_tokens_uses_provider_specific_dimension_estimates():
     )
 
 
-def test_image_size_reads_dimensions_from_local_image():
+def test_image_size_reads_png_dimensions_without_pillow(monkeypatch):
     """
-    Test local image dimension reading.
+    Test PNG header image dimension reading without Pillow.
 
     This function performs the following steps:
-    1. Reads a PNG fixture from `tests/data/images`.
-    2. Reads the image dimensions with `_image_size`.
+    1. Blocks Pillow imports for this test.
+    2. Reads a PNG fixture from `tests/data/images`.
     3. Reads dimensions from a missing image path.
 
     Asserts:
-        - Local image dimensions are returned as a `(width, height)` tuple.
+        - PNG dimensions are returned from the file header.
         - Unreadable paths return `None`.
     """
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == 'PIL' or name.startswith('PIL.'):
+            raise ImportError('missing pillow')
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', fake_import)
+
     assert compression._image_size(str(IMAGE_DIR / '12x34.png')) == (12, 34)
     assert compression._image_size(str(IMAGE_DIR / 'missing.png')) is None
 
