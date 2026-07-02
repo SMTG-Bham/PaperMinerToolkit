@@ -155,3 +155,85 @@ def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_pa
     assert corpus._json_dumps('{"already": true}') == '{"already": true}'
     assert corpus._prepare_content(Path(text_path)) == b'paper text'
     assert corpus._prepare_content([65, 66, 67]) == b'ABC'
+
+
+def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
+    """
+    Test corpus paper upserts and duplicate merging.
+
+    This function performs the following steps:
+    1. Creates a temporary SQLite corpus database.
+    2. Inserts one paper with DOI, title, source, and metadata.
+    3. Inserts another paper with the same DOI and additional empty-field values.
+    4. Reloads the stored paper rows from the corpus.
+
+    Asserts:
+        - Duplicate DOI rows are merged into one corpus paper.
+        - Existing populated values are preserved during the merge.
+        - New empty-field values are copied from the incoming row.
+        - Source names are combined without duplication.
+        - Metadata JSON from a direct paper upsert is preserved.
+    """
+    with corpus.connect(tmp_path / 'papers.db') as conn:
+        paper_id = corpus.upsert_paper(conn, {
+            'paper_id': 'elsevier:1',
+            'doi': '10.1000/demo',
+            'title': 'Existing title',
+            'sources': 'elsevier',
+            'metadata': {'provider': 'elsevier'},
+        })
+        added, updated = corpus.upsert_papers(conn, [{
+            'paper_id': 'core:1',
+            'doi': 'https://doi.org/10.1000/demo',
+            'title': 'Incoming title',
+            'journal': 'Corpus Journal',
+            'sources': 'core',
+            'metadata_status': 'retrieved',
+        }])
+        rows = corpus.paper_rows(conn)
+
+    assert paper_id == 'elsevier:1'
+    assert (added, updated) == (0, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'elsevier:1'
+    assert rows[0]['title'] == 'Existing title'
+    assert rows[0]['journal'] == 'Corpus Journal'
+    assert rows[0]['sources'] == 'elsevier;core'
+    assert rows[0]['metadata_json'] == '{"provider": "elsevier"}'
+
+
+def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path):
+    """
+    Test fallback paper IDs and title/year duplicate matching.
+
+    This function performs the following steps:
+    1. Creates a temporary SQLite corpus database.
+    2. Inserts a paper without provider IDs so the corpus creates a fallback ID.
+    3. Inserts a second paper with the same normalized title and publication year.
+    4. Reloads the corpus paper rows.
+
+    Asserts:
+        - Missing provider IDs are replaced with a stable fallback paper ID.
+        - Matching title/year rows update the existing paper rather than adding a duplicate.
+        - Integer pipeline count fields are coerced to integers.
+    """
+    with corpus.connect(tmp_path / 'papers.db') as conn:
+        added, updated = corpus.upsert_papers(conn, [{
+            'title': 'Lithium Solid Electrolyte',
+            'publication_date': '2026-03-01',
+            'authors': 'A. Author',
+            'sources': 'elsevier',
+        }, {
+            'title': 'lithium: solid electrolyte',
+            'publication_date': '2026',
+            'journal': 'Matched Journal',
+            'num_images': '3',
+            'sources': 'core',
+        }])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (1, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'].startswith('paper:')
+    assert rows[0]['journal'] == 'Matched Journal'
+    assert rows[0]['num_images'] == 3

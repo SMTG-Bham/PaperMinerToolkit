@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus and CORE, then merge results into papers CSV files.
+"""Search Elsevier/Scopus and CORE, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -11,7 +11,7 @@ import requests
 from tqdm import tqdm
 
 from paperscraper import elsevier
-from paperscraper.pipeline import merge_paper_rows, normalize_paper_columns, read_papers, write_papers
+from paperscraper.corpus import PAPER_FIELDS, connect, normalize_paper, upsert_papers
 from paperscraper.settings import load_settings
 
 SEARCH_SOURCES = {'elsevier', 'core', 'all'}
@@ -104,7 +104,8 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
             'elsevier_link': paper.get('link') or '',
             'metadata_status': 'retrieved',
         })
-    return normalize_paper_columns(pd.DataFrame(rows))
+    normalized = [normalize_paper(row) for row in rows]
+    return pd.DataFrame(normalized, columns=PAPER_FIELDS)
 
 
 def _core_api_key():
@@ -178,7 +179,8 @@ def _core_rows(works) -> pd.DataFrame:
             'pdf_url': _core_download_url(work),
             'metadata_status': 'retrieved',
         })
-    return normalize_paper_columns(pd.DataFrame(rows))
+    normalized = [normalize_paper(row) for row in rows]
+    return pd.DataFrame(normalized, columns=PAPER_FIELDS)
 
 
 def core_search(query: str, count: int = 200):
@@ -209,9 +211,9 @@ def core_search(query: str, count: int = 200):
     return _core_rows(works)
 
 
-def search_for_papers(query: str, papers_path: str = 'papers.csv', source: str = 'all', count: int = 200):
+def search_for_papers(query: str, db_path: str = 'papers.db', source: str = 'all', count: int = 200):
     """
-    Search the selected source(s) and merge results into ``papers_path``.
+    Search the selected source(s) and merge results into ``db_path``.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:
@@ -232,16 +234,10 @@ def search_for_papers(query: str, papers_path: str = 'papers.csv', source: str =
                 raise
             print(f'CORE search skipped: {e}')
 
-    new_papers = normalize_paper_columns(pd.concat(frames, ignore_index=True) if frames else pd.DataFrame())
+    new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=PAPER_FIELDS)
     if new_papers.empty:
         print('Document search found 0 new results.')
         return
-    if os.path.isfile(papers_path):
-        old_papers = read_papers(papers_path)
-        papers, added, updated = merge_paper_rows(old_papers, new_papers)
-        print(f'Document search found {added} new results and updated {updated} existing rows.')
-        write_papers(papers, papers_path)
-    else:
-        papers, added, updated = merge_paper_rows(pd.DataFrame(), new_papers)
-        print(f'Document search found {added} new results and updated {updated} existing rows.')
-        write_papers(papers, papers_path)
+    with connect(db_path) as conn:
+        added, updated = upsert_papers(conn, new_papers.to_dict('records'))
+    print(f'Document search found {added} new results and updated {updated} existing rows.')

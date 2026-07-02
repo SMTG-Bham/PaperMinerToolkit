@@ -2,13 +2,14 @@
 
 This module tests provider-specific search helpers, CORE and Elsevier row
 normalization, pagination behavior, request headers, and merging search results
-into the papers CSV.
+into the paper corpus.
 """
 
 
 import pandas as pd
 import pytest
 
+import paperscraper.corpus as corpus
 import paperscraper.search as search
 
 
@@ -582,18 +583,18 @@ def test_search_for_papers_rejects_invalid_source():
 
 def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, capsys):
     """
-    Test merging search results into a papers CSV.
+    Test merging search results into a corpus database.
 
     This function performs the following steps:
     1. Replaces Elsevier search with a normalized one-row DataFrame.
     2. Calls `search_for_papers`.
-    3. Reloads the written papers CSV.
+    3. Reloads the written corpus paper rows.
 
     Asserts:
-        - New search results are written to the requested papers CSV.
+        - New search results are written to the requested corpus database.
         - The summary reports one added result.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{
         'dc:identifier': 'SCOPUS_ID:1',
         'prism:doi': '10.1234/new',
@@ -602,20 +603,21 @@ def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, caps
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='elsevier', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    written = pd.read_csv(papers_path, index_col=0)
+    with corpus.connect(db_path) as conn:
+        written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
-    assert written.loc[0, 'paper_id'] == 'SCOPUS_ID:1'
+    assert written[0]['paper_id'] == 'SCOPUS_ID:1'
     assert '1 new results and updated 0 existing rows' in output
 
 
-def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, capsys):
     """
-    Test merging search results into an existing papers CSV.
+    Test merging search results into an existing corpus database.
 
     This function performs the following steps:
-    1. Writes an existing papers CSV with one DOI.
+    1. Writes an existing corpus row with one DOI.
     2. Replaces CORE search with a row using the same DOI and additional fields.
     3. Calls `search_for_papers`.
 
@@ -623,12 +625,15 @@ def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatc
         - The existing row is updated instead of duplicated.
         - The summary reports one updated row.
     """
-    papers_path = tmp_path / 'papers.csv'
-    search._core_rows([{
-        'id': 'old',
-        'doi': '10.1234/existing',
-        'title': 'Existing title',
-    }]).to_csv(papers_path)
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {
+            'paper_id': 'core:old',
+            'doi': '10.1234/existing',
+            'title': 'Existing title',
+            'sources': 'core',
+            'metadata_status': 'retrieved',
+        })
     incoming = search._core_rows([{
         'id': 'new',
         'doi': '10.1234/existing',
@@ -637,13 +642,14 @@ def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatc
     }])
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: incoming)
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='core', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
-    written = pd.read_csv(papers_path, index_col=0)
+    with corpus.connect(db_path) as conn:
+        written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
     assert len(written) == 1
-    assert written.loc[0, 'title'] == 'Existing title'
-    assert written.loc[0, 'journal'] == 'Updated Journal'
+    assert written[0]['title'] == 'Existing title'
+    assert written[0]['journal'] == 'Updated Journal'
     assert '0 new results and updated 1 existing rows' in output
 
 
@@ -658,15 +664,15 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path,
 
     Asserts:
         - Empty search results print a zero-results message.
-        - No papers CSV is written.
+        - No corpus database is written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: pd.DataFrame())
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='core', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
     assert 'Document search found 0 new results.' in capsys.readouterr().out
-    assert not papers_path.exists()
+    assert not db_path.exists()
 
 
 def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(monkeypatch, tmp_path, capsys):
@@ -683,14 +689,14 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
         - Directly selected failed sources re-raise their error.
         - Successful fallback source results are still written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='all', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'Elsevier search skipped: elsevier down' in capsys.readouterr().out
-    assert papers_path.exists()
+    assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='elsevier down'):
         search.search_for_papers('query', source='elsevier', count=1)
@@ -710,7 +716,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
         - Directly selected failed CORE searches re-raise their request error.
         - Successful fallback Elsevier results are still written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
@@ -720,10 +726,10 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
         lambda *_, **__: (_ for _ in ()).throw(search.requests.RequestException('core down')),
     )
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='all', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'CORE search skipped: core down' in capsys.readouterr().out
-    assert papers_path.exists()
+    assert db_path.exists()
 
     with pytest.raises(search.requests.RequestException, match='core down'):
         search.search_for_papers('query', source='core', count=1)

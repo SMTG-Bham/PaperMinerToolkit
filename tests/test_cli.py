@@ -3,18 +3,18 @@ from click.testing import CliRunner
 import cli.cli as cli
 
 
-def test_paper_search_passes_query_path_source_and_count(monkeypatch):
+def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
     """
     Test the paper search command delegates to the search workflow.
 
     This function performs the following steps:
     1. Replaces `search_for_papers` with a local fake that records its inputs.
-    2. Runs the CLI command with explicit query, path, source, and count values.
+    2. Runs the CLI command with explicit query, database path, source, and count values.
     3. Reads the command result and recorded call.
 
     Asserts:
         - The command exits successfully.
-        - The search workflow receives the requested query, path, source, and count.
+        - The search workflow receives the requested query, database path, source, and count.
     """
     calls = {}
     monkeypatch.setattr(
@@ -22,19 +22,19 @@ def test_paper_search_passes_query_path_source_and_count(monkeypatch):
         'search_for_papers',
         lambda query, path, source, count: calls.update({
             'query': query,
-            'path': path,
+            'db_path': path,
             'source': source,
             'count': count,
         }),
     )
 
-    result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.csv', '--source', 'core',
+    result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.db', '--source', 'core',
                                                    '--count', '10'])
 
     assert result.exit_code == 0
     assert calls == {
         'query': 'Lithium solid electrolyte',
-        'path': 'papers.csv',
+        'db_path': 'papers.db',
         'source': 'core',
         'count': 10,
     }

@@ -26,7 +26,7 @@ from paperscraper.utilities import reset, status, sort, shuffle
 
 @click.command()
 @click.argument('query', default='Lithium solid electrolyte', type=str)
-@click.argument('path', default='papers.csv', type=str)
+@click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
               type=click.Choice(['all', 'elsevier', 'core']),
               default='all',
@@ -38,9 +38,9 @@ from paperscraper.utilities import reset, status, sort, shuffle
               show_default=True,
               help='Maximum results to request from each selected source.')
 
-def paper_search(query: str, path: str, source: str, count: int):
-    """Search configured paper sources and merge results into a papers CSV."""
-    search_for_papers(query, path, source=source, count=count)
+def paper_search(query: str, db_path: str, source: str, count: int):
+    """Search configured paper sources and merge results into the paper corpus."""
+    search_for_papers(query, db_path, source=source, count=count)
 
 
 @click.command()
