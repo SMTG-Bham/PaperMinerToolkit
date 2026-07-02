@@ -31,6 +31,7 @@ test = [
 [project.scripts]
 ps_search = "cli.cli:paper_search"
 ps_download = "cli.cli:download"
+ps_corpus_stats = "cli.cli:corpus_status"
 ps_import_pdfs = "cli.cli:import_pdf_folder"
 ps_scrape = "cli.cli:scrape"
 ps_store = "cli.cli:store"

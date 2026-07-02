@@ -1,6 +1,7 @@
 from click.testing import CliRunner
 
 import cli.cli as cli
+import paperscraper.corpus as corpus
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
@@ -111,6 +112,41 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
         'download_format': 'pdf',
         'sources': ['core', 'unpaywall'],
     }
+
+
+def test_corpus_status_prints_database_storage_statistics(tmp_path):
+    """
+    Test the corpus statistics command.
+
+    This function performs the following steps:
+    1. Creates a temporary corpus database.
+    2. Stores one repeated text asset so compression statistics are available.
+    3. Runs the corpus statistics CLI command.
+
+    Asserts:
+        - The command exits successfully.
+        - The output includes paper, blob, size, and storage saving summaries.
+    """
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            'paper text ' * 100,
+            role='text',
+            kind='text',
+            mime_type='text/plain',
+        )
+
+    result = CliRunner().invoke(cli.corpus_status, [str(db_path)])
+
+    assert result.exit_code == 0
+    assert f'Corpus: {db_path}' in result.output
+    assert 'Papers: 1' in result.output
+    assert 'Blobs: 1' in result.output
+    assert 'Original size:' in result.output
+    assert 'Stored size:' in result.output
+    assert 'Storage saved:' in result.output
 
 
 def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_path):

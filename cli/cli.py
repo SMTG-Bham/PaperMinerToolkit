@@ -5,6 +5,7 @@ download, scrape, store, configuration, and maintenance functions.
 """
 
 import click
+from paperscraper.corpus import connect, corpus_stats
 from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
@@ -22,6 +23,15 @@ from paperscraper.settings import (get_model_profile,
                                    update_unpaywall_email,
                                    update_model_settings)
 from paperscraper.utilities import reset, status, sort, shuffle
+
+
+def _format_bytes(size: int):
+    """Format a byte count using compact binary units."""
+    value = float(size)
+    for unit in ['B', 'KiB', 'MiB', 'GiB']:
+        if value < 1024 or unit == 'GiB':
+            return f'{value:.1f} {unit}' if unit != 'B' else f'{int(value)} B'
+        value /= 1024
 
 
 @click.command()
@@ -70,6 +80,20 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
 def download(db_path: str, download_format: str, sources: tuple[str]):
     """Download text and/or PDFs for rows in the paper corpus."""
     download_papers(db_path, download_format=download_format, sources=list(sources))
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+def corpus_status(db_path: str):
+    """Print storage statistics for the paper corpus."""
+    with connect(db_path) as conn:
+        stats = corpus_stats(conn)
+    click.echo(f'Corpus: {db_path}')
+    click.echo(f'Papers: {stats["papers"]}')
+    click.echo(f'Blobs: {stats["blobs"]}')
+    click.echo(f'Original size: {_format_bytes(stats["original_size"])}')
+    click.echo(f'Stored size: {_format_bytes(stats["stored_size"])}')
+    click.echo(f'Storage saved: {stats["savings_fraction"]:.1%}')
 
 
 @click.command()
