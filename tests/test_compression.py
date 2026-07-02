@@ -461,7 +461,7 @@ def test_compress_content_reports_missing_headroom_package(monkeypatch):
     Test missing Headroom universal dependency errors.
 
     This function performs the following steps:
-    1. Replaces Python imports with a fake that raises for `headroom`.
+    1. Replaces Python imports with a fake that raises for `headroom.compression`.
     2. Calls `compress_content`.
     3. Captures the expected exception.
 
@@ -471,7 +471,7 @@ def test_compress_content_reports_missing_headroom_package(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == 'headroom':
+        if name == 'headroom' or name.startswith('headroom.'):
             raise ImportError('missing headroom')
         return real_import(name, *args, **kwargs)
 
