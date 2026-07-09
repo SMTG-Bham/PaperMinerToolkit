@@ -44,8 +44,6 @@ ps_model_config = "cli.cli:model_config"
 ps_model_status = "cli.cli:model_status"
 ps_reset = "cli.cli:reset_scraper"
 ps_status = "cli.cli:scraper_status"
-ps_sort = "cli.cli:sort_df"
-ps_shuffle = "cli.cli:shuffle_papers"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -5,16 +5,19 @@ small public paper schema and append or update rows without duplicating papers
 that appear in multiple sources.
 """
 
+import html
 import os
 import pandas as pd
+import re
 import requests
 from tqdm import tqdm
 
 from paperscraper import elsevier
-from paperscraper.corpus import PAPER_FIELDS, connect, normalize_paper, upsert_papers
+from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
 SEARCH_SOURCES = {'elsevier', 'core', 'all'}
+SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
 def _elsevier_api_key():
@@ -60,7 +63,7 @@ def document_search(query: str,
         return pd.DataFrame()
     results = api_response['search-results'].get('entry', [])
     if get_all:
-        with tqdm(total=target_results, desc='Getting Results', colour='blue') as pbar:
+        with tqdm(total=target_results, desc='Searching Scopus', colour='blue') as pbar:
             pbar.update(min(len(results), target_results))
             upper_limit_reached = False
             while (len(results) < target_results) and not upper_limit_reached:
@@ -104,11 +107,32 @@ def _elsevier_link(value):
     return value or ''
 
 
+def _clean_search_abstract(value):
+    """Normalize a search-result abstract to compact plain text."""
+    if value is None:
+        return ''
+    if isinstance(value, list):
+        value = ' '.join(str(part) for part in value if part)
+    text = html.unescape(str(value))
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _abstract_from_search_record(record):
+    """Extract an abstract-like field from one provider search record."""
+    for key in ['abstract', 'dc:description', 'description', 'dcDescription']:
+        abstract = _clean_search_abstract(record.get(key))
+        if abstract:
+            return abstract
+    return ''
+
+
 def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     """Convert raw Elsevier search records into normalized paper rows."""
     rows = []
     for _, paper in results.iterrows():
-        rows.append({
+        row = {
             'paper_id': paper.get('dc:identifier') or paper.get('eid') or '',
             'doi': paper.get('prism:doi') or '',
             'title': paper.get('dc:title') or '',
@@ -118,9 +142,11 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
             'sources': 'elsevier',
             'elsevier_link': _elsevier_link(paper.get('link')),
             'metadata_status': 'retrieved',
-        })
-    normalized = [normalize_paper(row) for row in rows]
-    return pd.DataFrame(normalized, columns=PAPER_FIELDS)
+        }
+        normalized = normalize_paper(row)
+        normalized['abstract'] = _abstract_from_search_record(paper)
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
 def _core_api_key():
@@ -182,7 +208,7 @@ def _core_rows(works) -> pd.DataFrame:
         core_id = work.get('id') or ''
         doi = _first(work.get('doi') or work.get('DOI'))
         identifier = f'core:{core_id}' if core_id else (f'doi:{doi}' if doi else '')
-        rows.append({
+        row = {
             'paper_id': identifier,
             'doi': doi,
             'title': _first(work.get('title')),
@@ -193,9 +219,11 @@ def _core_rows(works) -> pd.DataFrame:
             'core_id': core_id,
             'pdf_url': _core_download_url(work),
             'metadata_status': 'retrieved',
-        })
-    normalized = [normalize_paper(row) for row in rows]
-    return pd.DataFrame(normalized, columns=PAPER_FIELDS)
+        }
+        normalized = normalize_paper(row)
+        normalized['abstract'] = _abstract_from_search_record(work)
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
 def core_search(query: str, count: int = 200):
@@ -226,7 +254,35 @@ def core_search(query: str, count: int = 200):
     return _core_rows(works)
 
 
-def search_for_papers(query: str, db_path: str = 'papers.db', source: str = 'all', count: int = 200):
+def _store_search_abstracts(conn, papers):
+    """Store search-result abstracts as corpus assets and return the stored count."""
+    stored = 0
+    for paper in papers:
+        abstract = _clean_search_abstract(paper.get('abstract'))
+        if not abstract:
+            continue
+        matched = find_paper(conn, paper) or paper
+        source = paper.get('sources') or 'search'
+        add_asset(conn,
+                  matched,
+                  abstract,
+                  role='abstract',
+                  kind='text',
+                  mime_type='text/plain',
+                  source=source,
+                  original_filename='abstract.txt')
+        matched['abstract_source'] = source
+        matched['abstract_download_status'] = 'succeeded'
+        upsert_paper(conn, matched)
+        stored += 1
+    return stored
+
+
+def search_for_papers(query: str,
+                      db_path: str = 'papers.db',
+                      source: str = 'all',
+                      count: int = 200,
+                      store_abstract: bool = False):
     """
     Search the selected source(s) and merge results into ``db_path``.
     """
@@ -249,10 +305,14 @@ def search_for_papers(query: str, db_path: str = 'papers.db', source: str = 'all
                 raise
             print(f'CORE search skipped: {e}')
 
-    new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=PAPER_FIELDS)
+    new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:
         print('Document search found 0 new results.')
         return
     with connect(db_path) as conn:
-        added, updated = upsert_papers(conn, new_papers.to_dict('records'))
+        records = new_papers.to_dict('records')
+        added, updated = upsert_papers(conn, records)
+        abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
     print(f'Document search found {added} new results and updated {updated} existing rows.')
+    if store_abstract:
+        print(f'Stored {abstract_count} search-time abstracts.')

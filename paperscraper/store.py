@@ -8,12 +8,12 @@ stored once their scrape results have been persisted.
 import os
 import pandas as pd
 
+from paperscraper.corpus import connect, paper_rows, upsert_paper
 from paperscraper.extract import convert_units
-from paperscraper.pipeline import ensure_pipeline_columns, write_papers
 from paperscraper.recipes import canonical_match, field_columns, load_recipe
 
 
-def store_results(papers_path='papers.csv',
+def store_results(db_path='papers.db',
                   in_filepath='temp_scraped_materials.csv',
                   out_filepath='materials.csv',
                   unit_conversion=True,
@@ -76,10 +76,13 @@ def store_results(papers_path='papers.csv',
             materials_df = out_data
         materials_df.to_csv(out_filepath)
         os.remove(in_filepath)
-        papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
-        papers_df['store_status'] = papers_df['store_status'].where(
-            ~((papers_df['text_scrape_status'] == 'succeeded') | (papers_df['image_scrape_status'] == 'succeeded')),
-            'stored',
-        )
-        write_papers(papers_df, papers_path)
+        with connect(db_path) as conn:
+            for paper in paper_rows(conn):
+                if (
+                    paper.get('abstract_scrape_status') == 'succeeded'
+                    or paper.get('text_scrape_status') == 'succeeded'
+                    or paper.get('image_scrape_status') == 'succeeded'
+                ):
+                    paper['store_status'] = 'stored'
+                    upsert_paper(conn, paper)
     os.remove(temp_filename)

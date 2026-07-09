@@ -402,7 +402,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file):
     assert profile['input_token_limit'] == 120000
 
 
-def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monkeypatch):
+def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
     """
     Test interactive Anthropic API key storage.
 
@@ -414,10 +414,13 @@ def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monk
     Asserts:
         - The entered Anthropic API key is saved.
     """
+    settings.save_settings({'anthropic_api_key': 'old-anthropic-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'anthropic-key')
 
     settings.update_anthropic_key()
 
+    output = capsys.readouterr().out
+    assert 'Current Anthropic API key: old-...-key' in output
     assert settings.load_settings()['anthropic_api_key'] == 'anthropic-key'
 
 
@@ -479,7 +482,7 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
     assert settings.check_openai_api_key('placeholder-openai-key') is False
 
 
-def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch):
+def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
     """
     Test interactive OpenAI API key storage after successful validation.
 
@@ -491,11 +494,14 @@ def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_fil
     Asserts:
         - The entered OpenAI API key is saved after validation succeeds.
     """
+    settings.save_settings({'openai_api_key': 'old-openai-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openai-key')
     monkeypatch.setattr(settings, 'check_openai_api_key', lambda api_key: api_key == 'openai-key')
 
     settings.update_openai_key()
 
+    output = capsys.readouterr().out
+    assert 'Current OpenAI API key: old-...-key' in output
     assert settings.load_settings()['openai_api_key'] == 'openai-key'
 
 
@@ -521,7 +527,7 @@ def test_update_openai_key_rejects_invalid_key(isolated_settings_file, monkeypat
     assert 'openai_api_key' not in settings.load_settings()
 
 
-def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypatch):
+def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
     """
     Test interactive CORE API key storage.
 
@@ -533,10 +539,13 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypat
     Asserts:
         - The entered CORE API key is saved.
     """
+    settings.save_settings({'core_api_key': 'old-core-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'core-key')
 
     settings.update_core_key()
 
+    output = capsys.readouterr().out
+    assert 'Current CORE API key: old-...-key' in output
     assert settings.load_settings()['core_api_key'] == 'core-key'
 
 
@@ -587,7 +596,7 @@ def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is False
 
 
-def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch):
+def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
     """
     Test interactive Elsevier API key storage after successful validation.
 
@@ -599,11 +608,14 @@ def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_f
     Asserts:
         - The entered Elsevier API key is saved after validation succeeds.
     """
+    settings.save_settings({'elsevier_api_key': 'old-elsevier-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'elsevier-key')
     monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda api_key: api_key == 'elsevier-key')
 
     settings.update_elsevier_key()
 
+    output = capsys.readouterr().out
+    assert 'Current Elsevier API key: old-...-key' in output
     assert settings.load_settings()['elsevier_api_key'] == 'elsevier-key'
 
 
@@ -629,7 +641,7 @@ def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file, monkeyp
     assert 'elsevier_api_key' not in settings.load_settings()
 
 
-def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file, monkeypatch):
+def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file, monkeypatch, capsys):
     """
     Test interactive Unpaywall email validation and storage.
 
@@ -642,8 +654,11 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
         - A valid email address is saved.
         - An invalid email address raises `ValueError`.
     """
+    settings.save_settings({'unpaywall_email': 'old@example.com'})
     monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
     settings.update_unpaywall_email()
+    output = capsys.readouterr().out
+    assert 'Current Unpaywall email: old@example.com' in output
     assert settings.load_settings()['unpaywall_email'] == 'person@example.com'
 
     monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')

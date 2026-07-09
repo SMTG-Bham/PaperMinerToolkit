@@ -8,24 +8,25 @@ the main ``ps_scrape`` command.
 import math
 import os
 import pandas as pd
+import random
 import re
+import tempfile
 from tqdm import tqdm
 
 from paperscraper.compression import compression_config, maybe_compress_text
 from paperscraper.documents import (extract_pdf_images,
-                                    pdf_file_for_row,
                                     read_document_text,
-                                    read_pdf_text,
-                                    text_file_for_row)
+                                    read_pdf_text)
+from paperscraper.corpus import PIPELINE_COLUMNS, connect, get_asset, paper_rows, upsert_paper
 from paperscraper.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
 from paperscraper.models import ModelConfig
-from paperscraper.pipeline import ensure_pipeline_columns, set_status, write_papers
 from paperscraper.recipes import load_recipe
 from paperscraper.tokenizer import prompt_token_reserve, usable_input_token_limit
 
-SCRAPE_MODES = {'text', 'images', 'text-images'}
+SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
 IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
+SCRAPE_ORDERS = {'corpus', 'random', 'publication-asc', 'publication-desc', 'title', 'paper-id'}
 
 
 def _text_chunks(text: str, model_config, prompt: str = ''):
@@ -79,6 +80,17 @@ def _delete_file(path):
         os.remove(path)
 
 
+def _set_status(paper, column: str, status: str, error: str | None = None):
+    """Update a corpus paper status field and optional error text."""
+    if column not in PIPELINE_COLUMNS:
+        raise KeyError(f'Unknown pipeline status column: {column}')
+    paper[column] = status
+    if error:
+        paper['last_error'] = error
+    elif status in {'succeeded', 'stored'}:
+        paper['last_error'] = ''
+
+
 def _safe_path_part(value):
     """Convert an arbitrary value into a safe path fragment."""
     safe = re.sub(r'[^A-Za-z0-9._-]+', '_', str(value or '').strip())
@@ -107,8 +119,63 @@ def _image_batches(image_paths, batch_size):
     return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
 
 
-def scrape_papers(papers_dir: str,
-                  papers_path: str = 'papers.csv',
+def _asset_path(asset, temp_dir, fallback_name):
+    """Write a corpus asset to a temporary file and return its path."""
+    if asset is None:
+        return None
+    filename = asset.get('original_filename') or fallback_name
+    path = os.path.join(temp_dir, _safe_path_part(filename))
+    if not os.path.splitext(path)[1]:
+        path += os.path.splitext(fallback_name)[1]
+    with open(path, 'wb') as out_file:
+        out_file.write(asset['content'])
+    return path
+
+
+def _paper_asset_paths(conn, paper, temp_dir):
+    """Materialize corpus abstract, text, and PDF assets for one paper as temporary files."""
+    paper_id = paper.get('paper_id')
+    abstract_asset = get_asset(conn, paper_id, 'abstract')
+    text_asset = get_asset(conn, paper_id, 'text')
+    pdf_asset = get_asset(conn, paper_id, 'pdf')
+    key = _safe_path_part(paper_id)
+    paper_temp_dir = os.path.join(temp_dir, key)
+    os.makedirs(paper_temp_dir, exist_ok=True)
+    return {
+        'abstract': _asset_path(abstract_asset, paper_temp_dir, f'{key}-abstract.txt'),
+        'text': _asset_path(text_asset, paper_temp_dir, f'{key}.txt'),
+        'pdf': _asset_path(pdf_asset, paper_temp_dir, f'{key}.pdf'),
+    }
+
+
+def _publication_key(paper):
+    """Return a stable sort key for publication-date ordering."""
+    return str(paper.get('publication_date') or '9999-99-99')
+
+
+def _select_papers(papers, scrape_order='corpus', scrape_count=None):
+    """Order and optionally limit corpus papers for a scrape run."""
+    if scrape_order not in SCRAPE_ORDERS:
+        raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
+    if scrape_count is not None and scrape_count < 1:
+        raise ValueError('scrape_count must be a positive integer')
+    selected = list(papers)
+    if scrape_order == 'random':
+        random.shuffle(selected)
+    elif scrape_order == 'publication-asc':
+        selected.sort(key=_publication_key)
+    elif scrape_order == 'publication-desc':
+        selected.sort(key=_publication_key, reverse=True)
+    elif scrape_order == 'title':
+        selected.sort(key=lambda paper: str(paper.get('title') or '').lower())
+    elif scrape_order == 'paper-id':
+        selected.sort(key=lambda paper: str(paper.get('paper_id') or ''))
+    if scrape_count is not None:
+        return selected[:scrape_count]
+    return selected
+
+
+def scrape_papers(db_path: str = 'papers.db',
                   recipe: str = 'sse',
                   mode: str = 'text',
                   image_dir: str = 'paper_images',
@@ -123,9 +190,10 @@ def scrape_papers(papers_dir: str,
                   vision_provider: str | None = None,
                   vision_base_url: str | None = None,
                   delete_images_after: bool = False,
-                  delete_papers_after: bool = False,
                   output_path: str = 'temp_scraped_materials.csv',
                   force: bool = False,
+                  scrape_count: int | None = None,
+                  scrape_order: str = 'corpus',
                   compression_scope: str = 'none',
                   compression_mode: str = 'auto',
                   compression_ratio: float | str = 'auto',
@@ -143,13 +211,17 @@ def scrape_papers(papers_dir: str,
         raise ValueError(f'mode must be one of: {", ".join(sorted(SCRAPE_MODES))}')
     if image_context not in IMAGE_CONTEXT_MODES:
         raise ValueError(f'image_context must be one of: {", ".join(sorted(IMAGE_CONTEXT_MODES))}')
+    scrape_order = str(scrape_order).lower()
     if image_extraction not in IMAGE_EXTRACTION_MODES:
         raise ValueError(f'image_extraction must be one of: {", ".join(sorted(IMAGE_EXTRACTION_MODES))}')
+    if scrape_order not in SCRAPE_ORDERS:
+        raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
+    if scrape_count is not None and scrape_count < 1:
+        raise ValueError('scrape_count must be a positive integer')
 
+    should_scrape_abstract = mode == 'abstract'
     should_scrape_text = mode in {'text', 'text-images'}
     should_scrape_images = mode in {'images', 'text-images'}
-    files = os.listdir(papers_dir)
-    papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
     recipe_data = load_recipe(recipe)
     text_config = ModelConfig.from_profile('text', name=model, provider=provider, base_url=base_url)
     vision_config = None
@@ -163,133 +235,153 @@ def scrape_papers(papers_dir: str,
         vision_config.require('vision')
 
     first_material = not os.path.isfile(output_path)
-    target_count = len(papers_df)
     summary = {
         'papers': 0,
+        'abstract_attempted': 0,
+        'abstract_skipped': 0,
         'text_attempted': 0,
         'text_skipped': 0,
         'image_attempted': 0,
         'image_skipped': 0,
         'materials': 0,
     }
-    with tqdm(total=target_count, desc='Scraping Papers', colour='green') as pbar:
-        for i, row in papers_df.iterrows():
-            summary['papers'] += 1
-            row_materials = []
-            text_materials = []
-            image_materials = []
-            text_source_path = None
-            image_source_paths = []
-            text = None
-            text_stage_ran = False
-            image_stage_ran = False
-            text_path = text_file_for_row(papers_dir, files, row)
-            pdf_path = pdf_file_for_row(papers_dir, files, row)
+    with connect(db_path) as conn:
+        papers = _select_papers(paper_rows(conn), scrape_order=scrape_order, scrape_count=scrape_count)
+        with tempfile.TemporaryDirectory(prefix='paperscraper-scrape-') as temp_dir:
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
+                for row in papers:
+                    paths = _paper_asset_paths(conn, row, temp_dir)
+                    abstract_path = paths['abstract']
+                    text_path = paths['text']
+                    pdf_path = paths['pdf']
+                    summary['papers'] += 1
+                    row_materials = []
+                    text_materials = []
+                    image_materials = []
+                    text_source_path = None
+                    image_source_paths = []
+                    text = None
 
-            if should_scrape_text:
-                if not force and row.get('text_scrape_status') == 'succeeded':
-                    summary['text_skipped'] += 1
-                else:
-                    summary['text_attempted'] += 1
-                    text_stage_ran = True
-                    try:
-                        source_path = text_path or pdf_path
-                        if not source_path:
-                            raise FileNotFoundError('No downloaded text or PDF file found for text scrape.')
-                        text = read_document_text(source_path)
-                        text_source_path = source_path
-                        prompt = build_scrape_prompt(recipe_data, source='text')
-                        text = maybe_compress_text(text, prompt, text_config, compression)
-                        for text_chunk in _text_chunks(text, text_config, prompt=prompt):
-                            response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                            text_materials.extend(response)
-                        papers_df.loc[i, 'num_text_materials'] = len(text_materials)
-                        set_status(papers_df, i, 'text_scrape_status', 'succeeded')
-                    except Exception as e:
-                        set_status(papers_df, i, 'text_scrape_status', 'failed', str(e))
+                    if should_scrape_abstract:
+                        if not force and row.get('abstract_scrape_status') == 'succeeded':
+                            summary['abstract_skipped'] += 1
+                        else:
+                            summary['abstract_attempted'] += 1
+                            try:
+                                if not abstract_path:
+                                    raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
+                                text = read_document_text(abstract_path)
+                                prompt = build_scrape_prompt(recipe_data, source='text')
+                                text = maybe_compress_text(text, prompt, text_config, compression)
+                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
+                                    text_materials.extend(response)
+                                row['num_abstract_materials'] = len(text_materials)
+                                _set_status(row, 'abstract_scrape_status', 'succeeded')
+                            except Exception as e:
+                                _set_status(row, 'abstract_scrape_status', 'failed', str(e))
 
-            if should_scrape_images:
-                image_paths = []
-                if not force and row.get('image_scrape_status') == 'succeeded':
-                    summary['image_skipped'] += 1
-                else:
-                    summary['image_attempted'] += 1
-                    image_stage_ran = True
-                    try:
-                        if not pdf_path:
-                            raise FileNotFoundError('No downloaded PDF file found for image analysis.')
-                        image_key = _image_key_for_row(row, pdf_path)
-                        paper_image_dir = os.path.join(image_dir, image_key)
-                        image_paths = extract_pdf_images(
-                            pdf_path,
-                            paper_image_dir,
-                            prefix=image_key,
-                            strategy=image_extraction,
-                            dpi=image_dpi,
-                        )
-                        if not image_paths:
-                            raise RuntimeError('No PDF images could be extracted or rendered.')
-                        context = None
-                        if image_context == 'paper-text':
-                            if text is None:
-                                text = read_pdf_text(pdf_path)
-                            prompt = build_scrape_prompt(recipe_data, source='image', with_context=True)
-                            text = maybe_compress_text(text, prompt, vision_config, compression)
-                            context = text
-                        for image_batch in _image_batches(image_paths, image_batch_size):
-                            response = scrape_images(image_batch,
-                                                     recipe_data,
-                                                     model_config=vision_config,
-                                                     context=context,
-                                                     compression_config=compression)
-                            image_source_paths.extend(image_batch)
-                            image_materials.extend(response)
-                        papers_df.loc[i, 'image_dir'] = paper_image_dir
-                        papers_df.loc[i, 'num_images'] = len(image_paths)
-                        papers_df.loc[i, 'num_image_materials'] = len(image_materials)
-                        set_status(papers_df, i, 'image_scrape_status', 'succeeded')
-                        if delete_images_after:
-                            for image_path in image_paths:
-                                _delete_file(image_path)
-                    except Exception as e:
-                        set_status(papers_df, i, 'image_scrape_status', 'failed', str(e))
+                    if should_scrape_text:
+                        if not force and row.get('text_scrape_status') == 'succeeded':
+                            summary['text_skipped'] += 1
+                        else:
+                            summary['text_attempted'] += 1
+                            try:
+                                source_path = text_path or pdf_path
+                                if not source_path:
+                                    raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
+                                text = read_document_text(source_path)
+                                text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
+                                prompt = build_scrape_prompt(recipe_data, source='text')
+                                text = maybe_compress_text(text, prompt, text_config, compression)
+                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
+                                    text_materials.extend(response)
+                                row['num_text_materials'] = len(text_materials)
+                                _set_status(row, 'text_scrape_status', 'succeeded')
+                            except Exception as e:
+                                _set_status(row, 'text_scrape_status', 'failed', str(e))
 
-            if text_materials and image_materials:
-                text_source = text_source_path or ''
-                image_source = ';'.join(image_source_paths)
-                try:
-                    combined_materials = combine_material_records(text_materials, image_materials, recipe_data,
-                                                                  model_config=text_config)
-                    if not combined_materials:
-                        raise ValueError('reconciliation returned no material records')
-                    row_materials.extend(_append_materials(combined_materials, row, 'text+image',
-                                                           f'{text_source};{image_source}'.strip(';')))
-                except Exception as e:
-                    papers_df.loc[i, 'last_error'] = f'Combining text and image results failed: {e}'
-                    row_materials.extend(_append_materials(text_materials, row, 'text', text_source))
-                    row_materials.extend(_append_materials(image_materials, row, 'image', image_source))
-            elif text_materials:
-                row_materials.extend(_append_materials(text_materials, row, 'text', text_source_path))
-            elif image_materials:
-                row_materials.extend(_append_materials(image_materials, row, 'image', ';'.join(image_source_paths)))
+                    if should_scrape_images:
+                        image_paths = []
+                        if not force and row.get('image_scrape_status') == 'succeeded':
+                            summary['image_skipped'] += 1
+                        else:
+                            summary['image_attempted'] += 1
+                            try:
+                                if not pdf_path:
+                                    raise FileNotFoundError('No downloaded PDF asset found for image analysis.')
+                                image_key = _image_key_for_row(row, pdf_path)
+                                paper_image_dir = os.path.join(image_dir, image_key)
+                                image_paths = extract_pdf_images(
+                                    pdf_path,
+                                    paper_image_dir,
+                                    prefix=image_key,
+                                    strategy=image_extraction,
+                                    dpi=image_dpi,
+                                )
+                                if not image_paths:
+                                    raise RuntimeError('No PDF images could be extracted or rendered.')
+                                context = None
+                                if image_context == 'paper-text':
+                                    if text is None:
+                                        text = read_pdf_text(pdf_path)
+                                    prompt = build_scrape_prompt(recipe_data, source='image', with_context=True)
+                                    text = maybe_compress_text(text, prompt, vision_config, compression)
+                                    context = text
+                                for image_batch in _image_batches(image_paths, image_batch_size):
+                                    response = scrape_images(image_batch,
+                                                             recipe_data,
+                                                             model_config=vision_config,
+                                                             context=context,
+                                                             compression_config=compression)
+                                    image_source_paths.extend(image_batch)
+                                    image_materials.extend(response)
+                                row['image_dir'] = paper_image_dir
+                                row['num_images'] = len(image_paths)
+                                row['num_image_materials'] = len(image_materials)
+                                _set_status(row, 'image_scrape_status', 'succeeded')
+                                if delete_images_after:
+                                    for image_path in image_paths:
+                                        _delete_file(image_path)
+                            except Exception as e:
+                                _set_status(row, 'image_scrape_status', 'failed', str(e))
 
-            first_material, written_count = _write_materials(row_materials, first_material, output_path)
-            summary['materials'] += written_count
-            if delete_papers_after:
-                if text_stage_ran and papers_df.loc[i, 'text_scrape_status'] == 'succeeded':
-                    _delete_file(text_path)
-                if image_stage_ran and papers_df.loc[i, 'image_scrape_status'] == 'succeeded':
-                    _delete_file(pdf_path)
-            write_papers(papers_df, papers_path)
-            pbar.update(1)
+                    if text_materials and image_materials:
+                        text_source = text_source_path or ''
+                        image_source = ';'.join(image_source_paths)
+                        try:
+                            combined_materials = combine_material_records(text_materials, image_materials, recipe_data,
+                                                                          model_config=text_config)
+                            if not combined_materials:
+                                raise ValueError('reconciliation returned no material records')
+                            row_materials.extend(_append_materials(combined_materials, row, 'text+image',
+                                                                   f'{text_source};{image_source}'.strip(';')))
+                        except Exception as e:
+                            row['last_error'] = f'Combining text and image results failed: {e}'
+                            row_materials.extend(_append_materials(text_materials, row, 'text', text_source))
+                            row_materials.extend(_append_materials(image_materials, row, 'image', image_source))
+                    elif text_materials:
+                        if should_scrape_abstract:
+                            row_materials.extend(_append_materials(text_materials, row, 'abstract', 'corpus:abstract'))
+                        else:
+                            row_materials.extend(_append_materials(text_materials, row, 'text', text_source_path))
+                    elif image_materials:
+                        row_materials.extend(_append_materials(image_materials, row, 'image', ';'.join(image_source_paths)))
+
+                    first_material, written_count = _write_materials(row_materials, first_material, output_path)
+                    summary['materials'] += written_count
+                    upsert_paper(conn, row)
+                    pbar.update(1)
 
     print(
         f"Scrape complete: {summary['papers']} papers processed, "
         f"{summary['materials']} material rows written to {output_path}."
     )
-    if summary['text_skipped'] or summary['image_skipped']:
+    if summary['abstract_skipped'] or summary['text_skipped'] or summary['image_skipped']:
         print(
-            f"Skipped already successful stages: text={summary['text_skipped']}, "
+            f"Skipped already successful stages: abstracts={summary['abstract_skipped']}, "
+            f"text={summary['text_skipped']}, "
             f"images={summary['image_skipped']}. Use --force to rescrape."
         )
     if summary['materials'] == 0:

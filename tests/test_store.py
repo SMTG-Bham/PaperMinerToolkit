@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import pytest
 
+import paperscraper.corpus as corpus
 import paperscraper.store as store
 
 
@@ -24,22 +25,37 @@ def sample_recipe():
     }
 
 
-def write_papers_csv(path):
-    """Write a minimal papers CSV for store unit tests."""
-    pd.DataFrame([
-        {
-            'paper_id': 'paper-1',
-            'text_scrape_status': 'succeeded',
-            'image_scrape_status': 'pending',
-            'store_status': 'pending',
-        },
-        {
-            'paper_id': 'paper-2',
-            'text_scrape_status': 'pending',
-            'image_scrape_status': 'pending',
-            'store_status': 'pending',
-        },
-    ]).to_csv(path)
+def write_papers_corpus(path):
+    """Write a minimal paper corpus for store unit tests."""
+    with corpus.connect(path) as conn:
+        for row in [
+            {
+                'paper_id': 'paper-1',
+                'text_scrape_status': 'succeeded',
+                'image_scrape_status': 'pending',
+                'store_status': 'pending',
+            },
+            {
+                'paper_id': 'paper-2',
+                'abstract_scrape_status': 'succeeded',
+                'text_scrape_status': 'pending',
+                'image_scrape_status': 'pending',
+                'store_status': 'pending',
+            },
+            {
+                'paper_id': 'paper-3',
+                'text_scrape_status': 'pending',
+                'image_scrape_status': 'pending',
+                'store_status': 'pending',
+            },
+        ]:
+            corpus.upsert_paper(conn, row)
+
+
+def read_papers_corpus(path):
+    """Read paper rows from a test corpus."""
+    with corpus.connect(path) as conn:
+        return pd.DataFrame(corpus.paper_rows(conn))
 
 
 def test_store_results_reports_missing_scraped_materials_file(tmp_path, capsys):
@@ -97,7 +113,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     1. Writes scraped materials with a matched name column, a unit-bearing conductivity column, and an unknown column.
     2. Replaces recipe loading and unit conversion with deterministic local helpers.
     3. Calls `store_results` with `assume_yes=True`.
-    4. Reloads the materials and papers CSV files.
+    4. Reloads the materials CSV file and paper corpus.
 
     Asserts:
         - The unknown column is skipped in noninteractive mode.
@@ -106,10 +122,10 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
         - Papers with succeeded scrape statuses are marked as stored.
     """
     monkeypatch.chdir(tmp_path)
-    papers_path = tmp_path / 'papers.csv'
+    papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
-    write_papers_csv(papers_path)
+    write_papers_corpus(papers_path)
     pd.DataFrame({
         'Name': ['LLZO'],
         'Conductivity': ['1e-3'],
@@ -126,7 +142,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     monkeypatch.setattr(store, 'convert_units', fake_convert_units)
 
     store.store_results(
-        papers_path=str(papers_path),
+        db_path=str(papers_path),
         in_filepath=str(in_path),
         out_filepath=str(out_path),
         assume_yes=True,
@@ -134,14 +150,14 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     )
 
     materials = pd.read_csv(out_path, index_col=0)
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_corpus(papers_path)
     output = capsys.readouterr().out
     assert materials.columns.tolist() == ['Name', 'Conductivity [S cm^-1]']
     assert materials.loc[0, 'Name'] == 'LLZO'
     assert materials.loc[0, 'Conductivity [S cm^-1]'] == '0.001 converted'
     assert 'Skipping unmatched column in noninteractive mode: Unknown' in output
     assert not in_path.exists()
-    assert papers['store_status'].tolist() == ['stored', 'pending']
+    assert papers['store_status'].tolist() == ['stored', 'stored', 'pending']
     assert not (tmp_path / 'temp_converted_materials.csv').exists()
 
 
@@ -158,16 +174,16 @@ def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path
         - An unmatched scraped materials column raises `RuntimeError`.
         - The original scraped materials file is left in place.
     """
-    papers_path = tmp_path / 'papers.csv'
+    papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
-    write_papers_csv(papers_path)
+    write_papers_corpus(papers_path)
     pd.DataFrame({'Unknown': ['value']}).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
 
     with pytest.raises(RuntimeError, match='did not match'):
         store.store_results(
-            papers_path=str(papers_path),
+            db_path=str(papers_path),
             in_filepath=str(in_path),
             out_filepath=str(out_path),
             assume_yes=False,
@@ -181,7 +197,7 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
     Test appending to an existing materials CSV without unit conversion.
 
     This function performs the following steps:
-    1. Writes existing materials, new scraped materials, and a papers CSV.
+    1. Writes existing materials, new scraped materials, and a paper corpus.
     2. Replaces recipe loading with a minimal recipe.
     3. Calls `store_results` with unit conversion disabled.
     4. Reloads the output materials CSV.
@@ -192,16 +208,16 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
         - The output index is reset after appending.
     """
     monkeypatch.chdir(tmp_path)
-    papers_path = tmp_path / 'papers.csv'
+    papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
-    write_papers_csv(papers_path)
+    write_papers_corpus(papers_path)
     pd.DataFrame({'Name': ['Existing'], 'Conductivity [S cm^-1]': ['old']}).to_csv(out_path)
     pd.DataFrame({'Name': ['New'], 'Conductivity': ['new']}).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
 
     store.store_results(
-        papers_path=str(papers_path),
+        db_path=str(papers_path),
         in_filepath=str(in_path),
         out_filepath=str(out_path),
         unit_conversion=False,
@@ -219,7 +235,7 @@ def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monke
     Test storing results when the user rejects the temporary converted data.
 
     This function performs the following steps:
-    1. Writes scraped materials and a papers CSV.
+    1. Writes scraped materials and a paper corpus.
     2. Replaces recipe loading and interactive input.
     3. Calls `store_results` and rejects the conversion prompt.
 
@@ -229,16 +245,16 @@ def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monke
         - The temporary converted materials file is removed.
     """
     monkeypatch.chdir(tmp_path)
-    papers_path = tmp_path / 'papers.csv'
+    papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
-    write_papers_csv(papers_path)
+    write_papers_corpus(papers_path)
     pd.DataFrame({'Name': ['LLZO']}).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
     monkeypatch.setattr('builtins.input', lambda _: 'no')
 
     store.store_results(
-        papers_path=str(papers_path),
+        db_path=str(papers_path),
         in_filepath=str(in_path),
         out_filepath=str(out_path),
         assume_yes=False,

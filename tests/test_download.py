@@ -333,6 +333,102 @@ def test_core_headers_and_core_pdf_download(tmp_path, monkeypatch):
     )
 
 
+def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch):
+    """
+    Test abstract cleanup and provider source selection.
+
+    This function performs the following steps:
+    1. Cleans HTML, entities, whitespace, and list values from abstract text.
+    2. Extracts abstract text from nested provider payloads.
+    3. Replaces CORE and Elsevier abstract fetchers with local helpers.
+    4. Calls `_download_abstract` for CORE, Elsevier, and missing-source rows.
+
+    Asserts:
+        - Provider abstract text is normalized to plain text.
+        - CORE abstracts are preferred when a CORE ID is available.
+        - Elsevier abstracts are used when configured and CORE is unavailable.
+        - Missing sources return a useful failure.
+    """
+    assert download._clean_abstract(' A&nbsp;<b>solid</b>\n electrolyte ') == 'A solid electrolyte'
+    assert download._clean_abstract(['First', 'Second']) == 'First Second'
+    assert download._abstract_from_mapping({'outer': {'dc:description': '<p>Nested abstract</p>'}}) == 'Nested abstract'
+
+    calls = []
+    monkeypatch.setattr(download, '_download_core_abstract', lambda paper: calls.append('core') or (True, 'core', 'CORE abstract'))
+    monkeypatch.setattr(download, '_download_elsevier_abstract',
+                        lambda paper: calls.append('elsevier') or (True, 'elsevier', 'Elsevier abstract'))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+
+    assert download._download_abstract({'core_id': '123'}) == (True, 'core', 'CORE abstract')
+    assert download._download_abstract({'doi': '10.1234/example'}) == (True, 'elsevier', 'Elsevier abstract')
+
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    assert download._download_abstract({'paper_id': 'missing'}) == (False, 'no abstract source available', '')
+    assert calls == ['core', 'elsevier']
+
+
+def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatch):
+    """
+    Test CORE and Elsevier abstract metadata requests.
+
+    This function performs the following steps:
+    1. Replaces CORE HTTP requests with successful, missing, and error responses.
+    2. Replaces Elsevier content requests with successful and missing-abstract responses.
+    3. Calls the provider-specific abstract download helpers.
+
+    Asserts:
+        - CORE and Elsevier abstract payloads are parsed into plain text.
+        - Missing IDs, missing abstracts, and HTTP errors return failure details.
+    """
+
+    class FakeResponse:
+        def __init__(self, payload=None, status_code=200):
+            self.payload = payload or {}
+            self.status_code = status_code
+
+        def json(self):
+            return self.payload
+
+    core_calls = []
+
+    def fake_get(url, headers, timeout):
+        core_calls.append((url, headers, timeout))
+        return FakeResponse({'abstract': '<p>CORE abstract</p>'})
+
+    monkeypatch.setattr(download.requests, 'get', fake_get)
+    monkeypatch.setattr(download, '_core_headers', lambda: {'Authorization': 'Bearer core-key'})
+
+    assert download._download_core_abstract({'core_id': 'abc 123'}) == (True, 'core', 'CORE abstract')
+    assert core_calls == [(
+        'https://api.core.ac.uk/v3/works/abc%20123',
+        {'Authorization': 'Bearer core-key'},
+        60,
+    )]
+    assert download._download_core_abstract({'core_id': ''}) == (False, 'missing CORE ID', '')
+
+    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: FakeResponse(status_code=404))
+    assert download._download_core_abstract({'core_id': '123'}) == (False, '404 from CORE', '')
+
+    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(
+        download.elsevier,
+        'get_content',
+        lambda api_key, url, accept, params: FakeResponse({'abstracts-retrieval-response': {
+            'coredata': {'dc:description': '<p>Elsevier abstract</p>'},
+        }}),
+    )
+    assert download._download_elsevier_abstract({
+        'doi': '10.1234/example',
+        'elsevier_link': 'https://api.elsevier.com/content/abstract/scopus_id/1',
+    }) == (True, 'elsevier', 'Elsevier abstract')
+
+    monkeypatch.setattr(download.elsevier, 'get_content', lambda *_, **__: FakeResponse({'no': 'abstract'}))
+    ok, error, abstract = download._download_elsevier_abstract({'doi': '10.1234/example'})
+    assert ok is False
+    assert 'no abstract in response' in error
+    assert abstract == ''
+
+
 def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkeypatch):
     """
     Test PDF source configuration resolution.
@@ -443,7 +539,7 @@ def test_download_papers_validates_configuration(tmp_path, monkeypatch):
         download.download_papers(str(db_path), download_format='pdf')
 
 
-def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch):
+def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch, capsys):
     """
     Test downloading text and PDFs for papers in a corpus database.
 
@@ -495,9 +591,10 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch):
     monkeypatch.setattr(download, '_download_text', fake_download_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
-    download.download_papers(str(db_path), download_format='both')
+    download.download_papers(str(db_path), download_format='both', download_abstract=False)
 
     papers = read_corpus(db_path)
+    output = capsys.readouterr().out
     with corpus.connect(db_path) as conn:
         text_asset = corpus.get_asset(conn, 'paper:1', 'text')
         pdf_asset = corpus.get_asset(conn, 'paper:1', 'pdf')
@@ -511,6 +608,116 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch):
     assert not (tmp_path / 'downloads').exists()
     assert text_asset['content'] == b'text'
     assert pdf_asset['content'].startswith(b'%PDF')
+    assert 'Download complete: 1 text files, 1 PDFs, 0 abstracts downloaded.' in output
+
+
+def test_download_papers_downloads_abstract_by_default(tmp_path, monkeypatch, capsys):
+    """
+    Test default abstract downloading during corpus downloads.
+
+    This function performs the following steps:
+    1. Writes a corpus database with one paper row.
+    2. Replaces abstract downloading and progress reporting with local helpers.
+    3. Calls `download_papers` without passing an abstract option.
+    4. Reads the updated paper row and stored abstract asset.
+
+    Asserts:
+        - Abstract downloading runs by default.
+        - Abstract status and source are recorded on the paper row.
+        - Abstract text is stored as a compressed corpus asset.
+    """
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'paper:abstract'}])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, '_download_abstract', lambda paper: (True, 'core', 'abstract text'))
+
+    download.download_papers(str(db_path), download_format='text')
+
+    papers = read_corpus(db_path)
+    output = capsys.readouterr().out
+    with corpus.connect(db_path) as conn:
+        abstract_asset = corpus.get_asset(conn, 'paper:abstract', 'abstract')
+    assert papers[0]['abstract_download_status'] == 'succeeded'
+    assert papers[0]['abstract_source'] == 'core'
+    assert abstract_asset['content'] == b'abstract text'
+    assert 'Download complete: 0 text files, 0 PDFs, 1 abstracts downloaded.' in output
+
+
+def test_download_papers_skips_abstract_download_when_asset_already_exists(tmp_path, monkeypatch, capsys):
+    """
+    Test avoiding duplicate abstract downloads.
+
+    This function performs the following steps:
+    1. Writes a corpus database with one paper and an existing abstract asset.
+    2. Replaces abstract downloading with a helper that fails if called.
+    3. Calls `download_papers` with default abstract downloading enabled.
+    4. Reads the paper row and abstract asset.
+
+    Asserts:
+        - Existing abstract assets prevent provider abstract downloads.
+        - The existing abstract asset remains unchanged.
+        - Abstract status is marked succeeded and keeps the existing source.
+    """
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(
+            conn,
+            {'paper_id': 'paper:abstract', 'abstract_source': 'search'},
+            'search abstract text',
+            role='abstract',
+            kind='text',
+            mime_type='text/plain',
+            source='search',
+        )
+    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(
+        download,
+        '_download_abstract',
+        lambda paper: (_ for _ in ()).throw(AssertionError('abstract should not be downloaded twice')),
+    )
+
+    download.download_papers(str(db_path), download_format='text')
+
+    papers = read_corpus(db_path)
+    output = capsys.readouterr().out
+    with corpus.connect(db_path) as conn:
+        abstract_asset = corpus.get_asset(conn, 'paper:abstract', 'abstract')
+    assert papers[0]['abstract_download_status'] == 'succeeded'
+    assert papers[0]['abstract_source'] == 'search'
+    assert abstract_asset['content'] == b'search abstract text'
+    assert 'Download complete: 0 text files, 0 PDFs, 0 abstracts downloaded.' in output
 
 
 def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
@@ -766,7 +973,7 @@ def test_download_papers_records_text_and_pdf_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(download, '_download_text', lambda *_: False)
     monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (False, 'no pdf', ''))
 
-    download.download_papers(str(db_path), download_format='both')
+    download.download_papers(str(db_path), download_format='both', download_abstract=False)
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'failed'
@@ -812,7 +1019,7 @@ def test_download_papers_records_initial_text_download_exception(tmp_path, monke
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(download, '_download_text', lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')))
 
-    download.download_papers(str(db_path), download_format='text')
+    download.download_papers(str(db_path), download_format='text', download_abstract=False)
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'failed'
@@ -869,7 +1076,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
     monkeypatch.setattr(download, '_download_text', fake_download_text)
 
-    download.download_papers(str(db_path), download_format='pdf')
+    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
 
     papers = read_corpus(db_path)
     assert papers[0]['pdf_download_status'] == 'failed'
@@ -931,7 +1138,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
 
     monkeypatch.setattr(download, '_download_text', fake_download_text)
 
-    download.download_papers(str(db_path), download_format='pdf')
+    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
 
     papers = read_corpus(db_path)
     assert papers[0]['pdf_download_status'] == 'succeeded'

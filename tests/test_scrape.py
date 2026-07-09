@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import pytest
 
+import paperscraper.corpus as corpus
 import paperscraper.scrape as scrape
 
 
@@ -18,8 +19,26 @@ def sample_recipe():
 
 
 def write_papers_csv(path, rows):
-    """Write a papers CSV for scrape unit tests."""
-    pd.DataFrame(rows).to_csv(path)
+    """Write paper rows and matching local files to a corpus database for scrape unit tests."""
+    papers_dir = path.parent / 'papers'
+    with corpus.connect(path) as conn:
+        for row in rows:
+            corpus.upsert_paper(conn, row)
+            paper_id = row.get('paper_id')
+            if row.get('abstract'):
+                corpus.add_asset(conn, row, row['abstract'], role='abstract', kind='text', mime_type='text/plain')
+            text_path = papers_dir / f'{paper_id}.txt'
+            if text_path.is_file():
+                corpus.add_asset(conn, row, text_path, role='text', kind='text', mime_type='text/plain')
+            pdf_path = papers_dir / f'{paper_id}.pdf'
+            if pdf_path.is_file():
+                corpus.add_asset(conn, row, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
+
+
+def read_papers_csv(path):
+    """Read paper rows from a corpus database as a DataFrame for scrape unit tests."""
+    with corpus.connect(path) as conn:
+        return pd.DataFrame(corpus.paper_rows(conn))
 
 
 class FakeTqdm:
@@ -169,6 +188,50 @@ def test_material_file_and_image_helpers_handle_common_inputs(tmp_path):
         scrape._image_batches(['a'], 'many')
 
 
+def test_select_papers_orders_and_limits_corpus_rows(monkeypatch):
+    """
+    Test scrape paper ordering and limiting helpers.
+
+    This function performs the following steps:
+    1. Defines representative paper rows with ids, titles, and publication dates.
+    2. Selects papers by publication date, title, paper id, corpus order, and count.
+    3. Replaces random shuffling with a deterministic reverse-order helper.
+    4. Calls the selection helper with invalid count and order values.
+
+    Asserts:
+        - Publication, title, paper id, and corpus order choices are applied.
+        - Count limits are applied after ordering.
+        - Random order delegates to the shuffle helper.
+        - Invalid selection options raise `ValueError`.
+    """
+    papers = [
+        {'paper_id': 'paper-2', 'title': 'Beta', 'publication_date': '2024-01-01'},
+        {'paper_id': 'paper-1', 'title': 'Alpha', 'publication_date': '2026-01-01'},
+        {'paper_id': 'paper-3', 'title': 'Gamma', 'publication_date': '2025-01-01'},
+    ]
+
+    assert [row['paper_id'] for row in scrape._select_papers(papers)] == ['paper-2', 'paper-1', 'paper-3']
+    assert [row['paper_id'] for row in scrape._select_papers(papers, 'publication-asc')] == [
+        'paper-2',
+        'paper-3',
+        'paper-1',
+    ]
+    assert [row['paper_id'] for row in scrape._select_papers(papers, 'publication-desc', 2)] == [
+        'paper-1',
+        'paper-3',
+    ]
+    assert [row['paper_id'] for row in scrape._select_papers(papers, 'title')] == ['paper-1', 'paper-2', 'paper-3']
+    assert [row['paper_id'] for row in scrape._select_papers(papers, 'paper-id')] == ['paper-1', 'paper-2', 'paper-3']
+
+    monkeypatch.setattr(scrape.random, 'shuffle', lambda rows: rows.reverse())
+    assert [row['paper_id'] for row in scrape._select_papers(papers, 'random')] == ['paper-3', 'paper-1', 'paper-2']
+
+    with pytest.raises(ValueError, match='scrape_order must be one of'):
+        scrape._select_papers(papers, scrape_order='bad')
+    with pytest.raises(ValueError, match='positive integer'):
+        scrape._select_papers(papers, scrape_count=0)
+
+
 def test_scrape_papers_rejects_invalid_modes(tmp_path):
     """
     Test scrape option validation.
@@ -187,17 +250,21 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path):
     write_papers_csv(papers_path, [{'paper_id': 'paper-1'}])
 
     with pytest.raises(ValueError, match='mode must be one of'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), mode='bad')
+        scrape.scrape_papers(str(papers_path), mode='bad')
     with pytest.raises(ValueError, match='image_context must be one of'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), image_context='bad')
+        scrape.scrape_papers(str(papers_path), image_context='bad')
     with pytest.raises(ValueError, match='image_extraction must be one of'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), image_extraction='bad')
+        scrape.scrape_papers(str(papers_path), image_extraction='bad')
     with pytest.raises(ValueError, match='compression_scope must be one of'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_scope='bad')
+        scrape.scrape_papers(str(papers_path), compression_scope='bad')
     with pytest.raises(ValueError, match='compression_mode must be one of'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_mode='bad')
+        scrape.scrape_papers(str(papers_path), compression_mode='bad')
     with pytest.raises(ValueError, match='compression_ratio must be'):
-        scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), compression_ratio='1.5')
+        scrape.scrape_papers(str(papers_path), compression_ratio='1.5')
+    with pytest.raises(ValueError, match='scrape_order must be one of'):
+        scrape.scrape_papers(str(papers_path), scrape_order='bad')
+    with pytest.raises(ValueError, match='scrape_count must be a positive integer'):
+        scrape.scrape_papers(str(papers_path), scrape_count=0)
 
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_deletes_source(tmp_path, monkeypatch, capsys):
@@ -245,19 +312,17 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_deletes_sou
     monkeypatch.setattr(scrape, 'scrape_text', fake_analyze_text)
 
     scrape.scrape_papers(
-        str(papers_dir),
-        papers_path=str(papers_path),
+        str(papers_path),
         output_path=str(output_path),
         mode='text',
         recipe='sse',
         model='text-model',
         provider='local',
         base_url='http://localhost:8000/v1',
-        delete_papers_after=True,
     )
 
     materials = pd.read_csv(output_path, index_col=0)
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     output = capsys.readouterr().out
     assert calls['chunks'] == ['chunk one', 'chunk two']
     assert all(config.name == 'text-model' for config in calls['configs'])
@@ -267,14 +332,118 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_deletes_sou
     assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[0, 'num_text_materials'] == 2
     assert papers.loc[1, 'text_scrape_status'] == 'succeeded'
-    assert not text_path.exists()
+    assert text_path.exists()
     assert FakeModelConfig.calls == [{
         'profile': 'text',
         'name': 'text-model',
         'provider': 'local',
         'base_url': 'http://localhost:8000/v1',
     }]
-    assert 'Skipped already successful stages: text=1' in output
+    assert 'Skipped already successful stages: abstracts=0, text=1, images=0' in output
+
+
+def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_path, monkeypatch):
+    """
+    Test abstract-only scraping over corpus abstract assets.
+
+    This function performs the following steps:
+    1. Writes a corpus row with an abstract asset.
+    2. Replaces recipe loading, model config, progress bar, token chunking, document reading, and text analysis.
+    3. Calls `scrape_papers` in abstract mode.
+    4. Reloads the output materials and paper rows.
+
+    Asserts:
+        - The abstract asset is analyzed with the text model.
+        - Extracted materials are written with abstract provenance.
+        - Abstract scrape status and material counts are updated independently of full-text status.
+    """
+    papers_path = tmp_path / 'papers.csv'
+    output_path = tmp_path / 'scraped.csv'
+    write_papers_csv(papers_path, [{
+        'paper_id': 'paper-abstract',
+        'doi': '10.1/abstract',
+        'publication_date': '2026',
+        'abstract': 'abstract text',
+    }])
+    calls = {}
+    FakeModelConfig.calls = []
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'abstract text from corpus')
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
+
+    def fake_scrape_text(text, recipe, model_config=None):
+        calls['text'] = text
+        calls['model_config'] = model_config
+        return [{'Name': 'abstract material'}]
+
+    monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
+
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path), mode='abstract')
+
+    materials = pd.read_csv(output_path, index_col=0)
+    papers = read_papers_csv(papers_path)
+    assert calls['text'] == 'abstract text from corpus'
+    assert calls['model_config'].profile == 'text'
+    assert materials['Name'].tolist() == ['abstract material']
+    assert materials['Source'].tolist() == ['abstract']
+    assert materials['Source path'].tolist() == ['corpus:abstract']
+    assert papers.loc[0, 'abstract_scrape_status'] == 'succeeded'
+    assert papers.loc[0, 'text_scrape_status'] == 'pending'
+    assert papers.loc[0, 'num_abstract_materials'] == 1
+
+
+def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeypatch):
+    """
+    Test scrape ordering and count limiting in the main scrape loop.
+
+    This function performs the following steps:
+    1. Writes three corpus rows with matching text assets.
+    2. Replaces recipe loading, model configuration, progress, chunking, text reading, and text analysis.
+    3. Calls `scrape_papers` with a two-paper limit and paper-id ordering.
+    4. Reloads the output materials and corpus rows.
+
+    Asserts:
+        - Only the first two ordered papers are scraped.
+        - The third paper remains pending.
+        - Material rows are written in the selected order.
+    """
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    for paper_id in ['paper-3', 'paper-1', 'paper-2']:
+        (papers_dir / f'{paper_id}.txt').write_text(f'text for {paper_id}')
+    papers_path = tmp_path / 'papers.csv'
+    output_path = tmp_path / 'scraped.csv'
+    write_papers_csv(papers_path, [
+        {'paper_id': 'paper-3'},
+        {'paper_id': 'paper-1'},
+        {'paper_id': 'paper-2'},
+    ])
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path: os.path.basename(os.path.dirname(path)))
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
+    monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [{'Name': text}])
+
+    scrape.scrape_papers(
+        str(papers_path),
+        output_path=str(output_path),
+        mode='text',
+        scrape_count=2,
+        scrape_order='paper-id',
+    )
+
+    materials = pd.read_csv(output_path, index_col=0)
+    papers = read_papers_csv(papers_path).sort_values('paper_id').reset_index(drop=True)
+    assert materials['Paper id'].tolist() == ['paper-1', 'paper-2']
+    assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
+    assert papers.loc[1, 'text_scrape_status'] == 'succeeded'
+    assert papers.loc[2, 'text_scrape_status'] == 'pending'
 
 
 def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, monkeypatch, capsys):
@@ -302,14 +471,44 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, mo
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
 
-    scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), output_path=str(output_path))
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path))
 
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     output = capsys.readouterr().out
     assert papers.loc[0, 'text_scrape_status'] == 'failed'
-    assert 'No downloaded text or PDF file found' in papers.loc[0, 'last_error']
+    assert 'No downloaded text or PDF asset found' in papers.loc[0, 'last_error']
     assert not output_path.exists()
     assert 'No new scraped material rows were written' in output
+
+
+def test_scrape_papers_records_abstract_failures_when_source_is_missing(tmp_path, monkeypatch):
+    """
+    Test abstract scraping failure handling.
+
+    This function performs the following steps:
+    1. Writes a corpus row without an abstract asset.
+    2. Replaces recipe loading, model config, and progress bar with local fakes.
+    3. Calls `scrape_papers` in abstract mode.
+    4. Reloads the paper rows.
+
+    Asserts:
+        - The abstract scrape status is marked as failed.
+        - The missing-abstract error is recorded.
+        - No materials output file is created.
+    """
+    papers_path = tmp_path / 'papers.csv'
+    output_path = tmp_path / 'scraped.csv'
+    write_papers_csv(papers_path, [{'paper_id': 'missing-abstract'}])
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path), mode='abstract')
+
+    papers = read_papers_csv(papers_path)
+    assert papers.loc[0, 'abstract_scrape_status'] == 'failed'
+    assert 'No downloaded abstract asset found' in papers.loc[0, 'last_error']
+    assert not output_path.exists()
 
 
 def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
@@ -364,8 +563,7 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
     monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
 
     scrape.scrape_papers(
-        str(papers_dir),
-        papers_path=str(papers_path),
+        str(papers_path),
         output_path=str(output_path),
         compression_scope='text',
         compression_mode='always',
@@ -456,8 +654,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     monkeypatch.setattr(scrape, 'combine_material_records', fake_combine)
 
     scrape.scrape_papers(
-        str(papers_dir),
-        papers_path=str(papers_path),
+        str(papers_path),
         output_path=str(output_path),
         image_dir=str(image_root),
         mode='text-images',
@@ -472,7 +669,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     )
 
     materials = pd.read_csv(output_path, index_col=0)
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     image_dir = papers.loc[0, 'image_dir']
     image_paths = [path for batch in calls['image_batches'] for path in batch]
     assert FakeModelConfig.calls[0]['profile'] == 'text'
@@ -537,14 +734,13 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
     monkeypatch.setattr(scrape, 'combine_material_records', lambda *_, **__: [])
 
     scrape.scrape_papers(
-        str(papers_dir),
-        papers_path=str(papers_path),
+        str(papers_path),
         output_path=str(output_path),
         mode='text-images',
     )
 
     materials = pd.read_csv(output_path, index_col=0)
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     assert materials['Name'].tolist() == ['text material', 'image material']
     assert materials['Source'].tolist() == ['text', 'image']
     assert materials.loc[1, 'Source path'] == str(image_path)
@@ -594,16 +790,14 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_deletes_pd
     monkeypatch.setattr(scrape, 'scrape_images', fake_analyze_images)
 
     scrape.scrape_papers(
-        str(papers_dir),
-        papers_path=str(papers_path),
+        str(papers_path),
         output_path=str(output_path),
         mode='images',
         image_context='paper-text',
-        delete_papers_after=True,
     )
 
     materials = pd.read_csv(output_path, index_col=0)
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     assert calls['image_paths'] == [str(image_path)]
     assert calls['context'] == 'context from paper-1.pdf'
     assert calls['compression_config'].scope == 'none'
@@ -613,7 +807,7 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_deletes_pd
     assert papers.loc[0, 'image_scrape_status'] == 'succeeded'
     assert papers.loc[0, 'num_images'] == 1
     assert papers.loc[0, 'num_image_materials'] == 1
-    assert not pdf_path.exists()
+    assert pdf_path.exists()
 
 
 def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatch, capsys):
@@ -646,11 +840,11 @@ def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatc
         lambda *_, **__: (_ for _ in ()).throw(AssertionError('image extraction should not run')),
     )
 
-    scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), output_path=str(output_path), mode='images')
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path), mode='images')
 
     output = capsys.readouterr().out
     assert not output_path.exists()
-    assert 'Skipped already successful stages: text=0, images=1' in output
+    assert 'Skipped already successful stages: abstracts=0, text=0, images=1' in output
 
 
 def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monkeypatch):
@@ -678,11 +872,11 @@ def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monke
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
 
-    scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), output_path=str(output_path), mode='images')
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path), mode='images')
 
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     assert papers.loc[0, 'image_scrape_status'] == 'failed'
-    assert 'No downloaded PDF file found for image analysis' in papers.loc[0, 'last_error']
+    assert 'No downloaded PDF asset found for image analysis' in papers.loc[0, 'last_error']
     assert not output_path.exists()
 
 
@@ -713,9 +907,9 @@ def test_scrape_papers_records_image_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [])
 
-    scrape.scrape_papers(str(papers_dir), papers_path=str(papers_path), output_path=str(output_path), mode='images')
+    scrape.scrape_papers(str(papers_path), output_path=str(output_path), mode='images')
 
-    papers = pd.read_csv(papers_path, index_col=0)
+    papers = read_papers_csv(papers_path)
     assert papers.loc[0, 'image_scrape_status'] == 'failed'
     assert 'No PDF images could be extracted or rendered' in papers.loc[0, 'last_error']
     assert not output_path.exists()

@@ -310,6 +310,7 @@ def test_elsevier_rows_normalizes_provider_records():
         'prism:publicationName': 'Journal',
         'prism:coverDate': '2024-01-01',
         'dc:creator': 'Author',
+        'dc:description': '<p>Elsevier abstract</p>',
         'link': [
             {'@ref': 'self', '@href': 'self-link'},
             {'@ref': 'full-text', '@href': 'full-text-link'},
@@ -326,6 +327,7 @@ def test_elsevier_rows_normalizes_provider_records():
     assert row['authors'] == 'Author'
     assert row['sources'] == 'elsevier'
     assert row['elsevier_link'] == 'full-text-link'
+    assert row['abstract'] == 'Elsevier abstract'
     assert row['metadata_status'] == 'retrieved'
 
 
@@ -428,6 +430,7 @@ def test_core_rows_normalizes_work_records():
             'journal': {'name': 'Core Journal'},
             'publishedDate': '2023-01-01',
             'authors': [{'name': 'A. Author'}],
+            'abstract': '<p>Core abstract</p>',
         },
         {
             'DOI': '10.1234/no-id',
@@ -440,6 +443,7 @@ def test_core_rows_normalizes_work_records():
     assert rows.loc[0, 'title'] == 'Core title'
     assert rows.loc[0, 'journal'] == 'Core Journal'
     assert rows.loc[0, 'pdf_url'] == 'https://api.core.ac.uk/v3/works/123/download'
+    assert rows.loc[0, 'abstract'] == 'Core abstract'
     assert rows.loc[0, 'metadata_status'] == 'retrieved'
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
@@ -680,6 +684,50 @@ def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, ca
     assert written[0]['title'] == 'Existing title'
     assert written[0]['journal'] == 'Updated Journal'
     assert '0 new results and updated 1 existing rows' in output
+
+
+def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypatch, capsys):
+    """
+    Test optional storage of abstracts returned during search.
+
+    This function performs the following steps:
+    1. Writes an existing corpus row with a DOI.
+    2. Replaces CORE search with a matching row that includes an abstract.
+    3. Calls `search_for_papers` with `store_abstract=True`.
+    4. Reads the merged paper row and abstract asset from the corpus.
+
+    Asserts:
+        - The search result updates the existing corpus row instead of adding a duplicate.
+        - The abstract is stored as an `abstract` corpus asset.
+        - Abstract status and source are recorded on the matched paper row.
+    """
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {
+            'paper_id': 'existing:paper',
+            'doi': '10.1234/existing',
+            'title': 'Existing title',
+        })
+    incoming = search._core_rows([{
+        'id': 'core-new',
+        'doi': '10.1234/existing',
+        'title': 'Incoming title',
+        'abstract': '<p>Search abstract</p>',
+    }])
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: incoming)
+
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1, store_abstract=True)
+
+    with corpus.connect(db_path) as conn:
+        rows = corpus.paper_rows(conn)
+        abstract = corpus.get_asset(conn, 'existing:paper', 'abstract')
+    output = capsys.readouterr().out
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'existing:paper'
+    assert rows[0]['abstract_source'] == 'core'
+    assert rows[0]['abstract_download_status'] == 'succeeded'
+    assert abstract['content'] == b'Search abstract'
+    assert 'Stored 1 search-time abstracts.' in output
 
 
 def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path, monkeypatch, capsys):

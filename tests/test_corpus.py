@@ -73,6 +73,9 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     assert asset['content'] == text.encode('utf-8')
     assert asset['mime_type'] == 'text/plain'
     assert stats['papers'] == 2
+    assert stats['papers_with_text'] == 2
+    assert stats['papers_with_pdf'] == 0
+    assert stats['papers_with_abstract'] == 0
     assert stats['blobs'] == 1
     assert stats['stored_size'] < stats['original_size']
     assert stats['savings_fraction'] > 0

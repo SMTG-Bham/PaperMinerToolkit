@@ -30,13 +30,16 @@ PAPER_COLUMNS = [
     'pdf_url',
     'pdf_source',
     'text_source',
+    'abstract_source',
     'elsevier_link',
 ]
 PIPELINE_COLUMNS = {
     'metadata_status': 'pending',
+    'abstract_download_status': 'pending',
     'text_download_status': 'pending',
     'pdf_download_status': 'pending',
     'text_scrape_status': 'pending',
+    'abstract_scrape_status': 'pending',
     'image_scrape_status': 'pending',
     'store_status': 'pending',
     'text_path': '',
@@ -44,6 +47,7 @@ PIPELINE_COLUMNS = {
     'image_dir': '',
     'num_images': 0,
     'num_text_materials': 0,
+    'num_abstract_materials': 0,
     'num_image_materials': 0,
     'last_error': '',
 }
@@ -114,7 +118,7 @@ def init_corpus(conn):
 
 def _paper_column_type(column):
     """Return the SQLite storage type for a paper metadata or state column."""
-    if column in {'num_images', 'num_text_materials', 'num_image_materials'}:
+    if column in {'num_images', 'num_text_materials', 'num_abstract_materials', 'num_image_materials'}:
         return 'INTEGER'
     return 'TEXT'
 
@@ -246,6 +250,11 @@ def _find_existing_paper(conn, paper):
         if _papers_match(existing, incoming):
             return existing
     return None
+
+
+def find_paper(conn, paper):
+    """Return the first corpus paper matching ``paper``, or ``None``."""
+    return _find_existing_paper(conn, paper)
 
 
 def _json_dumps(value):
@@ -438,11 +447,21 @@ def corpus_stats(conn):
     """Return high-level paper, blob, and storage statistics for the corpus."""
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
     blob_count = conn.execute('SELECT COUNT(*) FROM blobs').fetchone()[0]
+    asset_counts = {
+        role: conn.execute(
+            'SELECT COUNT(DISTINCT paper_id) FROM paper_assets WHERE role = ?',
+            (role,),
+        ).fetchone()[0]
+        for role in ['abstract', 'text', 'pdf']
+    }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
     original_size, stored_size = sizes
     savings = 0 if original_size == 0 else 1 - (stored_size / original_size)
     return {
         'papers': paper_count,
+        'papers_with_abstract': asset_counts['abstract'],
+        'papers_with_text': asset_counts['text'],
+        'papers_with_pdf': asset_counts['pdf'],
         'blobs': blob_count,
         'original_size': original_size,
         'stored_size': stored_size,

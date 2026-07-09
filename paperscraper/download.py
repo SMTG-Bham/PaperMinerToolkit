@@ -6,6 +6,7 @@ download status in the SQLite paper corpus after each row.
 """
 
 import ast
+import html
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from tqdm import tqdm
 from urllib.parse import quote
 
 from paperscraper import elsevier
-from paperscraper.corpus import PIPELINE_COLUMNS, add_asset, connect, paper_rows, upsert_paper
+from paperscraper.corpus import PIPELINE_COLUMNS, add_asset, connect, get_asset, paper_rows, upsert_paper
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
@@ -297,6 +298,122 @@ def _download_core_pdf(paper, filepath):
     return False, last_error
 
 
+def _clean_abstract(value):
+    """Normalize provider abstract text to compact plain text."""
+    if not _has_value(value):
+        return ''
+    if isinstance(value, list):
+        value = ' '.join(str(part) for part in value if _has_value(part))
+    text = html.unescape(str(value))
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _abstract_from_mapping(value):
+    """Return the first abstract-like text from a nested provider mapping."""
+    if isinstance(value, dict):
+        for key in ['abstract', 'dc:description', 'description', 'dcDescription']:
+            abstract = _clean_abstract(value.get(key))
+            if abstract:
+                return abstract
+        for child in value.values():
+            abstract = _abstract_from_mapping(child)
+            if abstract:
+                return abstract
+    elif isinstance(value, list):
+        for child in value:
+            abstract = _abstract_from_mapping(child)
+            if abstract:
+                return abstract
+    return ''
+
+
+def _core_work_url(paper):
+    """Return a CORE work metadata URL for a paper row when possible."""
+    core_id = paper.get('core_id')
+    if not _has_value(core_id):
+        return None
+    return f'https://api.core.ac.uk/v3/works/{quote(str(core_id).strip(), safe="")}'
+
+
+def _download_core_abstract(paper):
+    """Fetch and return a CORE abstract for one paper row."""
+    url = _core_work_url(paper)
+    if not url:
+        return False, 'missing CORE ID', ''
+    try:
+        response = requests.get(url, headers=_core_headers(), timeout=60)
+        if response.status_code >= 400:
+            return False, f'{response.status_code} from CORE', ''
+        abstract = _abstract_from_mapping(response.json())
+    except requests.RequestException as e:
+        return False, str(e), ''
+    if abstract:
+        return True, 'core', abstract
+    return False, 'no CORE abstract found', ''
+
+
+def _elsevier_abstract_urls(paper):
+    """Build Elsevier abstract endpoint candidates for a paper row."""
+    urls = []
+    link = paper.get('elsevier_link')
+    for value in _link_values(link):
+        if isinstance(value, dict):
+            href = value.get('@href') or value.get('href') or value.get('url') or ''
+            ref = str(value.get('@ref') or value.get('ref') or '').lower()
+            if href and ('abstract' in ref or '/content/abstract/' in str(href).lower()):
+                urls.append(str(href))
+        elif isinstance(value, str) and '/content/abstract/' in value.lower():
+            urls.append(value)
+    paper_id = str(paper.get('paper_id') or '')
+    if paper_id.startswith('SCOPUS_ID:'):
+        urls.append(f'https://api.elsevier.com/content/abstract/scopus_id/{quote(paper_id.split(":", 1)[1])}')
+    doi = paper.get('doi')
+    if _has_value(doi):
+        urls.append(f'https://api.elsevier.com/content/abstract/doi/{quote(str(doi).strip(), safe="")}')
+    return list(dict.fromkeys(urls))
+
+
+def _download_elsevier_abstract(paper):
+    """Fetch and return an Elsevier abstract for one paper row."""
+    urls = _elsevier_abstract_urls(paper)
+    if not urls:
+        return False, 'missing Elsevier abstract URL', ''
+    api_key = _elsevier_api_key()
+    last_error = 'no Elsevier abstract found'
+    for url in urls:
+        try:
+            response = elsevier.get_content(api_key, url, accept='application/json', params={'httpAccept': 'application/json'})
+            abstract = _abstract_from_mapping(response.json())
+            if abstract:
+                return True, 'elsevier', abstract
+            last_error = f'no abstract in response from {url}'
+        except requests.HTTPError as e:
+            response = getattr(e, 'response', None)
+            status_code = response.status_code if response is not None else 'HTTP error'
+            last_error = f'{status_code} from {url}'
+        except requests.RequestException as e:
+            last_error = str(e)
+    return False, last_error, ''
+
+
+def _download_abstract(paper):
+    """Fetch abstract text from available metadata providers."""
+    errors = []
+    if _has_value(paper.get('core_id')):
+        ok, source, abstract = _download_core_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'core: {source}')
+    if _elsevier_configured():
+        ok, source, abstract = _download_elsevier_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'elsevier: {source}')
+    return False, '; '.join(errors) or 'no abstract source available', ''
+
+
 def _configured_sources(sources):
     """Resolve requested PDF sources, expanding ``all`` to configured providers."""
     if not sources or 'all' in sources:
@@ -347,14 +464,14 @@ def _should_try_elsevier_text(paper):
 
 def _store_downloaded_asset(conn, paper, filepath, role, source):
     """Store a downloaded text or PDF file in the corpus blob store."""
-    if role == 'text':
+    if role in {'text', 'abstract'}:
         kind = 'text'
         mime_type = 'text/plain'
     elif role == 'pdf':
         kind = 'pdf'
         mime_type = 'application/pdf'
     else:
-        raise ValueError('role must be text or pdf')
+        raise ValueError('role must be text, abstract, or pdf')
     add_asset(
         conn,
         paper,
@@ -369,7 +486,8 @@ def _store_downloaded_asset(conn, paper, filepath, role, source):
 
 def download_papers(db_path='papers.db',
                     download_format='text',
-                    sources=None):
+                    sources=None,
+                    download_abstract=True):
     """Download requested paper assets and update the corpus database in place."""
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
@@ -383,16 +501,30 @@ def download_papers(db_path='papers.db',
             'No PDF download sources are configured. Set an Unpaywall email, CORE API key, or Elsevier API key.')
     with connect(db_path) as conn:
         papers = paper_rows(conn)
+        summary = {'texts': 0, 'pdfs': 0, 'abstracts': 0}
         with tempfile.TemporaryDirectory(prefix='paperscraper-download-') as download_dir:
             with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
                 for paper in papers:
-                    _download_paper(conn, paper, download_dir, download_format, sources, elsevier_text_available)
+                    paper_summary = _download_paper(conn,
+                                                    paper,
+                                                    download_dir,
+                                                    download_format,
+                                                    sources,
+                                                    elsevier_text_available,
+                                                    download_abstract=download_abstract)
+                    for key, value in paper_summary.items():
+                        summary[key] += value
                     pbar.update(1)
+    print(
+        f"Download complete: {summary['texts']} text files, "
+        f"{summary['pdfs']} PDFs, {summary['abstracts']} abstracts downloaded."
+    )
 
 
-def _download_paper(conn, paper, download_dir, download_format, sources, elsevier_text_available):
+def _download_paper(conn, paper, download_dir, download_format, sources, elsevier_text_available, download_abstract=True):
     """Download requested assets for one corpus paper row."""
     filename = _safe_filename(paper)
+    summary = {'texts': 0, 'pdfs': 0, 'abstracts': 0}
     text_attempt_needed = (
         download_format in {'text', 'both'}
         and elsevier_text_available
@@ -400,6 +532,28 @@ def _download_paper(conn, paper, download_dir, download_format, sources, elsevie
     )
     pdf_attempt_needed = download_format in {'pdf', 'both'}
     pdf_succeeded_from_oa = False
+
+    if download_abstract:
+        abstract_filepath = os.path.join(download_dir, f'{filename}-abstract.txt')
+        try:
+            existing_abstract = get_asset(conn, paper.get('paper_id'), 'abstract')
+            if existing_abstract:
+                paper['abstract_source'] = existing_abstract.get('source') or paper.get('abstract_source')
+                _set_status(paper, 'abstract_download_status', 'succeeded')
+            else:
+                ok, source_or_error, abstract = _download_abstract(paper)
+                if not ok:
+                    _set_status(paper, 'abstract_download_status', 'failed', source_or_error)
+                    abstract = ''
+            if not existing_abstract and abstract:
+                with open(abstract_filepath, 'w', encoding='utf-8') as out_file:
+                    out_file.write(abstract)
+                paper['abstract_source'] = source_or_error
+                _set_status(paper, 'abstract_download_status', 'succeeded')
+                _store_downloaded_asset(conn, paper, abstract_filepath, role='abstract', source=source_or_error)
+                summary['abstracts'] += 1
+        except Exception as e:
+            _set_status(paper, 'abstract_download_status', 'failed', str(e))
 
     if text_attempt_needed:
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
@@ -409,6 +563,7 @@ def _download_paper(conn, paper, download_dir, download_format, sources, elsevie
                 paper['text_source'] = 'elsevier'
                 _set_status(paper, 'text_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, text_filepath, role='text', source='elsevier')
+                summary['texts'] += 1
             else:
                 _set_status(paper, 'text_download_status', 'failed', 'Elsevier text download failed')
         except Exception as e:
@@ -425,6 +580,7 @@ def _download_paper(conn, paper, download_dir, download_format, sources, elsevie
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
+                summary['pdfs'] += 1
                 pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'core'}
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
@@ -444,6 +600,8 @@ def _download_paper(conn, paper, download_dir, download_format, sources, elsevie
                 paper['text_source'] = 'elsevier'
                 _set_status(paper, 'text_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, text_filepath, role='text', source='elsevier')
+                summary['texts'] += 1
         except Exception as e:
             _set_status(paper, 'text_download_status', 'failed', str(e))
     upsert_paper(conn, paper)
+    return summary
