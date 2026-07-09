@@ -1,42 +1,45 @@
 from click.testing import CliRunner
 
 import cli.cli as cli
+import paperscraper.corpus as corpus
 
 
-def test_paper_search_passes_query_path_source_and_count(monkeypatch):
+def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
     """
     Test the paper search command delegates to the search workflow.
 
     This function performs the following steps:
     1. Replaces `search_for_papers` with a local fake that records its inputs.
-    2. Runs the CLI command with explicit query, path, source, and count values.
+    2. Runs the CLI command with explicit query, database path, source, and count values.
     3. Reads the command result and recorded call.
 
     Asserts:
         - The command exits successfully.
-        - The search workflow receives the requested query, path, source, and count.
+        - The search workflow receives the requested query, database path, source, and count.
     """
     calls = {}
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count: calls.update({
+        lambda query, path, source, count, store_abstract: calls.update({
             'query': query,
-            'path': path,
+            'db_path': path,
             'source': source,
             'count': count,
+            'store_abstract': store_abstract,
         }),
     )
 
-    result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.csv', '--source', 'core',
-                                                   '--count', '10'])
+    result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.db', '--source', 'core',
+                                                   '--count', '10', '--store-abstract'])
 
     assert result.exit_code == 0
     assert calls == {
         'query': 'Lithium solid electrolyte',
-        'path': 'papers.csv',
+        'db_path': 'papers.db',
         'source': 'core',
         'count': 10,
+        'store_abstract': True,
     }
 
 
@@ -59,19 +62,19 @@ def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         'import_pdfs',
-        lambda directory, path, use_crossref: calls.update({
+        lambda directory, db_path, use_crossref: calls.update({
             'directory': directory,
-            'path': path,
+            'db_path': db_path,
             'use_crossref': use_crossref,
         }),
     )
 
-    result = CliRunner().invoke(cli.import_pdf_folder, [str(papers_dir), 'external.csv', '--no-crossref'])
+    result = CliRunner().invoke(cli.import_pdf_folder, [str(papers_dir), 'papers.db', '--no-crossref'])
 
     assert result.exit_code == 0
     assert calls == {
         'directory': str(papers_dir),
-        'path': 'external.csv',
+        'db_path': 'papers.db',
         'use_crossref': False,
     }
 
@@ -81,7 +84,7 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     Test the download command delegates to the download workflow.
 
     This function performs the following steps:
-    1. Creates a temporary papers CSV accepted by Click path validation.
+    1. Creates a temporary corpus database accepted by Click path validation.
     2. Replaces `download_papers` with a local fake that records its inputs.
     3. Runs the command with explicit format and repeated source options.
 
@@ -90,29 +93,83 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
         - Download format and source choices are passed through.
     """
     calls = {}
-    papers_path = tmp_path / 'papers.csv'
-    papers_path.write_text('paper_id\n')
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, directory, download_format, sources: calls.update({
-            'path': path,
-            'directory': directory,
+        lambda path, download_format, sources, download_abstract: calls.update({
+            'db_path': path,
             'download_format': download_format,
             'sources': sources,
+            'download_abstract': download_abstract,
         }),
     )
 
-    result = CliRunner().invoke(cli.download, [str(papers_path), 'papers', '--format', 'pdf', '--source', 'core',
-                                               '--source', 'unpaywall'])
+    result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'pdf', '--source', 'core',
+                                               '--source', 'unpaywall', '--no_abstract'])
 
     assert result.exit_code == 0
     assert calls == {
-        'path': str(papers_path),
-        'directory': 'papers',
+        'db_path': str(db_path),
         'download_format': 'pdf',
         'sources': ['core', 'unpaywall'],
+        'download_abstract': False,
     }
+
+
+def test_corpus_status_prints_database_storage_statistics(tmp_path):
+    """
+    Test the corpus statistics command.
+
+    This function performs the following steps:
+    1. Creates a temporary corpus database.
+    2. Stores one repeated text asset so compression statistics are available.
+    3. Runs the corpus statistics CLI command.
+
+    Asserts:
+        - The command exits successfully.
+        - The output includes paper, blob, size, and storage saving summaries.
+    """
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            'paper text ' * 100,
+            role='text',
+            kind='text',
+            mime_type='text/plain',
+        )
+        corpus.add_asset(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            'abstract text',
+            role='abstract',
+            kind='text',
+            mime_type='text/plain',
+        )
+        corpus.add_asset(
+            conn,
+            {'paper_id': 'paper:2', 'title': 'Corpus paper 2'},
+            b'%PDF data',
+            role='pdf',
+            kind='pdf',
+            mime_type='application/pdf',
+        )
+
+    result = CliRunner().invoke(cli.corpus_status, [str(db_path)])
+
+    assert result.exit_code == 0
+    assert f'Corpus: {db_path}' in result.output
+    assert 'Papers: 2' in result.output
+    assert 'Papers with abstracts: 1' in result.output
+    assert 'Papers with text: 1' in result.output
+    assert 'Papers with PDFs: 1' in result.output
+    assert 'Blobs: 3' in result.output
+    assert 'Original size:' in result.output
+    assert 'Stored size:' in result.output
+    assert 'Storage saved:' in result.output
 
 
 def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_path):
@@ -120,7 +177,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
     Test the scrape command delegates with text, image, and cleanup options.
 
     This function performs the following steps:
-    1. Creates temporary paper directory and papers CSV inputs accepted by Click validation.
+    1. Creates a temporary corpus database accepted by Click validation.
     2. Replaces `scrape_papers` with a local fake that records its inputs.
     3. Runs the command with explicit text, vision, image, cleanup, output, and force options.
 
@@ -129,10 +186,8 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         - All scrape options are forwarded to the scrape workflow.
     """
     calls = {}
-    papers_dir = tmp_path / 'papers'
-    papers_dir.mkdir()
-    papers_path = tmp_path / 'papers.csv'
-    papers_path.write_text('paper_id\n')
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
 
     def fake_scrape_papers(*args, **kwargs):
         calls['args'] = args
@@ -141,8 +196,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
     monkeypatch.setattr(cli, 'scrape_papers', fake_scrape_papers)
 
     result = CliRunner().invoke(cli.scrape, [
-        str(papers_dir),
-        str(papers_path),
+        str(db_path),
         'custom_recipe',
         '--mode', 'text-images',
         '--image-context', 'paper-text',
@@ -157,9 +211,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         '--vision-provider', 'local',
         '--vision-base-url', 'http://localhost:8000/v1',
         '--delete-images-after',
-        '--delete-papers-after',
         '--output', 'scraped.csv',
         '--force',
+        '--count', '3',
+        '--order', 'publication-desc',
         '--compression-scope', 'both',
         '--compression-mode', 'always',
         '--compression-ratio', 'auto',
@@ -167,7 +222,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
     ])
 
     assert result.exit_code == 0
-    assert calls['args'] == (str(papers_dir), str(papers_path), 'custom_recipe')
+    assert calls['args'] == (str(db_path), 'custom_recipe')
     assert calls['kwargs'] == {
         'mode': 'text-images',
         'image_dir': 'images',
@@ -182,9 +237,10 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         'vision_provider': 'local',
         'vision_base_url': 'http://localhost:8000/v1',
         'delete_images_after': True,
-        'delete_papers_after': True,
         'output_path': 'scraped.csv',
         'force': True,
+        'scrape_count': 3,
+        'scrape_order': 'publication-desc',
         'compression_scope': 'both',
         'compression_mode': 'always',
         'compression_ratio': 'auto',
@@ -197,7 +253,7 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
     Test the store command delegates to the store workflow.
 
     This function performs the following steps:
-    1. Creates a temporary papers CSV accepted by Click path validation.
+    1. Creates a temporary corpus database accepted by Click path validation.
     2. Replaces `store_results` with a local fake that records its inputs.
     3. Runs the command with explicit input, output, recipe, and assume-yes options.
 
@@ -206,13 +262,13 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
         - Store arguments include unit conversion enabled and assume-yes forwarded.
     """
     calls = {}
-    papers_path = tmp_path / 'papers.csv'
-    papers_path.write_text('paper_id\n')
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
     monkeypatch.setattr(
         cli,
         'store_results',
-        lambda path, in_file, out_file, unit_conversion, recipe, assume_yes: calls.update({
-            'path': path,
+        lambda db_path, in_file, out_file, unit_conversion, recipe, assume_yes: calls.update({
+            'db_path': db_path,
             'in_file': in_file,
             'out_file': out_file,
             'unit_conversion': unit_conversion,
@@ -221,11 +277,11 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
         }),
     )
 
-    result = CliRunner().invoke(cli.store, [str(papers_path), 'scraped.csv', 'materials.csv', 'sse', '--assume-yes'])
+    result = CliRunner().invoke(cli.store, [str(db_path), 'scraped.csv', 'materials.csv', 'sse', '--assume-yes'])
 
     assert result.exit_code == 0
     assert calls == {
-        'path': str(papers_path),
+        'db_path': str(db_path),
         'in_file': 'scraped.csv',
         'out_file': 'materials.csv',
         'unit_conversion': True,
@@ -424,34 +480,28 @@ def test_update_model_config_calls_interactive_settings_helper(monkeypatch):
 
 def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch, tmp_path):
     """
-    Test reset, status, sort, and shuffle CLI commands.
+    Test reset and status CLI commands.
 
     This function performs the following steps:
-    1. Creates a temporary papers CSV accepted by Click path validation.
+    1. Creates a temporary corpus database accepted by Click path validation.
     2. Replaces maintenance helpers with local fakes that record their inputs.
     3. Runs each maintenance command.
 
     Asserts:
         - Each command exits successfully.
-        - Reset, status, sort, and shuffle helpers receive the expected arguments.
+        - Reset and status helpers receive the expected arguments.
     """
-    papers_path = tmp_path / 'papers.csv'
-    papers_path.write_text('paper_id\n')
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
     calls = []
     monkeypatch.setattr(cli, 'reset', lambda path: calls.append(('reset', path)))
     monkeypatch.setattr(cli, 'status', lambda path: calls.append(('status', path)))
-    monkeypatch.setattr(cli, 'sort', lambda path, field, ascending: calls.append(('sort', path, field, ascending)))
-    monkeypatch.setattr(cli, 'shuffle', lambda path: calls.append(('shuffle', path)))
 
     runner = CliRunner()
-    assert runner.invoke(cli.reset_scraper, [str(papers_path)]).exit_code == 0
-    assert runner.invoke(cli.scraper_status, [str(papers_path)]).exit_code == 0
-    assert runner.invoke(cli.sort_df, [str(papers_path), 'title', '--ascending']).exit_code == 0
-    assert runner.invoke(cli.shuffle_papers, [str(papers_path)]).exit_code == 0
+    assert runner.invoke(cli.reset_scraper, [str(db_path)]).exit_code == 0
+    assert runner.invoke(cli.scraper_status, [str(db_path)]).exit_code == 0
 
     assert calls == [
-        ('reset', str(papers_path)),
-        ('status', str(papers_path)),
-        ('sort', str(papers_path), 'title', True),
-        ('shuffle', str(papers_path)),
+        ('reset', str(db_path)),
+        ('status', str(db_path)),
     ]

@@ -31,6 +31,7 @@ test = [
 [project.scripts]
 ps_search = "cli.cli:paper_search"
 ps_download = "cli.cli:download"
+ps_corpus_stats = "cli.cli:corpus_status"
 ps_import_pdfs = "cli.cli:import_pdf_folder"
 ps_scrape = "cli.cli:scrape"
 ps_store = "cli.cli:store"
@@ -43,8 +44,6 @@ ps_model_config = "cli.cli:model_config"
 ps_model_status = "cli.cli:model_status"
 ps_reset = "cli.cli:reset_scraper"
 ps_status = "cli.cli:scraper_status"
-ps_sort = "cli.cli:sort_df"
-ps_shuffle = "cli.cli:shuffle_papers"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -2,13 +2,14 @@
 
 This module tests provider-specific search helpers, CORE and Elsevier row
 normalization, pagination behavior, request headers, and merging search results
-into the papers CSV.
+into the paper corpus.
 """
 
 
 import pandas as pd
 import pytest
 
+import paperscraper.corpus as corpus
 import paperscraper.search as search
 
 
@@ -309,7 +310,11 @@ def test_elsevier_rows_normalizes_provider_records():
         'prism:publicationName': 'Journal',
         'prism:coverDate': '2024-01-01',
         'dc:creator': 'Author',
-        'link': 'full-text-link',
+        'dc:description': '<p>Elsevier abstract</p>',
+        'link': [
+            {'@ref': 'self', '@href': 'self-link'},
+            {'@ref': 'full-text', '@href': 'full-text-link'},
+        ],
     }])
 
     rows = search._elsevier_rows(raw)
@@ -322,7 +327,34 @@ def test_elsevier_rows_normalizes_provider_records():
     assert row['authors'] == 'Author'
     assert row['sources'] == 'elsevier'
     assert row['elsevier_link'] == 'full-text-link'
+    assert row['abstract'] == 'Elsevier abstract'
     assert row['metadata_status'] == 'retrieved'
+
+
+def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
+    """
+    Test Elsevier record recasting keeps link lists intact.
+
+    This function performs the following steps:
+    1. Builds a raw Elsevier record with list-valued DOI and link fields.
+    2. Recasts the record into a DataFrame.
+    3. Converts the recast DataFrame to normalized paper rows.
+
+    Asserts:
+        - Non-link list fields are flattened to scalar values.
+        - Link lists are preserved long enough to select the full-text link.
+    """
+    recast = search._recast_elsevier_records([{
+        'prism:doi': ['10.1234/example'],
+        'link': [
+            {'@ref': 'self', '@href': 'self-link'},
+            {'@ref': 'full-text', '@href': 'full-text-link'},
+        ],
+    }])
+    rows = search._elsevier_rows(recast)
+
+    assert recast.loc[0, 'prism:doi'] == '10.1234/example'
+    assert rows.loc[0, 'elsevier_link'] == 'full-text-link'
 
 
 def test_core_headers_include_optional_authorization(monkeypatch):
@@ -398,6 +430,7 @@ def test_core_rows_normalizes_work_records():
             'journal': {'name': 'Core Journal'},
             'publishedDate': '2023-01-01',
             'authors': [{'name': 'A. Author'}],
+            'abstract': '<p>Core abstract</p>',
         },
         {
             'DOI': '10.1234/no-id',
@@ -410,6 +443,7 @@ def test_core_rows_normalizes_work_records():
     assert rows.loc[0, 'title'] == 'Core title'
     assert rows.loc[0, 'journal'] == 'Core Journal'
     assert rows.loc[0, 'pdf_url'] == 'https://api.core.ac.uk/v3/works/123/download'
+    assert rows.loc[0, 'abstract'] == 'Core abstract'
     assert rows.loc[0, 'metadata_status'] == 'retrieved'
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
@@ -582,18 +616,18 @@ def test_search_for_papers_rejects_invalid_source():
 
 def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, capsys):
     """
-    Test merging search results into a papers CSV.
+    Test merging search results into a corpus database.
 
     This function performs the following steps:
     1. Replaces Elsevier search with a normalized one-row DataFrame.
     2. Calls `search_for_papers`.
-    3. Reloads the written papers CSV.
+    3. Reloads the written corpus paper rows.
 
     Asserts:
-        - New search results are written to the requested papers CSV.
+        - New search results are written to the requested corpus database.
         - The summary reports one added result.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{
         'dc:identifier': 'SCOPUS_ID:1',
         'prism:doi': '10.1234/new',
@@ -602,20 +636,21 @@ def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, caps
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='elsevier', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    written = pd.read_csv(papers_path, index_col=0)
+    with corpus.connect(db_path) as conn:
+        written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
-    assert written.loc[0, 'paper_id'] == 'SCOPUS_ID:1'
+    assert written[0]['paper_id'] == 'SCOPUS_ID:1'
     assert '1 new results and updated 0 existing rows' in output
 
 
-def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, capsys):
     """
-    Test merging search results into an existing papers CSV.
+    Test merging search results into an existing corpus database.
 
     This function performs the following steps:
-    1. Writes an existing papers CSV with one DOI.
+    1. Writes an existing corpus row with one DOI.
     2. Replaces CORE search with a row using the same DOI and additional fields.
     3. Calls `search_for_papers`.
 
@@ -623,12 +658,15 @@ def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatc
         - The existing row is updated instead of duplicated.
         - The summary reports one updated row.
     """
-    papers_path = tmp_path / 'papers.csv'
-    search._core_rows([{
-        'id': 'old',
-        'doi': '10.1234/existing',
-        'title': 'Existing title',
-    }]).to_csv(papers_path)
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {
+            'paper_id': 'core:old',
+            'doi': '10.1234/existing',
+            'title': 'Existing title',
+            'sources': 'core',
+            'metadata_status': 'retrieved',
+        })
     incoming = search._core_rows([{
         'id': 'new',
         'doi': '10.1234/existing',
@@ -637,14 +675,59 @@ def test_search_for_papers_merges_into_existing_papers_file(tmp_path, monkeypatc
     }])
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: incoming)
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='core', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
-    written = pd.read_csv(papers_path, index_col=0)
+    with corpus.connect(db_path) as conn:
+        written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
     assert len(written) == 1
-    assert written.loc[0, 'title'] == 'Existing title'
-    assert written.loc[0, 'journal'] == 'Updated Journal'
+    assert written[0]['title'] == 'Existing title'
+    assert written[0]['journal'] == 'Updated Journal'
     assert '0 new results and updated 1 existing rows' in output
+
+
+def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypatch, capsys):
+    """
+    Test optional storage of abstracts returned during search.
+
+    This function performs the following steps:
+    1. Writes an existing corpus row with a DOI.
+    2. Replaces CORE search with a matching row that includes an abstract.
+    3. Calls `search_for_papers` with `store_abstract=True`.
+    4. Reads the merged paper row and abstract asset from the corpus.
+
+    Asserts:
+        - The search result updates the existing corpus row instead of adding a duplicate.
+        - The abstract is stored as an `abstract` corpus asset.
+        - Abstract status and source are recorded on the matched paper row.
+    """
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {
+            'paper_id': 'existing:paper',
+            'doi': '10.1234/existing',
+            'title': 'Existing title',
+        })
+    incoming = search._core_rows([{
+        'id': 'core-new',
+        'doi': '10.1234/existing',
+        'title': 'Incoming title',
+        'abstract': '<p>Search abstract</p>',
+    }])
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: incoming)
+
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1, store_abstract=True)
+
+    with corpus.connect(db_path) as conn:
+        rows = corpus.paper_rows(conn)
+        abstract = corpus.get_asset(conn, 'existing:paper', 'abstract')
+    output = capsys.readouterr().out
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'existing:paper'
+    assert rows[0]['abstract_source'] == 'core'
+    assert rows[0]['abstract_download_status'] == 'succeeded'
+    assert abstract['content'] == b'Search abstract'
+    assert 'Stored 1 search-time abstracts.' in output
 
 
 def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path, monkeypatch, capsys):
@@ -658,15 +741,15 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path,
 
     Asserts:
         - Empty search results print a zero-results message.
-        - No papers CSV is written.
+        - No corpus database is written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: pd.DataFrame())
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='core', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
     assert 'Document search found 0 new results.' in capsys.readouterr().out
-    assert not papers_path.exists()
+    assert not db_path.exists()
 
 
 def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(monkeypatch, tmp_path, capsys):
@@ -683,14 +766,14 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
         - Directly selected failed sources re-raise their error.
         - Successful fallback source results are still written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='all', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'Elsevier search skipped: elsevier down' in capsys.readouterr().out
-    assert papers_path.exists()
+    assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='elsevier down'):
         search.search_for_papers('query', source='elsevier', count=1)
@@ -710,7 +793,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
         - Directly selected failed CORE searches re-raise their request error.
         - Successful fallback Elsevier results are still written.
     """
-    papers_path = tmp_path / 'papers.csv'
+    db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
@@ -720,10 +803,10 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
         lambda *_, **__: (_ for _ in ()).throw(search.requests.RequestException('core down')),
     )
 
-    search.search_for_papers('query', papers_path=str(papers_path), source='all', count=1)
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'CORE search skipped: core down' in capsys.readouterr().out
-    assert papers_path.exists()
+    assert db_path.exists()
 
     with pytest.raises(search.requests.RequestException, match='core down'):
         search.search_for_papers('query', source='core', count=1)

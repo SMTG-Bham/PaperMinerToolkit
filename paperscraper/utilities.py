@@ -1,29 +1,29 @@
-"""Small maintenance utilities for papers CSV files.
+"""Small maintenance utilities for the PaperScraper corpus.
 
-These helpers back CLI commands for resetting pipeline status, printing a
-progress summary, sorting rows, and shuffling paper order.
+These helpers back CLI commands for resetting pipeline status and printing a
+progress summary for the SQLite paper corpus.
 """
 
-import pandas as pd
-
-from paperscraper.pipeline import PIPELINE_COLUMNS, ensure_pipeline_columns, write_papers
+from paperscraper.corpus import PIPELINE_COLUMNS, connect, paper_rows, upsert_paper
 
 
-def reset(papers_path: str = 'papers.csv'):
-    """Reset all pipeline columns in a papers CSV to their initial statuses."""
-    papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
-    for column, default in PIPELINE_COLUMNS.items():
-        papers_df[column] = default
-    papers_df['metadata_status'] = 'retrieved'
-    write_papers(papers_df, papers_path)
+def reset(db_path: str = 'papers.db'):
+    """Reset all pipeline columns in a corpus database to their initial statuses."""
+    with connect(db_path) as conn:
+        for paper in paper_rows(conn):
+            for column, default in PIPELINE_COLUMNS.items():
+                paper[column] = default
+            paper['metadata_status'] = 'retrieved'
+            upsert_paper(conn, paper)
 
 
-def status(papers_path: str = 'papers.csv'):
-    """Print a compact progress summary for a papers CSV."""
-    papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
+def status(db_path: str = 'papers.db'):
+    """Print a compact progress summary for a corpus database."""
+    with connect(db_path) as conn:
+        papers = paper_rows(conn)
     print('\nPaperScraper Progress Summary')
     print('---------------------------')
-    print(f'Total papers: {len(papers_df)}')
+    print(f'Total papers: {len(papers)}')
     rows = [
         ('Metadata retrieved', 'metadata_status', 'retrieved'),
         ('Text downloaded', 'text_download_status', 'succeeded'),
@@ -37,25 +37,10 @@ def status(papers_path: str = 'papers.csv'):
         ('Failed image scrapes', 'image_scrape_status', 'failed'),
     ]
     for label, column, value in rows:
-        count = int((papers_df[column] == value).sum()) if column in papers_df else 0
+        count = sum(1 for paper in papers if paper.get(column) == value)
         print(f'{label}: {count}')
-    text_materials = int(papers_df['num_text_materials'].sum()) if 'num_text_materials' in papers_df else 0
-    image_materials = int(papers_df['num_image_materials'].sum()) if 'num_image_materials' in papers_df else 0
+    text_materials = sum(int(paper.get('num_text_materials') or 0) for paper in papers)
+    image_materials = sum(int(paper.get('num_image_materials') or 0) for paper in papers)
     print(f'Text material rows extracted: {text_materials}')
     print(f'Image material rows extracted: {image_materials}')
     print('---------------------------\n')
-
-
-def sort(path: str = 'papers.csv', field: str = 'metadata_status', ascending: bool = True):
-    """Sort a papers CSV by one column and write it back in place."""
-    papers_df = ensure_pipeline_columns(pd.read_csv(path, index_col=0))
-    papers_df.sort_values(by=field, ascending=ascending, inplace=True)
-    papers_df.reset_index(drop=True, inplace=True)
-    write_papers(papers_df, path)
-
-
-def shuffle(path: str = 'papers.csv'):
-    """Randomly shuffle paper rows and write the CSV back in place."""
-    papers_df = ensure_pipeline_columns(pd.read_csv(path, index_col=0))
-    papers_df = papers_df.sample(frac=1).reset_index(drop=True)
-    write_papers(papers_df, path)

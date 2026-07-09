@@ -197,10 +197,31 @@ def check_openai_api_key(api_key):
         return True
 
 
+def _mask_secret(value):
+    """Return a display-safe representation of a configured secret."""
+    if not value:
+        return 'not set'
+    value = str(value)
+    if len(value) <= 8:
+        return '********'
+    return f'{value[:4]}...{value[-4:]}'
+
+
+def _show_current_setting(settings, key, label, secret=True):
+    """Print the currently configured credential value before prompting."""
+    value = settings.get(key)
+    if secret:
+        value = _mask_secret(value)
+    elif not value:
+        value = 'not set'
+    print(f'Current {label}: {value}')
+
+
 def update_openai_key(settings=True):
     """Prompt for and save an OpenAI API key after validating it."""
     if settings:
         settings = load_settings()
+    _show_current_setting(settings, 'openai_api_key', 'OpenAI API key')
     api_key = input('Enter OpenAI API key: ')
     if check_openai_api_key(api_key):
         settings['openai_api_key'] = api_key
@@ -213,6 +234,7 @@ def update_anthropic_key(settings=True):
     """Prompt for and save an Anthropic API key."""
     if settings:
         settings = load_settings()
+    _show_current_setting(settings, 'anthropic_api_key', 'Anthropic API key')
     api_key = input('Enter Anthropic API key: ')
     settings['anthropic_api_key'] = api_key
     save_settings(settings)
@@ -233,6 +255,7 @@ def update_elsevier_key(settings=True):
     """Prompt for, validate, and save an Elsevier API key."""
     if settings:
         settings = load_settings()
+    _show_current_setting(settings, 'elsevier_api_key', 'Elsevier API key')
     api_key = input('Enter Elsevier API key: ')
     if check_elsevier_api_key(api_key):
         settings['elsevier_api_key'] = api_key
@@ -245,6 +268,7 @@ def update_core_key(settings=True):
     """Prompt for and save a CORE API key."""
     if settings:
         settings = load_settings()
+    _show_current_setting(settings, 'core_api_key', 'CORE API key')
     api_key = input('Enter CORE API key: ')
     settings['core_api_key'] = api_key
     save_settings(settings)
@@ -254,6 +278,7 @@ def update_unpaywall_email(settings=True):
     """Prompt for and save the email address sent to Unpaywall."""
     if settings:
         settings = load_settings()
+    _show_current_setting(settings, 'unpaywall_email', 'Unpaywall email', secret=False)
     email = input('Enter Unpaywall email: ').strip()
     if '@' not in email:
         raise ValueError('Unpaywall email must be a valid email address.')

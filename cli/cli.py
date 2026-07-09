@@ -5,11 +5,12 @@ download, scrape, store, configuration, and maintenance functions.
 """
 
 import click
+from paperscraper.corpus import connect, corpus_stats
 from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
-from paperscraper.scrape import scrape_papers
+from paperscraper.scrape import SCRAPE_ORDERS, scrape_papers
 from paperscraper.store import store_results
 from paperscraper.settings import (get_model_profile,
                                    DEFAULT_INPUT_TOKEN_LIMIT,
@@ -21,12 +22,21 @@ from paperscraper.settings import (get_model_profile,
                                    update_openai_key,
                                    update_unpaywall_email,
                                    update_model_settings)
-from paperscraper.utilities import reset, status, sort, shuffle
+from paperscraper.utilities import reset, status
+
+
+def _format_bytes(size: int):
+    """Format a byte count using compact binary units."""
+    value = float(size)
+    for unit in ['B', 'KiB', 'MiB', 'GiB']:
+        if value < 1024 or unit == 'GiB':
+            return f'{value:.1f} {unit}' if unit != 'B' else f'{int(value)} B'
+        value /= 1024
 
 
 @click.command()
 @click.argument('query', default='Lithium solid electrolyte', type=str)
-@click.argument('path', default='papers.csv', type=str)
+@click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
               type=click.Choice(['all', 'elsevier', 'core']),
               default='all',
@@ -37,27 +47,30 @@ from paperscraper.utilities import reset, status, sort, shuffle
               type=int,
               show_default=True,
               help='Maximum results to request from each selected source.')
+@click.option('--store-abstract',
+              is_flag=True,
+              default=False,
+              help='Store abstracts returned by search providers as corpus assets.')
 
-def paper_search(query: str, path: str, source: str, count: int):
-    """Search configured paper sources and merge results into a papers CSV."""
-    search_for_papers(query, path, source=source, count=count)
+def paper_search(query: str, db_path: str, source: str, count: int, store_abstract: bool):
+    """Search configured paper sources and merge results into the paper corpus."""
+    search_for_papers(query, db_path, source=source, count=count, store_abstract=store_abstract)
 
 
 @click.command()
 @click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
-@click.argument('path', default='external_papers.csv', type=click.Path())
+@click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--no-crossref',
               is_flag=True,
               default=False,
               help='Only scrape DOI from PDFs; skip Crossref metadata lookup.')
-def import_pdf_folder(dir: str, path: str, no_crossref: bool):
-    """Import local PDFs into a papers CSV, optionally skipping Crossref lookup."""
-    import_pdfs(dir, path, use_crossref=not no_crossref)
+def import_pdf_folder(dir: str, db_path: str, no_crossref: bool):
+    """Import local PDFs into the paper corpus, optionally skipping Crossref lookup."""
+    import_pdfs(dir, db_path, use_crossref=not no_crossref)
 
 
 @click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-@click.argument('dir', default='papers', type=click.Path())
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
               type=click.Choice(['text', 'pdf', 'both']),
               default='both',
@@ -68,16 +81,46 @@ def import_pdf_folder(dir: str, path: str, no_crossref: bool):
               default=('all',),
               show_default=True,
               help='PDF source to use. Repeat to choose more than one.')
-def download(path: str, dir: str, download_format: str, sources: tuple[str]):
-    """Download text and/or PDFs for rows in a papers CSV."""
-    download_papers(path, dir, download_format=download_format, sources=list(sources))
+@click.option('--abstract/--no-abstract',
+              'download_abstract',
+              default=True,
+              show_default=True,
+              help='Download and store abstracts alongside requested paper assets.')
+@click.option('--no_abstract', 'no_abstract_alias', is_flag=True, hidden=True)
+def download(
+        db_path: str,
+        download_format: str,
+        sources: tuple[str],
+        download_abstract: bool,
+        no_abstract_alias: bool,
+):
+    """Download text and/or PDFs for rows in the paper corpus."""
+    if no_abstract_alias:
+        download_abstract = False
+    download_papers(db_path, download_format=download_format, sources=list(sources), download_abstract=download_abstract)
 
 
 @click.command()
-@click.argument('dir', default='papers', type=click.Path(exists=True))
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+def corpus_status(db_path: str):
+    """Print storage statistics for the paper corpus."""
+    with connect(db_path) as conn:
+        stats = corpus_stats(conn)
+    click.echo(f'Corpus: {db_path}')
+    click.echo(f'Papers: {stats["papers"]}')
+    click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
+    click.echo(f'Papers with text: {stats["papers_with_text"]}')
+    click.echo(f'Papers with PDFs: {stats["papers_with_pdf"]}')
+    click.echo(f'Blobs: {stats["blobs"]}')
+    click.echo(f'Original size: {_format_bytes(stats["original_size"])}')
+    click.echo(f'Stored size: {_format_bytes(stats["stored_size"])}')
+    click.echo(f'Storage saved: {stats["savings_fraction"]:.1%}')
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
-@click.option('--mode', type=click.Choice(['text', 'images', 'text-images']), default='text', show_default=True)
+@click.option('--mode', type=click.Choice(['abstract', 'text', 'images', 'text-images']), default='text', show_default=True)
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction',
@@ -99,10 +142,6 @@ def download(path: str, dir: str, download_format: str, sources: tuple[str]):
               is_flag=True,
               default=False,
               help='Delete extracted images after successful image analysis.')
-@click.option('--delete-papers-after',
-              is_flag=True,
-              default=False,
-              help='Delete downloaded paper files after successful scraping.')
 @click.option('--output', 'output_path',
               default='temp_scraped_materials.csv',
               type=click.Path(),
@@ -112,6 +151,17 @@ def download(path: str, dir: str, download_format: str, sources: tuple[str]):
               is_flag=True,
               default=False,
               help='Rescrape stages even if their status is already succeeded.')
+@click.option('--count',
+              'scrape_count',
+              default=None,
+              type=int,
+              help='Maximum number of corpus papers to process in this scrape run.')
+@click.option('--order',
+              'scrape_order',
+              type=click.Choice(sorted(SCRAPE_ORDERS)),
+              default='corpus',
+              show_default=True,
+              help='Order used to select papers for this scrape run.')
 @click.option('--compression-scope',
               type=click.Choice(sorted(COMPRESSION_SCOPES)),
               default='none',
@@ -131,8 +181,7 @@ def download(path: str, dir: str, download_format: str, sources: tuple[str]):
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
 def scrape(
-        dir: str,
-        path: str,
+        db_path: str,
         recipe: str,
         mode: str,
         image_context: str,
@@ -147,9 +196,10 @@ def scrape(
         vision_provider: str | None,
         vision_base_url: str | None,
         delete_images_after: bool,
-        delete_papers_after: bool,
         output_path: str,
         force: bool,
+        scrape_count: int | None,
+        scrape_order: str,
         compression_scope: str,
         compression_mode: str,
         compression_ratio: str,
@@ -157,8 +207,7 @@ def scrape(
 ):
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
-        dir,
-        path,
+        db_path,
         recipe,
         mode=mode,
         image_dir=image_dir,
@@ -173,9 +222,10 @@ def scrape(
         vision_provider=vision_provider,
         vision_base_url=vision_base_url,
         delete_images_after=delete_images_after,
-        delete_papers_after=delete_papers_after,
         output_path=output_path,
         force=force,
+        scrape_count=scrape_count,
+        scrape_order=scrape_order,
         compression_scope=compression_scope,
         compression_mode=compression_mode,
         compression_ratio=compression_ratio,
@@ -184,15 +234,15 @@ def scrape(
 
 
 @click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path())
 @click.argument('out_file', default='materials.csv', type=click.Path())
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False,
               help='Store converted results without an interactive confirmation prompt.')
-def store(path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool):
+def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool):
     """Store temporary scrape results in the final materials CSV."""
-    store_results(path, in_file, out_file, True, recipe, assume_yes=assume_yes)
+    store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
 def update_elsevier_api_key():
@@ -279,30 +329,14 @@ def model_status():
 
 
 @click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-def reset_scraper(path: str):
-    """Reset pipeline statuses in a papers CSV."""
-    reset(path)
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+def reset_scraper(db_path: str):
+    """Reset pipeline statuses in the paper corpus."""
+    reset(db_path)
 
 
 @click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-def scraper_status(path: str):
-    """Print pipeline progress for a papers CSV."""
-    status(path)
-
-
-@click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-@click.argument('field', default='metadata_status', type=str)
-@click.option('--ascending', is_flag=True, show_default=True, default=True)
-def sort_df(path: str, field: str, ascending: bool):
-    """Sort a papers CSV by a selected field."""
-    sort(path, field, ascending)
-
-
-@click.command()
-@click.argument('path', default='papers.csv', type=click.Path(exists=True))
-def shuffle_papers(path: str):
-    """Shuffle paper rows in a papers CSV."""
-    shuffle(path)
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+def scraper_status(db_path: str):
+    """Print pipeline progress for the paper corpus."""
+    status(db_path)

@@ -1,19 +1,18 @@
-"""Import local PDFs into a PaperScraper papers CSV.
+"""Import local PDFs into a PaperScraper SQLite corpus.
 
 The import flow scans each PDF for DOI metadata, optionally enriches rows with
-Crossref, and merges imported files with existing paper rows so local PDFs can
-join the same downstream scraping pipeline as searched papers.
+Crossref, stores the PDF bytes as corpus assets, and merges imported files with
+existing paper rows so local PDFs can join the same corpus as searched papers.
 """
 
-import pandas as pd
 from pathlib import Path
 
+from paperscraper.corpus import add_asset, connect, find_paper, normalize_paper, upsert_papers
 from paperscraper.metadata import metadata_from_pdf
-from paperscraper.pipeline import ensure_pipeline_columns, merge_paper_rows, normalize_paper_columns, write_papers
 
 
-def import_pdfs(papers_dir: str, papers_path: str = 'external_papers.csv', use_crossref: bool = True):
-    """Import all PDFs in ``papers_dir`` into ``papers_path``."""
+def import_pdfs(papers_dir: str, db_path: str = 'papers.db', use_crossref: bool = True):
+    """Import all PDFs in ``papers_dir`` into ``db_path``."""
     pdf_dir = Path(papers_dir)
     if not pdf_dir.is_dir():
         raise NotADirectoryError(f'{papers_dir} is not a directory.')
@@ -28,7 +27,8 @@ def import_pdfs(papers_dir: str, papers_path: str = 'external_papers.csv', use_c
             'sources': 'external',
             'metadata_status': metadata_status,
             'pdf_download_status': 'succeeded',
-            'pdf_path': str(pdf_path),
+            'pdf_path': '',
+            'pdf_source': 'external',
             'text_download_status': 'pending',
             'text_scrape_status': 'pending',
             'image_scrape_status': 'pending',
@@ -41,21 +41,30 @@ def import_pdfs(papers_dir: str, papers_path: str = 'external_papers.csv', use_c
             'last_error': metadata_error,
         }
         row.update({key: value for key, value in metadata.items() if value})
+        row['_pdf_path'] = pdf_path
         rows.append(row)
     if not rows:
         raise RuntimeError(f'No PDF files found in {papers_dir}.')
 
-    imported_df = normalize_paper_columns(pd.DataFrame(rows))
-    if Path(papers_path).is_file():
-        papers_df = ensure_pipeline_columns(pd.read_csv(papers_path, index_col=0))
-    else:
-        papers_df = ensure_pipeline_columns(pd.DataFrame())
-
-    papers_df, added, updated = merge_paper_rows(papers_df, imported_df)
-    write_papers(papers_df, papers_path)
-    enriched = int((imported_df['metadata_status'] == 'enriched').sum())
-    doi_found = int((imported_df['doi'] != '').sum()) if 'doi' in imported_df.columns else 0
+    paper_rows = [normalize_paper({key: value for key, value in row.items() if key != '_pdf_path'}) for row in rows]
+    with connect(db_path) as conn:
+        added, updated = upsert_papers(conn, paper_rows)
+        for row in rows:
+            paper = {key: value for key, value in row.items() if key != '_pdf_path'}
+            matched = find_paper(conn, paper) or paper
+            add_asset(
+                conn,
+                matched,
+                row['_pdf_path'],
+                role='pdf',
+                kind='pdf',
+                mime_type='application/pdf',
+                source='external',
+                original_filename=row['_pdf_path'].name,
+            )
+    enriched = sum(1 for row in paper_rows if row['metadata_status'] == 'enriched')
+    doi_found = sum(1 for row in paper_rows if row['doi'])
     print(
-        f'Imported {len(imported_df)} PDFs into {papers_path} '
+        f'Imported {len(paper_rows)} PDFs into {db_path} '
         f'({added} added, {updated} matched existing rows, {doi_found} DOI found, {enriched} enriched via Crossref).'
     )

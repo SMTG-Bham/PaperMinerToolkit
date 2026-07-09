@@ -97,7 +97,7 @@ The recipe argument can be a bundled recipe name such as `sse`, or a path to an 
 
 `ps_scrape papers papers.csv ./my_recipe.json --mode text`
 
-`ps_store papers.csv temp_scraped_materials.csv materials.csv ./my_recipe.json --assume-yes`
+`ps_store papers.db temp_scraped_materials.csv materials.csv ./my_recipe.json --assume-yes`
 
 ### Scrape Papers
 
@@ -141,11 +141,11 @@ Delete extracted images after successful image analysis:
 
 Store newly scraped rows, converting units according to the recipe:
 
-`ps_store papers.csv temp_scraped_materials.csv materials.csv sse --assume-yes`
+`ps_store papers.db temp_scraped_materials.csv materials.csv sse --assume-yes`
 
 Check pipeline status:
 
-`ps_status papers.csv`
+`ps_status papers.db`
 
 ## Testing
 
