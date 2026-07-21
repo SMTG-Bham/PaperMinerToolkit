@@ -1,7 +1,7 @@
 """Unit tests for paperscraper.documents.
 
-This module tests text extraction from PDF/TXT inputs, PDF image extraction and
-page rendering helpers, and lookup of text/PDF files associated with paper rows.
+This module tests text extraction from PDF/TXT inputs, PDF image extraction,
+and page rendering helpers.
 """
 
 import os
@@ -255,36 +255,3 @@ def test_extract_pdf_images_validates_strategy_and_uses_embedded_or_rendered_pat
     monkeypatch.setattr(documents, '_extract_embedded_pdf_images', lambda *_: [])
     assert documents.extract_pdf_images('paper.pdf', str(tmp_path), strategy='auto') == ['rendered.png']
     assert documents.extract_pdf_images('paper.pdf', str(tmp_path), strategy='pages') == ['rendered.png']
-
-
-def test_file_lookup_helpers_prefer_existing_paths_and_match_identifiers(tmp_path):
-    """
-    Test paper-row file lookup helpers.
-
-    This function performs the following steps:
-    1. Creates existing text and PDF files.
-    2. Looks up files from explicit row paths.
-    3. Looks up files by paper identifier and extension.
-
-    Asserts:
-        - Existing explicit paths are preferred.
-        - Text files are found by paper identifier.
-        - PDF files are found by paper identifier.
-        - Missing identifiers return None.
-    """
-    papers_dir = tmp_path / 'papers'
-    papers_dir.mkdir()
-    explicit_text = papers_dir / 'explicit.txt'
-    explicit_pdf = papers_dir / 'explicit.pdf'
-    explicit_text.write_text('text')
-    explicit_pdf.write_bytes(b'pdf')
-    files = ['abc123_full.txt', 'abc123_full.PDF', 'other.txt']
-    row = {'paper_id': 'scopus:abc123', 'text_path': str(explicit_text), 'pdf_path': str(explicit_pdf)}
-
-    assert documents.text_file_for_row(str(papers_dir), files, row) == str(explicit_text)
-    assert documents.pdf_file_for_row(str(papers_dir), files, row) == str(explicit_pdf)
-
-    row_without_paths = {'paper_id': 'scopus:abc123', 'text_path': '', 'pdf_path': ''}
-    assert documents.text_file_for_row(str(papers_dir), files, row_without_paths) == os.path.join(str(papers_dir), 'abc123_full.txt')
-    assert documents.pdf_file_for_row(str(papers_dir), files, row_without_paths) == os.path.join(str(papers_dir), 'abc123_full.PDF')
-    assert documents.file_for_row_by_identifier(str(papers_dir), files, {'paper_id': 'scopus:missing'}, '.txt') is None

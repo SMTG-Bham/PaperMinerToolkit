@@ -1,7 +1,7 @@
 """Extract and enrich paper metadata from DOI text and Crossref.
 
 The helpers here read DOI values from raw text/PDFs, normalize them, and use
-Crossref to populate the public paper metadata fields used in ``papers.csv``.
+Crossref to populate the public paper metadata fields stored in the corpus.
 """
 
 import html

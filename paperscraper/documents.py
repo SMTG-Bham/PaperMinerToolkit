@@ -9,8 +9,6 @@ import os
 from pypdf import PdfReader
 from pathlib import Path
 
-from paperscraper.pipeline import existing_path
-
 
 def read_pdf_text(pdf_path: str):
     """Extract concatenated text from every page in a PDF file."""
@@ -100,22 +98,3 @@ def extract_pdf_images(pdf_path: str,
             if saved or strategy == 'embedded':
                 return saved
         return _render_pdf_pages(fitz, doc, output_dir, prefix, dpi=dpi)
-
-
-def text_file_for_row(papers_dir, files, row):
-    """Find the text file associated with a paper row."""
-    return existing_path(row.get('text_path')) or file_for_row_by_identifier(papers_dir, files, row, '.txt')
-
-
-def pdf_file_for_row(papers_dir, files, row):
-    """Find the PDF file associated with a paper row."""
-    return existing_path(row.get('pdf_path')) or file_for_row_by_identifier(papers_dir, files, row, '.pdf')
-
-
-def file_for_row_by_identifier(papers_dir, files, row, extension):
-    """Find a file whose name contains the paper row identifier and extension."""
-    paper_id = row['paper_id'].split(':')[-1]
-    filenames = [file for file in files if paper_id in file and file.lower().endswith(extension)]
-    if filenames:
-        return os.path.join(papers_dir, filenames[0])
-    return None

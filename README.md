@@ -27,16 +27,15 @@ Environment variables still work for batch jobs. `PAPERSCRAPER_MODEL_*` applies 
 
 ## Workflow
 
-PaperScraper can start from an Elsevier/Scopus or CORE search, PDFs you have already downloaded, or a mixture of both. Matching DOI, source ID, and title/year rows are merged into one `papers.csv` entry so the same paper is not scraped twice.
+PaperScraper can start from an Elsevier/Scopus or CORE search, PDFs you have already downloaded, or a mixture of both. Paper metadata, pipeline state, and compressed source documents are stored in a SQLite corpus. Matching DOI, source ID, and title/year records are merged so the same paper is not scraped twice.
 
 ```mermaid
 flowchart TD
-    A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.csv"/]
-    C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] -->|"target existing CSV"| B
-    C -->|"target standalone CSV"| D[/"external_papers.csv"/]
+    A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
+    C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] --> B
     B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
     E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
-    D --> F
+    B --> F
     F --> G[/"temp_scraped_materials.csv"/]
     G --> H["Store converted rows<br/><b><code>ps_store</code></b>"]
     H --> I[/"materials.csv"/]
@@ -44,58 +43,54 @@ flowchart TD
     classDef action fill:#e8f1ff,stroke:#2f5f9f,color:#10233f
     classDef file fill:#fff3bf,stroke:#b7791f,color:#3b2f0b
     class A,C,E,F,H action
-    class B,D,G,I file
+    class B,G,I file
 ```
 
 ### Configure Models
 
 Configure model profiles before scraping. The text profile is used for text extraction, unit conversion, and text/image reconciliation; the vision profile is used for `--mode images` and `--mode text-images`. See [Model Profiles](#model-profiles) for setup commands.
 
-### Build A Papers CSV
+### Build A Paper Corpus
 
-Search Elsevier/Scopus and CORE and write streamlined metadata to a papers CSV:
+Search Elsevier/Scopus and CORE and write streamlined metadata to a SQLite corpus:
 
-`ps_search "Lithium solid electrolyte" papers.csv`
+`ps_search "Lithium solid electrolyte" papers.db`
 
 Choose one source when needed:
 
-`ps_search "Lithium solid electrolyte" papers.csv --source core --count 100`
+`ps_search "Lithium solid electrolyte" papers.db --source core --count 100`
 
 CORE can use `CORE_API_KEY` from the environment or a saved key:
 
 `ps_core_key`
 
-Or import externally downloaded PDFs. This scans each PDF for a DOI and uses Crossref to fill metadata when possible. If the target CSV already exists, matching DOI rows are updated with the local PDF path and unmatched PDFs are appended:
+Or import externally downloaded PDFs. This scans each PDF for a DOI, uses Crossref to fill metadata when possible, and stores the PDF in the corpus. Matching records are updated and unmatched PDFs are appended:
 
-`ps_import_pdfs papers external_papers.csv`
+`ps_import_pdfs papers papers.db`
 
-To add local PDFs to a Scopus search CSV instead, use that CSV as the target:
+For offline runs, skip Crossref lookup while still trying to extract the DOI from the PDF text:
 
-`ps_import_pdfs papers papers.csv`
-
-For offline runs, skip Crossref lookup while still trying to scrape the DOI from the PDF text:
-
-`ps_import_pdfs papers external_papers.csv --no-crossref`
+`ps_import_pdfs papers papers.db --no-crossref`
 
 ### Download Paper Content
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.
 
-`ps_download papers.csv papers --format text`
+`ps_download papers.db --format text`
 
-`ps_download papers.csv papers --format pdf`
+`ps_download papers.db --format pdf`
 
-`ps_download papers.csv papers --format both`
+`ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.csv papers --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
 
 ### Choose A Recipe
 
 The recipe argument can be a bundled recipe name such as `sse`, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
 
-`ps_scrape papers papers.csv sse --mode text`
+`ps_scrape papers.db sse --mode text`
 
-`ps_scrape papers papers.csv ./my_recipe.json --mode text`
+`ps_scrape papers.db ./my_recipe.json --mode text`
 
 `ps_store papers.db temp_scraped_materials.csv materials.csv ./my_recipe.json --assume-yes`
 
@@ -103,15 +98,15 @@ The recipe argument can be a bundled recipe name such as `sse`, or a path to an 
 
 Scrape text only:
 
-`ps_scrape papers papers.csv sse --mode text`
+`ps_scrape papers.db sse --mode text`
 
 Scrape images with the vision profile:
 
-`ps_scrape papers papers.csv sse --mode images --vision-provider local --vision-model Qwen/Qwen3-VL-30B-A3B-Instruct --vision-base-url http://127.0.0.1:8000/v1`
+`ps_scrape papers.db sse --mode images --vision-provider local --vision-model Qwen/Qwen3-VL-30B-A3B-Instruct --vision-base-url http://127.0.0.1:8000/v1`
 
 Scrape text and images together, using paper text as image context:
 
-`ps_scrape papers papers.csv sse --mode text-images --image-context paper-text`
+`ps_scrape papers.db sse --mode text-images --image-context paper-text`
 
 When text and image scraping both produce records for a paper, PaperScraper asks the text model to reconcile them and merge matching materials into combined `text+image` rows.
 
@@ -123,19 +118,15 @@ By default, image scraping sends one image per vision request. Use `--image-batc
 
 By default, successful scrape stages are skipped on rerun. Rescrape them with:
 
-`ps_scrape papers papers.csv sse --mode text --force`
+`ps_scrape papers.db sse --mode text --force`
 
 Use a named scrape output file for batch runs:
 
-`ps_scrape papers papers.csv sse --mode text --output scraped_materials.csv`
-
-Delete downloaded paper files after successful scraping:
-
-`ps_scrape papers papers.csv sse --mode text --delete-papers-after`
+`ps_scrape papers.db sse --mode text --output scraped_materials.csv`
 
 Delete extracted images after successful image analysis:
 
-`ps_scrape papers papers.csv sse --mode images --delete-images-after`
+`ps_scrape papers.db sse --mode images --delete-images-after`
 
 ### Store And Inspect Results
 
@@ -155,7 +146,7 @@ Install the test dependencies and run the default test suite with:
 
 `pytest`
 
-Unit tests live in `tests/` and should be split by source file, for example `tests/test_pipeline.py` covers `paperscraper/pipeline.py`. If test data files are needed, put them in `tests/data/`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
+Unit tests live in `tests/` and should be split by source file, for example `tests/test_corpus.py` covers `paperscraper/corpus.py`. If test data files are needed, put them in `tests/data/`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
 
 ## Example Notebooks
 
