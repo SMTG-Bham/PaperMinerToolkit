@@ -119,7 +119,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
         - The unknown column is skipped in noninteractive mode.
         - Unit-bearing columns are converted when unit conversion is enabled.
         - The temporary scraped materials file is removed after storing.
-        - Papers with succeeded scrape statuses are marked as stored.
+        - Only the paper represented in the stored batch is marked as stored.
     """
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
@@ -127,6 +127,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     out_path = tmp_path / 'materials.csv'
     write_papers_corpus(papers_path)
     pd.DataFrame({
+        'Paper id': ['paper-1'],
         'Name': ['LLZO'],
         'Conductivity': ['1e-3'],
         'Unknown': ['skip me'],
@@ -152,13 +153,14 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     materials = pd.read_csv(out_path, index_col=0)
     papers = read_papers_corpus(papers_path)
     output = capsys.readouterr().out
-    assert materials.columns.tolist() == ['Name', 'Conductivity [S cm^-1]']
+    assert materials.columns.tolist() == ['Paper id', 'Name', 'Conductivity [S cm^-1]']
+    assert materials.loc[0, 'Paper id'] == 'paper-1'
     assert materials.loc[0, 'Name'] == 'LLZO'
     assert materials.loc[0, 'Conductivity [S cm^-1]'] == '0.001 converted'
     assert 'Skipping unmatched column in noninteractive mode: Unknown' in output
     assert not in_path.exists()
-    assert papers['store_status'].tolist() == ['stored', 'stored', 'pending']
-    assert not (tmp_path / 'temp_converted_materials.csv').exists()
+    assert papers['store_status'].tolist() == ['stored', 'pending', 'pending']
+    assert not list(tmp_path.glob('.paperscraper-converted-*'))
 
 
 def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path, monkeypatch):
@@ -212,8 +214,12 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
     write_papers_corpus(papers_path)
-    pd.DataFrame({'Name': ['Existing'], 'Conductivity [S cm^-1]': ['old']}).to_csv(out_path)
-    pd.DataFrame({'Name': ['New'], 'Conductivity': ['new']}).to_csv(in_path)
+    pd.DataFrame({
+        'Paper id': ['paper-1'],
+        'Name': ['Existing'],
+        'Conductivity [S cm^-1]': ['old'],
+    }).to_csv(out_path)
+    pd.DataFrame({'Paper id': ['paper-2'], 'Name': ['New'], 'Conductivity': ['new']}).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
 
     store.store_results(
@@ -226,6 +232,7 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
 
     materials = pd.read_csv(out_path, index_col=0)
     assert materials.index.tolist() == [0, 1]
+    assert materials['Paper id'].tolist() == ['paper-1', 'paper-2']
     assert materials['Name'].tolist() == ['Existing', 'New']
     assert materials['Conductivity [S cm^-1]'].tolist() == ['old', 'new']
 
@@ -249,7 +256,7 @@ def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monke
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
     write_papers_corpus(papers_path)
-    pd.DataFrame({'Name': ['LLZO']}).to_csv(in_path)
+    pd.DataFrame({'Paper id': ['paper-1'], 'Name': ['LLZO']}).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
     monkeypatch.setattr('builtins.input', lambda _: 'no')
 
@@ -262,4 +269,85 @@ def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monke
 
     assert not out_path.exists()
     assert in_path.exists()
-    assert not (tmp_path / 'temp_converted_materials.csv').exists()
+    assert not list(tmp_path.glob('.paperscraper-converted-*'))
+
+
+def test_store_results_requires_paper_ids(tmp_path, monkeypatch):
+    """Reject batches that cannot be tied to corpus records."""
+    in_path = tmp_path / 'scraped.csv'
+    out_path = tmp_path / 'materials.csv'
+    pd.DataFrame({'Name': ['LLZO']}).to_csv(in_path)
+    monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
+
+    with pytest.raises(ValueError, match='Paper id'):
+        store.store_results(
+            in_filepath=str(in_path),
+            out_filepath=str(out_path),
+            assume_yes=True,
+        )
+
+    assert in_path.exists()
+    assert not out_path.exists()
+
+
+def test_store_results_is_retry_safe_for_identical_rows(tmp_path, monkeypatch):
+    """Do not append a duplicate when an identical stored batch is retried."""
+    papers_path = tmp_path / 'papers.db'
+    in_path = tmp_path / 'scraped.csv'
+    out_path = tmp_path / 'materials.csv'
+    write_papers_corpus(papers_path)
+    monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
+    batch = pd.DataFrame({'Paper id': ['paper-1'], 'Name': ['LLZO'], 'Conductivity': ['1e-3']})
+
+    for _ in range(2):
+        batch.to_csv(in_path)
+        store.store_results(
+            db_path=str(papers_path),
+            in_filepath=str(in_path),
+            out_filepath=str(out_path),
+            unit_conversion=False,
+            assume_yes=True,
+        )
+
+    materials = pd.read_csv(out_path, index_col=0)
+    assert len(materials) == 1
+    assert materials.loc[0, 'Paper id'] == 'paper-1'
+
+
+def test_store_results_preserves_existing_output_when_atomic_replace_fails(tmp_path, monkeypatch):
+    """Leave the existing output, input batch, and corpus state intact on replacement failure."""
+    papers_path = tmp_path / 'papers.db'
+    in_path = tmp_path / 'scraped.csv'
+    out_path = tmp_path / 'materials.csv'
+    write_papers_corpus(papers_path)
+    existing = pd.DataFrame({'Paper id': ['paper-3'], 'Name': ['Existing'], 'Conductivity [S cm^-1]': ['old']})
+    existing.to_csv(out_path)
+    pd.DataFrame({'Paper id': ['paper-1'], 'Name': ['New'], 'Conductivity': ['new']}).to_csv(in_path)
+    monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
+    monkeypatch.setattr(store.os, 'replace', lambda *_: (_ for _ in ()).throw(OSError('replace failed')))
+
+    with pytest.raises(OSError, match='replace failed'):
+        store.store_results(
+            db_path=str(papers_path),
+            in_filepath=str(in_path),
+            out_filepath=str(out_path),
+            unit_conversion=False,
+            assume_yes=True,
+        )
+
+    assert pd.read_csv(out_path, index_col=0).equals(existing)
+    assert in_path.exists()
+    assert read_papers_corpus(papers_path)['store_status'].tolist() == ['pending', 'pending', 'pending']
+    assert not list(tmp_path.glob('.materials.csv.*'))
+    assert not list(tmp_path.glob('.paperscraper-converted-*'))
+
+
+def test_store_results_rejects_identical_input_and_output_paths(tmp_path):
+    """Prevent the successful-store cleanup from deleting the output file."""
+    path = tmp_path / 'materials.csv'
+    pd.DataFrame({'Paper id': ['paper-1'], 'Name': ['LLZO']}).to_csv(path)
+
+    with pytest.raises(ValueError, match='must be different'):
+        store.store_results(in_filepath=str(path), out_filepath=str(path), assume_yes=True)
+
+    assert path.exists()

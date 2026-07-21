@@ -20,8 +20,7 @@ from paperscraper.settings import (get_model_profile,
                                    update_core_key,
                                    update_elsevier_key,
                                    update_openai_key,
-                                   update_unpaywall_email,
-                                   update_model_settings)
+                                   update_unpaywall_email)
 from paperscraper.utilities import reset, status
 
 
@@ -86,17 +85,13 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool):
               default=True,
               show_default=True,
               help='Download and store abstracts alongside requested paper assets.')
-@click.option('--no_abstract', 'no_abstract_alias', is_flag=True, hidden=True)
 def download(
         db_path: str,
         download_format: str,
         sources: tuple[str],
         download_abstract: bool,
-        no_abstract_alias: bool,
 ):
     """Download text and/or PDFs for rows in the paper corpus."""
-    if no_abstract_alias:
-        download_abstract = False
     download_papers(db_path, download_format=download_format, sources=list(sources), download_abstract=download_abstract)
 
 
@@ -311,11 +306,6 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
     )
     click.echo(
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
-
-
-def update_model_config():
-    """Run the interactive model configuration prompt."""
-    update_model_settings()
 
 
 @click.command()

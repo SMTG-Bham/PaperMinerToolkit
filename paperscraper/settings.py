@@ -284,23 +284,3 @@ def update_unpaywall_email(settings=True):
         raise ValueError('Unpaywall email must be a valid email address.')
     settings['unpaywall_email'] = email
     save_settings(settings)
-
-
-def update_model_settings(settings=True):
-    """Interactively update one text or vision model profile."""
-    if settings:
-        settings = load_settings()
-    profile = input('Enter model profile [text/vision]: ').strip() or 'text'
-    provider = input('Enter model provider [openai/anthropic/local]: ').strip() or 'openai'
-    model = input('Enter model name: ').strip()
-    base_url = input('Enter base URL (leave blank for provider default): ').strip() or None
-    api_key = input('Enter model API key (leave blank if not needed): ').strip() or None
-    capabilities = input('Enter capabilities as comma-separated values [text,vision]: ').strip()
-    temperature = input('Enter temperature [0]: ').strip() or DEFAULT_TEMPERATURE
-    top_p = input('Enter top_p [1]: ').strip() or DEFAULT_TOP_P
-    input_token_limit = input(f'Enter input token limit [{DEFAULT_INPUT_TOKEN_LIMIT}]: ').strip()
-    input_token_limit = input_token_limit or DEFAULT_INPUT_TOKEN_LIMIT
-    if not model:
-        raise ValueError('Model name is required.')
-    set_model_profile(profile, provider, model, base_url, api_key, capabilities or None, temperature=temperature,
-                      top_p=top_p, input_token_limit=input_token_limit)

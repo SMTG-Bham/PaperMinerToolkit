@@ -107,7 +107,7 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     )
 
     result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'pdf', '--source', 'core',
-                                               '--source', 'unpaywall', '--no_abstract'])
+                                               '--source', 'unpaywall', '--no-abstract'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -456,26 +456,6 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
     assert result.exit_code == 0
     assert 'text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 input_token_limit=32000 base_url=None' in result.output
     assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000' in result.output
-
-
-def test_update_model_config_calls_interactive_settings_helper(monkeypatch):
-    """
-    Test the interactive model configuration entry point.
-
-    This function performs the following steps:
-    1. Replaces the interactive settings helper with a local fake.
-    2. Calls the entry point directly.
-    3. Reads the recorded calls.
-
-    Asserts:
-        - The interactive model settings helper is called once.
-    """
-    calls = []
-    monkeypatch.setattr(cli, 'update_model_settings', lambda: calls.append('model_settings'))
-
-    cli.update_model_config()
-
-    assert calls == ['model_settings']
 
 
 def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch, tmp_path):
