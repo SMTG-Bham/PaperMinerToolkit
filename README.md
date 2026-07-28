@@ -72,6 +72,16 @@ For offline runs, skip Crossref lookup while still trying to extract the DOI fro
 
 `ps_import_pdfs papers papers.db --no-crossref`
 
+If you do not have PDFs yet, discover one author's DOI-bearing works through Crossref. An ORCID is strongly preferred because author-name searches can be ambiguous:
+
+`ps_import_author supervisor.db --orcid 0000-0000-0000-0000 --email you@example.ac.uk --review-csv supervisor_works.csv`
+
+If no ORCID is available, use the author's full name and, where Crossref has deposited affiliation metadata, restrict the match further:
+
+`ps_import_author supervisor.db --author "First Family" --affiliation "University of Example" --email you@example.ac.uk --review-csv supervisor_works.csv`
+
+Inspect the review CSV before downloading. Crossref supplies metadata and DOIs rather than guaranteed PDF access, so the next step uses the configured Unpaywall, CORE, and Elsevier download sources.
+
 ### Download Paper Content
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.

@@ -79,6 +79,38 @@ def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
     }
 
 
+def test_import_author_validates_identity_and_reports_summary(monkeypatch, tmp_path):
+    """Delegate author discovery with exactly one identity selector."""
+    calls = {}
+    db_path = tmp_path / 'supervisor.db'
+    review_path = tmp_path / 'works.csv'
+    monkeypatch.setattr(cli, 'import_author_works', lambda *args, **kwargs: (
+        calls.update({'args': args, 'kwargs': kwargs})
+        or {'found': 3, 'added': 2, 'updated': 1}
+    ))
+
+    result = CliRunner().invoke(cli.import_author, [
+        str(db_path),
+        '--orcid', '0000-0001-2345-6789',
+        '--email', 'person@example.ac.uk',
+        '--review-csv', str(review_path),
+    ])
+
+    assert result.exit_code == 0
+    assert calls['args'] == (str(db_path),)
+    assert calls['kwargs']['orcid'] == '0000-0001-2345-6789'
+    assert calls['kwargs']['author_name'] is None
+    assert calls['kwargs']['review_csv'] == str(review_path)
+    assert '3 matching works: 2 added and 1 updated' in result.output
+
+    invalid = CliRunner().invoke(cli.import_author, [
+        str(db_path), '--orcid', '0000-0001-2345-6789', '--author', 'Jane Smith',
+        '--email', 'person@example.ac.uk',
+    ])
+    assert invalid.exit_code == 2
+    assert 'exactly one' in invalid.output
+
+
 def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     """
     Test the download command delegates to the download workflow.

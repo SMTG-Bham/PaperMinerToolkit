@@ -6,6 +6,7 @@ download, scrape, store, configuration, and maintenance functions.
 
 import click
 from paperscraper.corpus import connect, corpus_stats
+from paperscraper.crossref import import_author_works
 from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
@@ -66,6 +67,44 @@ def paper_search(query: str, db_path: str, source: str, count: int, store_abstra
 def import_pdf_folder(dir: str, db_path: str, no_crossref: bool):
     """Import local PDFs into the paper corpus, optionally skipping Crossref lookup."""
     import_pdfs(dir, db_path, use_crossref=not no_crossref)
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path())
+@click.option('--email', required=True, help='Contact email sent with Crossref polite-pool requests.')
+@click.option('--orcid', default=None, help='Exact ORCID identifier for the author.')
+@click.option('--author', 'author_name', default=None, help='Author name fallback when no ORCID is available.')
+@click.option('--affiliation', default=None, help='Require this affiliation on the matching author record.')
+@click.option('--max-results', default=500, type=click.IntRange(min=1), show_default=True)
+@click.option('--review-csv', default='author_works.csv', type=click.Path(), show_default=True,
+              help='CSV summary written for manual review.')
+def import_author(db_path: str,
+                  email: str,
+                  orcid: str | None,
+                  author_name: str | None,
+                  affiliation: str | None,
+                  max_results: int,
+                  review_csv: str):
+    """Import one author's DOI-bearing Crossref works into a corpus."""
+    if bool(orcid) == bool(author_name):
+        raise click.UsageError('Provide exactly one of --orcid or --author.')
+    try:
+        summary = import_author_works(
+            db_path,
+            email=email,
+            orcid=orcid,
+            author_name=author_name,
+            affiliation=affiliation,
+            max_results=max_results,
+            review_csv=review_csv,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f'Crossref found {summary["found"]} matching works: '
+        f'{summary["added"]} added and {summary["updated"]} updated in {db_path}.'
+    )
+    click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
 @click.command()
