@@ -65,6 +65,35 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
     assert config.input_token_limit == 64000
 
 
+def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch):
+    """Do not send a provider override through another provider's URL or API key."""
+    monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
+        'provider': 'local',
+        'model': 'qwen',
+        'base_url': 'http://127.0.0.1:8000/v1',
+        'api_key': 'local-key',
+        'capabilities': ['text'],
+        'temperature': 0,
+        'top_p': 1,
+        'input_token_limit': 32000,
+    })
+    monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'anthropic-key'})
+
+    config = models.ModelConfig.from_profile(
+        'text',
+        provider='anthropic',
+        model='claude-test',
+    )
+
+    assert config.provider == 'anthropic'
+    assert config.name == 'claude-test'
+    assert config.base_url is None
+    assert config.api_key == 'anthropic-key'
+
+    with pytest.raises(ValueError, match='explicit model name'):
+        models.ModelConfig.from_profile('text', provider='anthropic')
+
+
 def test_model_config_generation_args_and_require():
     """
     Test generation arguments and capability validation.
@@ -82,6 +111,7 @@ def test_model_config_generation_args_and_require():
     config = text_config()
 
     assert config.generation_args() == {'temperature': 0.2, 'top_p': 0.9}
+    assert text_config(provider='anthropic').generation_args() == {'temperature': 0.2}
     config.require('text')
     with pytest.raises(models.ModelCapabilityError, match='cannot handle vision inputs'):
         config.require('vision')
@@ -309,6 +339,8 @@ def test_anthropic_messages_client_queries_text_and_images(monkeypatch, tmp_path
     assert calls[0]['url'] == 'https://anthropic.example/v1/messages'
     assert calls[0]['json']['system'] == 'system'
     assert calls[0]['json']['messages'] == [{'role': 'user', 'content': 'question'}]
+    assert calls[0]['json']['temperature'] == 0.2
+    assert 'top_p' not in calls[0]['json']
 
     assert client.query_with_images('look', [str(image_path)], context='context') == 'hello world'
     content = calls[1]['json']['messages'][0]['content']
@@ -316,6 +348,34 @@ def test_anthropic_messages_client_queries_text_and_images(monkeypatch, tmp_path
     assert content[1] == {'type': 'text', 'text': 'context'}
     assert content[2]['type'] == 'image'
     assert content[2]['source']['media_type'] == 'image/jpeg'
+
+
+def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(monkeypatch):
+    """Avoid duplicate API versions and retain Anthropic validation messages."""
+    calls = []
+
+    class ErrorResponse:
+        text = ''
+
+        def raise_for_status(self):
+            raise models.requests.HTTPError('400 Client Error', response=self)
+
+        def json(self):
+            return {'error': {'type': 'invalid_request_error', 'message': 'invalid sampling parameters'}}
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(url)
+        return ErrorResponse()
+
+    monkeypatch.setattr(models.requests, 'post', fake_post)
+    client = models.AnthropicMessagesClient(text_config(
+        provider='anthropic',
+        base_url='https://anthropic.example/v1/',
+    ))
+
+    with pytest.raises(RuntimeError, match='invalid sampling parameters'):
+        client.query([{'role': 'user', 'content': 'question'}])
+    assert calls == ['https://anthropic.example/v1/messages']
 
 
 def test_anthropic_messages_client_requires_key_and_wraps_errors(monkeypatch):

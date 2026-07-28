@@ -167,10 +167,12 @@ def corpus_status(db_path: str):
 @click.option('--image-batch-size', default='1', show_default=True,
               help='Number of images per vision request, or "all".')
 @click.option('--model', default=None, help='Text model name override for this scrape run.')
-@click.option('--provider', default=None, help='Text provider override: openai, anthropic, or local.')
+@click.option('--provider', default=None,
+              help='Text provider override: openai, anthropic, or local. Pair with --model when changing provider.')
 @click.option('--base-url', default=None, help='Text model base URL override.')
 @click.option('--vision-model', default=None, help='Vision model name override for this scrape run.')
-@click.option('--vision-provider', default=None, help='Vision provider override.')
+@click.option('--vision-provider', default=None,
+              help='Vision provider override. Pair with --vision-model when changing provider.')
 @click.option('--vision-base-url', default=None, help='Vision model base URL override.')
 @click.option('--delete-images-after',
               is_flag=True,

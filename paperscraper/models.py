@@ -42,13 +42,20 @@ class ModelConfig:
         if isinstance(capabilities, str):
             capabilities = [cap.strip() for cap in capabilities.split(',') if cap.strip()]
         settings = load_settings()
-        provider = overrides.get('provider') or configured.get('provider') or 'openai'
+        configured_provider = configured.get('provider') or 'openai'
+        provider = overrides.get('provider') or configured_provider
+        provider_changed = provider.lower().replace('_', '-') != configured_provider.lower().replace('_', '-')
+        name = overrides.get('name') or overrides.get('model')
+        if provider_changed and not name:
+            raise ValueError('Changing model provider requires an explicit model name.')
         provider_key = f'{provider.lower()}_api_key'
+        profile_api_key = None if provider_changed else configured.get('api_key')
+        profile_base_url = None if provider_changed else configured.get('base_url')
         return cls(
             provider=provider,
-            name=overrides.get('name') or overrides.get('model') or configured.get('model') or DEFAULT_MODEL,
-            base_url=overrides.get('base_url') or configured.get('base_url'),
-            api_key=overrides.get('api_key') or configured.get('api_key') or settings.get(provider_key),
+            name=name or configured.get('model') or DEFAULT_MODEL,
+            base_url=overrides.get('base_url') or profile_base_url,
+            api_key=overrides.get('api_key') or profile_api_key or settings.get(provider_key),
             capabilities=set(capabilities or ['text']),
             temperature=float(overrides.get('temperature', configured.get('temperature', 0))),
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
@@ -59,7 +66,10 @@ class ModelConfig:
 
     def generation_args(self):
         """Return provider generation parameters shared across request types."""
-        return {'temperature': self.temperature, 'top_p': self.top_p}
+        args = {'temperature': self.temperature, 'top_p': self.top_p}
+        if self.provider.lower().replace('_', '-') == 'anthropic':
+            args.pop('top_p')
+        return args
 
     def require(self, capability: str):
         """Raise when this config lacks the requested model capability."""
@@ -238,15 +248,35 @@ class AnthropicMessagesClient(BaseModelClient):
             'anthropic-version': '2023-06-01',
             'content-type': 'application/json',
         }
-        base_url = self.config.base_url or 'https://api.anthropic.com'
+        base_url = (self.config.base_url or 'https://api.anthropic.com').rstrip('/')
+        endpoint = f'{base_url}/messages' if base_url.endswith('/v1') else f'{base_url}/v1/messages'
         try:
-            response = requests.post(f'{base_url.rstrip("/")}/v1/messages', headers=headers, json=payload, timeout=120)
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
             response.raise_for_status()
+        except requests.HTTPError as e:
+            detail = _anthropic_error_detail(e.response)
+            suffix = f': {detail}' if detail else ''
+            raise RuntimeError(f'Anthropic request failed: {e}{suffix}') from e
         except requests.RequestException as e:
             raise RuntimeError(f'Anthropic request failed: {e}') from e
         data = response.json()
         chunks = [block.get('text', '') for block in data.get('content', []) if block.get('type') == 'text']
         return ''.join(chunks)
+
+
+def _anthropic_error_detail(response):
+    """Return a concise provider error message from an Anthropic HTTP response."""
+    if response is None:
+        return ''
+    try:
+        data = response.json()
+    except (requests.JSONDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        error = data.get('error')
+        if isinstance(error, dict) and error.get('message'):
+            return str(error['message'])[:1000]
+    return str(getattr(response, 'text', '') or '').strip()[:1000]
 
 
 class OpenAICompatibleChatClient(BaseModelClient):
