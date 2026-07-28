@@ -9,14 +9,29 @@ import re
 import requests
 import unicodedata
 from collections import Counter
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from pypdf import PdfReader
 
 from paperscraper.documents import read_pdf_text
 
-DOI_PATTERN = re.compile(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', re.IGNORECASE)
-TRAILING_PUNCTUATION = '.),;:]}'
+MODERN_DOI_PATTERN = r'10\.\d{4,9}/(?:[-._;()/:A-Z0-9]|%[0-9A-F]{2})+'
+# These two older publisher formats contain characters excluded by the modern
+# Crossref pattern. Keep them narrow to avoid treating arbitrary URLs as DOIs.
+LEGACY_DOI_PATTERNS = (
+    r'10\.1002/\S+',
+    r'10\.1207/[\w\d]+&\d+_\d+',
+)
+DOI_PRESENTATION_PREFIX = r'(?:(?:https?://(?:dx\.)?doi\.org/)|(?:doi\s*:\s*))?'
+DOI_PATTERN = re.compile(
+    DOI_PRESENTATION_PREFIX + '(?:' + '|'.join((*LEGACY_DOI_PATTERNS, MODERN_DOI_PATTERN)) + ')',
+    re.IGNORECASE,
+)
+DOI_URL_PREFIX = re.compile(r'^https?://(?:dx\.)?doi\.org/', re.IGNORECASE)
+DOI_LABEL_PREFIX = re.compile(r'^doi\s*:\s*', re.IGNORECASE)
+TRAILING_SENTENCE_PUNCTUATION = '.,;:'
+TRAILING_DELIMITERS = {')': '(', ']': '[', '}': '{', '>': '<'}
+INVISIBLE_CHARACTERS = str.maketrans('', '', '\u200b\u200c\u200d\u2060\ufeff')
 UNICODE_PUNCTUATION = str.maketrans({
     '\u2010': '-',
     '\u2011': '-',
@@ -38,9 +53,29 @@ UNICODE_PUNCTUATION = str.maketrans({
 
 
 def clean_doi(value: str):
-    """Trim common trailing punctuation from a DOI string."""
-    doi = value.strip().strip(TRAILING_PUNCTUATION)
-    return doi.rstrip('.')
+    """Return a canonical DOI from a plain, labelled, or resolver URL value."""
+    doi = unicodedata.normalize('NFKC', html.unescape(str(value))).translate(UNICODE_PUNCTUATION)
+    doi = doi.translate(INVISIBLE_CHARACTERS).strip()
+
+    url_prefix = DOI_URL_PREFIX.match(doi)
+    if url_prefix:
+        doi = unquote(doi[url_prefix.end():])
+        doi = re.split(r'[?#]', doi, maxsplit=1)[0]
+    else:
+        doi = DOI_LABEL_PREFIX.sub('', doi, count=1)
+    doi = doi.strip()
+
+    while doi:
+        final_character = doi[-1]
+        if final_character in TRAILING_SENTENCE_PUNCTUATION or final_character in {'"', "'"}:
+            doi = doi[:-1]
+            continue
+        opening_character = TRAILING_DELIMITERS.get(final_character)
+        if opening_character and doi.count(final_character) > doi.count(opening_character):
+            doi = doi[:-1]
+            continue
+        break
+    return doi.casefold()
 
 
 def normalize_metadata_text(value):
@@ -95,7 +130,15 @@ def _rank_doi_candidates(candidates):
 
 def extract_dois_from_text(text: str):
     """Find DOI-like values in a block of text ranked by frequency."""
-    normalized = re.sub(r'\s+', ' ', text or '')
+    normalized = unicodedata.normalize('NFKC', html.unescape(str(text or ''))).translate(UNICODE_PUNCTUATION)
+    normalized = normalized.translate(INVISIBLE_CHARACTERS)
+    # A soft hyphen marks a word-wrap rather than part of the identifier. PDF
+    # extractors may retain both it and the following line break.
+    normalized = re.sub(r'\u00ad[ \t]*(?:\r?\n)?[ \t]*', '', normalized)
+    # Joining immediately after the mandatory prefix slash is unambiguous. Do
+    # not join arbitrary DOI-looking lines: a DOI can legitimately end there.
+    normalized = re.sub(r'(10\.\d{4,9}/)[ \t]*\r?\n[ \t]*', r'\1', normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r'\s+', ' ', normalized)
     return _rank_doi_candidates(match.group(0) for match in DOI_PATTERN.finditer(normalized))
 
 
