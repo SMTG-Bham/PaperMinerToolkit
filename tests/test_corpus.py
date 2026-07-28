@@ -116,6 +116,28 @@ def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
     assert missing is None
 
 
+def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
+    """Load the latest asset per paper and role without returning unrelated roles."""
+    with corpus.connect(tmp_path / 'corpus.db') as conn:
+        paper = sample_paper('demo:assets')
+        corpus.add_asset(conn, paper, 'older abstract', role='abstract', kind='text', mime_type='text/plain')
+        corpus.add_asset(
+            conn,
+            paper,
+            'newer abstract',
+            role='abstract',
+            kind='text',
+            mime_type='text/plain',
+            source='second',
+        )
+        corpus.add_asset(conn, paper, 'full text', role='text', kind='text', mime_type='text/plain')
+        assets = corpus.latest_assets(conn, ['abstract'])
+
+    assert set(assets) == {('demo:assets', 'abstract')}
+    assert assets[('demo:assets', 'abstract')]['content'] == b'newer abstract'
+    assert assets[('demo:assets', 'abstract')]['source'] == 'second'
+
+
 def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
     """
     Test corpus compression validation.

@@ -16,6 +16,8 @@ dependencies = [
   "pymupdf",
   "pypdf",
   "requests",
+  "joblib",
+  "scikit-learn",
   "sentencepiece",
   "tiktoken>=0.13.0",
   "tqdm",
@@ -32,6 +34,10 @@ test = [
 ps_search = "cli.cli:paper_search"
 ps_download = "cli.cli:download"
 ps_corpus_stats = "cli.cli:corpus_status"
+ps_topics_train = "cli.cli:topics_train"
+ps_topics_show = "cli.cli:topics_show"
+ps_topics_name = "cli.cli:topics_name"
+ps_topics_predict = "cli.cli:topics_predict"
 ps_import_pdfs = "cli.cli:import_pdf_folder"
 ps_import_author = "cli.cli:import_author"
 ps_scrape = "cli.cli:scrape"

@@ -94,6 +94,32 @@ Use this step for papers discovered by search. External PDF imports already poin
 
 PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
 
+### Train And Inspect LDA Topics
+
+Train a reproducible LDA model from titles and abstracts. The model uses count vectors and online learning by default, making it suitable for larger corpora:
+
+`ps_topics_train papers.db topic_model --topics 12`
+
+Choose the input fields explicitly when required. Repeating `--field` combines fields:
+
+`ps_topics_train papers.db topic_model --topics 12 --field title --field text`
+
+Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities.
+
+Inspect the top terms and representative papers before assigning names:
+
+`ps_topics_show topic_model`
+
+Topic names are manual metadata and do not modify the fitted model:
+
+`ps_topics_name topic_model 0 "sulfide solid electrolytes"`
+
+Apply the saved model to a new or updated corpus:
+
+`ps_topics_predict topic_model new_papers.db new_paper_topics.csv`
+
+Papers containing no terms from the fitted vocabulary are marked `no_vocabulary_terms` rather than receiving misleading uniform probabilities. Topic probability exports are designed to support the subsequent temporal-trend and filtering stages.
+
 ### Choose A Recipe
 
 The recipe argument can be a bundled recipe name such as `sse`, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
