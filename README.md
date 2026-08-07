@@ -128,10 +128,13 @@ Bundled recipes:
 
 - `sse` extracts lithium-conducting solid electrolytes: composition, structure, conductivity, and electrochemical properties.
 - `polymer` extracts polymers: identity and architecture, printed SMILES and BigSMILES line notations, thermal, molecular weight and mechanical properties, and biodegradation test results.
+- `polymer_db` is a wider version of `polymer` matching a polymer property database schema. It adds monomer CAS numbers, backbone linkage, microstructure, chain end groups, ionic character, elemental composition, functional group numbers, Mark-Houwink and hydrodynamic parameters, solubility and Hansen parameters, in vitro acid, base, hydrolytic and enzymatic degradation curves, and the full OECD 301 and 310 biodegradation test setup and results.
 
 `ps_scrape papers.db sse --mode text`
 
 `ps_scrape papers.db polymer --mode text`
+
+`ps_scrape papers.db polymer_db --mode text`
 
 `ps_scrape papers.db ./my_recipe.json --mode text`
 
@@ -139,7 +142,9 @@ Bundled recipes:
 
 Store each recipe into its own materials file. When the output file already exists, its existing columns are reused for column matching, so mixing recipes in one file will not work.
 
-The `polymer` recipe only records SMILES, BigSMILES, and other structure identifiers that are printed as text in the paper or its supporting information. It never builds a structure string from a polymer name or from a drawn structure, so these columns are often empty. Copy the recipe to your own JSON file and edit its prompts if you want different behaviour.
+The `polymer` and `polymer_db` recipes only record SMILES, BigSMILES, CAS numbers, and other structure identifiers that are printed as text in the paper or its supporting information. They never build a structure string from a polymer name or from a drawn structure, so these columns are often empty. `polymer_db` treats its `Structural confidence`, `Klimisch score`, and `GLP compliance` fields the same way: they are reported only when a paper states them, and are otherwise left for a curator to fill in. Copy a recipe to your own JSON file and edit its prompts if you want different behaviour.
+
+`polymer_db` defines 86 fields, so each extracted record costs roughly 1100 output tokens and a paper reaching the 10000 token response limit will return about nine records before the response is truncated. Prefer `polymer` for papers that report long sample series, and `polymer_db` when the full property schema matters. Storing `polymer_db` results runs 30 unit conversions, one per unit-bearing column, regardless of how many rows were scraped.
 
 ### Scrape Papers
 
