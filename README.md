@@ -122,13 +122,24 @@ Papers containing no terms from the fitted vocabulary are marked `no_vocabulary_
 
 ### Choose A Recipe
 
-The recipe argument can be a bundled recipe name such as `sse`, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
+The recipe argument can be a bundled recipe name, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
+
+Bundled recipes:
+
+- `sse` extracts lithium-conducting solid electrolytes: composition, structure, conductivity, and electrochemical properties.
+- `polymer` extracts polymers: identity and architecture, printed SMILES and BigSMILES line notations, thermal, molecular weight and mechanical properties, and biodegradation test results.
 
 `ps_scrape papers.db sse --mode text`
+
+`ps_scrape papers.db polymer --mode text`
 
 `ps_scrape papers.db ./my_recipe.json --mode text`
 
 `ps_store papers.db temp_scraped_materials.csv materials.csv ./my_recipe.json --assume-yes`
+
+Store each recipe into its own materials file. When the output file already exists, its existing columns are reused for column matching, so mixing recipes in one file will not work.
+
+The `polymer` recipe only records SMILES, BigSMILES, and other structure identifiers that are printed as text in the paper or its supporting information. It never builds a structure string from a polymer name or from a drawn structure, so these columns are often empty. Copy the recipe to your own JSON file and edit its prompts if you want different behaviour.
 
 ### Scrape Papers
 
