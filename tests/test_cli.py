@@ -1,6 +1,6 @@
 from click.testing import CliRunner
 
-import cli.cli as cli
+import paperscraper.cli as cli
 import paperscraper.corpus as corpus
 
 

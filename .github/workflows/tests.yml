@@ -35,11 +35,11 @@ jobs:
 
       - name: Run unit tests
         run: |
-          pytest --cov=paperscraper --cov=cli --cov-report=term-missing --cov-report=xml
+          pytest --cov=paperscraper --cov-report=term-missing --cov-report=xml
 
       - name: Compile Python sources and examples
         run: |
-          python -m compileall paperscraper cli examples
+          python -m compileall paperscraper examples
 
       - name: Upload coverage report artifact
         uses: actions/upload-artifact@v7
