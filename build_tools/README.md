@@ -26,6 +26,13 @@ Verify the install:
 pytest
 ```
 
+## Running on ASU Sol
+
+The steps above cover a local machine. To run on Sol's Intel Gaudi nodes, see
+[`sol_gaudi/README.md`](sol_gaudi/README.md) — the install differs there (the
+CUDA build of torch has to be kept out) and the model server is scheduled
+through SLURM.
+
 ## Adding a dependency
 
 Add it to `dependencies` (or `optional-dependencies.test`) in `pyproject.toml`
