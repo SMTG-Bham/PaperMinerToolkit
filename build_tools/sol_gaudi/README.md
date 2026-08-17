@@ -31,6 +31,7 @@ alongside the workflow notebooks:
 
 | Script | Runs on | Purpose |
 | --- | --- | --- |
+| [`install.sbatch`](../../examples/sol_gaudi/install.sbatch) | `htc` | **Run this first.** Builds the environment and verifies it |
 | [`fetch_corpus.sh`](../../examples/sol_gaudi/fetch_corpus.sh) | login node or interactive | Search and download; never touches the model |
 | [`fetch_corpus.sbatch`](../../examples/sol_gaudi/fetch_corpus.sbatch) | `htc` | The same thing as a batch job, for corpora too big to babysit |
 | [`scrape_gaudi.sbatch`](../../examples/sol_gaudi/scrape_gaudi.sbatch) | `gaudi` | **Start here.** vLLM + scrape + store in one job |
@@ -39,9 +40,27 @@ alongside the workflow notebooks:
 Copy them into your working directory and edit, or submit them in place — every
 setting is an environment variable with a default.
 
+## Quick start
+
+From the repository root, three submissions end to end:
+
+```bash
+sbatch examples/sol_gaudi/install.sbatch
+sbatch examples/sol_gaudi/fetch_corpus.sbatch
+sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+```
+
+Wait for each to finish before the next — the corpus has to exist before the
+scrape, and the environment before either. Watch progress with
+`tail -f ps-install-<jobid>.log`.
+
+Sections 1 to 4 explain what `install.sbatch` does and how to do it by hand;
+skip to section 5 if the install job succeeded.
+
 ## 1. Get an interactive session
 
-Do not build environments on a login node.
+Only needed if you are installing by hand. ASU asks that environments not be
+built on a login node, which is why `install.sbatch` is a batch job.
 
 ```bash
 interactive -c 4 -t 0-2
@@ -86,6 +105,18 @@ python -c "import torch; print(torch.__version__)"
 `pytest` needs no credentials and no accelerator — `pyproject.toml` already
 excludes the `network` and `slow` markers by default. The torch version should
 carry a `+cpu` suffix.
+
+`install.sbatch` checks all of this and fails the job if any of it is wrong: a
+torch build without `+cpu`, any surviving `nvidia-*` or `triton` package, a
+missing `ps_*` console script, or a failing test. It also pre-caches the
+tokenizer for `PS_MODEL`, so the Gaudi job does not need the network for the
+chunk-sizing lookup. Pass `PS_PREFETCH_WEIGHTS=1` to download the model weights
+too, which keeps tens of GB of transfer out of your four-hour accelerator
+allocation:
+
+```bash
+sbatch --export=ALL,PS_PREFETCH_WEIGHTS=1 examples/sol_gaudi/install.sbatch
+```
 
 ## 4. Point caches at scratch
 
