@@ -100,6 +100,20 @@ Train a reproducible LDA model from titles and abstracts. The model uses count v
 
 `ps_topics_train papers.db topic_model --topics 12`
 
+Bigram features such as `lithium_metal`, `ionic_conductivity`, and `solid_electrolyte` are enabled by default. Use `--ngram-max 1` for a unigram-only model.
+
+Corpus-specific stopwords can remove generic standalone terms while retaining meaningful bigrams. The file must contain one word per line, with optional comments beginning with `#`:
+
+```text
+# Words common to the complete search corpus
+lithium
+battery
+study
+performance
+```
+
+`ps_topics_train papers.db topic_model --topics 12 --stopwords-file domain_stopwords.txt`
+
 Choose the input fields explicitly when required. Repeating `--field` combines fields:
 
 `ps_topics_train papers.db topic_model --topics 12 --field title --field text`
@@ -119,6 +133,18 @@ Apply the saved model to a new or updated corpus:
 `ps_topics_predict topic_model new_papers.db new_paper_topics.csv`
 
 Papers containing no terms from the fitted vocabulary are marked `no_vocabulary_terms` rather than receiving misleading uniform probabilities. Topic probability exports are designed to support the subsequent temporal-trend and filtering stages.
+
+Before choosing a topic count, train a comparison grid from one corpus load:
+
+```bash
+ps_topics_compare papers.db topic_comparison \
+    --topics 6 --topics 8 --topics 10 \
+    --seed 0 --seed 1 --seed 2 \
+    --field abstract \
+    --stopwords-file domain_stopwords.txt
+```
+
+`model_comparison.csv` reports perplexity, log likelihood, topic diversity, dominant-topic balance, training time, and cross-seed topic stability. These metrics help narrow the candidates, but the final choice should still be based on `ps_topics_show` and the representative papers.
 
 ### Choose A Recipe
 

@@ -209,6 +209,8 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     model_dir = tmp_path / 'model'
+    stopwords_path = tmp_path / 'stopwords.txt'
+    stopwords_path.write_text('battery\n')
     calls = {}
 
     def fake_train(*args, **kwargs):
@@ -239,6 +241,8 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
         '--random-seed', '9',
         '--top-terms', '8',
         '--representative-papers', '4',
+        '--stopwords-file', str(stopwords_path),
+        '--ngram-max', '1',
         '--overwrite',
     ])
 
@@ -255,11 +259,52 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
         'random_state': 9,
         'top_terms': 8,
         'representative_papers': 4,
+        'stopwords_file': str(stopwords_path),
+        'ngram_max': 1,
         'overwrite': True,
         'emit_warnings': False,
     }
     assert 'Warning: Small topic-model corpus' in result.output
     assert 'Trained 6 topics from 120 papers using 800 terms.' in result.output
+
+
+def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path):
+    """Train a topic-count and seed grid through the comparison command."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    output_dir = tmp_path / 'comparison'
+    calls = {}
+
+    def fake_compare(*args, **kwargs):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        return {
+            'output_dir': str(output_dir),
+            'models_trained': 4,
+            'comparison_csv': str(output_dir / 'model_comparison.csv'),
+            'models': [{'warnings': ['comparison warning']}],
+        }
+
+    monkeypatch.setattr(cli, 'compare_topic_models', fake_compare)
+
+    result = CliRunner().invoke(cli.topics_compare, [
+        str(db_path), str(output_dir),
+        '--topics', '6', '--topics', '8',
+        '--seed', '3', '--seed', '4',
+        '--field', 'abstract',
+        '--iterations', '7',
+        '--ngram-max', '2',
+    ])
+
+    assert result.exit_code == 0
+    assert calls['args'] == (str(db_path), str(output_dir))
+    assert calls['kwargs']['topic_counts'] == (6, 8)
+    assert calls['kwargs']['random_states'] == (3, 4)
+    assert calls['kwargs']['text_fields'] == ('abstract',)
+    assert calls['kwargs']['max_iter'] == 7
+    assert calls['kwargs']['ngram_max'] == 2
+    assert 'Warning: comparison warning' in result.output
+    assert 'Trained 4 comparison models' in result.output
 
 
 def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):

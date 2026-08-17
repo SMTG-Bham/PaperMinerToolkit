@@ -13,7 +13,8 @@ from paperscraper.download import download_papers
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import SCRAPE_ORDERS, scrape_papers
 from paperscraper.store import store_results
-from paperscraper.topics import (predict_topic_model,
+from paperscraper.topics import (compare_topic_models,
+                                 predict_topic_model,
                                  set_topic_name,
                                  topic_descriptions,
                                  train_topic_model)
@@ -173,6 +174,10 @@ def corpus_status(db_path: str):
 @click.option('--random-seed', 'random_state', default=0, type=int, show_default=True)
 @click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
 @click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
+@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
+              help='UTF-8 file containing one corpus-specific stopword per line.')
+@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True,
+              help='Largest generated n-gram; use 2 to include bigrams.')
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known model artifact files in a non-empty model directory.')
 def topics_train(db_path: str,
@@ -187,6 +192,8 @@ def topics_train(db_path: str,
                  random_state: int,
                  top_terms: int,
                  representative_papers: int,
+                 stopwords_file: str | None,
+                 ngram_max: int,
                  overwrite: bool):
     """Train an LDA model and write inspectable, manually nameable artifacts."""
     try:
@@ -203,6 +210,8 @@ def topics_train(db_path: str,
             random_state=random_state,
             top_terms=top_terms,
             representative_papers=representative_papers,
+            stopwords_file=stopwords_file,
+            ngram_max=ngram_max,
             overwrite=overwrite,
             emit_warnings=False,
         )
@@ -216,6 +225,79 @@ def topics_train(db_path: str,
     )
     click.echo(f'Model artifacts: {summary["model_dir"]}')
     click.echo(f'Manual topic review: {summary["model_dir"]}/topics.csv')
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('output_dir', default='topic_comparison', type=click.Path())
+@click.option('--topics', 'topic_counts', multiple=True, type=click.IntRange(min=2),
+              default=(5, 10), show_default=True,
+              help='Topic count to train. Repeat to compare several values.')
+@click.option('--seed', 'random_states', multiple=True, type=int, default=(0, 1), show_default=True,
+              help='Random seed to train. Repeat to assess stability.')
+@click.option('--field', 'text_fields', multiple=True,
+              type=click.Choice(['title', 'abstract', 'text']),
+              default=('title', 'abstract'), show_default=True,
+              help='Corpus text field to model. Repeat to combine fields.')
+@click.option('--min-df', default=2, type=click.IntRange(min=1), show_default=True)
+@click.option('--max-df', default=0.95, type=click.FloatRange(min=0.0, max=1.0, min_open=True),
+              show_default=True)
+@click.option('--max-features', default=20000, type=click.IntRange(min=2), show_default=True)
+@click.option('--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True)
+@click.option('--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True)
+@click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
+@click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
+@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
+              help='UTF-8 file containing one corpus-specific stopword per line.')
+@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True)
+@click.option('--overwrite', is_flag=True, default=False,
+              help='Replace known comparison and model artifact files.')
+def topics_compare(db_path: str,
+                   output_dir: str,
+                   topic_counts: tuple[int],
+                   random_states: tuple[int],
+                   text_fields: tuple[str],
+                   min_df: int,
+                   max_df: float,
+                   max_features: int,
+                   learning_method: str,
+                   max_iter: int,
+                   top_terms: int,
+                   representative_papers: int,
+                   stopwords_file: str | None,
+                   ngram_max: int,
+                   overwrite: bool):
+    """Train several LDA configurations and export comparable diagnostics."""
+    try:
+        summary = compare_topic_models(
+            db_path,
+            output_dir,
+            topic_counts=topic_counts,
+            random_states=random_states,
+            text_fields=text_fields,
+            min_df=min_df,
+            max_df=max_df,
+            max_features=max_features,
+            learning_method=learning_method,
+            max_iter=max_iter,
+            top_terms=top_terms,
+            representative_papers=representative_papers,
+            stopwords_file=stopwords_file,
+            ngram_max=ngram_max,
+            overwrite=overwrite,
+        )
+    except (OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    warning_messages = dict.fromkeys(
+        message
+        for model in summary['models']
+        for message in model['warnings']
+    )
+    for message in warning_messages:
+        click.echo(f'Warning: {message}', err=True)
+    click.echo(f'Trained {summary["models_trained"]} comparison models in {summary["output_dir"]}.')
+    click.echo(f'Comparison metrics: {summary["comparison_csv"]}')
+    click.echo('Inspect each model with ps_topics_show before choosing one.')
 
 
 @click.command()
