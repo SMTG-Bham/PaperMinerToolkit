@@ -150,6 +150,46 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     }
 
 
+def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_path):
+    """
+    Test the search and download commands accept the OpenAlex source choice.
+
+    This function performs the following steps:
+    1. Replaces the search and download workflows with local fakes that record sources.
+    2. Runs the search command with `--source openalex`.
+    3. Runs the download command with `--source openalex`.
+
+    Asserts:
+        - Both commands exit successfully.
+        - The OpenAlex source choice is passed through to each workflow.
+    """
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'openalex'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'openalex'
+
+    download_calls = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract: download_calls.update({'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'openalex'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['openalex']
+
+
 def test_corpus_status_prints_database_storage_statistics(tmp_path):
     """
     Test the corpus statistics command.
@@ -486,16 +526,18 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch):
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
+    monkeypatch.setattr(cli, 'update_openalex_email', lambda: calls.append('openalex'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
     cli.update_unpaywall_api_email()
+    cli.update_openalex_api_email()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'unpaywall', 'openalex', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch):

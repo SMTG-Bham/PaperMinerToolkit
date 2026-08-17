@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus and CORE, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, and OpenAlex, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -12,11 +12,11 @@ import re
 import requests
 from tqdm import tqdm
 
-from paperscraper import elsevier
+from paperscraper import elsevier, openalex
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
-SEARCH_SOURCES = {'elsevier', 'core', 'all'}
+SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
@@ -254,6 +254,43 @@ def core_search(query: str, count: int = 200):
     return _core_rows(works)
 
 
+def _openalex_rows(works) -> pd.DataFrame:
+    """Convert OpenAlex work records into normalized paper rows."""
+    rows = []
+    for work in works:
+        normalized = normalize_paper(openalex.work_to_paper(work))
+        abstract = openalex.reconstruct_abstract(work.get('abstract_inverted_index'))
+        normalized['abstract'] = _clean_search_abstract(abstract)
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def openalex_search(query: str, count: int = 200):
+    """
+    Search OpenAlex works and return at most ``count`` normalized paper rows.
+    """
+    email = openalex.configured_email()
+    per_page = min(max(int(count), 1), 200)
+    params = {'search': query, 'per-page': per_page, 'cursor': '*'}
+    if email:
+        params['mailto'] = email
+    works = []
+    with tqdm(total=count, desc='Searching OpenAlex', colour='green') as pbar:
+        while len(works) < count:
+            params['per-page'] = min(per_page, count - len(works))
+            payload = openalex.request_json(openalex.WORKS_URL, params=params, email=email) or {}
+            results = payload.get('results') or []
+            if not results:
+                break
+            works.extend(results)
+            pbar.update(len(results))
+            next_cursor = (payload.get('meta') or {}).get('next_cursor')
+            if not next_cursor:
+                break
+            params['cursor'] = next_cursor
+    return _openalex_rows(works)
+
+
 def _store_search_abstracts(conn, papers):
     """Store search-result abstracts as corpus assets and return the stored count."""
     stored = 0
@@ -304,6 +341,13 @@ def search_for_papers(query: str,
             if source == 'core':
                 raise
             print(f'CORE search skipped: {e}')
+    if source in {'openalex', 'all'}:
+        try:
+            frames.append(openalex_search(query, count=count))
+        except Exception as e:
+            if source == 'openalex':
+                raise
+            print(f'OpenAlex search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:

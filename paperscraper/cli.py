@@ -26,6 +26,7 @@ from paperscraper.settings import (get_model_profile,
                                    update_core_key,
                                    update_elsevier_key,
                                    update_openai_key,
+                                   update_openalex_email,
                                    update_unpaywall_email)
 from paperscraper.utilities import reset, status
 
@@ -43,7 +44,7 @@ def _format_bytes(size: int):
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
-              type=click.Choice(['all', 'elsevier', 'core']),
+              type=click.Choice(['all', 'elsevier', 'core', 'openalex']),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -120,7 +121,7 @@ def import_author(db_path: str,
               show_default=True)
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier']),
+              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex']),
               default=('all',),
               show_default=True,
               help='PDF source to use. Repeat to choose more than one.')
@@ -491,6 +492,11 @@ def update_core_api_key():
 def update_unpaywall_api_email():
     """Prompt for and save an Unpaywall email address."""
     update_unpaywall_email()
+
+
+def update_openalex_api_email():
+    """Prompt for and save an OpenAlex email address."""
+    update_openalex_email()
 
 
 def update_openai_api_key():

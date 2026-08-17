@@ -1,0 +1,181 @@
+"""Unit tests for OpenAlex request helpers and work-record mapping."""
+
+import pytest
+import requests
+
+import paperscraper.openalex as openalex
+
+
+def work(doi='https://doi.org/10.1234/Example.One', identifier='https://openalex.org/W123'):
+    """Return a minimal OpenAlex work record."""
+    return {
+        'id': identifier,
+        'doi': doi,
+        'title': 'Solid electrolyte interphase',
+        'display_name': 'Solid electrolyte interphase',
+        'publication_date': '2024-03-07',
+        'publication_year': 2024,
+        'authorships': [
+            {'author': {'display_name': 'Jane A. Smith'}},
+            {'author': {'display_name': 'Wei Chen'}},
+        ],
+        'primary_location': {'source': {'display_name': 'Test Journal'}},
+        'best_oa_location': {'pdf_url': 'https://example.org/best.pdf'},
+        'locations': [
+            {'pdf_url': 'https://example.org/best.pdf'},
+            {'pdf_url': 'https://example.org/repo.pdf'},
+            {'pdf_url': None},
+        ],
+        'open_access': {'oa_url': 'https://example.org/landing'},
+        'abstract_inverted_index': {'Despite': [0], 'growth': [2], 'the': [1]},
+    }
+
+
+class FakeResponse:
+    """Prepared OpenAlex JSON response with a configurable status code."""
+
+    def __init__(self, payload, status_code=200):
+        self.payload = payload
+        self.status_code = status_code
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f'{self.status_code} error', response=self)
+
+    def json(self):
+        return self.payload
+
+
+class FakeSession:
+    """Return prepared OpenAlex responses and record request arguments."""
+
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.calls = []
+
+    def get(self, url, params, headers, timeout):
+        self.calls.append({
+            'url': url,
+            'params': dict(params),
+            'headers': dict(headers),
+            'timeout': timeout,
+        })
+        return next(self.responses)
+
+
+def test_reconstruct_abstract_orders_tokens_and_handles_missing_index():
+    """Rebuild readable text from position lists and tolerate absent indexes."""
+    assert openalex.reconstruct_abstract({'Despite': [0], 'growth': [2], 'the': [1]}) == 'Despite the growth'
+    assert openalex.reconstruct_abstract({'is': [1, 3], 'It': [0], 'good': [2]}) == 'It is good is'
+    assert openalex.reconstruct_abstract(None) == ''
+    assert openalex.reconstruct_abstract({}) == ''
+
+
+def test_work_to_paper_maps_and_cleans_fields():
+    """Clean URL-form DOIs and flatten nested OpenAlex fields into paper columns."""
+    paper = openalex.work_to_paper(work())
+    assert paper['paper_id'] == 'doi:10.1234/example.one'
+    assert paper['doi'] == '10.1234/example.one'
+    assert paper['title'] == 'Solid electrolyte interphase'
+    assert paper['journal'] == 'Test Journal'
+    assert paper['publication_date'] == '2024-03-07'
+    assert paper['authors'] == 'Jane A. Smith; Wei Chen'
+    assert paper['sources'] == 'openalex'
+    assert paper['pdf_url'] == 'https://example.org/best.pdf'
+    assert paper['metadata_status'] == 'retrieved'
+
+
+def test_work_to_paper_without_doi_uses_openalex_identifier():
+    """Fall back to the W-identifier and empty fields when data is missing."""
+    record = work(doi=None)
+    record['primary_location'] = None
+    record['authorships'] = None
+    record['best_oa_location'] = None
+    record['publication_date'] = None
+
+    paper = openalex.work_to_paper(record)
+
+    assert paper['paper_id'] == 'openalex:W123'
+    assert paper['doi'] == ''
+    assert paper['journal'] == ''
+    assert paper['authors'] == ''
+    assert paper['pdf_url'] == ''
+    assert paper['publication_date'] == '2024'
+    assert openalex.work_to_paper({})['paper_id'] == ''
+
+
+def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch):
+    """Sleep for Retry-After seconds when numeric and exponential backoff otherwise."""
+    sleeps = []
+    monkeypatch.setattr(openalex.time, 'sleep', sleeps.append)
+
+    rate_limited = FakeResponse({}, status_code=429)
+    rate_limited.headers['Retry-After'] = '7'
+    session = FakeSession([rate_limited, FakeResponse({'ok': True})])
+    assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
+
+    malformed = FakeResponse({}, status_code=429)
+    malformed.headers['Retry-After'] = 'soon'
+    session = FakeSession([malformed, FakeResponse({'ok': True})])
+    assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
+
+    assert sleeps == [7.0, 1]
+
+
+def test_request_json_returns_none_for_missing_work():
+    """Treat a 404 as a terminal miss instead of retrying."""
+    session = FakeSession([FakeResponse({'error': 'not found'}, status_code=404)])
+    assert openalex.request_json(openalex.WORKS_URL, session=session) is None
+    assert len(session.calls) == 1
+
+
+def test_request_json_raises_after_exhausting_attempts(monkeypatch):
+    """Surface a RuntimeError containing the last error once retries run out."""
+    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
+    session = FakeSession([FakeResponse({}, status_code=500), FakeResponse({}, status_code=500)])
+    with pytest.raises(RuntimeError, match='OpenAlex request failed after 2 attempts'):
+        openalex.request_json(openalex.WORKS_URL, session=session, attempts=2)
+
+
+def test_get_work_builds_doi_and_id_urls():
+    """Request single works by DOI or W-identifier with polite-pool headers."""
+    session = FakeSession([FakeResponse(work()), FakeResponse(work())])
+
+    openalex.get_work('doi:10.1234/example.one', email='person@example.ac.uk', session=session)
+    openalex.get_work('W123', session=session)
+
+    assert session.calls[0]['url'] == 'https://api.openalex.org/works/doi:10.1234/example.one'
+    assert session.calls[0]['headers']['User-Agent'] == 'PaperScraper/0.0.1 (mailto:person@example.ac.uk)'
+    assert session.calls[1]['url'] == 'https://api.openalex.org/works/W123'
+    assert session.calls[1]['headers']['User-Agent'] == 'PaperScraper/0.0.1'
+
+
+def test_pdf_candidates_orders_and_deduplicates_urls():
+    """Prefer the best OA location, then other locations, then the OA landing URL."""
+    assert openalex.pdf_candidates(work()) == [
+        'https://example.org/best.pdf',
+        'https://example.org/repo.pdf',
+        'https://example.org/landing',
+    ]
+    assert openalex.pdf_candidates({}) == []
+
+
+def test_configured_email_prefers_openalex_setting_then_unpaywall_fallback(monkeypatch):
+    """Resolve the polite-pool email from OpenAlex settings before Unpaywall ones."""
+    monkeypatch.delenv('OPENALEX_EMAIL', raising=False)
+    monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
+    settings = {'openalex_email': 'oa@example.ac.uk', 'unpaywall_email': 'up@example.ac.uk'}
+    assert openalex.configured_email(settings) == 'oa@example.ac.uk'
+    assert openalex.configured_email({'unpaywall_email': 'up@example.ac.uk'}) == 'up@example.ac.uk'
+    assert openalex.configured_email({'elsevier_api_key': 'key'}) is None
+    monkeypatch.setenv('OPENALEX_EMAIL', 'env@example.ac.uk')
+    assert openalex.configured_email({'unpaywall_email': 'up@example.ac.uk'}) == 'env@example.ac.uk'
+
+
+@pytest.mark.network
+def test_get_work_uses_real_openalex_api():
+    """Fetch one known open-access work from the live OpenAlex API."""
+    record = openalex.get_work('doi:10.1371/journal.pone.0000308')
+    assert record is not None
+    assert record['doi'] == 'https://doi.org/10.1371/journal.pone.0000308'

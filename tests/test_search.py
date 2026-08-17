@@ -448,6 +448,51 @@ def test_core_rows_normalizes_work_records():
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
 
+def test_openalex_rows_normalizes_work_records():
+    """
+    Test OpenAlex work row normalization.
+
+    This function performs the following steps:
+    1. Builds OpenAlex work records with URL-form identifiers and inverted abstracts.
+    2. Converts them with `_openalex_rows`.
+    3. Reads the normalized row values.
+
+    Asserts:
+        - DOI-bearing and DOI-less records produce stable paper IDs.
+        - OpenAlex fields map to public paper columns.
+        - Inverted abstract indexes are reconstructed into plain abstract text.
+    """
+    rows = search._openalex_rows([
+        {
+            'id': 'https://openalex.org/W123',
+            'doi': 'https://doi.org/10.1234/OpenAlex',
+            'title': 'OpenAlex title',
+            'publication_date': '2024-03-07',
+            'authorships': [{'author': {'display_name': 'A. Author'}}],
+            'primary_location': {'source': {'display_name': 'OpenAlex Journal'}},
+            'best_oa_location': {'pdf_url': 'https://example.org/paper.pdf'},
+            'abstract_inverted_index': {'Second': [1], 'First': [0]},
+        },
+        {
+            'id': 'https://openalex.org/W456',
+            'title': 'No DOI title',
+        },
+    ])
+
+    assert list(rows.columns) == search.SEARCH_FIELDS
+    assert rows.loc[0, 'paper_id'] == 'doi:10.1234/openalex'
+    assert rows.loc[0, 'doi'] == '10.1234/openalex'
+    assert rows.loc[0, 'title'] == 'OpenAlex title'
+    assert rows.loc[0, 'journal'] == 'OpenAlex Journal'
+    assert rows.loc[0, 'authors'] == 'A. Author'
+    assert rows.loc[0, 'pdf_url'] == 'https://example.org/paper.pdf'
+    assert rows.loc[0, 'abstract'] == 'First Second'
+    assert rows.loc[0, 'sources'] == 'openalex'
+    assert rows.loc[0, 'metadata_status'] == 'retrieved'
+    assert rows.loc[1, 'paper_id'] == 'openalex:W456'
+    assert rows.loc[1, 'abstract'] == ''
+
+
 def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
     """
     Test CORE search pagination and stop conditions.
@@ -597,6 +642,109 @@ def test_core_search_stops_when_page_is_short(monkeypatch):
 
     assert rows['paper_id'].tolist() == ['core:1']
     assert len(calls) == 1
+
+
+def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
+    """
+    Test OpenAlex search cursor pagination and stop conditions.
+
+    This function performs the following steps:
+    1. Replaces OpenAlex JSON requests with prepared multi-page payloads.
+    2. Replaces the configured polite-pool email and tqdm with local fakes.
+    3. Calls `openalex_search` for more than one page.
+
+    Asserts:
+        - Requests carry the search query, shrinking per-page limits, and cursors.
+        - The polite-pool email is sent as the mailto parameter.
+        - Results from multiple pages are returned up to the requested count.
+    """
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    calls = []
+
+    first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
+
+    def fake_request_json(url, params=None, email=None, **_):
+        calls.append({'url': url, 'params': dict(params), 'email': email})
+        if len(calls) == 1:
+            return {'results': first_page, 'meta': {'next_cursor': 'cursor-2'}}
+        return {'results': [{'id': 'https://openalex.org/W200', 'title': 'paper 200'}],
+                'meta': {'next_cursor': 'cursor-3'}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_email', lambda: 'person@example.ac.uk')
+    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+
+    rows = search.openalex_search('solid electrolyte', count=201)
+
+    assert calls[0]['url'] == search.openalex.WORKS_URL
+    assert calls[0]['params']['search'] == 'solid electrolyte'
+    assert calls[0]['params']['per-page'] == 200
+    assert calls[0]['params']['cursor'] == '*'
+    assert calls[0]['params']['mailto'] == 'person@example.ac.uk'
+    assert calls[0]['email'] == 'person@example.ac.uk'
+    assert calls[1]['params']['per-page'] == 1
+    assert calls[1]['params']['cursor'] == 'cursor-2'
+    assert len(rows) == 201
+    assert rows['paper_id'].iloc[0] == 'openalex:W0'
+    assert rows['paper_id'].iloc[-1] == 'openalex:W200'
+
+
+def test_openalex_search_stops_without_next_cursor_and_omits_mailto(monkeypatch):
+    """
+    Test OpenAlex search stop behavior and anonymous-pool requests.
+
+    This function performs the following steps:
+    1. Replaces OpenAlex JSON requests with a single page lacking a next cursor.
+    2. Replaces the configured polite-pool email with None.
+    3. Calls `openalex_search` for more results than exist.
+
+    Asserts:
+        - Pagination stops when no next cursor is returned.
+        - Requests omit the mailto parameter when no email is configured.
+    """
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    calls = []
+
+    def fake_request_json(url, params=None, email=None, **_):
+        calls.append({'params': dict(params), 'email': email})
+        return {'results': [{'id': 'https://openalex.org/W1', 'title': 'only'}], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_email', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+
+    rows = search.openalex_search('query', count=50)
+
+    assert len(calls) == 1
+    assert 'mailto' not in calls[0]['params']
+    assert calls[0]['email'] is None
+    assert rows['paper_id'].tolist() == ['openalex:W1']
 
 
 def test_search_for_papers_rejects_invalid_source():
@@ -769,6 +917,7 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
     db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -797,6 +946,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
     monkeypatch.setattr(
         search,
         'core_search',
@@ -810,6 +960,40 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
 
     with pytest.raises(search.requests.RequestException, match='core down'):
         search.search_for_papers('query', source='core', count=1)
+
+
+def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex(monkeypatch, tmp_path, capsys):
+    """
+    Test OpenAlex failure handling during paper search.
+
+    This function performs the following steps:
+    1. Replaces Elsevier search with one successful result and CORE search with none.
+    2. Replaces OpenAlex search with a retry-exhaustion failure.
+    3. Calls `search_for_papers` with all sources and with OpenAlex selected directly.
+
+    Asserts:
+        - Failed OpenAlex searches are skipped when searching all sources.
+        - Directly selected failed OpenAlex searches re-raise their error.
+        - Successful fallback Elsevier results are still written.
+    """
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
+    monkeypatch.setattr(
+        search,
+        'openalex_search',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('openalex down')),
+    )
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    assert 'OpenAlex search skipped: openalex down' in capsys.readouterr().out
+    assert db_path.exists()
+
+    with pytest.raises(RuntimeError, match='openalex down'):
+        search.search_for_papers('query', source='openalex', count=1)
 
 
 @pytest.mark.network
@@ -848,3 +1032,22 @@ def test_core_search_uses_real_core_api_when_configured():
     """
     assert search._core_api_key(), 'Set core_api_key or CORE_API_KEY before running network tests.'
     assert len(search.core_search('solid electrolyte', count=1)) <= 1
+
+
+@pytest.mark.network
+def test_openalex_search_uses_real_openalex_api():
+    """
+    Test live OpenAlex search without credentials.
+
+    This function performs the following steps:
+    1. Runs a one-result OpenAlex search against the live API.
+    2. Reads the returned normalized rows.
+
+    Asserts:
+        - The live search returns no more than one result.
+        - Returned rows carry the openalex source label.
+    """
+    rows = search.openalex_search('solid electrolyte', count=1)
+
+    assert len(rows) <= 1
+    assert rows.empty or rows.loc[0, 'sources'] == 'openalex'

@@ -7,7 +7,7 @@
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
 </p>
 
-PaperScraper searches Elsevier/Scopus and CORE, downloads paper content through Elsevier, Unpaywall, and CORE, and extracts structured materials data from papers with configurable text and vision models.
+PaperScraper searches Elsevier/Scopus, CORE, and OpenAlex, downloads paper content through Elsevier, Unpaywall, CORE, and OpenAlex, and extracts structured materials data from papers with configurable text and vision models.
 
 ## Model Profiles
 
@@ -27,11 +27,11 @@ Environment variables still work for batch jobs. `PAPERSCRAPER_MODEL_*` applies 
 
 ## Workflow
 
-PaperScraper can start from an Elsevier/Scopus or CORE search, PDFs you have already downloaded, or a mixture of both. Paper metadata, pipeline state, and compressed source documents are stored in a SQLite corpus. Matching DOI, source ID, and title/year records are merged so the same paper is not scraped twice.
+PaperScraper can start from an Elsevier/Scopus, CORE, or OpenAlex search, PDFs you have already downloaded, or a mixture of both. Paper metadata, pipeline state, and compressed source documents are stored in a SQLite corpus. Matching DOI, source ID, and title/year records are merged so the same paper is not scraped twice.
 
 ```mermaid
 flowchart TD
-    A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
+    A["Search Scopus/CORE/OpenAlex<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] --> B
     B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
     E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
@@ -52,7 +52,7 @@ Configure model profiles before scraping. The text profile is used for text extr
 
 ### Build A Paper Corpus
 
-Search Elsevier/Scopus and CORE and write streamlined metadata to a SQLite corpus:
+Search Elsevier/Scopus, CORE, and OpenAlex and write streamlined metadata to a SQLite corpus:
 
 `ps_search "Lithium solid electrolyte" papers.db`
 
@@ -63,6 +63,14 @@ Choose one source when needed:
 CORE can use `CORE_API_KEY` from the environment or a saved key:
 
 `ps_core_key`
+
+OpenAlex needs no API key at all:
+
+`ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100`
+
+Optionally save a contact email to join OpenAlex's faster polite pool. When unset, the Unpaywall email is reused, and requests without either email still work:
+
+`ps_openalex_email`
 
 Or import externally downloaded PDFs. This scans each PDF for a DOI, uses Crossref to fill metadata when possible, and stores the PDF in the corpus. Matching records are updated and unmatched PDFs are appended:
 
@@ -92,7 +100,7 @@ Use this step for papers discovered by search. External PDF imports already poin
 
 `ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always (no credentials needed), CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
 
 ### Train And Inspect LDA Topics
 
@@ -234,7 +242,7 @@ The examples folder contains notebooks with explained bash cells for common mode
 - `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
 - `examples/anthropic_claude_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
-Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
+Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and the optional `OPENALEX_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
 
 ## Running On HPC
 
