@@ -217,6 +217,7 @@ The vLLM notebook assumes a local CUDA workstation. For ASU's Sol supercomputer,
 They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else.
 
 - `examples/sol_gaudi/fetch_corpus.sh` runs search and download off the Gaudi queue, since neither stage calls the model.
+- `examples/sol_gaudi/fetch_corpus.sbatch` submits that same corpus build as an `htc` batch job for larger runs.
 - `examples/sol_gaudi/scrape_gaudi.sbatch` starts a vLLM server on one Gaudi card and runs scrape and store against it in the same job.
 - `examples/sol_gaudi/serve_gaudi.sbatch` keeps a warm server up for reuse across several runs.
 

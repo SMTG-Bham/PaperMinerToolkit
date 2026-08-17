@@ -47,7 +47,7 @@ mkdir -p "$HF_HOME"
 # to the launch below.
 # export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
-echo "=== Job $SLURM_JOB_ID on $(hostname) ==="
+echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
 # Module and conda activation scripts routinely reference unset variables, which

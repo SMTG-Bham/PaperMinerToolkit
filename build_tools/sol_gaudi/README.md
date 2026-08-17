@@ -31,7 +31,8 @@ alongside the workflow notebooks:
 
 | Script | Runs on | Purpose |
 | --- | --- | --- |
-| [`fetch_corpus.sh`](../../examples/sol_gaudi/fetch_corpus.sh) | login node or `htc` | Search and download; never touches the model |
+| [`fetch_corpus.sh`](../../examples/sol_gaudi/fetch_corpus.sh) | login node or interactive | Search and download; never touches the model |
+| [`fetch_corpus.sbatch`](../../examples/sol_gaudi/fetch_corpus.sbatch) | `htc` | The same thing as a batch job, for corpora too big to babysit |
 | [`scrape_gaudi.sbatch`](../../examples/sol_gaudi/scrape_gaudi.sbatch) | `gaudi` | **Start here.** vLLM + scrape + store in one job |
 | [`serve_gaudi.sbatch`](../../examples/sol_gaudi/serve_gaudi.sbatch) | `gaudi` | Long-lived server for reusing a warm model |
 
@@ -133,6 +134,28 @@ Pass your own as the first argument:
 Naming the test standard — OECD 301, OECD 310, ASTM D6400, ISO 14855 — tends to
 surface papers with extractable results rather than reviews, which matters
 because the biodegradation fields are only filled when a paper states them.
+
+For a corpus large enough that you do not want to sit in an interactive session
+waiting on rate limits, submit it instead:
+
+```bash
+sbatch examples/sol_gaudi/fetch_corpus.sbatch
+sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch
+```
+
+That runs on `htc` with no accelerator requested, since neither stage calls the
+model. `htc` caps wall time at four hours but runs uninterrupted; for a bigger
+corpus switch the header to `-p general`, which allows up to a week on the
+`public` QOS. Submit from the repository root so `papers.db` lands there rather
+than in the scheduler's spool directory.
+
+A batch job does not reliably inherit your shell environment, so put the
+credentials in a file only you can read and the script will source it:
+
+```bash
+printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\n' > ~/.paperscraper_env
+chmod 600 ~/.paperscraper_env
+```
 
 ## 7. Submit the scrape
 

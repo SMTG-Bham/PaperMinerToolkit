@@ -81,7 +81,7 @@ mkdir -p "$HF_HOME"
 # matching --tensor-parallel-size to the launch below.
 # export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
-echo "=== Job $SLURM_JOB_ID on $(hostname) ==="
+echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "model=$PS_MODEL max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
