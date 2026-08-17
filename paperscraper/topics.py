@@ -9,16 +9,19 @@ import csv
 import hashlib
 import html
 import json
+import math
 import re
+import time
 import unicodedata
 import warnings
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 
 import joblib
 import sklearn
 from sklearn.decomposition import LatentDirichletAllocation
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer
 
 from paperscraper.corpus import connect, latest_assets, paper_rows
 
@@ -33,11 +36,34 @@ TOPICS_FILENAME = 'topics.csv'
 TOPIC_NAMES_FILENAME = 'topic_names.json'
 REPRESENTATIVES_FILENAME = 'representative_papers.csv'
 PREDICTIONS_FILENAME = 'paper_topics.csv'
+STOPWORDS_FILENAME = 'stopwords.txt'
+COMPARISON_CSV_FILENAME = 'model_comparison.csv'
+COMPARISON_JSON_FILENAME = 'model_comparison.json'
 ARTIFACT_VERSION = 1
 TOKEN_PATTERN = r'(?u)\b[a-z][a-z0-9]{1,}\b'
 TOKEN_RE = re.compile(TOKEN_PATTERN)
 URL_RE = re.compile(r'https?://\S+', re.IGNORECASE)
 DOI_RE = re.compile(r'\b10\.\d{4,9}/\S+', re.IGNORECASE)
+
+
+class TopicAnalyzer:
+    """Generate domain-aware unigram and bigram features for topic models."""
+
+    def __init__(self, domain_stopwords=(), ngram_max=2):
+        self.domain_stopwords = frozenset(domain_stopwords)
+        self.ngram_max = ngram_max
+
+    def __call__(self, document):
+        features = []
+        for segment in re.split(r'[.!?;:\n]+', document):
+            tokens = [token for token in TOKEN_RE.findall(segment) if token not in ENGLISH_STOP_WORDS]
+            features.extend(token for token in tokens if token not in self.domain_stopwords)
+            if self.ngram_max >= 2:
+                for left, right in zip(tokens, tokens[1:]):
+                    if left in self.domain_stopwords and right in self.domain_stopwords:
+                        continue
+                    features.append(f'{left}_{right}')
+        return features
 
 
 def _utc_now():
@@ -56,6 +82,26 @@ def normalize_topic_text(value):
     text = DOI_RE.sub(' ', text)
     text = text.casefold()
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def load_domain_stopwords(stopwords_file):
+    """Load one normalized corpus-specific stopword per non-comment line."""
+    if stopwords_file is None:
+        return []
+    path = Path(stopwords_file)
+    words = []
+    for line_number, raw_line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), start=1):
+        value = raw_line.split('#', 1)[0].strip()
+        if not value:
+            continue
+        normalized = normalize_topic_text(value)
+        tokens = TOKEN_RE.findall(normalized)
+        if len(tokens) != 1 or tokens[0] != normalized:
+            raise ValueError(
+                f'{path}:{line_number}: expected exactly one word per line; found {value!r}.'
+            )
+        words.append(tokens[0])
+    return sorted(set(words))
 
 
 def _validate_text_fields(text_fields):
@@ -294,6 +340,26 @@ def _prepare_output_directory(output_dir, overwrite):
     return path
 
 
+def _model_quality_metrics(model, matrix, distributions, topic_rows):
+    """Return quantitative diagnostics useful for comparing fitted models."""
+    dominant_topics = distributions.argmax(axis=1)
+    dominant_counts = [int((dominant_topics == topic_id).sum()) for topic_id in range(distributions.shape[1])]
+    proportions = [count / len(distributions) for count in dominant_counts if count]
+    entropy = -sum(proportion * math.log(proportion) for proportion in proportions)
+    normalized_entropy = entropy / math.log(distributions.shape[1]) if distributions.shape[1] > 1 else 0
+    all_top_terms = [term for topic in topic_rows for term in topic['top_terms']]
+    topic_diversity = len(set(all_top_terms)) / len(all_top_terms) if all_top_terms else 0
+    return {
+        'perplexity': float(model.perplexity(matrix)),
+        'log_likelihood': float(model.score(matrix)),
+        'topic_diversity': topic_diversity,
+        'dominant_topic_counts': dominant_counts,
+        'dominant_topic_balance': normalized_entropy,
+        'smallest_dominant_topic': min(dominant_counts),
+        'largest_dominant_topic': max(dominant_counts),
+    }
+
+
 def train_topic_model(db_path,
                       output_dir,
                       num_topics=10,
@@ -306,8 +372,11 @@ def train_topic_model(db_path,
                       random_state=0,
                       top_terms=15,
                       representative_papers=5,
+                      stopwords_file=None,
+                      ngram_max=2,
                       overwrite=False,
-                      emit_warnings=True):
+                      emit_warnings=True,
+                      documents=None):
     """Train and persist an LDA model and its inspection artifacts."""
     fields = _validate_text_fields(text_fields)
     if learning_method not in {'online', 'batch'}:
@@ -318,23 +387,26 @@ def train_topic_model(db_path,
         raise ValueError('max_df must be greater than 0 and at most 1.')
     if max_features < num_topics:
         raise ValueError('max_features must be at least num_topics.')
+    if ngram_max not in {1, 2}:
+        raise ValueError('ngram_max must be either 1 or 2.')
     if max_iter < 1 or top_terms < 1 or representative_papers < 1:
         raise ValueError('max_iter, top_terms, and representative_papers must be positive.')
 
-    documents = load_topic_documents(db_path, fields)
+    domain_stopwords = load_domain_stopwords(stopwords_file)
+    documents = documents if documents is not None else load_topic_documents(db_path, fields)
     report = assess_topic_corpus(documents, num_topics)
     usable_documents = [document for document in documents if document['token_count'] > 0]
     if min_df > len(usable_documents):
         raise ValueError(f'min_df={min_df} exceeds the {len(usable_documents)} usable documents.')
 
     vectorizer = CountVectorizer(
-        stop_words='english',
-        token_pattern=TOKEN_PATTERN,
+        analyzer=TopicAnalyzer(domain_stopwords=domain_stopwords, ngram_max=ngram_max),
         min_df=min_df,
         max_df=max_df,
         max_features=max_features,
         dtype='int64',
     )
+    vectorization_started = time.perf_counter()
     try:
         matrix = vectorizer.fit_transform(document['text'] for document in usable_documents)
     except ValueError as error:
@@ -353,6 +425,7 @@ def train_topic_model(db_path,
     report['documents_used'] = len(training_documents)
     report['documents_without_vocabulary_terms'] = len(usable_documents) - len(training_documents)
     report['vocabulary_size'] = feature_count
+    report['vectorization_seconds'] = time.perf_counter() - vectorization_started
     if feature_count < 2 * num_topics:
         report['warnings'].append(
             f'Small topic vocabulary: {feature_count} retained terms for {num_topics} topics. '
@@ -372,8 +445,11 @@ def train_topic_model(db_path,
         max_iter=max_iter,
         random_state=random_state,
     )
+    fitting_started = time.perf_counter()
     distributions = model.fit_transform(matrix)
-    output_path = _prepare_output_directory(output_dir, overwrite)
+    report['fitting_seconds'] = time.perf_counter() - fitting_started
+    topic_rows = _topic_rows(model, vectorizer, top_terms)
+    report.update(_model_quality_metrics(model, matrix, distributions, topic_rows))
     config = {
         'artifact_version': ARTIFACT_VERSION,
         'created_at': _utc_now(),
@@ -387,6 +463,8 @@ def train_topic_model(db_path,
         'random_state': random_state,
         'top_terms': top_terms,
         'representative_papers': representative_papers,
+        'domain_stopwords': domain_stopwords,
+        'ngram_max': ngram_max,
         'sklearn_version': sklearn.__version__,
     }
     fingerprint = {
@@ -394,8 +472,8 @@ def train_topic_model(db_path,
         'sha256': _corpus_fingerprint(training_documents),
         'documents': len(training_documents),
     }
-    topic_rows = _topic_rows(model, vectorizer, top_terms)
     names = {str(topic_id): '' for topic_id in range(num_topics)}
+    output_path = _prepare_output_directory(output_dir, overwrite)
 
     joblib.dump(model, output_path / MODEL_FILENAME)
     joblib.dump(vectorizer, output_path / VECTORIZER_FILENAME)
@@ -403,6 +481,10 @@ def train_topic_model(db_path,
     _write_json(output_path / REPORT_FILENAME, report)
     _write_json(output_path / FINGERPRINT_FILENAME, fingerprint)
     _write_json(output_path / TOPIC_NAMES_FILENAME, names)
+    (output_path / STOPWORDS_FILENAME).write_text(
+        ''.join(f'{word}\n' for word in domain_stopwords),
+        encoding='utf-8',
+    )
     _write_topics(output_path / TOPICS_FILENAME, topic_rows)
     _write_representatives(
         output_path / REPRESENTATIVES_FILENAME,
@@ -509,4 +591,142 @@ def predict_topic_model(model_dir, db_path, output_path):
         'papers_predicted': len(included_indices),
         'papers_without_vocabulary_terms': len(documents) - len(included_indices),
         'output_path': str(output_path),
+    }
+
+
+def _topic_set_similarity(left_topics, right_topics):
+    """Return symmetric best-match Jaccard similarity between two topic sets."""
+    left_sets = [set(topic['top_terms']) for topic in left_topics]
+    right_sets = [set(topic['top_terms']) for topic in right_topics]
+
+    def directional(source, targets):
+        scores = []
+        for source_terms in source:
+            candidates = [
+                len(source_terms & target_terms) / len(source_terms | target_terms)
+                for target_terms in targets
+                if source_terms or target_terms
+            ]
+            scores.append(max(candidates, default=0))
+        return sum(scores) / len(scores) if scores else 0
+
+    return (directional(left_sets, right_sets) + directional(right_sets, left_sets)) / 2
+
+
+def _write_model_comparison(path, rows):
+    """Write one compact quality-metric row for each comparison model."""
+    fieldnames = [
+        'num_topics', 'random_state', 'model_dir', 'documents_used', 'vocabulary_size',
+        'perplexity', 'log_likelihood', 'topic_diversity', 'dominant_topic_balance',
+        'smallest_dominant_topic', 'largest_dominant_topic', 'mean_seed_stability',
+        'vectorization_seconds', 'fitting_seconds', 'warnings',
+    ]
+    with Path(path).open('w', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                **row,
+                'warnings': ' | '.join(row['warnings']),
+            })
+
+
+def compare_topic_models(db_path,
+                         output_dir,
+                         topic_counts=(5, 10),
+                         random_states=(0, 1),
+                         text_fields=('title', 'abstract'),
+                         min_df=2,
+                         max_df=0.95,
+                         max_features=20000,
+                         learning_method='online',
+                         max_iter=20,
+                         top_terms=15,
+                         representative_papers=5,
+                         stopwords_file=None,
+                         ngram_max=2,
+                         overwrite=False):
+    """Train and compare several topic counts and random seeds on one corpus."""
+    counts = tuple(dict.fromkeys(int(value) for value in topic_counts))
+    seeds = tuple(dict.fromkeys(int(value) for value in random_states))
+    if not counts or any(value < 2 for value in counts):
+        raise ValueError('topic_counts must contain values of at least 2.')
+    if not seeds:
+        raise ValueError('At least one random state is required.')
+    if len(counts) * len(seeds) < 2:
+        raise ValueError('Model comparison requires at least two topic-count and seed combinations.')
+
+    fields = _validate_text_fields(text_fields)
+    documents = load_topic_documents(db_path, fields)
+    comparison_path = _prepare_output_directory(output_dir, overwrite)
+    model_records = []
+    summaries = []
+    for num_topics in counts:
+        for random_state in seeds:
+            model_dir = comparison_path / f'topics-{num_topics}_seed-{random_state}'
+            summary = train_topic_model(
+                db_path,
+                model_dir,
+                num_topics=num_topics,
+                text_fields=fields,
+                min_df=min_df,
+                max_df=max_df,
+                max_features=max_features,
+                learning_method=learning_method,
+                max_iter=max_iter,
+                random_state=random_state,
+                top_terms=top_terms,
+                representative_papers=representative_papers,
+                stopwords_file=stopwords_file,
+                ngram_max=ngram_max,
+                overwrite=overwrite,
+                emit_warnings=False,
+                documents=documents,
+            )
+            report = summary['report']
+            record = {
+                'num_topics': num_topics,
+                'random_state': random_state,
+                'model_dir': str(model_dir),
+                'documents_used': report['documents_used'],
+                'vocabulary_size': report['vocabulary_size'],
+                'perplexity': report['perplexity'],
+                'log_likelihood': report['log_likelihood'],
+                'topic_diversity': report['topic_diversity'],
+                'dominant_topic_balance': report['dominant_topic_balance'],
+                'smallest_dominant_topic': report['smallest_dominant_topic'],
+                'largest_dominant_topic': report['largest_dominant_topic'],
+                'mean_seed_stability': '',
+                'vectorization_seconds': report['vectorization_seconds'],
+                'fitting_seconds': report['fitting_seconds'],
+                'warnings': report['warnings'],
+            }
+            model_records.append(record)
+            summaries.append(summary)
+
+    for num_topics in counts:
+        matching = [summary for summary in summaries if summary['config']['num_topics'] == num_topics]
+        pair_scores = [
+            _topic_set_similarity(left['topics'], right['topics'])
+            for left, right in combinations(matching, 2)
+        ]
+        mean_stability = sum(pair_scores) / len(pair_scores) if pair_scores else ''
+        for record in model_records:
+            if record['num_topics'] == num_topics:
+                record['mean_seed_stability'] = mean_stability
+
+    _write_model_comparison(comparison_path / COMPARISON_CSV_FILENAME, model_records)
+    comparison_report = {
+        'created_at': _utc_now(),
+        'topic_counts': list(counts),
+        'random_states': list(seeds),
+        'models': model_records,
+    }
+    _write_json(comparison_path / COMPARISON_JSON_FILENAME, comparison_report)
+    return {
+        'output_dir': str(comparison_path),
+        'models_trained': len(model_records),
+        'models': model_records,
+        'comparison_csv': str(comparison_path / COMPARISON_CSV_FILENAME),
+        'comparison_json': str(comparison_path / COMPARISON_JSON_FILENAME),
     }

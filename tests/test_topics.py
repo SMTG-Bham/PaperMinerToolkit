@@ -64,6 +64,37 @@ def test_normalize_topic_text_removes_markup_urls_and_dois():
     assert normalized == 'li7la3zr2o12 transport'
 
 
+def test_domain_stopwords_preserve_meaningful_bigrams(tmp_path):
+    """Suppress generic unigrams without removing phrases that contain them."""
+    stopwords_path = tmp_path / 'stopwords.txt'
+    stopwords_path.write_text(
+        '# Corpus-specific generic terms\nLithium\nbattery\nstudy\nperformance\nlithium\n',
+        encoding='utf-8',
+    )
+
+    stopwords = topics.load_domain_stopwords(stopwords_path)
+    analyzer = topics.TopicAnalyzer(stopwords, ngram_max=2)
+    features = analyzer('lithium metal battery performance. ionic conductivity and solid electrolyte.')
+
+    assert stopwords == ['battery', 'lithium', 'performance', 'study']
+    assert 'lithium' not in features
+    assert 'battery' not in features
+    assert 'performance' not in features
+    assert 'lithium_metal' in features
+    assert 'ionic_conductivity' in features
+    assert 'solid_electrolyte' in features
+    assert 'battery_performance' not in features
+
+
+def test_domain_stopwords_require_one_word_per_line(tmp_path):
+    """Reject ambiguous multi-word stopword entries with a useful location."""
+    path = tmp_path / 'stopwords.txt'
+    path.write_text('solid electrolyte\n', encoding='utf-8')
+
+    with pytest.raises(ValueError, match=r'stopwords\.txt:1: expected exactly one word'):
+        topics.load_domain_stopwords(path)
+
+
 def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path):
     """Build one normalized document from a title and its latest abstract asset."""
     db_path = tmp_path / 'papers.db'
@@ -101,10 +132,16 @@ def test_train_topic_model_writes_reusable_manual_inspection_artifacts(tmp_path)
         topics.TOPIC_NAMES_FILENAME,
         topics.REPRESENTATIVES_FILENAME,
         topics.PREDICTIONS_FILENAME,
+        topics.STOPWORDS_FILENAME,
     }
     assert expected_files <= {path.name for path in model_dir.iterdir()}
     assert summary['report']['documents_used'] == 24
     assert summary['report']['vocabulary_size'] > 3
+    assert summary['report']['perplexity'] > 0
+    assert 0 < summary['report']['topic_diversity'] <= 1
+    assert 0 <= summary['report']['dominant_topic_balance'] <= 1
+    assert summary['report']['vectorization_seconds'] >= 0
+    assert summary['report']['fitting_seconds'] >= 0
     assert len(summary['fingerprint']['sha256']) == 64
 
     descriptions = topics.topic_descriptions(model_dir)
@@ -198,3 +235,51 @@ def test_topic_training_rejects_invalid_corpora_and_accidental_overwrite(tmp_pat
                 max_df=1.0,
                 max_iter=2,
             )
+
+
+def test_compare_topic_models_exports_counts_seeds_metrics_and_stability(tmp_path):
+    """Train a comparison grid from one corpus and summarize model diagnostics."""
+    db_path = tmp_path / 'papers.db'
+    output_dir = tmp_path / 'comparison'
+    stopwords_path = tmp_path / 'stopwords.txt'
+    stopwords_path.write_text('study\n', encoding='utf-8')
+    build_topic_corpus(db_path, papers_per_theme=4)
+
+    summary = topics.compare_topic_models(
+        db_path,
+        output_dir,
+        topic_counts=(2, 3),
+        random_states=(0, 1),
+        text_fields=('title', 'abstract'),
+        min_df=1,
+        max_df=1.0,
+        max_features=500,
+        learning_method='batch',
+        max_iter=2,
+        top_terms=5,
+        representative_papers=1,
+        stopwords_file=stopwords_path,
+        ngram_max=2,
+    )
+
+    assert summary['models_trained'] == 4
+    assert (output_dir / topics.COMPARISON_CSV_FILENAME).exists()
+    assert (output_dir / topics.COMPARISON_JSON_FILENAME).exists()
+    assert {(row['num_topics'], row['random_state']) for row in summary['models']} == {
+        (2, 0), (2, 1), (3, 0), (3, 1),
+    }
+    assert all(0 <= row['mean_seed_stability'] <= 1 for row in summary['models'])
+    assert all(0 < row['topic_diversity'] <= 1 for row in summary['models'])
+    assert all((output_dir / f'topics-{row["num_topics"]}_seed-{row["random_state"]}').is_dir()
+               for row in summary['models'])
+
+
+def test_compare_topic_models_requires_multiple_configurations(tmp_path):
+    """Reject a comparison request that would train only one model."""
+    with pytest.raises(ValueError, match='at least two'):
+        topics.compare_topic_models(
+            tmp_path / 'missing.db',
+            tmp_path / 'comparison',
+            topic_counts=(3,),
+            random_states=(0,),
+        )
