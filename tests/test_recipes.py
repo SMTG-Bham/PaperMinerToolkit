@@ -175,6 +175,36 @@ def test_load_recipe_reports_missing_or_invalid_bundled_recipe_file(monkeypatch,
         recipes.load_recipe('demo')
 
 
+def test_bundled_band_gap_recipe_uses_structured_lists_and_material_granularity():
+    """Keep band-gap values structured while returning one record per material."""
+    recipe = recipes.load_recipe('band_gap_validation')
+
+    assert list(recipe['search fields']) == [
+        'Material system',
+        'Band gap',
+        'All band gaps',
+        'Cited literature band gaps',
+    ]
+    assert 'one record per distinct material' in recipe['additional prompts']
+    assert 'Do not split one material' in recipe['additional prompts']
+    assert 'Return [] for the whole response' in recipe['additional prompts']
+    assert 'prior work' in recipe['additional prompts']
+    assert 'general missing value \'None\'' in recipe['additional prompts']
+
+    gap_fields = ['Band gap', 'All band gaps', 'Cited literature band gaps']
+    item_keys = {'value', 'method_or_source', 'gap_type', 'conditions'}
+    for field in gap_fields:
+        example = recipe['search fields'][field]['example']
+        assert isinstance(example, list)
+        assert example
+        assert all(set(item) == item_keys for item in example)
+
+    aliases = recipes.aliases_for(recipe)
+    for field, field_aliases in aliases.items():
+        other_aliases = set().union(*(names for owner, names in aliases.items() if owner != field))
+        assert field_aliases.isdisjoint(other_aliases)
+
+
 def test_field_columns_builds_recipe_columns_and_respects_existing_columns():
     """
     Test output column construction for recipe fields.
