@@ -19,6 +19,7 @@ API_ENV_KEYS = [
     'ANTHROPIC_API_KEY',
     'CORE_API_KEY',
     'UNPAYWALL_EMAIL',
+    'OPENALEX_EMAIL',
 ]
 
 MODEL_ENV_KEYS = [
@@ -251,7 +252,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     3. Calls `load_settings`.
 
     Asserts:
-        - Elsevier, OpenAI, Anthropic, CORE, and Unpaywall environment values override file values.
+        - Elsevier, OpenAI, Anthropic, CORE, Unpaywall, and OpenAlex environment values override file values.
     """
     isolated_settings_file.write_text(json.dumps({
         'elsevier_api_key': 'file-elsevier',
@@ -259,12 +260,14 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'anthropic_api_key': 'file-anthropic',
         'core_api_key': 'file-core',
         'unpaywall_email': 'file@example.com',
+        'openalex_email': 'file-openalex@example.com',
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-anthropic')
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
+    monkeypatch.setenv('OPENALEX_EMAIL', 'env-openalex@example.com')
 
     loaded = settings.load_settings()
 
@@ -273,6 +276,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['anthropic_api_key'] == 'env-anthropic'
     assert loaded['core_api_key'] == 'env-core'
     assert loaded['unpaywall_email'] == 'env@example.com'
+    assert loaded['openalex_email'] == 'env-openalex@example.com'
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file, monkeypatch):
@@ -664,6 +668,31 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
     monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
     with pytest.raises(ValueError):
         settings.update_unpaywall_email()
+
+
+def test_update_openalex_email_validates_and_saves_email(isolated_settings_file, monkeypatch, capsys):
+    """
+    Test interactive OpenAlex email validation and storage.
+
+    This function performs the following steps:
+    1. Enters a valid email and saves it with `update_openalex_email`.
+    2. Enters an invalid email in a second call.
+    3. Captures the expected validation error.
+
+    Asserts:
+        - A valid email address is saved.
+        - An invalid email address raises `ValueError`.
+    """
+    settings.save_settings({'openalex_email': 'old@example.com'})
+    monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
+    settings.update_openalex_email()
+    output = capsys.readouterr().out
+    assert 'Current OpenAlex email: old@example.com' in output
+    assert settings.load_settings()['openalex_email'] == 'person@example.com'
+
+    monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
+    with pytest.raises(ValueError):
+        settings.update_openalex_email()
 
 
 @pytest.mark.network

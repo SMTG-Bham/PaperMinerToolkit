@@ -443,6 +443,40 @@ def get_asset(conn, paper_id: str, role: str):
     return data
 
 
+def latest_assets(conn, roles):
+    """Return the newest decompressed asset for each paper and requested role."""
+    roles = tuple(dict.fromkeys(roles))
+    if not roles:
+        return {}
+    placeholders = ', '.join('?' for _ in roles)
+    rows = conn.execute(
+        f"""
+        SELECT paper_id, role, source, original_filename, compression, content
+        FROM (
+            SELECT
+                a.paper_id, a.role, a.source, a.original_filename,
+                a.created_at, a.rowid AS asset_rowid,
+                b.compression, b.content,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.paper_id, a.role
+                    ORDER BY a.created_at DESC, a.rowid DESC
+                ) AS asset_rank
+            FROM paper_assets AS a
+            JOIN blobs AS b ON b.blob_id = a.blob_id
+            WHERE a.role IN ({placeholders})
+        )
+        WHERE asset_rank = 1
+        """,
+        roles,
+    ).fetchall()
+    assets = {}
+    for row in rows:
+        asset = dict(row)
+        asset['content'] = _decompress(asset['content'], asset.pop('compression'))
+        assets[(asset['paper_id'], asset['role'])] = asset
+    return assets
+
+
 def corpus_stats(conn):
     """Return high-level paper, blob, and storage statistics for the corpus."""
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]

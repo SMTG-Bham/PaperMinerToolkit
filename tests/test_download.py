@@ -333,6 +333,69 @@ def test_core_headers_and_core_pdf_download(tmp_path, monkeypatch):
     )
 
 
+def test_download_openalex_pdf_handles_missing_doi_lookup_failure_and_candidates(tmp_path, monkeypatch):
+    """
+    Test OpenAlex PDF download behavior.
+
+    This function performs the following steps:
+    1. Checks missing identifier, failed lookup, and missing work paths.
+    2. Replaces the OpenAlex work lookup with prepared PDF candidates.
+    3. Replaces the URL download helper so the second candidate succeeds.
+
+    Asserts:
+        - Rows without a DOI or OpenAlex paper ID fail with a useful message.
+        - OpenAlex W-identifiers from paper IDs are used when no DOI exists.
+        - Candidate PDF URLs are tried in order and the winning URL is returned.
+    """
+    pdf_path = str(tmp_path / 'paper.pdf')
+    assert download._download_openalex_pdf({'doi': ''}, pdf_path) == (False, 'missing DOI')
+
+    monkeypatch.setattr(
+        download.openalex,
+        'get_work',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('rate limited')),
+    )
+    assert download._download_openalex_pdf({'doi': '10.1234/example'}, pdf_path) == (False, 'rate limited')
+
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: None)
+    assert download._download_openalex_pdf({'doi': '10.9999/missing'}, pdf_path) == (
+        False,
+        'no OpenAlex work found for doi:10.9999/missing',
+    )
+
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: {'id': 'https://openalex.org/W1'})
+    assert download._download_openalex_pdf({'doi': '10.1234/example'}, pdf_path) == (
+        False,
+        'no OpenAlex PDF URL found',
+    )
+
+    identifiers = []
+
+    def fake_get_work(identifier, **_):
+        identifiers.append(identifier)
+        return {
+            'best_oa_location': {'pdf_url': 'https://example.com/one.pdf'},
+            'locations': [{'pdf_url': 'https://example.com/two.pdf'}],
+            'open_access': {'oa_url': 'https://example.com/landing'},
+        }
+
+    tried = []
+
+    def fake_download(url, filepath):
+        tried.append(url)
+        return (url.endswith('two.pdf'), 'failed')
+
+    monkeypatch.setattr(download.openalex, 'get_work', fake_get_work)
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download)
+
+    assert download._download_openalex_pdf({'paper_id': 'openalex:W123'}, pdf_path) == (
+        True,
+        'https://example.com/two.pdf',
+    )
+    assert identifiers == ['W123']
+    assert tried == ['https://example.com/one.pdf', 'https://example.com/two.pdf']
+
+
 def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch):
     """
     Test abstract cleanup and provider source selection.
@@ -435,11 +498,13 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkey
 
     This function performs the following steps:
     1. Resolves `all` with configured Unpaywall, CORE, and Elsevier settings.
-    2. Resolves an explicit list containing duplicate sources.
-    3. Resolves an invalid source.
+    2. Resolves `all` with no credentials configured at all.
+    3. Resolves an explicit list containing duplicate sources.
+    4. Resolves an invalid source.
 
     Asserts:
-        - `all` expands only to configured sources.
+        - `all` expands to configured sources plus the credential-free OpenAlex.
+        - `all` still includes OpenAlex when nothing is configured.
         - Explicit source lists are de-duplicated while preserving order.
         - Invalid source names raise `ValueError`.
     """
@@ -453,10 +518,15 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkey
         },
     )
 
-    assert download._configured_sources(['all']) == ['unpaywall', 'core', 'elsevier']
+    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
+
+    monkeypatch.setattr(download, 'load_settings', lambda: {})
+    monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
+    monkeypatch.delenv('CORE_API_KEY', raising=False)
+    assert download._configured_sources(['all']) == ['openalex']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(tmp_path, monkeypatch):
@@ -609,6 +679,58 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch, ca
     assert text_asset['content'] == b'text'
     assert pdf_asset['content'].startswith(b'%PDF')
     assert 'Download complete: 1 text files, 1 PDFs, 0 abstracts downloaded.' in output
+
+
+def test_download_papers_persists_openalex_pdf_source_and_url(tmp_path, monkeypatch):
+    """
+    Test corpus updates after a successful OpenAlex PDF download.
+
+    This function performs the following steps:
+    1. Writes a corpus database with one DOI-bearing row.
+    2. Replaces source resolution and PDF download with OpenAlex fakes.
+    3. Calls `download_papers` for PDFs only.
+
+    Asserts:
+        - The OpenAlex source label and winning URL are written back to the row.
+        - The downloaded PDF is stored as a corpus asset.
+    """
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'doi:10.1234/example', 'doi': '10.1234/example'}])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+
+    def fake_download_pdf_from_sources(paper, filepath, sources):
+        assert sources == ['openalex']
+        with open(filepath, 'wb') as f:
+            f.write(b'%PDF text')
+        return True, 'openalex', 'https://example.org/openalex.pdf'
+
+    monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
+
+    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
+
+    papers = read_corpus(db_path)
+    with corpus.connect(db_path) as conn:
+        pdf_asset = corpus.get_asset(conn, 'doi:10.1234/example', 'pdf')
+    assert papers[0]['pdf_download_status'] == 'succeeded'
+    assert papers[0]['pdf_source'] == 'openalex'
+    assert papers[0]['pdf_url'] == 'https://example.org/openalex.pdf'
+    assert pdf_asset['content'].startswith(b'%PDF')
 
 
 def test_download_papers_downloads_abstract_by_default(tmp_path, monkeypatch, capsys):
@@ -1171,6 +1293,39 @@ def test_download_unpaywall_pdf_uses_real_api(tmp_path):
 
     assert ok, detail
     assert pdf_path.read_bytes().startswith(b'%PDF')
+
+
+@pytest.mark.network
+def test_download_openalex_pdf_uses_real_api(tmp_path):
+    """
+    Test real OpenAlex metadata lookup and PDF download.
+
+    This function performs the following steps:
+    1. Uses an OpenAlex open-access search to find a small set of candidate works.
+    2. Attempts to download each candidate's PDF through `_download_openalex_pdf`.
+    3. Reads the first successfully downloaded file header.
+
+    Asserts:
+        - At least one OpenAlex candidate can be downloaded without credentials.
+        - The downloaded file starts with a PDF header.
+    """
+    from paperscraper import openalex
+
+    payload = openalex.request_json(openalex.WORKS_URL, params={
+        'search': 'solid electrolyte',
+        'filter': 'open_access.is_oa:true',
+        'per-page': 5,
+    })
+    candidates = [openalex.work_to_paper(work) for work in payload.get('results') or []]
+    last_error = 'no OpenAlex candidates were returned'
+    for index, paper in enumerate(candidates):
+        pdf_path = tmp_path / f'openalex-{index}.pdf'
+        ok, detail = download._download_openalex_pdf(paper, str(pdf_path))
+        if ok:
+            assert pdf_path.read_bytes().startswith(b'%PDF')
+            return
+        last_error = detail
+    pytest.fail(f'No OpenAlex PDF candidate downloaded successfully: {last_error}')
 
 
 @pytest.mark.network

@@ -1,22 +1,38 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "paperscraper"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A package for extracting structured information from scientific papers with configurable language and vision models."
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Louie", email = "louies@hotmail.co.uk" }]
+keywords = ["research", "scientific-papers", "materials", "text-mining", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Text Processing",
+]
+requires-python = ">=3.11"
 dependencies = [
   "click",
-  "headroom-ai[image,ml]",
+  "headroom-ai[image,ml]>=0.35,<0.36",
   "openai",
   "pandas",
+  "pillow",
   "pymupdf",
   "pypdf",
   "requests",
-  "sentencepiece",
+  "joblib",
+  "scikit-learn",
   "tiktoken>=0.13.0",
   "tqdm",
   "transformers",
@@ -28,26 +44,44 @@ test = [
   "pytest-cov",
 ]
 
+[project.urls]
+Homepage = "https://github.com/SMTG-Bham/PaperScraper"
+Repository = "https://github.com/SMTG-Bham/PaperScraper"
+Issues = "https://github.com/SMTG-Bham/PaperScraper/issues"
+
 [project.scripts]
-ps_search = "cli.cli:paper_search"
-ps_download = "cli.cli:download"
-ps_corpus_stats = "cli.cli:corpus_status"
-ps_import_pdfs = "cli.cli:import_pdf_folder"
-ps_import_author = "cli.cli:import_author"
-ps_scrape = "cli.cli:scrape"
-ps_store = "cli.cli:store"
-ps_elsevier_key = "cli.cli:update_elsevier_api_key"
-ps_core_key = "cli.cli:update_core_api_key"
-ps_unpaywall_email = "cli.cli:update_unpaywall_api_email"
-ps_openai_key = "cli.cli:update_openai_api_key"
-ps_anthropic_key = "cli.cli:update_anthropic_api_key"
-ps_model_config = "cli.cli:model_config"
-ps_model_status = "cli.cli:model_status"
-ps_reset = "cli.cli:reset_scraper"
-ps_status = "cli.cli:scraper_status"
+ps_search = "paperscraper.cli:paper_search"
+ps_download = "paperscraper.cli:download"
+ps_corpus_stats = "paperscraper.cli:corpus_status"
+ps_topics_train = "paperscraper.cli:topics_train"
+ps_topics_compare = "paperscraper.cli:topics_compare"
+ps_topics_show = "paperscraper.cli:topics_show"
+ps_topics_name = "paperscraper.cli:topics_name"
+ps_topics_predict = "paperscraper.cli:topics_predict"
+ps_import_pdfs = "paperscraper.cli:import_pdf_folder"
+ps_import_author = "paperscraper.cli:import_author"
+ps_scrape = "paperscraper.cli:scrape"
+ps_store = "paperscraper.cli:store"
+ps_elsevier_key = "paperscraper.cli:update_elsevier_api_key"
+ps_core_key = "paperscraper.cli:update_core_api_key"
+ps_unpaywall_email = "paperscraper.cli:update_unpaywall_api_email"
+ps_openalex_email = "paperscraper.cli:update_openalex_api_email"
+ps_openai_key = "paperscraper.cli:update_openai_api_key"
+ps_anthropic_key = "paperscraper.cli:update_anthropic_api_key"
+ps_model_config = "paperscraper.cli:model_config"
+ps_model_status = "paperscraper.cli:model_status"
+ps_reset = "paperscraper.cli:reset_scraper"
+ps_status = "paperscraper.cli:scraper_status"
+
+[tool.setuptools.dynamic]
+version = { attr = "paperscraper.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["paperscraper*"]
+
+[tool.setuptools.package-data]
+"paperscraper" = ["resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -61,7 +95,7 @@ addopts = [
 ]
 
 [tool.coverage.run]
-source = ["paperscraper", "cli"]
+source = ["paperscraper"]
 
 [tool.coverage.report]
 show_missing = true

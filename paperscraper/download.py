@@ -1,8 +1,8 @@
 """Download paper text and PDFs from configured open-access and publisher sources.
 
 This module powers ``ps_download``. It can fetch Elsevier full text when
-available, try PDFs from Unpaywall, CORE, and Elsevier, and update per-paper
-download status in the SQLite paper corpus after each row.
+available, try PDFs from Unpaywall, OpenAlex, CORE, and Elsevier, and update
+per-paper download status in the SQLite paper corpus after each row.
 """
 
 import ast
@@ -16,12 +16,12 @@ from pathlib import Path
 from tqdm import tqdm
 from urllib.parse import quote
 
-from paperscraper import elsevier
+from paperscraper import elsevier, openalex
 from paperscraper.corpus import PIPELINE_COLUMNS, add_asset, connect, get_asset, paper_rows, upsert_paper
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier'}
+DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex'}
 
 
 def _elsevier_api_key():
@@ -298,6 +298,31 @@ def _download_core_pdf(paper, filepath):
     return False, last_error
 
 
+def _download_openalex_pdf(paper, filepath):
+    """Use OpenAlex metadata to locate and download an open-access PDF."""
+    doi = paper.get('doi')
+    paper_id = str(paper.get('paper_id') or '')
+    if _has_value(doi):
+        identifier = f'doi:{str(doi).strip()}'
+    elif paper_id.startswith('openalex:'):
+        identifier = paper_id.split(':', 1)[1]
+    else:
+        return False, 'missing DOI'
+    try:
+        work = openalex.get_work(identifier)
+    except RuntimeError as e:
+        return False, str(e)
+    if not work:
+        return False, f'no OpenAlex work found for {identifier}'
+    last_error = 'no OpenAlex PDF URL found'
+    for url in openalex.pdf_candidates(work):
+        ok, error = _download_url_to_pdf(url, filepath)
+        if ok:
+            return True, url
+        last_error = error
+    return False, last_error
+
+
 def _clean_abstract(value):
     """Normalize provider abstract text to compact plain text."""
     if not _has_value(value):
@@ -421,6 +446,7 @@ def _configured_sources(sources):
         enabled = []
         if _unpaywall_email(settings):
             enabled.append('unpaywall')
+        enabled.append('openalex')
         if settings.get('core_api_key') or os.environ.get('CORE_API_KEY'):
             enabled.append('core')
         if settings.get('elsevier_api_key'):
@@ -441,6 +467,7 @@ def _download_pdf_from_sources(paper, filepath, sources):
     """Try configured PDF sources in order and return success/source details."""
     downloader_by_source = {
         'unpaywall': _download_unpaywall_pdf,
+        'openalex': _download_openalex_pdf,
         'core': _download_core_pdf,
         'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
     }
@@ -576,12 +603,12 @@ def _download_paper(conn, paper, download_dir, download_format, sources, elsevie
             if ok:
                 paper['pdf_path'] = ''
                 paper['pdf_source'] = source_or_error
-                if source_or_error in {'unpaywall', 'core'} and source_url:
+                if source_or_error in {'unpaywall', 'openalex', 'core'} and source_url:
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
                 summary['pdfs'] += 1
-                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'core'}
+                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core'}
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
         except Exception as e:

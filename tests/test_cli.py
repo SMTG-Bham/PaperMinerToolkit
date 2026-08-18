@@ -1,6 +1,6 @@
 from click.testing import CliRunner
 
-import cli.cli as cli
+import paperscraper.cli as cli
 import paperscraper.corpus as corpus
 
 
@@ -150,6 +150,46 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     }
 
 
+def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_path):
+    """
+    Test the search and download commands accept the OpenAlex source choice.
+
+    This function performs the following steps:
+    1. Replaces the search and download workflows with local fakes that record sources.
+    2. Runs the search command with `--source openalex`.
+    3. Runs the download command with `--source openalex`.
+
+    Asserts:
+        - Both commands exit successfully.
+        - The OpenAlex source choice is passed through to each workflow.
+    """
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'openalex'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'openalex'
+
+    download_calls = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract: download_calls.update({'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'openalex'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['openalex']
+
+
 def test_corpus_status_prints_database_storage_statistics(tmp_path):
     """
     Test the corpus statistics command.
@@ -202,6 +242,154 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output
+
+
+def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp_path):
+    """Train the topic model with explicit fields and print corpus warnings."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    model_dir = tmp_path / 'model'
+    stopwords_path = tmp_path / 'stopwords.txt'
+    stopwords_path.write_text('battery\n')
+    calls = {}
+
+    def fake_train(*args, **kwargs):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        return {
+            'model_dir': str(model_dir),
+            'report': {
+                'documents_used': 120,
+                'vocabulary_size': 800,
+                'warnings': ['Small topic-model corpus: test warning'],
+            },
+        }
+
+    monkeypatch.setattr(cli, 'train_topic_model', fake_train)
+
+    result = CliRunner().invoke(cli.topics_train, [
+        str(db_path),
+        str(model_dir),
+        '--topics', '6',
+        '--field', 'title',
+        '--field', 'text',
+        '--min-df', '3',
+        '--max-df', '0.9',
+        '--max-features', '5000',
+        '--learning-method', 'batch',
+        '--iterations', '12',
+        '--random-seed', '9',
+        '--top-terms', '8',
+        '--representative-papers', '4',
+        '--stopwords-file', str(stopwords_path),
+        '--ngram-max', '1',
+        '--overwrite',
+    ])
+
+    assert result.exit_code == 0
+    assert calls['args'] == (str(db_path), str(model_dir))
+    assert calls['kwargs'] == {
+        'num_topics': 6,
+        'text_fields': ('title', 'text'),
+        'min_df': 3,
+        'max_df': 0.9,
+        'max_features': 5000,
+        'learning_method': 'batch',
+        'max_iter': 12,
+        'random_state': 9,
+        'top_terms': 8,
+        'representative_papers': 4,
+        'stopwords_file': str(stopwords_path),
+        'ngram_max': 1,
+        'overwrite': True,
+        'emit_warnings': False,
+    }
+    assert 'Warning: Small topic-model corpus' in result.output
+    assert 'Trained 6 topics from 120 papers using 800 terms.' in result.output
+
+
+def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path):
+    """Train a topic-count and seed grid through the comparison command."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    output_dir = tmp_path / 'comparison'
+    calls = {}
+
+    def fake_compare(*args, **kwargs):
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        return {
+            'output_dir': str(output_dir),
+            'models_trained': 4,
+            'comparison_csv': str(output_dir / 'model_comparison.csv'),
+            'models': [{'warnings': ['comparison warning']}],
+        }
+
+    monkeypatch.setattr(cli, 'compare_topic_models', fake_compare)
+
+    result = CliRunner().invoke(cli.topics_compare, [
+        str(db_path), str(output_dir),
+        '--topics', '6', '--topics', '8',
+        '--seed', '3', '--seed', '4',
+        '--field', 'abstract',
+        '--iterations', '7',
+        '--ngram-max', '2',
+    ])
+
+    assert result.exit_code == 0
+    assert calls['args'] == (str(db_path), str(output_dir))
+    assert calls['kwargs']['topic_counts'] == (6, 8)
+    assert calls['kwargs']['random_states'] == (3, 4)
+    assert calls['kwargs']['text_fields'] == ('abstract',)
+    assert calls['kwargs']['max_iter'] == 7
+    assert calls['kwargs']['ngram_max'] == 2
+    assert 'Warning: comparison warning' in result.output
+    assert 'Trained 4 comparison models' in result.output
+
+
+def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
+    """Expose manual topic review, naming, and prediction through CLI commands."""
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    calls = []
+    monkeypatch.setattr(cli, 'topic_descriptions', lambda _: [{
+        'topic_id': 0,
+        'topic_name': '',
+        'top_terms': ['lithium', 'electrolyte'],
+        'representative_papers': [{'title': 'Representative paper', 'probability': '0.75'}],
+    }])
+    monkeypatch.setattr(
+        cli,
+        'set_topic_name',
+        lambda directory, topic_id, name: calls.append(('name', directory, topic_id, name)),
+    )
+    monkeypatch.setattr(
+        cli,
+        'predict_topic_model',
+        lambda directory, database, output: {
+            'papers_total': 10,
+            'papers_predicted': 9,
+            'papers_without_vocabulary_terms': 1,
+            'output_path': output,
+        },
+    )
+    runner = CliRunner()
+
+    shown = runner.invoke(cli.topics_show, [str(model_dir)])
+    named = runner.invoke(cli.topics_name, [str(model_dir), '0', 'solid electrolytes'])
+    predicted = runner.invoke(cli.topics_predict, [
+        str(model_dir), str(db_path), str(tmp_path / 'scores.csv'),
+    ])
+
+    assert shown.exit_code == 0
+    assert 'Topic 0: (unnamed)' in shown.output
+    assert 'Representative paper (0.750)' in shown.output
+    assert named.exit_code == 0
+    assert calls == [('name', str(model_dir), 0, 'solid electrolytes')]
+    assert predicted.exit_code == 0
+    assert 'Predicted topics for 9 of 10 papers' in predicted.output
 
 
 def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_path):
@@ -338,16 +526,18 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch):
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
+    monkeypatch.setattr(cli, 'update_openalex_email', lambda: calls.append('openalex'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
     cli.update_unpaywall_api_email()
+    cli.update_openalex_api_email()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'unpaywall', 'openalex', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch):

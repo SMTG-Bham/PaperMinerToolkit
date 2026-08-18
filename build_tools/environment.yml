@@ -1,20 +1,16 @@
 name: paperscraper
 
+# This file supplies the interpreter only.
+#
+# Every runtime and test dependency is declared once in pyproject.toml and is
+# installed with `pip install -e ".[test]"` (see README.md). Keeping the lists
+# in one place stops this file drifting out of sync with the package metadata,
+# and keeps the whole dependency tree resolved by a single resolver rather than
+# split between conda and pip.
 channels:
   - conda-forge
   - nodefaults
 
 dependencies:
-  - python>=3.14.*
+  - python=3.14
   - pip
-  - pytest
-  - pandas
-  - numpy
-  - matplotlib
-  - click
-  - openai
-  - pymupdf
-  - pypdf
-  - requests
-  - tiktoken
-  - tqdm

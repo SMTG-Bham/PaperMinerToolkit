@@ -15,6 +15,8 @@ from typing import Any
 from paperscraper.compression import CompressionConfig, maybe_compress_image_messages
 from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
 
+OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
+
 
 class ModelCapabilityError(ValueError):
     """Raised when a configured model is asked to handle an unsupported input type."""
@@ -66,8 +68,12 @@ class ModelConfig:
 
     def generation_args(self):
         """Return provider generation parameters shared across request types."""
+        provider = self.provider.lower().replace('_', '-')
+        model = self.name.lower()
+        if provider == 'openai' and model.startswith(OPENAI_FIXED_SAMPLING_PREFIXES):
+            return {}
         args = {'temperature': self.temperature, 'top_p': self.top_p}
-        if self.provider.lower().replace('_', '-') == 'anthropic':
+        if provider == 'anthropic':
             args.pop('top_p')
         return args
 

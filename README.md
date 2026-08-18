@@ -7,7 +7,7 @@
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
 </p>
 
-PaperScraper searches Elsevier/Scopus and CORE, downloads paper content through Elsevier, Unpaywall, and CORE, and extracts structured materials data from papers with configurable text and vision models.
+PaperScraper searches Elsevier/Scopus, CORE, and OpenAlex, downloads paper content through Elsevier, Unpaywall, CORE, and OpenAlex, and extracts structured materials data from papers with configurable text and vision models.
 
 ## Model Profiles
 
@@ -27,11 +27,11 @@ Environment variables still work for batch jobs. `PAPERSCRAPER_MODEL_*` applies 
 
 ## Workflow
 
-PaperScraper can start from an Elsevier/Scopus or CORE search, PDFs you have already downloaded, or a mixture of both. Paper metadata, pipeline state, and compressed source documents are stored in a SQLite corpus. Matching DOI, source ID, and title/year records are merged so the same paper is not scraped twice.
+PaperScraper can start from an Elsevier/Scopus, CORE, or OpenAlex search, PDFs you have already downloaded, or a mixture of both. Paper metadata, pipeline state, and compressed source documents are stored in a SQLite corpus. Matching DOI, source ID, and title/year records are merged so the same paper is not scraped twice.
 
 ```mermaid
 flowchart TD
-    A["Search Scopus/CORE<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
+    A["Search Scopus/CORE/OpenAlex<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] --> B
     B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
     E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
@@ -52,7 +52,7 @@ Configure model profiles before scraping. The text profile is used for text extr
 
 ### Build A Paper Corpus
 
-Search Elsevier/Scopus and CORE and write streamlined metadata to a SQLite corpus:
+Search Elsevier/Scopus, CORE, and OpenAlex and write streamlined metadata to a SQLite corpus:
 
 `ps_search "Lithium solid electrolyte" papers.db`
 
@@ -63,6 +63,14 @@ Choose one source when needed:
 CORE can use `CORE_API_KEY` from the environment or a saved key:
 
 `ps_core_key`
+
+OpenAlex needs no API key at all:
+
+`ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100`
+
+Optionally save a contact email to join OpenAlex's faster polite pool. When unset, the Unpaywall email is reused, and requests without either email still work:
+
+`ps_openalex_email`
 
 Or import externally downloaded PDFs. This scans each PDF for a DOI, uses Crossref to fill metadata when possible, and stores the PDF in the corpus. Matching records are updated and unmatched PDFs are appended:
 
@@ -92,17 +100,90 @@ Use this step for papers discovered by search. External PDF imports already poin
 
 `ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source core`. If a PDF is found through Unpaywall or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always (no credentials needed), CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+
+### Train And Inspect LDA Topics
+
+Train a reproducible LDA model from titles and abstracts. The model uses count vectors and online learning by default, making it suitable for larger corpora:
+
+`ps_topics_train papers.db topic_model --topics 12`
+
+Bigram features such as `lithium_metal`, `ionic_conductivity`, and `solid_electrolyte` are enabled by default. Use `--ngram-max 1` for a unigram-only model.
+
+Corpus-specific stopwords can remove generic standalone terms while retaining meaningful bigrams. The file must contain one word per line, with optional comments beginning with `#`:
+
+```text
+# Words common to the complete search corpus
+lithium
+battery
+study
+performance
+```
+
+`ps_topics_train papers.db topic_model --topics 12 --stopwords-file domain_stopwords.txt`
+
+Choose the input fields explicitly when required. Repeating `--field` combines fields:
+
+`ps_topics_train papers.db topic_model --topics 12 --field title --field text`
+
+Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities.
+
+Inspect the top terms and representative papers before assigning names:
+
+`ps_topics_show topic_model`
+
+Topic names are manual metadata and do not modify the fitted model:
+
+`ps_topics_name topic_model 0 "sulfide solid electrolytes"`
+
+Apply the saved model to a new or updated corpus:
+
+`ps_topics_predict topic_model new_papers.db new_paper_topics.csv`
+
+Papers containing no terms from the fitted vocabulary are marked `no_vocabulary_terms` rather than receiving misleading uniform probabilities. Topic probability exports are designed to support the subsequent temporal-trend and filtering stages.
+
+Before choosing a topic count, train a comparison grid from one corpus load:
+
+```bash
+ps_topics_compare papers.db topic_comparison \
+    --topics 6 --topics 8 --topics 10 \
+    --seed 0 --seed 1 --seed 2 \
+    --field abstract \
+    --stopwords-file domain_stopwords.txt
+```
+
+`model_comparison.csv` reports perplexity, log likelihood, topic diversity, dominant-topic balance, training time, and cross-seed topic stability. These metrics help narrow the candidates, but the final choice should still be based on `ps_topics_show` and the representative papers.
 
 ### Choose A Recipe
 
-The recipe argument can be a bundled recipe name such as `sse`, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
+The recipe argument can be a bundled recipe name, or a path to an external JSON recipe file. Use the same recipe when scraping and storing.
+
+Bundled recipes:
+
+- `sse` extracts lithium-conducting solid electrolytes: composition, structure, conductivity, and electrochemical properties.
+- `polymer` extracts polymers: identity and architecture, printed SMILES and BigSMILES line notations, thermal, molecular weight and mechanical properties, and biodegradation test results.
+- `polymer_db` is a wider version of `polymer` matching a polymer property database schema. It adds monomer CAS numbers, backbone linkage, microstructure, chain end groups, ionic character, elemental composition, functional group numbers, Mark-Houwink and hydrodynamic parameters, solubility and Hansen parameters, in vitro acid, base, hydrolytic and enzymatic degradation curves, and the full OECD 301 and 310 biodegradation test setup and results.
+- `band_gap_validation` produces one record per material with separate lists for its principal gaps, all gaps reported by the study, and cited literature gaps.
 
 `ps_scrape papers.db sse --mode text`
+
+`ps_scrape papers.db polymer --mode text`
+
+`ps_scrape papers.db polymer_db --mode text`
+
+`ps_scrape papers.db band_gap_validation --mode text --output temp_band_gaps.csv`
 
 `ps_scrape papers.db ./my_recipe.json --mode text`
 
 `ps_store papers.db temp_scraped_materials.csv materials.csv ./my_recipe.json --assume-yes`
+
+Store each recipe into its own materials file. When the output file already exists, its existing columns are reused for column matching, so mixing recipes in one file will not work.
+
+The `band_gap_validation` recipe keeps this-study and cited values separate. Every populated gap field is a JSON list, including when it contains only one value. Each item has fixed `value`, `method_or_source`, `gap_type`, and `conditions` keys, using `"None"` for unsupported context. Different methods and gap types for one material remain in the same material record. Papers without relevant band-gap materials return no records. PaperScraper appends its normal `Paper id`, `doi`, publication-date, and source-provenance columns to the extracted fields.
+
+The `polymer` and `polymer_db` recipes only record SMILES, BigSMILES, CAS numbers, and other structure identifiers that are printed as text in the paper or its supporting information. They never build a structure string from a polymer name or from a drawn structure, so these columns are often empty. `polymer_db` treats its `Structural confidence`, `Klimisch score`, and `GLP compliance` fields the same way: they are reported only when a paper states them, and are otherwise left for a curator to fill in. Copy a recipe to your own JSON file and edit its prompts if you want different behaviour.
+
+`polymer_db` defines 86 fields, so each extracted record costs roughly 1100 output tokens and a paper reaching the 10000 token response limit will return about nine records before the response is truncated. Prefer `polymer` for papers that report long sample series, and `polymer_db` when the full property schema matters. Storing `polymer_db` results runs 30 unit conversions, one per unit-bearing column, regardless of how many rows were scraped.
 
 ### Scrape Papers
 
@@ -166,4 +247,18 @@ The examples folder contains notebooks with explained bash cells for common mode
 - `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
 - `examples/anthropic_claude_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
-Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, and `UNPAYWALL_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
+Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and the optional `OPENALEX_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
+
+## Running On HPC
+
+The vLLM notebook assumes a local CUDA workstation. For ASU's Sol supercomputer, `examples/sol_gaudi/` holds ready-to-submit scripts for the Intel Gaudi accelerators:
+
+They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else.
+
+- `examples/sol_gaudi/install.sbatch` builds the environment and verifies it, keeping the CUDA build of torch out of a Gaudi node. Run this first.
+- `examples/sol_gaudi/fetch_corpus.sh` runs search and download off the Gaudi queue, since neither stage calls the model.
+- `examples/sol_gaudi/fetch_corpus.sbatch` submits that same corpus build as an `htc` batch job for larger runs.
+- `examples/sol_gaudi/scrape_gaudi.sbatch` starts a vLLM server on one Gaudi card and runs scrape and store against it in the same job.
+- `examples/sol_gaudi/serve_gaudi.sbatch` keeps a warm server up for reuse across several runs.
+
+`build_tools/sol_gaudi/README.md` is the install guide for them, covering environment setup and the context sizing rule that local runs never hit.

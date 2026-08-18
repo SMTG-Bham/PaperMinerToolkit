@@ -28,6 +28,17 @@ def test_clean_doi_removes_trailing_punctuation():
     assert metadata.clean_doi('10.1002/aenm.70977.') == '10.1002/aenm.70977'
 
 
+def test_clean_doi_normalizes_labels_resolver_urls_and_case():
+    """Test canonicalization of common DOI presentation formats."""
+    assert metadata.clean_doi('DOI: 10.1234/EXAMPLE') == '10.1234/example'
+    assert metadata.clean_doi('https://doi.org/10.1234/EXAMPLE%2BONE?source=pdf') == '10.1234/example+one'
+
+
+def test_clean_doi_preserves_balanced_suffix_delimiters():
+    """Test that sentence delimiters are removed without damaging a DOI suffix."""
+    assert metadata.clean_doi('10.1234/example(test)).') == '10.1234/example(test)'
+
+
 def test_extract_doi_from_text_finds_first_doi():
     """
     Test DOI extraction from plain text.
@@ -42,6 +53,9 @@ def test_extract_doi_from_text_finds_first_doi():
         - Text without a DOI returns None.
     """
     assert metadata.extract_doi_from_text('See doi 10.1002/aenm.70977.') == '10.1002/aenm.70977'
+    assert metadata.extract_doi_from_text('See https://doi.org/10.1234/EXAMPLE%2BONE?source=pdf') == (
+        '10.1234/example+one'
+    )
     assert metadata.extract_doi_from_text('No DOI here.') is None
 
 
@@ -125,6 +139,42 @@ def test_extract_dois_from_text_ranks_candidates_by_frequency():
     )
 
     assert metadata.extract_dois_from_text(text) == ['10.1002/aenm.70977', '10.1002/aenm.709771of15']
+
+
+def test_extract_dois_from_text_deduplicates_case_insensitively():
+    """Test that differently cased forms of one DOI count as one candidate."""
+    text = 'First 10.1234/EXAMPLE then 10.1234/example and finally 10.9999/other.'
+
+    assert metadata.extract_dois_from_text(text) == ['10.1234/example', '10.9999/other']
+
+
+def test_extract_dois_from_text_handles_pdf_text_artifacts():
+    """Test DOI extraction across common invisible and line-wrap artifacts."""
+    text = (
+        'Prefix wrap 10.1234/\nwrapped '
+        'soft hyphen 10.1234/soft\u00ad\nhyphen '
+        'zero width 10.1234/zero\u200bwidth '
+        'Unicode dash 10.1234/unicode\u2010dash'
+    )
+
+    assert metadata.extract_dois_from_text(text) == [
+        '10.1234/wrapped',
+        '10.1234/softhyphen',
+        '10.1234/zerowidth',
+        '10.1234/unicode-dash',
+    ]
+
+
+def test_extract_dois_from_text_supports_legacy_crossref_formats():
+    """Test valid legacy publisher DOI forms excluded by the modern pattern."""
+    wiley = '10.1002/(SICI)1099-0844(199912)17:4<290::AID-CBF849>3.0.CO;2-P'
+    taylor_and_francis = '10.1207/S15327965PLI1503&4_01'
+
+    assert metadata.extract_dois_from_text(f'{wiley}. {taylor_and_francis}.') == [
+        wiley.casefold(),
+        taylor_and_francis.casefold(),
+    ]
+    assert metadata.extract_doi_from_text(taylor_and_francis.replace('&', '&amp;')) == taylor_and_francis.casefold()
 
 
 def test_extract_doi_from_pdf_metadata_reads_fixture_article_doi():

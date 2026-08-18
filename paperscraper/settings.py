@@ -95,7 +95,8 @@ def load_settings():
         raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
 
     merged = deepcopy(DEFAULT_SETTINGS)
-    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openai_api_key', 'anthropic_api_key']:
+    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_email', 'openai_api_key',
+                'anthropic_api_key']:
         if key in settings:
             merged[key] = settings[key]
 
@@ -118,6 +119,9 @@ def load_settings():
     unpaywall_email = os.environ.get('UNPAYWALL_EMAIL')
     if unpaywall_email:
         merged['unpaywall_email'] = unpaywall_email
+    openalex_email = os.environ.get('OPENALEX_EMAIL')
+    if openalex_email:
+        merged['openalex_email'] = openalex_email
 
     text_env = _env_profile('PAPERSCRAPER_MODEL_')
     if text_env:
@@ -283,4 +287,20 @@ def update_unpaywall_email(settings=True):
     if '@' not in email:
         raise ValueError('Unpaywall email must be a valid email address.')
     settings['unpaywall_email'] = email
+    save_settings(settings)
+
+
+def update_openalex_email(settings=True):
+    """Prompt for and save the optional polite-pool email sent to OpenAlex.
+
+    OpenAlex works without any credentials; when no OpenAlex email is set,
+    requests fall back to the Unpaywall email before the anonymous pool.
+    """
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'openalex_email', 'OpenAlex email', secret=False)
+    email = input('Enter OpenAlex email: ').strip()
+    if '@' not in email:
+        raise ValueError('OpenAlex email must be a valid email address.')
+    settings['openalex_email'] = email
     save_settings(settings)

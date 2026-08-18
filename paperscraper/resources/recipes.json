@@ -229,5 +229,1404 @@
                 ]
             }
         }
+    },
+    "polymer": {
+        "material type": "polymer",
+        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nBiodegradation rules:\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\n- Keep reported test conditions with the test they belong to. If the paper reports several degradation tests for the same material in different media, return one record per test.\n- Report percentage biodegradation, mass loss, and molecular weight loss in their own fields. Do not copy the same number into more than one of them.",
+        "search fields": {
+            "Name": {
+                "prompt": "Name of the polymer as reported, including any sample label, grade, or trade name",
+                "example": "PLLA-3 (poly(L-lactide))",
+                "aliases": [
+                    "Polymer name",
+                    "Name of polymer",
+                    "Sample label",
+                    "Sample name",
+                    "Material name"
+                ]
+            },
+            "Polymer class": {
+                "prompt": "Polymer class or backbone chemistry, such as polyester, polyamide, polyolefin, polycarbonate, polyurethane, polysaccharide, polypeptide, polyether, or vinyl polymer. If more than one class applies, report each.",
+                "example": "Aliphatic polyester",
+                "aliases": [
+                    "Backbone chemistry",
+                    "Polymer family",
+                    "Polymer type",
+                    "Chemical class",
+                    "Compound class"
+                ]
+            },
+            "Monomers": {
+                "prompt": "Monomer or comonomer names used to make the polymer, exactly as reported",
+                "example": [
+                    "L-lactide",
+                    "glycolide"
+                ],
+                "aliases": [
+                    "Monomer",
+                    "Comonomers",
+                    "Monomer units",
+                    "Monomer names"
+                ]
+            },
+            "Repeat unit": {
+                "prompt": "Description of the repeat unit as reported in words or as a chemical formula. Do not report a line notation here.",
+                "example": "-[O-CH(CH3)-C(=O)]-",
+                "aliases": [
+                    "Repeating unit",
+                    "Constitutional repeat unit",
+                    "Repeat unit structure",
+                    "Monomer unit"
+                ]
+            },
+            "Copolymer type and composition": {
+                "prompt": "Copolymer architecture and comonomer composition, such as homopolymer, random, alternating, block, or graft, together with the reported comonomer ratio or blend ratio",
+                "example": "Random copolymer, 82:18 L-lactide:glycolide",
+                "aliases": [
+                    "Copolymer type",
+                    "Copolymer composition",
+                    "Comonomer ratio",
+                    "Blend ratio",
+                    "Composition"
+                ]
+            },
+            "Polymer architecture": {
+                "prompt": "Chain architecture, such as linear, branched, star, comb, crosslinked, network, or dendritic",
+                "example": "Linear",
+                "aliases": [
+                    "Architecture",
+                    "Chain architecture",
+                    "Chain topology",
+                    "Topology"
+                ]
+            },
+            "Tacticity": {
+                "prompt": "Tacticity or stereochemistry as reported, such as isotactic, syndiotactic, atactic, or the reported D/L or R/S content",
+                "example": "Isotactic, 98% L content",
+                "aliases": [
+                    "Stereochemistry",
+                    "Stereoregularity",
+                    "Optical purity",
+                    "Isotacticity"
+                ]
+            },
+            "End groups": {
+                "prompt": "Chain end groups, or the initiator or terminating agent that defines them",
+                "example": "Hydroxyl and carboxylic acid",
+                "aliases": [
+                    "End group",
+                    "Chain ends",
+                    "Terminal groups",
+                    "Initiator"
+                ]
+            },
+            "Additives fillers and blends": {
+                "prompt": "Additives, plasticizers, fillers, compatibilizers, reinforcements, or blend partners present in the sample, with loading when reported",
+                "example": "20 wt% cellulose nanocrystals",
+                "aliases": [
+                    "Additives",
+                    "Fillers",
+                    "Plasticizers",
+                    "Plasticisers",
+                    "Blend components",
+                    "Composite filler",
+                    "Reinforcement"
+                ]
+            },
+            "Synthesis method": {
+                "prompt": "Polymerization or processing method and conditions, such as ring-opening polymerization, polycondensation, RAFT, ATRP, melt extrusion, solvent casting, or electrospinning, including catalyst, temperature, and time when reported",
+                "example": "Ring-opening polymerization, Sn(Oct)2, 130 C, 24 h",
+                "aliases": [
+                    "Polymerization method",
+                    "Polymerisation method",
+                    "Synthesis conditions",
+                    "Processing method",
+                    "Preparation method"
+                ]
+            },
+            "Polymer SMILES": {
+                "prompt": "SMILES string for the polymer or its repeat unit, copied exactly as it is printed as text in the paper or its supporting information, including any * or [*] attachment points. Only report a SMILES string that is printed as text. If none is printed, report None.",
+                "example": "*OC(C)C(=O)*",
+                "aliases": [
+                    "SMILES",
+                    "PSMILES",
+                    "p-SMILES",
+                    "SMILES string",
+                    "Polymer SMILES string",
+                    "Repeat unit SMILES"
+                ]
+            },
+            "Monomer SMILES": {
+                "prompt": "SMILES strings for the monomers, copied exactly as they are printed as text in the paper or its supporting information. Only report SMILES strings that are printed as text. If none is printed, report None.",
+                "example": [
+                    "CC1OC(=O)C(C)OC1=O",
+                    "O=C1COC(=O)CO1"
+                ],
+                "aliases": [
+                    "Monomer SMILES string",
+                    "Monomer SMILES strings",
+                    "Reactant SMILES"
+                ]
+            },
+            "BigSMILES": {
+                "prompt": "BigSMILES string copied exactly as it is printed as text in the paper or its supporting information. BigSMILES uses stochastic objects in curly braces with bonding descriptors, for example {[][$]CC[$][]}. Only report a BigSMILES string that is printed as text. Never build, complete, or convert one from a SMILES string, a drawn structure, a formula, or a polymer name. If none is printed, report None.",
+                "example": "{[][$]OC(C)C(=O)[$][]}",
+                "aliases": [
+                    "BigSMILES string",
+                    "Big SMILES",
+                    "BigSMILES notation"
+                ]
+            },
+            "Other structure identifier": {
+                "prompt": "Any other machine-readable structure identifier printed in the paper, such as an InChI, InChIKey, CAS Registry Number, PubChem CID, or PolyInfo identifier, copied exactly as printed",
+                "example": "CAS 26100-51-6",
+                "aliases": [
+                    "InChI",
+                    "InChIKey",
+                    "CAS number",
+                    "CAS Registry Number",
+                    "PubChem CID",
+                    "PolyInfo ID",
+                    "Structure identifier"
+                ]
+            },
+            "Number average molecular weight": {
+                "prompt": "Number average molecular weight (Mn)",
+                "example": "45000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mn",
+                    "Number-average molecular weight",
+                    "Number average molar mass"
+                ]
+            },
+            "Weight average molecular weight": {
+                "prompt": "Weight average molecular weight (Mw)",
+                "example": "78000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mw",
+                    "Weight-average molecular weight",
+                    "Weight average molar mass"
+                ]
+            },
+            "Dispersity": {
+                "prompt": "Dispersity or polydispersity index (Mw/Mn)",
+                "example": "1.73",
+                "aliases": [
+                    "PDI",
+                    "Polydispersity",
+                    "Polydispersity index",
+                    "Molecular weight distribution"
+                ]
+            },
+            "Degree of polymerization": {
+                "prompt": "Degree of polymerization or reported average number of repeat units per chain",
+                "example": "310",
+                "aliases": [
+                    "DP",
+                    "Degree of polymerisation",
+                    "Number of repeat units",
+                    "Chain length"
+                ]
+            },
+            "Glass transition temperature": {
+                "prompt": "Glass transition temperature (Tg)",
+                "example": "58 C",
+                "unit": "C",
+                "aliases": [
+                    "Tg",
+                    "Glass transition",
+                    "Glass transition temp"
+                ]
+            },
+            "Melting temperature": {
+                "prompt": "Melting temperature (Tm)",
+                "example": "168 C",
+                "unit": "C",
+                "aliases": [
+                    "Tm",
+                    "Melting point",
+                    "Melt temperature",
+                    "Melting temp"
+                ]
+            },
+            "Degree of crystallinity": {
+                "prompt": "Degree of crystallinity, usually from DSC or XRD",
+                "example": "42%",
+                "unit": "%",
+                "aliases": [
+                    "Crystallinity",
+                    "Xc",
+                    "Percent crystallinity",
+                    "Crystallinity fraction"
+                ]
+            },
+            "Decomposition temperature": {
+                "prompt": "Thermal decomposition or degradation onset temperature from TGA. Do not confuse this with the melting temperature or with biodegradation results.",
+                "example": "312 C",
+                "unit": "C",
+                "aliases": [
+                    "Td",
+                    "Thermal decomposition temperature",
+                    "Degradation onset temperature",
+                    "TGA onset",
+                    "T5%"
+                ]
+            },
+            "Tensile strength": {
+                "prompt": "Tensile strength or stress at break",
+                "example": "62 MPa",
+                "unit": "MPa",
+                "aliases": [
+                    "Ultimate tensile strength",
+                    "UTS",
+                    "Stress at break",
+                    "Tensile stress at break"
+                ]
+            },
+            "Tensile modulus": {
+                "prompt": "Tensile or Young's modulus",
+                "example": "3500 MPa",
+                "unit": "MPa",
+                "aliases": [
+                    "Young's modulus",
+                    "Young’s modulus",
+                    "Youngs modulus",
+                    "Elastic modulus",
+                    "Modulus"
+                ]
+            },
+            "Elongation at break": {
+                "prompt": "Elongation or strain at break",
+                "example": "5.8%",
+                "unit": "%",
+                "aliases": [
+                    "Strain at break",
+                    "Elongation",
+                    "Ultimate elongation",
+                    "Tensile strain at break"
+                ]
+            },
+            "Biodegradability": {
+                "prompt": "What the paper itself states about the biodegradability, compostability, or bio-based origin of this material, using the paper's own wording. Only report a statement the paper makes about this material. If the paper makes no such statement, report None.",
+                "example": "Reported as biodegradable under industrial composting conditions",
+                "aliases": [
+                    "Biodegradable",
+                    "Biodegradability claim",
+                    "Degradability",
+                    "Compostability",
+                    "Biodegradability statement"
+                ]
+            },
+            "Biodegradation test standard": {
+                "prompt": "Standard test method or protocol used for the degradation test, such as ISO 14855, ISO 17556, ISO 14851, ASTM D6400, ASTM D5988, ASTM D6691, OECD 301B, or EN 13432, copied exactly as named",
+                "example": "ISO 14855-1",
+                "aliases": [
+                    "Test standard",
+                    "Standard method",
+                    "Standard test method",
+                    "ASTM standard",
+                    "ISO standard",
+                    "OECD test",
+                    "Biodegradation standard"
+                ]
+            },
+            "Degradation medium": {
+                "prompt": "Medium or environment used for the degradation test, such as industrial compost, home compost, soil, seawater, marine sediment, activated sludge, freshwater, phosphate buffer, or simulated body fluid, including the reported temperature and pH",
+                "example": "Industrial compost at 58 C",
+                "aliases": [
+                    "Test medium",
+                    "Degradation environment",
+                    "Test environment",
+                    "Incubation medium",
+                    "Degradation conditions"
+                ]
+            },
+            "Biodegradation extent": {
+                "prompt": "Percentage biodegradation or mineralization reached in the test, usually evolved CO2 as a percentage of theoretical. Report the highest value reported for this material and test.",
+                "example": "91%",
+                "unit": "%",
+                "aliases": [
+                    "Biodegradation",
+                    "Percent biodegradation",
+                    "Mineralization",
+                    "Mineralisation",
+                    "Biodegradation percentage",
+                    "CO2 evolution"
+                ]
+            },
+            "Biodegradation test duration": {
+                "prompt": "Duration of the degradation test at which the reported degradation extent was measured",
+                "example": "90 days",
+                "unit": "days",
+                "aliases": [
+                    "Test duration",
+                    "Incubation time",
+                    "Degradation time",
+                    "Exposure time",
+                    "Test period"
+                ]
+            },
+            "Mass loss": {
+                "prompt": "Percentage mass loss or weight loss of the sample during degradation. Report the highest value reported for this material and test.",
+                "example": "38%",
+                "unit": "%",
+                "aliases": [
+                    "Weight loss",
+                    "Percent mass loss",
+                    "Gravimetric mass loss",
+                    "Sample mass loss"
+                ]
+            },
+            "Molecular weight loss": {
+                "prompt": "Change in molecular weight during degradation, reported either as a percentage decrease or as the initial and final molecular weight",
+                "example": "Mn decreased from 45000 to 12000 g/mol",
+                "aliases": [
+                    "Molecular weight reduction",
+                    "Molecular weight decrease",
+                    "Mn loss",
+                    "Chain scission extent"
+                ]
+            },
+            "Degradation mechanism": {
+                "prompt": "Reported degradation mechanism, such as hydrolytic, enzymatic, oxidative, photodegradation, thermal, or microbial assimilation, including bulk or surface erosion when stated",
+                "example": "Bulk hydrolytic degradation followed by microbial assimilation",
+                "aliases": [
+                    "Mechanism",
+                    "Degradation pathway",
+                    "Erosion mode",
+                    "Hydrolysis mechanism"
+                ]
+            },
+            "Degrading organisms or enzymes": {
+                "prompt": "Enzymes, microbial strains, or consortia used in or identified by the degradation test, with their source when reported",
+                "example": "Proteinase K from Tritirachium album",
+                "aliases": [
+                    "Enzymes",
+                    "Enzyme",
+                    "Microorganisms",
+                    "Microbial strain",
+                    "Inoculum",
+                    "Bacteria",
+                    "Fungi"
+                ]
+            },
+            "Biodegradation certification": {
+                "prompt": "Compostability or biodegradability certification or label reported for this material, such as TUV OK compost INDUSTRIAL, TUV OK compost HOME, OK biodegradable SOIL or MARINE, BPI certified, DIN CERTCO, or the Seedling logo",
+                "example": "TUV OK compost INDUSTRIAL",
+                "aliases": [
+                    "Certification",
+                    "Compostability certification",
+                    "Certified label",
+                    "Ecolabel",
+                    "Certification scheme"
+                ]
+            },
+            "Type of study": {
+                "prompt": "Type of study (experimental, computational, or both)",
+                "example": "Experimental",
+                "aliases": [
+                    "Study type"
+                ]
+            }
+        }
+    },
+    "polymer_db": {
+        "material type": "polymer",
+        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the same polymer is put through several separate degradation or biodegradation tests, return one record per test.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', 'Monomer CAS numbers', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Do not derive a CAS Registry Number from a chemical name. Report a CAS number only when the paper prints it.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nControlled vocabulary rules:\n- Several fields list the values this database expects, such as 'Backbone linkage', 'Architecture', 'Microstructure', 'Ionic character', and 'Inoculum source'. Use the listed value when the paper clearly describes it, even if the paper uses a synonym.\n- If the paper describes something outside the listed values, report the paper wording instead of forcing it into the list. Do not choose a listed value just because it is listed.\nMeasurement rules:\n- Keep each measured value with the method and conditions it belongs to. For molar mass, record the eluent, column, and detector in the GPC method field rather than splitting the mass across several records.\n- For degradation experiments reported as a curve, report the individual time points and their values in the matching field, for example as a molar mass or percentage at each time.\n- Report percentage biodegradation, mass loss, and molar mass loss in their own fields. Do not copy the same number into more than one of them.\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\nReported-only rules. These apply to the 'Structural confidence', 'Klimisch score', and 'GLP compliance' fields:\n- These are curation values. Report them only when the paper states them outright.\n- Never assign, estimate, or infer them yourself. Your own confidence in an answer is not evidence, and a study being well conducted is not a stated Klimisch score or a stated GLP declaration.",
+        "search fields": {
+            "Name": {
+                "prompt": "Name of the polymer as reported, including any sample label, grade, or trade name",
+                "example": "PLLA-3 (poly(L-lactide))",
+                "aliases": [
+                    "Polymer name",
+                    "Name of polymer",
+                    "Sample label",
+                    "Sample name",
+                    "Material name"
+                ]
+            },
+            "Monomers": {
+                "prompt": "Monomer or comonomer names used to make the polymer, exactly as reported",
+                "example": [
+                    "L-lactide",
+                    "glycolide"
+                ],
+                "aliases": [
+                    "Monomer",
+                    "Comonomers",
+                    "Monomer units",
+                    "Monomer names",
+                    "Reagents"
+                ]
+            },
+            "Monomer CAS numbers": {
+                "prompt": "CAS Registry Numbers for the monomers or reagents, copied exactly as printed in the paper. Do not derive a CAS number from a chemical name.",
+                "example": [
+                    "95-96-5",
+                    "502-97-6"
+                ],
+                "aliases": [
+                    "Monomer CAS",
+                    "Reagent CAS",
+                    "CAS numbers",
+                    "Monomer CAS code",
+                    "Reagent CAS code",
+                    "CAS Registry Numbers"
+                ]
+            },
+            "Monomer ratios": {
+                "prompt": "Molar or mass ratio of the monomers or reagents in the polymer, in the order the monomers are listed, for example 82:18",
+                "example": "82:18",
+                "aliases": [
+                    "Monomer ratio",
+                    "Comonomer ratio",
+                    "Feed ratio",
+                    "Blend ratio",
+                    "Copolymer composition"
+                ]
+            },
+            "Repeat unit": {
+                "prompt": "Description of the repeat unit as reported in words or as a chemical formula. Do not report a line notation here.",
+                "example": "-[O-CH(CH3)-C(=O)]-",
+                "aliases": [
+                    "Repeating unit",
+                    "Constitutional repeat unit",
+                    "Repeat unit structure",
+                    "Monomer unit"
+                ]
+            },
+            "Backbone linkage": {
+                "prompt": "Dominant linkage in the polymer backbone. Expected values are ester, carbonate, urethane, urea, ether, saccharide, acrylic, and amide. Report each linkage present in a copolymer.",
+                "example": "ester",
+                "aliases": [
+                    "Linkage",
+                    "Backbone chemistry",
+                    "Polymer class",
+                    "Polymer family",
+                    "Polymer type",
+                    "Chemical class",
+                    "Compound class"
+                ]
+            },
+            "Architecture": {
+                "prompt": "Chain architecture. Expected values are linear, branched, comb, cyclic, hyperbranched, star, and network.",
+                "example": "linear",
+                "aliases": [
+                    "Polymer architecture",
+                    "Chain architecture",
+                    "Chain topology",
+                    "Topology"
+                ]
+            },
+            "Microstructure": {
+                "prompt": "Arrangement of the monomers along the chain. Expected values are homopolymer, block polymer, statistical copolymer, random copolymer, and alternating copolymer.",
+                "example": "random copolymer",
+                "aliases": [
+                    "Copolymer type",
+                    "Copolymer microstructure",
+                    "Copolymer type and composition",
+                    "Sequence distribution",
+                    "Chain microstructure"
+                ]
+            },
+            "Tacticity": {
+                "prompt": "Tacticity or stereochemistry as reported, such as isotactic, syndiotactic, atactic, or the reported D/L or R/S content",
+                "example": "Isotactic, 98% L content",
+                "aliases": [
+                    "Stereochemistry",
+                    "Stereoregularity",
+                    "Optical purity",
+                    "Isotacticity"
+                ]
+            },
+            "Alpha chain end group": {
+                "prompt": "Chain end group at the alpha terminus, or the initiator that defines it",
+                "example": "Hydroxyl",
+                "aliases": [
+                    "Alpha end group",
+                    "Alpha terminus",
+                    "Initiating end group",
+                    "Initiator"
+                ]
+            },
+            "Omega chain end group": {
+                "prompt": "Chain end group at the omega terminus, or the terminating or capping agent that defines it",
+                "example": "Carboxylic acid",
+                "aliases": [
+                    "Omega end group",
+                    "Omega terminus",
+                    "Terminating end group",
+                    "Terminating agent",
+                    "End capping agent"
+                ]
+            },
+            "Ionic character": {
+                "prompt": "Ionic character of the polymer. Expected values are cationic, neutral, and anionic.",
+                "example": "neutral",
+                "aliases": [
+                    "Charge",
+                    "Ionic charge",
+                    "Polymer charge",
+                    "Charge character"
+                ]
+            },
+            "Polymer SMILES": {
+                "prompt": "SMILES string for the polymer or its repeat unit, copied exactly as it is printed as text in the paper or its supporting information, including any * or [*] attachment points. Only report a SMILES string that is printed as text. If none is printed, report None.",
+                "example": "*OC(C)C(=O)*",
+                "aliases": [
+                    "SMILES",
+                    "PSMILES",
+                    "p-SMILES",
+                    "SMILES string",
+                    "Polymer SMILES string",
+                    "Repeat unit SMILES"
+                ]
+            },
+            "Monomer SMILES": {
+                "prompt": "SMILES strings for the monomers, copied exactly as they are printed as text in the paper or its supporting information. Only report SMILES strings that are printed as text. If none is printed, report None.",
+                "example": [
+                    "CC1OC(=O)C(C)OC1=O",
+                    "O=C1COC(=O)CO1"
+                ],
+                "aliases": [
+                    "Monomer SMILES string",
+                    "Monomer SMILES strings",
+                    "Reactant SMILES"
+                ]
+            },
+            "BigSMILES": {
+                "prompt": "BigSMILES string copied exactly as it is printed as text in the paper or its supporting information. BigSMILES uses stochastic objects in curly braces with bonding descriptors, for example {[][$]CC[$][]}. Only report a BigSMILES string that is printed as text. Never build, complete, or convert one from a SMILES string, a drawn structure, a formula, or a polymer name. If none is printed, report None.",
+                "example": "{[][$]OC(C)C(=O)[$][]}",
+                "aliases": [
+                    "BigSMILES string",
+                    "Big SMILES",
+                    "BigSMILES notation"
+                ]
+            },
+            "Other structure identifier": {
+                "prompt": "Any other machine-readable structure identifier printed in the paper, such as an InChI, InChIKey, PubChem CID, or PolyInfo identifier, copied exactly as printed",
+                "example": "InChIKey JVTAAEKCZFNVCJ-UHFFFAOYSA-N",
+                "aliases": [
+                    "InChI",
+                    "InChIKey",
+                    "PubChem CID",
+                    "PolyInfo ID",
+                    "Structure identifier"
+                ]
+            },
+            "Structural confidence": {
+                "prompt": "Confidence in the assigned polymer structure, as a percentage, but only when the paper states such a confidence or certainty outright. Never assign a confidence of your own. If the paper states none, report None.",
+                "example": "None",
+                "aliases": [
+                    "Structure confidence",
+                    "Confidence in structure",
+                    "Structural certainty"
+                ]
+            },
+            "Amine number": {
+                "prompt": "Amine number or amine value of the polymer",
+                "example": "42",
+                "aliases": [
+                    "Amine value",
+                    "Amine index"
+                ]
+            },
+            "Acid number": {
+                "prompt": "Acid number or acid value of the polymer",
+                "example": "12.5",
+                "aliases": [
+                    "Acid value",
+                    "Acid index",
+                    "AV"
+                ]
+            },
+            "Hydroxyl number": {
+                "prompt": "Alcohol or hydroxyl number of the polymer",
+                "example": "56",
+                "aliases": [
+                    "Hydroxyl value",
+                    "Alcohol number",
+                    "OH number",
+                    "OH value"
+                ]
+            },
+            "Reactive functional group equivalents": {
+                "prompt": "Reactive functional group equivalents per gram of polymer",
+                "example": "1.8 meq/g",
+                "unit": "meq/g",
+                "aliases": [
+                    "Functional group equivalents",
+                    "Equivalents",
+                    "Reactive group equivalents",
+                    "meq/g"
+                ]
+            },
+            "Elemental composition": {
+                "prompt": "Elemental composition from elemental analysis, reported as a percentage for each element the paper gives, such as C, H, O, N, S, Cl, P, Na, Ca, K, Br, Ba, Mg, Si, Sr, B, or F. Report every element reported, each with its percentage.",
+                "example": "C 50.0%, H 5.6%, O 44.4%",
+                "aliases": [
+                    "Elemental analysis",
+                    "Element percentages",
+                    "CHN analysis",
+                    "CHNS analysis",
+                    "Elemental content"
+                ]
+            },
+            "Number average molar mass": {
+                "prompt": "Number average molar mass (Mn)",
+                "example": "45000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mn",
+                    "Number average molecular weight",
+                    "Number-average molecular weight",
+                    "Number average molar mass"
+                ]
+            },
+            "Weight average molar mass": {
+                "prompt": "Weight average molar mass (Mw)",
+                "example": "78000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mw",
+                    "Weight average molecular weight",
+                    "Weight-average molecular weight",
+                    "Weight average molar mass"
+                ]
+            },
+            "Dispersity": {
+                "prompt": "Dispersity or polydispersity index (Mw/Mn)",
+                "example": "1.73",
+                "aliases": [
+                    "PDI",
+                    "Polydispersity",
+                    "Polydispersity index",
+                    "Mw/Mn",
+                    "Molecular weight distribution"
+                ]
+            },
+            "GPC method and solvent": {
+                "prompt": "Method and conditions used to measure molar mass, including the technique, eluent or solvent, column, detector, and calibration standard, for example aqueous GPC with MALLS or DMF GPC with MALLS",
+                "example": "DMF GPC, MALLS detector, PMMA standards",
+                "aliases": [
+                    "GPC method",
+                    "GPC conditions",
+                    "SEC method",
+                    "SEC conditions",
+                    "Molar mass method",
+                    "Eluent",
+                    "Chromatography method"
+                ]
+            },
+            "Mark-Houwink chain flexibility parameter": {
+                "prompt": "Mark-Houwink chain flexibility exponent, usually written as alpha or a",
+                "example": "0.72",
+                "aliases": [
+                    "Mark-Houwink alpha",
+                    "Mark Houwink alpha",
+                    "Mark-Houwink exponent",
+                    "Mark-Houwink a",
+                    "MH alpha"
+                ]
+            },
+            "Mark-Houwink solvent interaction parameter": {
+                "prompt": "Mark-Houwink solvent interaction constant, usually written as K",
+                "example": "1.2 x 10^-4 mL/g",
+                "unit": "mL/g",
+                "aliases": [
+                    "Mark-Houwink K",
+                    "Mark Houwink K",
+                    "Mark-Houwink constant",
+                    "MH K"
+                ]
+            },
+            "Radius of gyration": {
+                "prompt": "Radius of gyration (Rg)",
+                "example": "12.4 nm",
+                "unit": "nm",
+                "aliases": [
+                    "Rg",
+                    "Gyration radius"
+                ]
+            },
+            "Hydrodynamic radius": {
+                "prompt": "Hydrodynamic radius (Rh), usually from DLS",
+                "example": "18 nm",
+                "unit": "nm",
+                "aliases": [
+                    "Rh",
+                    "Hydrodynamic size",
+                    "DLS radius"
+                ]
+            },
+            "Glass transition temperature": {
+                "prompt": "Glass transition temperature (Tg)",
+                "example": "58 C",
+                "unit": "C",
+                "aliases": [
+                    "Tg",
+                    "Glass transition",
+                    "Glass transition temp"
+                ]
+            },
+            "Crystallisation temperature": {
+                "prompt": "Crystallisation temperature (Tc) from DSC",
+                "example": "102 C",
+                "unit": "C",
+                "aliases": [
+                    "Tc",
+                    "Crystallization temperature",
+                    "Temperature of crystallisation",
+                    "Temperature of crystallization"
+                ]
+            },
+            "Melting temperature": {
+                "prompt": "Melting temperature (Tm)",
+                "example": "168 C",
+                "unit": "C",
+                "aliases": [
+                    "Tm",
+                    "Melting point",
+                    "Melt temperature",
+                    "Melting temp"
+                ]
+            },
+            "Enthalpy of melting": {
+                "prompt": "Enthalpy of melting or heat of fusion from DSC",
+                "example": "48 J/g",
+                "unit": "J/g",
+                "aliases": [
+                    "Heat of fusion",
+                    "Melting enthalpy",
+                    "Enthalpy of fusion",
+                    "dHm"
+                ]
+            },
+            "Degree of crystallinity": {
+                "prompt": "Degree of crystallinity, usually from DSC or XRD",
+                "example": "42%",
+                "unit": "%",
+                "aliases": [
+                    "Crystallinity",
+                    "Xc",
+                    "Percent crystallinity",
+                    "Crystallinity fraction"
+                ]
+            },
+            "Degradation temperature onset": {
+                "prompt": "Onset temperature of thermal degradation from TGA. This is a thermal stability measurement and is not a biodegradation result.",
+                "example": "312 C",
+                "unit": "C",
+                "aliases": [
+                    "Td onset",
+                    "Td-onset",
+                    "Onset degradation temperature",
+                    "TGA onset",
+                    "Onset of decomposition"
+                ]
+            },
+            "Degradation temperature 5 percent": {
+                "prompt": "Temperature at 5% mass loss from TGA. This is a thermal stability measurement and is not a biodegradation result.",
+                "example": "335 C",
+                "unit": "C",
+                "aliases": [
+                    "Td 5%",
+                    "Td-5%",
+                    "T5%",
+                    "T5",
+                    "5% weight loss temperature",
+                    "5% mass loss temperature"
+                ]
+            },
+            "Zero shear melt viscosity": {
+                "prompt": "Zero shear viscosity of the polymer melt from rheometry",
+                "example": "25000 Pa.s",
+                "unit": "Pa.s",
+                "aliases": [
+                    "Zero shear viscosity",
+                    "Melt viscosity",
+                    "Zero-shear melt viscosity"
+                ]
+            },
+            "Solution viscosity": {
+                "prompt": "Viscosity of the polymer in solution from rheometry, including the solvent and the polymer concentration",
+                "example": "450 mPa.s in water at 2 wt%",
+                "unit": "mPa.s",
+                "aliases": [
+                    "Solution viscosity in water",
+                    "Viscosity in solution",
+                    "Apparent viscosity"
+                ]
+            },
+            "Tensile strength": {
+                "prompt": "Tensile strength or stress at break",
+                "example": "62 MPa",
+                "unit": "MPa",
+                "aliases": [
+                    "Ultimate tensile strength",
+                    "UTS",
+                    "Stress at break",
+                    "Tensile stress at break"
+                ]
+            },
+            "Tensile modulus": {
+                "prompt": "Tensile or Young's modulus",
+                "example": "3500 MPa",
+                "unit": "MPa",
+                "aliases": [
+                    "Young's modulus",
+                    "Young’s modulus",
+                    "Youngs modulus",
+                    "Elastic modulus",
+                    "Modulus"
+                ]
+            },
+            "Elongation at break": {
+                "prompt": "Elongation or strain at break",
+                "example": "5.8%",
+                "unit": "%",
+                "aliases": [
+                    "Strain at break",
+                    "Elongation",
+                    "Ultimate elongation",
+                    "Tensile strain at break"
+                ]
+            },
+            "LogP experimental": {
+                "prompt": "Experimentally measured partition coefficient (logP)",
+                "example": "2.4",
+                "aliases": [
+                    "Experimental logP",
+                    "Measured logP",
+                    "logP exp",
+                    "Partition coefficient"
+                ]
+            },
+            "LogP calculated": {
+                "prompt": "Calculated or predicted partition coefficient (logP), including the method or software when reported",
+                "example": "2.1 (XLogP3)",
+                "aliases": [
+                    "Calculated logP",
+                    "Predicted logP",
+                    "clogP",
+                    "logP calc"
+                ]
+            },
+            "LogP per surface area": {
+                "prompt": "Partition coefficient normalised by molecular surface area",
+                "example": "0.004 A^-2",
+                "unit": "A^-2",
+                "aliases": [
+                    "LogP/SA",
+                    "logP per area",
+                    "Surface normalised logP"
+                ]
+            },
+            "Zeta potential": {
+                "prompt": "Zeta potential, including the pH and medium when reported",
+                "example": "-24 mV at pH 7.4",
+                "unit": "mV",
+                "aliases": [
+                    "Surface charge",
+                    "Zeta"
+                ]
+            },
+            "Water solubility": {
+                "prompt": "Solubility of the polymer in water",
+                "example": "12 g/L",
+                "unit": "g/L",
+                "aliases": [
+                    "Aqueous solubility",
+                    "Solubility in water"
+                ]
+            },
+            "Critical micelle concentration": {
+                "prompt": "Critical micelle concentration (CMC)",
+                "example": "0.005 mg/mL",
+                "unit": "mg/mL",
+                "aliases": [
+                    "CMC",
+                    "Critical aggregation concentration"
+                ]
+            },
+            "Lower critical solution temperature": {
+                "prompt": "Lower critical solution temperature (LCST) or cloud point",
+                "example": "32 C",
+                "unit": "C",
+                "aliases": [
+                    "LCST",
+                    "Cloud point",
+                    "Cloud point temperature"
+                ]
+            },
+            "Hansen dispersion parameter": {
+                "prompt": "Hansen solubility dispersion force parameter (delta D)",
+                "example": "17.4 MPa^0.5",
+                "unit": "MPa^0.5",
+                "aliases": [
+                    "Hansen dD",
+                    "delta D",
+                    "Dispersion solubility parameter"
+                ]
+            },
+            "Hansen polarity parameter": {
+                "prompt": "Hansen solubility polarity parameter (delta P)",
+                "example": "9.8 MPa^0.5",
+                "unit": "MPa^0.5",
+                "aliases": [
+                    "Hansen dP",
+                    "delta P",
+                    "Polar solubility parameter"
+                ]
+            },
+            "Hansen hydrogen bonding parameter": {
+                "prompt": "Hansen solubility hydrogen bonding parameter (delta H)",
+                "example": "11.2 MPa^0.5",
+                "unit": "MPa^0.5",
+                "aliases": [
+                    "Hansen dH",
+                    "delta H",
+                    "Hydrogen bonding solubility parameter"
+                ]
+            },
+            "Hydrophilic-lipophilic balance": {
+                "prompt": "Hydrophilic-lipophilic balance (HLB)",
+                "example": "12.5",
+                "aliases": [
+                    "HLB",
+                    "HLB value"
+                ]
+            },
+            "Basic accelerated degradation": {
+                "prompt": "Result of an accelerated degradation experiment under basic conditions, such as 1M NaOH at 37 C. Report the reported time points and the molar mass or property measured at each, together with the conditions.",
+                "example": "Mn 45000 g/mol at 0 h, 21000 at 24 h, 8000 at 72 h (1M NaOH, 37 C)",
+                "aliases": [
+                    "Alkaline degradation",
+                    "Base catalysed degradation",
+                    "NaOH degradation",
+                    "Accelerated basic degradation"
+                ]
+            },
+            "Acidic accelerated degradation": {
+                "prompt": "Result of an accelerated degradation experiment under acidic conditions, such as 1M HCl at 37 C. Report the reported time points and the molar mass or property measured at each, together with the conditions.",
+                "example": "None",
+                "aliases": [
+                    "Acid degradation",
+                    "Acid catalysed degradation",
+                    "HCl degradation",
+                    "Accelerated acidic degradation"
+                ]
+            },
+            "Neutral hydrolytic degradation": {
+                "prompt": "Result of a neutral hydrolytic degradation experiment, such as PBS at 37 C. Report the reported time points and the molar mass or property measured at each, together with the conditions.",
+                "example": "Mn 45000 g/mol at 0 d, 31000 at 14 d, 18000 at 28 d (PBS, 37 C)",
+                "aliases": [
+                    "Hydrolytic degradation",
+                    "Hydrolysis",
+                    "PBS degradation",
+                    "Neutral degradation"
+                ]
+            },
+            "Enzymatic degradation": {
+                "prompt": "Result of an enzymatic degradation experiment, such as lipase in water at 37 C. Report the enzyme, its source or supplier, the conditions, and the reported time points and values.",
+                "example": "Mass loss 12% at 24 h, 38% at 72 h (lipase Novozym 435, water, 37 C)",
+                "aliases": [
+                    "Enzyme degradation",
+                    "Lipase degradation",
+                    "In vitro enzymatic degradation"
+                ]
+            },
+            "Biodegradation test standard": {
+                "prompt": "Standard test method or protocol used for the biodegradation test, such as OECD 301A, OECD 301B, OECD 301C, OECD 301D, OECD 301E, OECD 301F, OECD 310, ISO 14855, ISO 17556, ISO 14851, ASTM D6400, ASTM D5988, ASTM D6691, or EN 13432, copied exactly as named",
+                "example": "OECD 301B",
+                "aliases": [
+                    "Test standard",
+                    "Standard method",
+                    "Standard test method",
+                    "OECD test",
+                    "ASTM standard",
+                    "ISO standard",
+                    "Biodegradation standard"
+                ]
+            },
+            "GLP compliance": {
+                "prompt": "Whether the study states it was conducted under Good Laboratory Practice. Report this only when the paper states it outright, and never infer it from study quality.",
+                "example": "None",
+                "aliases": [
+                    "GLP",
+                    "Good Laboratory Practice",
+                    "GLP compliant",
+                    "GLP status"
+                ]
+            },
+            "Klimisch score": {
+                "prompt": "Klimisch reliability score from 1 to 4, but only when the paper states one outright. Never assign a Klimisch score of your own.",
+                "example": "None",
+                "aliases": [
+                    "Klimisch",
+                    "Klimisch rating",
+                    "Reliability score"
+                ]
+            },
+            "Biodegradation test duration": {
+                "prompt": "Duration of the biodegradation test at which the reported degradation extent was measured",
+                "example": "28 days",
+                "unit": "days",
+                "aliases": [
+                    "Test duration",
+                    "Incubation time",
+                    "Degradation time",
+                    "Exposure time",
+                    "Test period"
+                ]
+            },
+            "Test substance purity": {
+                "prompt": "Purity of the test substance as a percentage",
+                "example": "98%",
+                "aliases": [
+                    "Substance purity",
+                    "Sample purity",
+                    "Purity"
+                ]
+            },
+            "Test substance additives and impurities": {
+                "prompt": "Additives, carriers, or impurities present in the test substance, with their percentage when reported",
+                "example": "2% residual monomer",
+                "aliases": [
+                    "Carriers",
+                    "Impurities",
+                    "Additives and carriers",
+                    "Carrier content",
+                    "Impurity content"
+                ]
+            },
+            "Test substance concentration": {
+                "prompt": "Concentration of the test substance in the biodegradation test, as reported, whether as mg/L, mg DOC/L, or mg ThOD/L",
+                "example": "20 mg DOC/L",
+                "aliases": [
+                    "Substance concentration",
+                    "Test concentration",
+                    "Initial concentration",
+                    "DOC concentration",
+                    "ThOD concentration"
+                ]
+            },
+            "Test volume": {
+                "prompt": "Volume of the biodegradation test vessel or medium",
+                "example": "500 mL",
+                "unit": "mL",
+                "aliases": [
+                    "Vessel volume",
+                    "Medium volume",
+                    "Reactor volume"
+                ]
+            },
+            "Number of replicates": {
+                "prompt": "Number of replicate test vessels",
+                "example": "3",
+                "aliases": [
+                    "Replicates",
+                    "Number of repeats",
+                    "Repeats"
+                ]
+            },
+            "Positive controls": {
+                "prompt": "Whether a positive control such as sodium benzoate or aniline was included, and which substance was used",
+                "example": "Yes, sodium benzoate",
+                "aliases": [
+                    "Positive control",
+                    "Reference substance",
+                    "Reference control"
+                ]
+            },
+            "Toxicity control": {
+                "prompt": "Whether a toxicity control was included, and its outcome",
+                "example": "Yes, no inhibition observed",
+                "aliases": [
+                    "Toxicity controls",
+                    "Inhibition control"
+                ]
+            },
+            "Inoculum source": {
+                "prompt": "Source of the inoculum. Expected values are effluent, activated sludge, mixed inocula, household inocula, industrial inocula, and other, with details when given.",
+                "example": "activated sludge from a municipal wastewater treatment plant",
+                "aliases": [
+                    "Inoculum",
+                    "Inocolum source",
+                    "Microbial source",
+                    "Sludge source",
+                    "Seed source"
+                ]
+            },
+            "Inoculum concentration": {
+                "prompt": "Concentration or loading of the inoculum, as reported, whether as a percentage, a CFU count, or mg/L suspended solids",
+                "example": "30 mg/L SS",
+                "aliases": [
+                    "Inoculum loading",
+                    "Inoculum density",
+                    "Sludge concentration",
+                    "Biomass concentration",
+                    "CFU"
+                ]
+            },
+            "Bioavailability improvement controls": {
+                "prompt": "Whether controls to improve bioavailability, such as dispersants, emulsifiers, or silica carriers, were included, with details",
+                "example": "None",
+                "aliases": [
+                    "Bioavailability controls",
+                    "Bioavailability improvement",
+                    "Dispersant control",
+                    "Solubilising agent"
+                ]
+            },
+            "Specific chemical analytical monitoring": {
+                "prompt": "Whether the test substance itself was monitored by a specific chemical analysis such as HPLC, GC, or NMR, in addition to the standard respirometric or DOC measurement, with details",
+                "example": "Yes, HPLC monitoring of residual monomer",
+                "aliases": [
+                    "Chemical analytical monitoring",
+                    "Analytical monitoring",
+                    "Specific analysis",
+                    "Substance specific analysis"
+                ]
+            },
+            "Substance degradation at end of test": {
+                "prompt": "Percentage biodegradation or mineralisation reached at the end of the test, usually evolved CO2 or oxygen demand as a percentage of theoretical. Report the value at the end of the test.",
+                "example": "68%",
+                "unit": "%",
+                "aliases": [
+                    "Biodegradation",
+                    "Percent biodegradation",
+                    "Mineralisation",
+                    "Mineralization",
+                    "Final biodegradation",
+                    "Biodegradation extent",
+                    "Degradation at end of test"
+                ]
+            },
+            "Ten day window criterion": {
+                "prompt": "Whether the 10-day window criterion was fulfilled",
+                "example": "Yes",
+                "aliases": [
+                    "10-day window",
+                    "10 day window",
+                    "Ten day window",
+                    "10-day window criterion"
+                ]
+            },
+            "Mineralisation kinetics": {
+                "prompt": "Biodegradation curve over time, reported as the percentage biodegradation at each reported time point",
+                "example": "0% at 0 d, 12% at 7 d, 55% at 14 d, 68% at 28 d",
+                "aliases": [
+                    "Biodegradation kinetics",
+                    "Kinetic data on mineralisation",
+                    "Biodegradation curve",
+                    "Degradation kinetics",
+                    "Mineralization kinetics"
+                ]
+            },
+            "Test substance recovery": {
+                "prompt": "Percentage of the test substance recovered at the end of the test",
+                "example": "92%",
+                "aliases": [
+                    "Substance recovery",
+                    "Recovery",
+                    "Mass balance",
+                    "Final recovery"
+                ]
+            },
+            "Biodegradability": {
+                "prompt": "What the paper itself states about the biodegradability, compostability, or bio-based origin of this material, using the paper's own wording. Only report a statement the paper makes about this material. If the paper makes no such statement, report None.",
+                "example": "Reported as readily biodegradable",
+                "aliases": [
+                    "Biodegradable",
+                    "Biodegradability claim",
+                    "Degradability",
+                    "Compostability",
+                    "Biodegradability statement"
+                ]
+            },
+            "Degradation medium": {
+                "prompt": "Medium or environment used for the degradation test, such as industrial compost, home compost, soil, seawater, marine sediment, activated sludge, freshwater, phosphate buffer, or simulated body fluid, including the reported temperature and pH",
+                "example": "Activated sludge at 22 C, pH 7.4",
+                "aliases": [
+                    "Test medium",
+                    "Degradation environment",
+                    "Test environment",
+                    "Incubation medium",
+                    "Degradation conditions"
+                ]
+            },
+            "Mass loss": {
+                "prompt": "Percentage mass loss or weight loss of the sample during degradation. Report the highest value reported for this material and test.",
+                "example": "38%",
+                "unit": "%",
+                "aliases": [
+                    "Weight loss",
+                    "Percent mass loss",
+                    "Gravimetric mass loss",
+                    "Sample mass loss"
+                ]
+            },
+            "Molar mass loss": {
+                "prompt": "Change in molar mass during degradation, reported either as a percentage decrease or as the initial and final molar mass",
+                "example": "Mn decreased from 45000 to 12000 g/mol",
+                "aliases": [
+                    "Molecular weight loss",
+                    "Molecular weight reduction",
+                    "Molar mass reduction",
+                    "Mn loss",
+                    "Chain scission extent"
+                ]
+            },
+            "Degradation mechanism": {
+                "prompt": "Reported degradation mechanism, such as hydrolytic, enzymatic, oxidative, photodegradation, thermal, or microbial assimilation, including bulk or surface erosion when stated",
+                "example": "Bulk hydrolytic degradation followed by microbial assimilation",
+                "aliases": [
+                    "Mechanism",
+                    "Degradation pathway",
+                    "Erosion mode",
+                    "Hydrolysis mechanism"
+                ]
+            },
+            "Degrading organisms or enzymes": {
+                "prompt": "Enzymes, microbial strains, or consortia used in or identified by the degradation test, with their source when reported",
+                "example": "Proteinase K from Tritirachium album",
+                "aliases": [
+                    "Enzymes",
+                    "Enzyme",
+                    "Microorganisms",
+                    "Microbial strain",
+                    "Bacteria",
+                    "Fungi"
+                ]
+            },
+            "Biodegradation certification": {
+                "prompt": "Compostability or biodegradability certification or label reported for this material, such as TUV OK compost INDUSTRIAL, TUV OK compost HOME, OK biodegradable SOIL or MARINE, BPI certified, DIN CERTCO, or the Seedling logo",
+                "example": "TUV OK compost INDUSTRIAL",
+                "aliases": [
+                    "Certification",
+                    "Compostability certification",
+                    "Certified label",
+                    "Ecolabel",
+                    "Certification scheme"
+                ]
+            },
+            "Additives fillers and blends": {
+                "prompt": "Additives, plasticizers, fillers, compatibilizers, reinforcements, or blend partners present in the polymer sample, with loading when reported",
+                "example": "20 wt% cellulose nanocrystals",
+                "aliases": [
+                    "Additives",
+                    "Fillers",
+                    "Plasticizers",
+                    "Plasticisers",
+                    "Blend components",
+                    "Composite filler",
+                    "Reinforcement"
+                ]
+            },
+            "Synthesis method": {
+                "prompt": "Polymerization or processing method and conditions, such as ring-opening polymerization, polycondensation, RAFT, ATRP, melt extrusion, solvent casting, or electrospinning, including catalyst, temperature, and time when reported",
+                "example": "Ring-opening polymerization, Sn(Oct)2, 130 C, 24 h",
+                "aliases": [
+                    "Polymerization method",
+                    "Polymerisation method",
+                    "Synthesis conditions",
+                    "Processing method",
+                    "Preparation method"
+                ]
+            },
+            "Type of study": {
+                "prompt": "Type of study (experimental, computational, or both)",
+                "example": "Experimental",
+                "aliases": [
+                    "Study type"
+                ]
+            }
+        }
+    },
+    "band_gap_validation": {
+        "material type": "band-gap material",
+        "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Combine all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, figures, captions, and supporting information.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
+        "search fields": {
+            "Material system": {
+                "prompt": "Specific material, sample, composition, phase, or structure represented by this record, including a reported sample label where available",
+                "example": "Cs2SnI6 vacancy-ordered double perovskite",
+                "aliases": [
+                    "Material systems",
+                    "Material",
+                    "Compound",
+                    "Composition",
+                    "Sample"
+                ]
+            },
+            "Band gap": {
+                "prompt": "JSON list of the principal band-gap value or values produced in this paper for this material, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "example": [
+                    {
+                        "value": "0.92 eV",
+                        "method_or_source": "HSE06+SOC",
+                        "gap_type": "indirect fundamental",
+                        "conditions": "None"
+                    }
+                ],
+                "aliases": [
+                    "Principal band gap",
+                    "Principal band gaps",
+                    "Representative band gap",
+                    "Study band gap summary"
+                ]
+            },
+            "All band gaps": {
+                "prompt": "JSON list of every distinct experimental or computational band gap produced in this paper for this material, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "example": [
+                    {
+                        "value": "0.92 eV",
+                        "method_or_source": "HSE06+SOC",
+                        "gap_type": "indirect fundamental",
+                        "conditions": "None"
+                    },
+                    {
+                        "value": "1.26 eV",
+                        "method_or_source": "HSE06+SOC",
+                        "gap_type": "optical",
+                        "conditions": "None"
+                    },
+                    {
+                        "value": "1.35 eV",
+                        "method_or_source": "experiment-this-work, diffuse reflectance/Tauc",
+                        "gap_type": "optical",
+                        "conditions": "room temperature"
+                    }
+                ],
+                "aliases": [
+                    "All gaps from this study"
+                ]
+            },
+            "Cited literature band gaps": {
+                "prompt": "JSON list of every distinct numeric band gap for this material that is explicitly attributed to cited literature, prior work, or an external database, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "example": [
+                    {
+                        "value": "1.30 eV",
+                        "method_or_source": "experiment, cited literature",
+                        "gap_type": "optical",
+                        "conditions": "None"
+                    },
+                    {
+                        "value": "0.88 eV",
+                        "method_or_source": "GW0, cited literature",
+                        "gap_type": "fundamental",
+                        "conditions": "None"
+                    }
+                ],
+                "aliases": [
+                    "Literature band gaps",
+                    "Cited band gaps",
+                    "Prior-work gaps",
+                    "External band gaps"
+                ]
+            }
+        }
     }
 }

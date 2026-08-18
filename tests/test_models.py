@@ -112,6 +112,11 @@ def test_model_config_generation_args_and_require():
 
     assert config.generation_args() == {'temperature': 0.2, 'top_p': 0.9}
     assert text_config(provider='anthropic').generation_args() == {'temperature': 0.2}
+    assert text_config(name='gpt-5.6-terra').generation_args() == {}
+    assert text_config(provider='local', name='gpt-5.6-terra').generation_args() == {
+        'temperature': 0.2,
+        'top_p': 0.9,
+    }
     config.require('text')
     with pytest.raises(models.ModelCapabilityError, match='cannot handle vision inputs'):
         config.require('vision')
