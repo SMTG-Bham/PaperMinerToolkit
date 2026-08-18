@@ -6,6 +6,7 @@ statistics without touching the command-line workflow.
 """
 
 import gzip
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -76,9 +77,53 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     assert stats['papers_with_text'] == 2
     assert stats['papers_with_pdf'] == 0
     assert stats['papers_with_abstract'] == 0
+    assert stats['papers_with_chunked_text'] == 0
+    assert stats['papers_with_chunked_abstracts'] == 0
     assert stats['blobs'] == 1
     assert stats['stored_size'] < stats['original_size']
     assert stats['savings_fraction'] > 0
+
+
+def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path):
+    """Add nullable chunk-count columns to an existing version-one corpus."""
+    db_path = tmp_path / 'legacy.db'
+    legacy_fields = [
+        field
+        for field in corpus.PAPER_FIELDS
+        if field not in {'num_text_chunks', 'num_abstract_chunks'}
+    ]
+    legacy_columns = ',\n'.join(
+        f'{field} {corpus._paper_column_type(field)}'
+        for field in legacy_fields
+        if field != 'paper_id'
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            f"""
+            PRAGMA user_version = 1;
+            CREATE TABLE papers (
+                paper_id TEXT PRIMARY KEY,
+                {legacy_columns},
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO papers (paper_id, title, metadata_json, created_at, updated_at)
+            VALUES ('legacy:1', 'Legacy paper', '{{}}', '2026-01-01', '2026-01-01');
+            """
+        )
+
+    with corpus.connect(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == 2
+    assert {'num_text_chunks', 'num_abstract_chunks'} <= columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['num_text_chunks'] is None
+    assert rows[0]['num_abstract_chunks'] is None
 
 
 def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):

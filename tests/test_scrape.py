@@ -324,7 +324,8 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
 
     materials = pd.read_csv(output_path, index_col=0)
     papers = read_corpus(db_path)
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out
     assert calls['chunks'] == ['chunk one', 'chunk two']
     assert all(config.name == 'text-model' for config in calls['configs'])
     assert materials['Name'].tolist() == ['material from chunk one', 'material from chunk two']
@@ -332,6 +333,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     assert materials['Paper id'].tolist() == ['paper-1', 'paper-1']
     assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[0, 'num_text_materials'] == 2
+    assert papers.loc[0, 'num_text_chunks'] == 2
     assert papers.loc[1, 'text_scrape_status'] == 'succeeded'
     assert text_path.exists()
     assert FakeModelConfig.calls == [{
@@ -341,6 +343,38 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
         'base_url': 'http://localhost:8000/v1',
     }]
     assert 'Skipped already successful stages: abstracts=0, text=1, images=0' in output
+    assert 'text for paper paper-1 was split into 2 independent model requests' in captured.err
+    assert 'Results from separate chunks are not automatically reconciled' in captured.err
+    assert 'Chunking warning: 1 paper input was split into 2 independent model requests' in captured.err
+
+
+def test_force_rescrape_replaces_previous_chunk_count(tmp_path, monkeypatch, capsys):
+    """Record the latest chunk plan rather than retaining an earlier split count."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    (papers_dir / 'paper-1.txt').write_text('paper text')
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{
+        'paper_id': 'paper-1',
+        'text_scrape_status': 'succeeded',
+        'num_text_chunks': 4,
+    }])
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'short paper text')
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
+    monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [])
+
+    scrape.scrape_papers(str(db_path), mode='text', force=True, output_path=str(tmp_path / 'scraped.csv'))
+
+    papers = read_corpus(db_path)
+    captured = capsys.readouterr()
+    assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
+    assert papers.loc[0, 'num_text_chunks'] == 1
+    assert 'was split into' not in captured.err
 
 
 def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_path, monkeypatch):
@@ -394,6 +428,7 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_pat
     assert papers.loc[0, 'abstract_scrape_status'] == 'succeeded'
     assert papers.loc[0, 'text_scrape_status'] == 'pending'
     assert papers.loc[0, 'num_abstract_materials'] == 1
+    assert papers.loc[0, 'num_abstract_chunks'] == 1
 
 
 def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeypatch):

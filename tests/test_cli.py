@@ -229,6 +229,11 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
             kind='pdf',
             mime_type='application/pdf',
         )
+        papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
+        papers['paper:1']['num_text_chunks'] = 3
+        papers['paper:2']['num_abstract_chunks'] = 2
+        corpus.upsert_paper(conn, papers['paper:1'])
+        corpus.upsert_paper(conn, papers['paper:2'])
 
     result = CliRunner().invoke(cli.corpus_status, [str(db_path)])
 
@@ -238,6 +243,8 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
     assert 'Papers with abstracts: 1' in result.output
     assert 'Papers with text: 1' in result.output
     assert 'Papers with PDFs: 1' in result.output
+    assert 'Text scrapes split into chunks: 1' in result.output
+    assert 'Abstract scrapes split into chunks: 1' in result.output
     assert 'Blobs: 3' in result.output
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output

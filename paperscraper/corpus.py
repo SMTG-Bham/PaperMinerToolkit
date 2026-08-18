@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -49,6 +49,8 @@ PIPELINE_COLUMNS = {
     'num_text_materials': 0,
     'num_abstract_materials': 0,
     'num_image_materials': 0,
+    'num_text_chunks': None,
+    'num_abstract_chunks': None,
     'last_error': '',
 }
 PAPER_FIELDS = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
@@ -70,7 +72,11 @@ def connect(db_path: str | Path):
 def init_corpus(conn):
     """Create corpus tables and indexes when they do not already exist."""
     conn.execute('PRAGMA foreign_keys = ON')
-    conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
+    current_version = conn.execute('PRAGMA user_version').fetchone()[0]
+    if current_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f'Corpus schema version {current_version} is newer than supported version {SCHEMA_VERSION}.'
+        )
     paper_columns = ',\n            '.join(
         f'{column} {_paper_column_type(column)}' for column in PAPER_FIELDS if column != 'paper_id'
     )
@@ -113,12 +119,27 @@ def init_corpus(conn):
         CREATE INDEX IF NOT EXISTS idx_assets_paper_role ON paper_assets(paper_id, role);
         """
     )
+    existing_columns = {
+        row['name'] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute('PRAGMA table_info(papers)').fetchall()
+    }
+    for column in ['num_text_chunks', 'num_abstract_chunks']:
+        if column not in existing_columns:
+            conn.execute(f'ALTER TABLE papers ADD COLUMN {column} INTEGER')
+    conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
     conn.commit()
 
 
 def _paper_column_type(column):
     """Return the SQLite storage type for a paper metadata or state column."""
-    if column in {'num_images', 'num_text_materials', 'num_abstract_materials', 'num_image_materials'}:
+    if column in {
+        'num_images',
+        'num_text_materials',
+        'num_abstract_materials',
+        'num_image_materials',
+        'num_text_chunks',
+        'num_abstract_chunks',
+    }:
         return 'INTEGER'
     return 'TEXT'
 
@@ -489,6 +510,8 @@ def corpus_stats(conn):
         for role in ['abstract', 'text', 'pdf']
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
+    chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
+    chunked_abstracts = conn.execute('SELECT COUNT(*) FROM papers WHERE num_abstract_chunks > 1').fetchone()[0]
     original_size, stored_size = sizes
     savings = 0 if original_size == 0 else 1 - (stored_size / original_size)
     return {
@@ -496,6 +519,8 @@ def corpus_stats(conn):
         'papers_with_abstract': asset_counts['abstract'],
         'papers_with_text': asset_counts['text'],
         'papers_with_pdf': asset_counts['pdf'],
+        'papers_with_chunked_text': chunked_text,
+        'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,
         'original_size': original_size,
         'stored_size': stored_size,

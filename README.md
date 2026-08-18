@@ -201,6 +201,8 @@ Scrape text and images together, using paper text as image context:
 
 When text and image scraping both produce records for a paper, PaperScraper asks the text model to reconcile them and merge matching materials into combined `text+image` rows.
 
+If a paper still exceeds the configured model input limit after optional compression, PaperScraper splits its text into independent model requests. It prints a warning because records extracted from separate chunks are not automatically reconciled and may be duplicated or incomplete across chunk boundaries. The corpus records the latest plan in `num_text_chunks` or `num_abstract_chunks`: `1` means the input fitted one request, a larger value means it was split, and a missing value means chunking was not recorded. `ps_corpus_status papers.db` reports how many paper inputs were split.
+
 Image extraction defaults to `--image-extraction auto`: embedded PDF images are used when available, otherwise pages are rendered to PNGs for vision analysis. Use `--image-extraction pages` to always render pages, or `--image-extraction embedded` to disable the fallback.
 
 By default, image scraping sends one image per vision request. Use `--image-batch-size 4` for small batches or `--image-batch-size all` to send every extracted image for a paper in one request.

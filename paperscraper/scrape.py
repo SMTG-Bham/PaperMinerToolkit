@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import random
 import re
+import sys
 import tempfile
 from tqdm import tqdm
 
@@ -45,6 +46,28 @@ def _text_chunks(text: str, model_config, prompt: str = ''):
         else:
             chunks.append(text[split * char_per_split:(split + 1) * char_per_split])
     return chunks
+
+
+def _record_chunk_plan(row, stage, chunks, model_config, summary):
+    """Persist a text chunk count and warn when one input needs several model requests."""
+    chunk_count = len(chunks)
+    row[f'num_{stage}_chunks'] = chunk_count
+    if chunk_count <= 1:
+        return
+
+    summary['chunked_inputs'] += 1
+    summary['chunk_requests'] += chunk_count
+    summary[f'{stage}_chunked'] += 1
+    paper_id = row.get('paper_id') or 'unknown paper'
+    model_name = getattr(model_config, 'name', None) or 'configured text model'
+    input_limit = getattr(model_config, 'input_token_limit', None)
+    limit_text = f' ({input_limit} tokens)' if input_limit is not None else ''
+    print(
+        f'Warning: {stage} for paper {paper_id} was split into {chunk_count} independent model requests '
+        f'to fit the configured input limit{limit_text} for {model_name}. Results from separate chunks are not '
+        'automatically reconciled and may contain duplicated or incomplete records.',
+        file=sys.stderr,
+    )
 
 
 def _append_materials(materials, row, source, source_path):
@@ -244,6 +267,10 @@ def scrape_papers(db_path: str = 'papers.db',
         'image_attempted': 0,
         'image_skipped': 0,
         'materials': 0,
+        'chunked_inputs': 0,
+        'chunk_requests': 0,
+        'abstract_chunked': 0,
+        'text_chunked': 0,
     }
     with connect(db_path) as conn:
         papers = _select_papers(paper_rows(conn), scrape_order=scrape_order, scrape_count=scrape_count)
@@ -273,7 +300,9 @@ def scrape_papers(db_path: str = 'papers.db',
                                 text = read_document_text(abstract_path)
                                 prompt = build_scrape_prompt(recipe_data, source='text')
                                 text = maybe_compress_text(text, prompt, text_config, compression)
-                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
+                                _record_chunk_plan(row, 'abstract', text_chunks, text_config, summary)
+                                for text_chunk in text_chunks:
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
                                 row['num_abstract_materials'] = len(text_materials)
@@ -294,7 +323,9 @@ def scrape_papers(db_path: str = 'papers.db',
                                 text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
                                 prompt = build_scrape_prompt(recipe_data, source='text')
                                 text = maybe_compress_text(text, prompt, text_config, compression)
-                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
+                                _record_chunk_plan(row, 'text', text_chunks, text_config, summary)
+                                for text_chunk in text_chunks:
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
                                 row['num_text_materials'] = len(text_materials)
@@ -386,3 +417,15 @@ def scrape_papers(db_path: str = 'papers.db',
         )
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
+    if summary['chunked_inputs']:
+        input_summary = (
+            '1 paper input was'
+            if summary['chunked_inputs'] == 1
+            else f"{summary['chunked_inputs']} paper inputs were"
+        )
+        print(
+            f"Chunking warning: {input_summary} split into "
+            f"{summary['chunk_requests']} independent model requests "
+            f"(abstracts={summary['abstract_chunked']}, text={summary['text_chunked']}).",
+            file=sys.stderr,
+        )
