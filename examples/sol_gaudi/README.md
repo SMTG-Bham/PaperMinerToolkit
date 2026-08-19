@@ -1,7 +1,7 @@
 # Running on ASU Sol's Intel Gaudi nodes
 
 This guide gets PaperScraper running against a local vLLM server on Sol's Gaudi 2
-accelerators. It replaces [`examples/qwen_vllm_workflow.ipynb`](../../examples/qwen_vllm_workflow.ipynb),
+accelerators. It replaces [`examples/qwen_vllm_workflow.ipynb`](../qwen_vllm_workflow.ipynb),
 which assumes a CUDA workstation.
 
 The worked example is biodegradable polymers: the scripts default to the
@@ -26,41 +26,49 @@ Those two environments cannot be merged. The vLLM Gaudi stack is built on Python
 > silently breaking HPU support for every other user. Only ever `source activate`
 > it.
 
-The runnable scripts live in [`examples/sol_gaudi/`](../../examples/sol_gaudi/),
-alongside the workflow notebooks:
+The runnable scripts live in this directory, alongside this guide:
 
 | Script | Runs on | Purpose |
 | --- | --- | --- |
-| [`install.sbatch`](../../examples/sol_gaudi/install.sbatch) | `htc` | **Run this first.** Builds the environment and verifies it |
-| [`fetch_corpus.sh`](../../examples/sol_gaudi/fetch_corpus.sh) | login node or interactive | Search and download; never touches the model |
-| [`fetch_corpus.sbatch`](../../examples/sol_gaudi/fetch_corpus.sbatch) | `htc` | The same thing as a batch job, for corpora too big to babysit |
-| [`scrape_gaudi.sbatch`](../../examples/sol_gaudi/scrape_gaudi.sbatch) | `gaudi` | **Start here.** vLLM + scrape + store in one job |
-| [`serve_gaudi.sbatch`](../../examples/sol_gaudi/serve_gaudi.sbatch) | `gaudi` | Long-lived server for reusing a warm model |
+| [`install.sbatch`](install.sbatch) | `htc` | **Run this first.** Builds the environment and verifies it |
+| [`fetch_corpus.sh`](fetch_corpus.sh) | login node or interactive | Search and download; never touches the model |
+| [`fetch_corpus.sbatch`](fetch_corpus.sbatch) | `htc` | The same thing as a batch job, for corpora too big to babysit |
+| [`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) | `gaudi` | **Start here.** vLLM + scrape + store in one job |
+| [`serve_gaudi.sbatch`](serve_gaudi.sbatch) | `gaudi` | Long-lived server for reusing a warm model |
 
-Copy them into your working directory and edit, or submit them in place — every
-setting is an environment variable with a default.
+Submit them in place, or copy them somewhere else and edit — every setting is an
+environment variable with a default.
+
+Everything in this example is submitted from **this directory**, and everything
+it produces is written back here: the job logs, `papers.db`, and the CSVs. Slurm
+runs a job in the directory it was submitted from, so `cd examples/sol_gaudi`
+once and the paths take care of themselves.
 
 ## Quick start
 
-From the repository root, three submissions end to end:
+From this directory, three submissions end to end:
 
 ```bash
-sbatch examples/sol_gaudi/install.sbatch
-sbatch examples/sol_gaudi/fetch_corpus.sbatch
-sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+cd examples/sol_gaudi
+sbatch install.sbatch
+sbatch fetch_corpus.sbatch
+sbatch scrape_gaudi.sbatch
 ```
 
-`install.sbatch` also works submitted from `examples/sol_gaudi` — it walks up
-from the submit directory to find the checkout. The other two still expect the
-repository root, since `papers.db` should land there rather than beside the
-scripts.
+`install.sbatch` is the one job that has to *run* from the repository root, for
+`build_tools/environment.yml` and the editable install; it walks up from the
+submit directory to find the checkout, so it is still submitted from here like
+the rest. The other two work in the directory they were submitted from, which is
+why `papers.db` and the CSVs end up beside the scripts.
 
 Wait for each to finish before the next — the corpus has to exist before the
-scrape, and the environment before either. Watch progress with
-`tail -f ps-install-<jobid>.log`.
+scrape, and the environment before either. The logs land here too, so watch
+progress with `tail -f ps-install-<jobid>.log`.
 
 Sections 1 to 4 explain what `install.sbatch` does and how to do it by hand;
-skip to section 5 if the install job succeeded.
+skip to section 5 if the install job succeeded. Those by-hand commands run from
+the repository root, since they install the checkout — only the submissions run
+from here.
 
 ## 1. Get an interactive session
 
@@ -81,7 +89,7 @@ mamba env create -f build_tools/environment.yml
 source activate paperscraper
 ```
 
-[`build_tools/environment.yml`](../environment.yml) supplies only the interpreter;
+[`build_tools/environment.yml`](../../build_tools/environment.yml) supplies only the interpreter;
 every dependency comes from `pyproject.toml`. Use `source activate`, never
 `mamba activate` — the latter writes cruft into your shell configuration.
 
@@ -91,7 +99,7 @@ environment regardless of what the last one left behind. Pass `PS_FORCE=0` to
 reuse an existing environment instead:
 
 ```bash
-sbatch --export=ALL,PS_FORCE=0 examples/sol_gaudi/install.sbatch
+sbatch --export=ALL,PS_FORCE=0 install.sbatch
 ```
 
 It only ever touches `$PS_ENV` — no other environment on the account — and
@@ -146,7 +154,7 @@ the model weights too, which keeps tens of GB of transfer out of your four-hour
 accelerator allocation:
 
 ```bash
-sbatch --export=ALL,PS_PREFETCH_WEIGHTS=1 examples/sol_gaudi/install.sbatch
+sbatch --export=ALL,PS_PREFETCH_WEIGHTS=1 install.sbatch
 ```
 
 ## 4. Point caches at scratch
@@ -183,14 +191,15 @@ Search and download are network-bound and never call the model, so they must not
 burn a Gaudi allocation.
 
 ```bash
-./examples/sol_gaudi/fetch_corpus.sh
+cd examples/sol_gaudi
+./fetch_corpus.sh
 ```
 
 That uses the default query, `biodegradable polymer OECD 301 biodegradation`.
 Pass your own as the first argument:
 
 ```bash
-./examples/sol_gaudi/fetch_corpus.sh "polymer biodegradation OECD 310" papers.db 100
+./fetch_corpus.sh "polymer biodegradation OECD 310" papers.db 100
 ```
 
 Naming the test standard — OECD 301, OECD 310, ASTM D6400, ISO 14855 — tends to
@@ -215,14 +224,16 @@ For a corpus large enough that you do not want to sit in an interactive session
 waiting on rate limits, submit it instead:
 
 ```bash
-sbatch examples/sol_gaudi/fetch_corpus.sbatch
-sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch
+sbatch fetch_corpus.sbatch
+sbatch --export=ALL,PS_COUNT=500 fetch_corpus.sbatch
 ```
 
 That runs on `htc` with no accelerator requested, since neither stage calls the
-model. `htc` caps wall time at four hours but runs uninterrupted. Submit from the
-repository root so `papers.db` lands there rather than in the scheduler's spool
-directory.
+model. `htc` caps wall time at four hours but runs uninterrupted. Submit it from
+this directory so `papers.db` lands beside the scripts rather than in the
+scheduler's spool directory — a relative `PS_DB` is resolved against the
+directory you submitted from, and `fetch_corpus.sh` anchors one to its own
+directory, so both routes agree on where the corpus lives.
 
 **The four-hour cap and an unbounded `PS_COUNT` interact badly on a large
 corpus**, and the two halves of the job behave differently if it is killed:
@@ -247,10 +258,13 @@ chmod 600 ~/.paperscraper_env
 ## 7. Submit the scrape
 
 ```bash
-sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+sbatch scrape_gaudi.sbatch
 ```
 
-[`scrape_gaudi.sbatch`](../../examples/sol_gaudi/scrape_gaudi.sbatch) requests one Gaudi card, starts vLLM
+From this directory again, so the job finds `papers.db` where the corpus step
+left it and writes the CSVs and its log alongside.
+
+[`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) requests one Gaudi card, starts vLLM
 from the shared environment in a background subshell, waits for `/v1/models` to
 answer, then runs `ps_scrape` and `ps_store` from your environment against
 `127.0.0.1`. The server is killed on exit.
@@ -258,7 +272,7 @@ answer, then runs `ps_scrape` and `ps_store` from your environment against
 Override anything at submit time:
 
 ```bash
-sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=1 examples/sol_gaudi/scrape_gaudi.sbatch
+sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=1 scrape_gaudi.sbatch
 ```
 
 Watch it with `tail -f ps-gaudi-<jobid>.log`.
@@ -284,7 +298,7 @@ to run this:
   `Corpus fully scraped.`
 
 ```bash
-sbatch examples/sol_gaudi/scrape_gaudi.sbatch   # repeat until nothing remains
+sbatch scrape_gaudi.sbatch   # repeat until nothing remains
 ```
 
 **Do not use `PS_COUNT` to pace a long run.** `--count` slices the *ordered
@@ -413,7 +427,7 @@ If warmup dies on an allocation failure, lower `PS_GPU_MEMORY_UTILIZATION`
 before touching anything else:
 
 ```bash
-sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 examples/sol_gaudi/scrape_gaudi.sbatch
+sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 scrape_gaudi.sbatch
 ```
 
 ### Adding vision

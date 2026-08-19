@@ -1,15 +1,19 @@
 #!/bin/bash
 # Build the PaperScraper environment on Sol, ready for the Gaudi example.
 #
-# Submit this once, before anything else, from the repository root or from this
-# directory — it finds the checkout either way:
+# Submit this once, before anything else, from this directory:
 #
-#   sbatch examples/sol_gaudi/install.sbatch
-#   cd examples/sol_gaudi && sbatch install.sbatch
+#   cd examples/sol_gaudi
+#   sbatch install.sbatch
 #
-# The log lands in whichever directory you submitted from:
+# Every script in this example is submitted from here and writes back here, so
+# the log lands beside the scripts:
 #
 #   tail -f ps-install-<jobid>.log
+#
+# The job itself runs from the repository root — the install needs
+# build_tools/environment.yml and an editable install of the checkout — which it
+# locates by walking up from this directory.
 #
 # It runs as a batch job because ASU asks that environments not be built on a
 # login node. No accelerator is requested — this only installs an HTTP client.
@@ -20,10 +24,10 @@
 #   PS_MODEL=Qwen/Qwen2.5-7B-Instruct   model whose tokenizer to pre-cache
 #   PS_PREFETCH_WEIGHTS=1          also download the model weights (tens of GB)
 #
-# When it finishes (paths relative to the repository root):
+# When it finishes, from this same directory:
 #
-#   sbatch examples/sol_gaudi/fetch_corpus.sbatch
-#   sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+#   sbatch fetch_corpus.sbatch
+#   sbatch scrape_gaudi.sbatch
 
 #SBATCH --job-name=ps-install
 #SBATCH -p htc
@@ -48,11 +52,12 @@ if [[ "$PS_ENV" == "gaudi-pytorch-vllm" ]]; then
   exit 1
 fi
 
-# Find the repository root by walking up from the submit directory, so this can
-# be submitted from the root, from examples/sol_gaudi, or from anywhere else in
-# the clone. Slurm copies the batch script into its spool directory before running
-# it, so $0 and BASH_SOURCE point at the copy and are no use for locating the
-# repository — the submit directory is the only reliable anchor.
+# Find the repository root by walking up from the submit directory. Unlike the
+# other scripts here this one has to run from the root, for environment.yml and
+# the editable install, but it is still submitted from examples/sol_gaudi like
+# everything else. Slurm copies the batch script into its spool directory before
+# running it, so $0 and BASH_SOURCE point at the copy and are no use for locating
+# the repository — the submit directory is the only reliable anchor.
 find_repo_root() {
   local dir="$1"
   while :; do
@@ -68,12 +73,12 @@ find_repo_root() {
 submit_dir="$(cd "${SLURM_SUBMIT_DIR:-$PWD}" && pwd -P)"
 if ! REPO_ROOT="$(find_repo_root "$submit_dir")"; then
   echo "ERROR: no PaperScraper checkout found at or above $submit_dir." >&2
-  echo "       Submit from the repository root or any directory inside it:" >&2
-  echo "         sbatch examples/sol_gaudi/install.sbatch" >&2
+  echo "       Submit from the example directory inside the checkout:" >&2
   echo "         cd examples/sol_gaudi && sbatch install.sbatch" >&2
   exit 1
 fi
 cd "$REPO_ROOT"
+echo "=== Submitted from: $submit_dir ==="
 echo "=== Repository root: $REPO_ROOT ==="
 
 # Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
@@ -254,6 +259,6 @@ fi
 
 echo
 echo "=== Done. Environment '$PS_ENV' is ready. ==="
-echo "Next:"
-echo "  sbatch examples/sol_gaudi/fetch_corpus.sbatch"
-echo "  sbatch examples/sol_gaudi/scrape_gaudi.sbatch"
+echo "Next, from $submit_dir:"
+echo "  sbatch fetch_corpus.sbatch"
+echo "  sbatch scrape_gaudi.sbatch"

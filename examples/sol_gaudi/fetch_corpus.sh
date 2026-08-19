@@ -6,8 +6,14 @@
 # a small corpus, or submit fetch_corpus.sbatch for a large one:
 #
 #   interactive -c 4 -t 0-2
-#   ./examples/sol_gaudi/fetch_corpus.sh
-#   ./examples/sol_gaudi/fetch_corpus.sh "polymer biodegradation OECD 310" bio.db 100
+#   cd examples/sol_gaudi
+#   ./fetch_corpus.sh
+#   ./fetch_corpus.sh "polymer biodegradation OECD 310" bio.db 100
+#
+# A relative database path is taken as relative to this directory, wherever you
+# happen to run the script from, so the corpus always lands beside the scripts
+# where scrape_gaudi.sbatch looks for it. Pass an absolute path to put it
+# somewhere else.
 #
 # The third argument caps results per source and defaults to everything the
 # sources have. An unbounded query against a broad search term can return tens of
@@ -18,10 +24,15 @@
 # queries naming the test standard (OECD 301, OECD 310, ASTM D6400, ISO 14855)
 # tend to return papers with extractable results rather than review articles.
 #
-# Credentials come from the environment (see build_tools/sol_gaudi/README.md):
+# Credentials come from the environment (see examples/sol_gaudi/README.md):
 #   ELSEVIER_API_KEY, CORE_API_KEY, UNPAYWALL_EMAIL
 
 set -euo pipefail
+
+# Work from the directory holding this script, so the corpus ends up beside the
+# sbatch scripts that consume it. This one is executed in place rather than
+# copied into Slurm's spool directory, so BASH_SOURCE really does point at it.
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
 QUERY="${1:-biodegradable polymer OECD 301 biodegradation}"
 DB="${2:-papers.db}"
@@ -64,9 +75,17 @@ ps_download "$DB" --format both --source all
 echo "=== Corpus ==="
 ps_corpus_stats "$DB"
 
+# $DB is absolute when fetch_corpus.sbatch resolved it against the submit
+# directory, and relative when it came straight off the command line.
+case "$DB" in
+  /*) DB_DISPLAY="$DB" ;;
+  *)  DB_DISPLAY="$PWD/$DB" ;;
+esac
+
 echo
-echo "Corpus ready at $DB. Now submit the scrape (defaults to the polymer recipe):"
-echo "  sbatch --export=ALL,PS_DB=$DB examples/sol_gaudi/scrape_gaudi.sbatch"
+echo "Corpus ready at $DB_DISPLAY. Now submit the scrape from $PWD"
+echo "(it defaults to the polymer recipe):"
+echo "  sbatch --export=ALL,PS_DB=$DB scrape_gaudi.sbatch"
 echo
 echo "Start with one paper to check the pipeline end to end:"
-echo "  sbatch --export=ALL,PS_DB=$DB,PS_COUNT=1 examples/sol_gaudi/scrape_gaudi.sbatch"
+echo "  sbatch --export=ALL,PS_DB=$DB,PS_COUNT=1 scrape_gaudi.sbatch"

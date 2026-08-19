@@ -6,15 +6,20 @@
 # load and HPU graph warmup cost more than the scrapes themselves, or when you
 # want to drive the same server from several client jobs or a notebook.
 #
-#   sbatch examples/sol_gaudi/serve_gaudi.sbatch
-#   cat ~/vllm_endpoint.txt          # -> <node>:<port>
+# Submit from this directory, like everything else in this example. The log
+# (vllm-gaudi-<jobid>.log) and the endpoint file land here beside the scripts:
+#
+#   cd examples/sol_gaudi
+#   sbatch serve_gaudi.sbatch
+#   cat vllm_endpoint.txt            # -> <node>:<port>
 #
 # Then, from a client job on a CPU partition or from your laptop through a
-# tunnel, point PaperScraper at it:
+# tunnel, point PaperScraper at it (still from this directory, where the corpus
+# is):
 #
 #   export PAPERSCRAPER_MODEL_PROVIDER=local
 #   export PAPERSCRAPER_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
-#   export PAPERSCRAPER_MODEL_BASE_URL="http://$(cat ~/vllm_endpoint.txt)/v1"
+#   export PAPERSCRAPER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
 #   export PAPERSCRAPER_MODEL_CAPABILITIES=text
 #   export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
 #   ps_scrape papers.db polymer --mode text --output scraped_polymer.csv
@@ -37,6 +42,11 @@
 
 set -euo pipefail
 
+# Run from wherever the job was submitted — normally examples/sol_gaudi — so the
+# endpoint file lands beside the scripts rather than in the scheduler's spool
+# directory.
+cd "${SLURM_SUBMIT_DIR:-$PWD}"
+
 PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 
 # ASU's own Gaudi examples serve at --max-model-len 8192, which is unusable here:
@@ -54,7 +64,10 @@ PS_GPU_MEMORY_UTILIZATION="${PS_GPU_MEMORY_UTILIZATION:-0.80}"
 PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
 
 PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"
-ENDPOINT_FILE="${ENDPOINT_FILE:-$HOME/vllm_endpoint.txt}"
+# Beside the scripts, not in $HOME, so one directory holds everything this
+# example produces. /home and /scratch are both shared across Sol, so a client
+# job on another node reads it either way. Set ENDPOINT_FILE to move it.
+ENDPOINT_FILE="${ENDPOINT_FILE:-$PWD/vllm_endpoint.txt}"
 
 # Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
 # sys.path, ahead of the environment's own. One `pip install torch` made there
@@ -71,6 +84,7 @@ mkdir -p "$HF_HOME"
 # export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
+echo "working directory: $PWD"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
 # Module and conda activation scripts routinely reference unset variables, which

@@ -5,10 +5,16 @@
 # babysit in an interactive session. Search and download are rate-limit bound
 # rather than compute bound, so this asks for few cores and a lot of wall clock.
 #
-#   sbatch examples/sol_gaudi/fetch_corpus.sbatch
-#   sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch   # bound it
+# Submit from this directory, like everything else in this example:
+#
+#   cd examples/sol_gaudi
+#   sbatch fetch_corpus.sbatch
+#   sbatch --export=ALL,PS_COUNT=500 fetch_corpus.sbatch   # bound it
 #   sbatch --export=ALL,PS_QUERY="polymer biodegradation OECD 310",PS_DB=bio.db \
-#          examples/sol_gaudi/fetch_corpus.sbatch
+#          fetch_corpus.sbatch
+#
+# The log (ps-fetch-<jobid>.log) and the corpus land beside the scripts, where
+# scrape_gaudi.sbatch looks for them.
 #
 # Credentials: a batch job does not reliably inherit your shell environment, so
 # keep the keys in a file only you can read and this script will source it:
@@ -16,9 +22,9 @@
 #   printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\n' > ~/.paperscraper_env
 #   chmod 600 ~/.paperscraper_env
 #
-# When the job finishes, submit the scrape:
+# When the job finishes, submit the scrape from the same directory:
 #
-#   sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+#   sbatch scrape_gaudi.sbatch
 
 #SBATCH --job-name=ps-fetch-corpus
 #SBATCH -p htc
@@ -52,14 +58,19 @@ PS_DB="${PS_DB:-papers.db}"
 PS_COUNT="${PS_COUNT:-1000000}"
 PS_SECRETS="${PS_SECRETS:-$HOME/.paperscraper_env}"
 
-# Run from wherever the job was submitted so papers.db lands next to the repo,
-# not in the scheduler's spool directory.
+# Run from wherever the job was submitted — normally examples/sol_gaudi — so the
+# corpus lands beside the scripts rather than in the scheduler's spool directory.
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
-PS_FETCH="${PS_FETCH:-examples/sol_gaudi/fetch_corpus.sh}"
+# fetch_corpus.sh anchors a relative database to its own directory. Resolve
+# PS_DB here so this job's working directory wins even if PS_FETCH points at a
+# copy of the script kept somewhere else.
+[[ "$PS_DB" == /* ]] || PS_DB="$PWD/$PS_DB"
+
+PS_FETCH="${PS_FETCH:-./fetch_corpus.sh}"
 if [[ ! -f "$PS_FETCH" ]]; then
-  echo "ERROR: $PS_FETCH not found. Submit from the repository root, or set" >&2
-  echo "       PS_FETCH to the path of fetch_corpus.sh." >&2
+  echo "ERROR: $PS_FETCH not found. Submit from examples/sol_gaudi, where" >&2
+  echo "       fetch_corpus.sh lives, or set PS_FETCH to its path." >&2
   exit 1
 fi
 

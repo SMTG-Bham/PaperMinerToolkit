@@ -255,7 +255,7 @@ Before running them, configure the search/download credentials you want to use, 
 
 The vLLM notebook assumes a local CUDA workstation. For ASU's Sol supercomputer, `examples/sol_gaudi/` holds ready-to-submit scripts for the Intel Gaudi accelerators:
 
-They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else.
+They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else. Every script is submitted from that directory — `cd examples/sol_gaudi` first — and the job logs, `papers.db`, and the CSVs are written back there beside the scripts.
 
 - `examples/sol_gaudi/install.sbatch` builds the environment and verifies it, keeping the CUDA build of torch out of a Gaudi node. Run this first.
 - `examples/sol_gaudi/fetch_corpus.sh` runs search and download off the Gaudi queue, since neither stage calls the model.
@@ -263,4 +263,4 @@ They are set up for the biodegradable polymer workflow, defaulting to the `polym
 - `examples/sol_gaudi/scrape_gaudi.sbatch` starts a vLLM server on one Gaudi card and runs scrape and store against it in the same job.
 - `examples/sol_gaudi/serve_gaudi.sbatch` keeps a warm server up for reuse across several runs.
 
-`build_tools/sol_gaudi/README.md` is the install guide for them, covering environment setup and the context sizing rule that local runs never hit.
+`examples/sol_gaudi/README.md` is the install guide for them, covering environment setup and the context sizing rule that local runs never hit.

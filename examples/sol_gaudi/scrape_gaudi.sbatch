@@ -6,13 +6,17 @@
 # paperscraper environment against 127.0.0.1. Both live in the same job, so
 # nothing is left running and no cross-node networking is involved.
 #
-# Submit from the directory holding papers.db:
+# Submit from this directory, where fetch_corpus.sh left papers.db:
 #
-#   sbatch examples/sol_gaudi/scrape_gaudi.sbatch
+#   cd examples/sol_gaudi
+#   sbatch scrape_gaudi.sbatch
+#
+# The log (ps-gaudi-<jobid>.log) and the CSVs land here too. Point PS_DB at an
+# absolute path if the corpus lives somewhere else.
 #
 # Every setting below can be overridden at submit time, for example:
 #
-#   sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=5 examples/sol_gaudi/scrape_gaudi.sbatch
+#   sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=5 scrape_gaudi.sbatch
 
 #SBATCH --job-name=ps-scrape-gaudi
 #SBATCH -p gaudi
@@ -24,6 +28,11 @@
 #SBATCH -o ps-gaudi-%j.log
 
 set -euo pipefail
+
+# Run from wherever the job was submitted — normally examples/sol_gaudi — so the
+# corpus and the CSVs are found and written beside the scripts rather than in the
+# scheduler's spool directory.
+cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 # --- Knobs ------------------------------------------------------------------
 # PS_MODEL must be the exact Hugging Face repo id. PaperScraper loads the
@@ -85,7 +94,7 @@ PS_RECIPE="${PS_RECIPE:-polymer}"
 # columns for matching, so two recipes must never share one CSV.
 PS_IN_CSV="${PS_IN_CSV:-scraped_${PS_RECIPE}.csv}"
 PS_OUT_CSV="${PS_OUT_CSV:-materials_${PS_RECIPE}.csv}"
-PS_ENV="${PS_ENV:-paperscraper}"    # our env, created per build_tools/sol_gaudi/README.md
+PS_ENV="${PS_ENV:-paperscraper}"    # our env, created per examples/sol_gaudi/README.md
 PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
 PS_RUN_STORE="${PS_RUN_STORE:-1}"   # ps_store also calls the model, so do it while the server is up
 PS_STARTUP_TIMEOUT="${PS_STARTUP_TIMEOUT:-3600}"
@@ -110,12 +119,16 @@ mkdir -p "$HF_HOME"
 # export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
+echo "working directory: $PWD"
 echo "model=$PS_MODEL max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
 echo "block_size=$PS_BLOCK_SIZE gpu_mem_util=$PS_GPU_MEMORY_UTILIZATION max_num_seqs=$PS_MAX_NUM_SEQS"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
 if [[ ! -f "$PS_DB" ]]; then
-  echo "ERROR: $PS_DB not found. Build the corpus first with examples/sol_gaudi/fetch_corpus.sh" >&2
+  echo "ERROR: $PS_DB not found in $PWD." >&2
+  echo "       Build the corpus first, from examples/sol_gaudi:" >&2
+  echo "         ./fetch_corpus.sh          # or: sbatch fetch_corpus.sbatch" >&2
+  echo "       Or set PS_DB to the path of an existing corpus." >&2
   exit 1
 fi
 
@@ -306,7 +319,7 @@ if remaining:
     print()
     print(f'{remaining} papers still to scrape. The scrape is resumable and skips')
     print('what already succeeded, so continue it by submitting the same job again:')
-    print(f'  sbatch --export=ALL,PS_DB={db_path} examples/sol_gaudi/scrape_gaudi.sbatch')
+    print(f'  sbatch --export=ALL,PS_DB={db_path} scrape_gaudi.sbatch')
 else:
     print()
     print('Corpus fully scraped.')
