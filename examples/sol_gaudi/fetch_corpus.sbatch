@@ -19,7 +19,7 @@
 # Credentials: a batch job does not reliably inherit your shell environment, so
 # keep the keys in a file only you can read and this script will source it:
 #
-#   printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\n' > ~/.paperscraper_env
+#   printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperscraper_env
 #   chmod 600 ~/.paperscraper_env
 #
 # When the job finishes, submit the scrape from the same directory:

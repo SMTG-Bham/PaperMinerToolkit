@@ -25,7 +25,7 @@
 # tend to return papers with extractable results rather than review articles.
 #
 # Credentials come from the environment (see examples/sol_gaudi/README.md):
-#   ELSEVIER_API_KEY, CORE_API_KEY, UNPAYWALL_EMAIL
+#   ELSEVIER_API_KEY, CORE_API_KEY, UNPAYWALL_EMAIL, OPENALEX_API_KEY
 
 set -euo pipefail
 
@@ -64,6 +64,15 @@ missing=()
 if (( ${#missing[@]} )); then
   echo "WARNING: unset credentials: ${missing[*]}"
   echo "Those sources will be skipped or will return nothing."
+fi
+
+# OpenAlex is the exception: it answers without a key, but keyless callers share
+# a daily credit budget worth roughly 100 search pages, which a full corpus
+# build exhausts long before it finishes.
+if [[ -z "${OPENALEX_API_KEY:-}" ]]; then
+  echo "WARNING: unset credential: OPENALEX_API_KEY"
+  echo "OpenAlex will still answer, but on a budget a full run will exhaust."
+  echo "Get a free key at https://openalex.org/settings/api"
 fi
 
 echo "=== Searching: $QUERY ==="

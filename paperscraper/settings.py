@@ -95,7 +95,7 @@ def load_settings():
         raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
 
     merged = deepcopy(DEFAULT_SETTINGS)
-    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_email', 'openai_api_key',
+    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_api_key', 'openai_api_key',
                 'anthropic_api_key']:
         if key in settings:
             merged[key] = settings[key]
@@ -119,9 +119,9 @@ def load_settings():
     unpaywall_email = os.environ.get('UNPAYWALL_EMAIL')
     if unpaywall_email:
         merged['unpaywall_email'] = unpaywall_email
-    openalex_email = os.environ.get('OPENALEX_EMAIL')
-    if openalex_email:
-        merged['openalex_email'] = openalex_email
+    openalex_api_key = os.environ.get('OPENALEX_API_KEY')
+    if openalex_api_key:
+        merged['openalex_api_key'] = openalex_api_key
 
     text_env = _env_profile('PAPERSCRAPER_MODEL_')
     if text_env:
@@ -290,17 +290,37 @@ def update_unpaywall_email(settings=True):
     save_settings(settings)
 
 
-def update_openalex_email(settings=True):
-    """Prompt for and save the optional polite-pool email sent to OpenAlex.
+def check_openalex_api_key(api_key):
+    """Return whether OpenAlex accepts an API key.
 
-    OpenAlex works without any credentials; when no OpenAlex email is set,
-    requests fall back to the Unpaywall email before the anonymous pool.
+    Only an explicit 401 counts as invalid. Any other status, or an unreachable
+    API, returns ``True`` so a network problem never blocks saving a good key.
+    """
+    from paperscraper import openalex
+
+    try:
+        response = requests.get(openalex.RATE_LIMIT_URL,
+                                params={'api_key': api_key},
+                                headers=openalex.request_headers(),
+                                timeout=30)
+    except requests.RequestException:
+        return True
+    return response.status_code != 401
+
+
+def update_openalex_key(settings=True):
+    """Prompt for, validate, and save an OpenAlex API key.
+
+    OpenAlex still answers requests without a key, but from a much smaller
+    daily credit budget. A free key from https://openalex.org/settings/api
+    raises that budget tenfold.
     """
     if settings:
         settings = load_settings()
-    _show_current_setting(settings, 'openalex_email', 'OpenAlex email', secret=False)
-    email = input('Enter OpenAlex email: ').strip()
-    if '@' not in email:
-        raise ValueError('OpenAlex email must be a valid email address.')
-    settings['openalex_email'] = email
-    save_settings(settings)
+    _show_current_setting(settings, 'openalex_api_key', 'OpenAlex API key')
+    api_key = input('Enter OpenAlex API key: ').strip()
+    if check_openalex_api_key(api_key):
+        settings['openalex_api_key'] = api_key
+        save_settings(settings)
+    else:
+        raise ValueError('OpenAlex API key is invalid.')

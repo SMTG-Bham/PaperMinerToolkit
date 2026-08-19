@@ -180,10 +180,17 @@ need an OpenAI or Anthropic key.
 export ELSEVIER_API_KEY="..."
 export CORE_API_KEY="..."
 export UNPAYWALL_EMAIL="you@asu.edu"
+export OPENALEX_API_KEY="..."
 ```
 
-The interactive `ps_elsevier_key`, `ps_core_key`, and `ps_unpaywall_email`
-commands store these in `~/.config/.pscraperrc.json` if you prefer.
+The interactive `ps_elsevier_key`, `ps_core_key`, `ps_unpaywall_email`, and
+`ps_openalex_key` commands store these in `~/.config/.pscraperrc.json` if you
+prefer.
+
+OpenAlex is the one source that still answers without a key, but it meters
+requests against a daily credit budget that a keyless caller exhausts after
+roughly 100 search pages. A free key from <https://openalex.org/settings/api>
+raises that budget tenfold, which a full corpus build needs.
 
 ## 6. Build the corpus off the Gaudi queue
 
@@ -251,7 +258,7 @@ A batch job does not reliably inherit your shell environment, so put the
 credentials in a file only you can read and the script will source it:
 
 ```bash
-printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\n' > ~/.paperscraper_env
+printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperscraper_env
 chmod 600 ~/.paperscraper_env
 ```
 

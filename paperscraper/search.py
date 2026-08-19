@@ -269,16 +269,14 @@ def openalex_search(query: str, count: int = 200):
     """
     Search OpenAlex works and return at most ``count`` normalized paper rows.
     """
-    email = openalex.configured_email()
+    api_key = openalex.configured_api_key()
     per_page = min(max(int(count), 1), 200)
     params = {'search': query, 'per-page': per_page, 'cursor': '*'}
-    if email:
-        params['mailto'] = email
     works = []
     with tqdm(total=count, desc='Searching OpenAlex', colour='green') as pbar:
         while len(works) < count:
             params['per-page'] = min(per_page, count - len(works))
-            payload = openalex.request_json(openalex.WORKS_URL, params=params, email=email) or {}
+            payload = openalex.request_json(openalex.WORKS_URL, params=params, api_key=api_key) or {}
             results = payload.get('results') or []
             if not results:
                 break

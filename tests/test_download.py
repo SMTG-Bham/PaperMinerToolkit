@@ -503,8 +503,8 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkey
     4. Resolves an invalid source.
 
     Asserts:
-        - `all` expands to configured sources plus the credential-free OpenAlex.
-        - `all` still includes OpenAlex when nothing is configured.
+        - `all` expands to configured sources plus OpenAlex, which needs no key.
+        - `all` still includes OpenAlex when nothing is configured, since keyless access works.
         - Explicit source lists are de-duplicated while preserving order.
         - Invalid source names raise `ValueError`.
     """
@@ -1306,16 +1306,18 @@ def test_download_openalex_pdf_uses_real_api(tmp_path):
     3. Reads the first successfully downloaded file header.
 
     Asserts:
-        - At least one OpenAlex candidate can be downloaded without credentials.
+        - At least one OpenAlex candidate can be downloaded, using OPENALEX_API_KEY when set.
         - The downloaded file starts with a PDF header.
     """
     from paperscraper import openalex
 
-    payload = openalex.request_json(openalex.WORKS_URL, params={
-        'search': 'solid electrolyte',
-        'filter': 'open_access.is_oa:true',
-        'per-page': 5,
-    })
+    payload = openalex.request_json(openalex.WORKS_URL,
+                                    params={
+                                        'search': 'solid electrolyte',
+                                        'filter': 'open_access.is_oa:true',
+                                        'per-page': 5,
+                                    },
+                                    api_key=openalex.configured_api_key())
     candidates = [openalex.work_to_paper(work) for work in payload.get('results') or []]
     last_error = 'no OpenAlex candidates were returned'
     for index, paper in enumerate(candidates):

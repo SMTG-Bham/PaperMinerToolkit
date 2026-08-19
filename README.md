@@ -64,13 +64,13 @@ CORE can use `CORE_API_KEY` from the environment or a saved key:
 
 `ps_core_key`
 
-OpenAlex needs no API key at all:
+OpenAlex answers requests without a key, but meters them against a small daily credit budget that works out at roughly 100 search pages per day:
 
 `ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100`
 
-Optionally save a contact email to join OpenAlex's faster polite pool. When unset, the Unpaywall email is reused, and requests without either email still work:
+A free key from <https://openalex.org/settings/api> raises that budget tenfold, which any real corpus build needs. Set `OPENALEX_API_KEY` in the environment or save it:
 
-`ps_openalex_email`
+`ps_openalex_key`
 
 Or import externally downloaded PDFs. This scans each PDF for a DOI, uses Crossref to fill metadata when possible, and stores the PDF in the corpus. Matching records are updated and unmatched PDFs are appended:
 
@@ -100,7 +100,7 @@ Use this step for papers discovered by search. External PDF imports already poin
 
 `ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always (no credentials needed), CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always, drawing on `OPENALEX_API_KEY` when set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
 
 ### Train And Inspect LDA Topics
 
@@ -249,7 +249,7 @@ The examples folder contains notebooks with explained bash cells for common mode
 - `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
 - `examples/anthropic_claude_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
-Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and the optional `OPENALEX_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
+Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and `OPENALEX_API_KEY`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
 
 ## Running On HPC
 

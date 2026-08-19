@@ -533,14 +533,14 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch):
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
-    monkeypatch.setattr(cli, 'update_openalex_email', lambda: calls.append('openalex'))
+    monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
     cli.update_unpaywall_api_email()
-    cli.update_openalex_api_email()
+    cli.update_openalex_api_key()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 

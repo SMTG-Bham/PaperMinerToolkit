@@ -19,7 +19,7 @@ API_ENV_KEYS = [
     'ANTHROPIC_API_KEY',
     'CORE_API_KEY',
     'UNPAYWALL_EMAIL',
-    'OPENALEX_EMAIL',
+    'OPENALEX_API_KEY',
 ]
 
 MODEL_ENV_KEYS = [
@@ -260,14 +260,14 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'anthropic_api_key': 'file-anthropic',
         'core_api_key': 'file-core',
         'unpaywall_email': 'file@example.com',
-        'openalex_email': 'file-openalex@example.com',
+        'openalex_api_key': 'file-openalex',
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-anthropic')
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
-    monkeypatch.setenv('OPENALEX_EMAIL', 'env-openalex@example.com')
+    monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
 
     loaded = settings.load_settings()
 
@@ -276,7 +276,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['anthropic_api_key'] == 'env-anthropic'
     assert loaded['core_api_key'] == 'env-core'
     assert loaded['unpaywall_email'] == 'env@example.com'
-    assert loaded['openalex_email'] == 'env-openalex@example.com'
+    assert loaded['openalex_api_key'] == 'env-openalex'
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file, monkeypatch):
@@ -670,29 +670,65 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
         settings.update_unpaywall_email()
 
 
-def test_update_openalex_email_validates_and_saves_email(isolated_settings_file, monkeypatch, capsys):
+def test_update_openalex_key_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
     """
-    Test interactive OpenAlex email validation and storage.
+    Test interactive OpenAlex API key validation and storage.
 
     This function performs the following steps:
-    1. Enters a valid email and saves it with `update_openalex_email`.
-    2. Enters an invalid email in a second call.
-    3. Captures the expected validation error.
+    1. Replaces `input` with a fake OpenAlex key response.
+    2. Replaces OpenAlex API key validation with a successful local result.
+    3. Calls `update_openalex_key` and reloads the temporary settings file.
+    4. Repeats the call with validation failing.
 
     Asserts:
-        - A valid email address is saved.
-        - An invalid email address raises `ValueError`.
+        - The stored key is masked when the current value is shown.
+        - A validated key is saved.
+        - A rejected key raises `ValueError`.
     """
-    settings.save_settings({'openalex_email': 'old@example.com'})
-    monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
-    settings.update_openalex_email()
-    output = capsys.readouterr().out
-    assert 'Current OpenAlex email: old@example.com' in output
-    assert settings.load_settings()['openalex_email'] == 'person@example.com'
+    settings.save_settings({'openalex_api_key': 'old-openalex-key'})
+    monkeypatch.setattr('builtins.input', lambda _: 'openalex-key')
+    monkeypatch.setattr(settings, 'check_openalex_api_key', lambda api_key: api_key == 'openalex-key')
 
-    monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
+    settings.update_openalex_key()
+
+    output = capsys.readouterr().out
+    assert 'Current OpenAlex API key: old-...-key' in output
+    assert settings.load_settings()['openalex_api_key'] == 'openalex-key'
+
+    monkeypatch.setattr('builtins.input', lambda _: 'wrong-key')
     with pytest.raises(ValueError):
-        settings.update_openalex_email()
+        settings.update_openalex_key()
+
+
+def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
+    """
+    Test OpenAlex API key validation outcomes.
+
+    This function performs the following steps:
+    1. Replaces the rate-limit request with prepared status codes.
+    2. Replaces the request with one raising a connection error.
+    3. Calls `check_openalex_api_key` for each case.
+
+    Asserts:
+        - A 401 response marks the key invalid.
+        - A successful response marks the key valid.
+        - An unreachable API does not block saving the key.
+    """
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(401))
+    assert settings.check_openalex_api_key('bad-key') is False
+
+    monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(200))
+    assert settings.check_openalex_api_key('good-key') is True
+
+    def unreachable(*_, **__):
+        raise settings.requests.ConnectionError('offline')
+
+    monkeypatch.setattr(settings.requests, 'get', unreachable)
+    assert settings.check_openalex_api_key('good-key') is True
 
 
 @pytest.mark.network

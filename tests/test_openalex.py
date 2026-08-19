@@ -110,12 +110,12 @@ def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch):
     sleeps = []
     monkeypatch.setattr(openalex.time, 'sleep', sleeps.append)
 
-    rate_limited = FakeResponse({}, status_code=429)
-    rate_limited.headers['Retry-After'] = '7'
-    session = FakeSession([rate_limited, FakeResponse({'ok': True})])
+    unavailable = FakeResponse({}, status_code=503)
+    unavailable.headers['Retry-After'] = '7'
+    session = FakeSession([unavailable, FakeResponse({'ok': True})])
     assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
 
-    malformed = FakeResponse({}, status_code=429)
+    malformed = FakeResponse({}, status_code=503)
     malformed.headers['Retry-After'] = 'soon'
     session = FakeSession([malformed, FakeResponse({'ok': True})])
     assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
@@ -139,16 +139,59 @@ def test_request_json_raises_after_exhausting_attempts(monkeypatch):
 
 
 def test_get_work_builds_doi_and_id_urls():
-    """Request single works by DOI or W-identifier with polite-pool headers."""
+    """Request single works by DOI or W-identifier, sending the key when configured."""
     session = FakeSession([FakeResponse(work()), FakeResponse(work())])
 
-    openalex.get_work('doi:10.1234/example.one', email='person@example.ac.uk', session=session)
+    openalex.get_work('doi:10.1234/example.one', api_key='oa-key', session=session)
     openalex.get_work('W123', session=session)
 
     assert session.calls[0]['url'] == 'https://api.openalex.org/works/doi:10.1234/example.one'
-    assert session.calls[0]['headers']['User-Agent'] == 'PaperScraper/0.0.1 (mailto:person@example.ac.uk)'
+    assert session.calls[0]['params']['api_key'] == 'oa-key'
+    assert session.calls[0]['headers']['User-Agent'] == 'PaperScraper/0.0.1'
     assert session.calls[1]['url'] == 'https://api.openalex.org/works/W123'
-    assert session.calls[1]['headers']['User-Agent'] == 'PaperScraper/0.0.1'
+    assert 'api_key' not in session.calls[1]['params']
+
+
+def test_request_params_adds_api_key_only_when_configured():
+    """Copy caller parameters and attach the API key only when one is available."""
+    params = {'search': 'solid electrolyte'}
+
+    assert openalex.request_params(params, 'oa-key') == {'search': 'solid electrolyte', 'api_key': 'oa-key'}
+    assert openalex.request_params(params, None) == {'search': 'solid electrolyte'}
+    assert openalex.request_params(params, '') == {'search': 'solid electrolyte'}
+    assert openalex.request_params(None, 'oa-key') == {'api_key': 'oa-key'}
+    assert params == {'search': 'solid electrolyte'}
+
+
+def test_request_json_raises_immediately_for_a_rejected_api_key(monkeypatch):
+    """Fail fast on 401 rather than retrying a key OpenAlex will keep rejecting."""
+    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
+    session = FakeSession([FakeResponse({'error': 'Invalid or missing API key'}, status_code=401)])
+
+    with pytest.raises(RuntimeError, match='OpenAlex rejected the API key'):
+        openalex.request_json(openalex.WORKS_URL, api_key='bad-key', session=session)
+
+    assert len(session.calls) == 1
+
+
+def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(monkeypatch):
+    """Fail fast on 429 and report the reset window, which outlasts any backoff."""
+    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
+    exhausted = FakeResponse({}, status_code=429)
+    exhausted.headers['X-RateLimit-Reset'] = '32841'
+    session = FakeSession([exhausted])
+
+    with pytest.raises(RuntimeError, match='daily credit budget is exhausted') as excinfo:
+        openalex.request_json(openalex.WORKS_URL, session=session)
+
+    assert 'resets in 9.1 hours' in str(excinfo.value)
+    assert len(session.calls) == 1
+
+    unlabelled = FakeResponse({}, status_code=429)
+    unlabelled.headers['X-RateLimit-Reset'] = 'soon'
+    session = FakeSession([unlabelled])
+    with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
+        openalex.request_json(openalex.WORKS_URL, session=session)
 
 
 def test_pdf_candidates_orders_and_deduplicates_urls():
@@ -161,21 +204,19 @@ def test_pdf_candidates_orders_and_deduplicates_urls():
     assert openalex.pdf_candidates({}) == []
 
 
-def test_configured_email_prefers_openalex_setting_then_unpaywall_fallback(monkeypatch):
-    """Resolve the polite-pool email from OpenAlex settings before Unpaywall ones."""
-    monkeypatch.delenv('OPENALEX_EMAIL', raising=False)
-    monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
-    settings = {'openalex_email': 'oa@example.ac.uk', 'unpaywall_email': 'up@example.ac.uk'}
-    assert openalex.configured_email(settings) == 'oa@example.ac.uk'
-    assert openalex.configured_email({'unpaywall_email': 'up@example.ac.uk'}) == 'up@example.ac.uk'
-    assert openalex.configured_email({'elsevier_api_key': 'key'}) is None
-    monkeypatch.setenv('OPENALEX_EMAIL', 'env@example.ac.uk')
-    assert openalex.configured_email({'unpaywall_email': 'up@example.ac.uk'}) == 'env@example.ac.uk'
+def test_configured_api_key_prefers_settings_then_environment(monkeypatch):
+    """Resolve the OpenAlex API key from settings before the environment."""
+    monkeypatch.delenv('OPENALEX_API_KEY', raising=False)
+    assert openalex.configured_api_key({'openalex_api_key': 'settings-key'}) == 'settings-key'
+    assert openalex.configured_api_key({'elsevier_api_key': 'key'}) is None
+    monkeypatch.setenv('OPENALEX_API_KEY', 'env-key')
+    assert openalex.configured_api_key({'openalex_api_key': 'settings-key'}) == 'settings-key'
+    assert openalex.configured_api_key({'elsevier_api_key': 'key'}) == 'env-key'
 
 
 @pytest.mark.network
 def test_get_work_uses_real_openalex_api():
     """Fetch one known open-access work from the live OpenAlex API."""
-    record = openalex.get_work('doi:10.1371/journal.pone.0000308')
+    record = openalex.get_work('doi:10.1371/journal.pone.0000308', api_key=openalex.configured_api_key())
     assert record is not None
     assert record['doi'] == 'https://doi.org/10.1371/journal.pone.0000308'

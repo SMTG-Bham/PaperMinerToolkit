@@ -309,7 +309,7 @@ def _download_openalex_pdf(paper, filepath):
     else:
         return False, 'missing DOI'
     try:
-        work = openalex.get_work(identifier)
+        work = openalex.get_work(identifier, api_key=openalex.configured_api_key())
     except RuntimeError as e:
         return False, str(e)
     if not work:

@@ -2,8 +2,8 @@
 
 This module centralizes OpenAlex HTTP details and the mapping from OpenAlex
 work records onto PaperScraper's paper schema so search and download code can
-share one implementation. OpenAlex needs no API key; configuring a contact
-email joins the faster polite pool.
+share one implementation. OpenAlex meters access against a daily credit budget;
+requests without an API key still work but draw on a much smaller budget.
 """
 
 import os
@@ -17,39 +17,68 @@ from paperscraper.settings import load_settings
 
 BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
+RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
 USER_AGENT = 'PaperScraper/0.0.1'
 
 
-def configured_email(settings=None):
-    """Return the polite-pool contact email for OpenAlex requests, if any."""
+def configured_api_key(settings=None):
+    """Return the configured OpenAlex API key, if one is available."""
     settings = settings or load_settings()
-    return (settings.get('openalex_email')
-            or os.environ.get('OPENALEX_EMAIL')
-            or settings.get('unpaywall_email')
-            or os.environ.get('UNPAYWALL_EMAIL'))
+    return settings.get('openalex_api_key') or os.environ.get('OPENALEX_API_KEY')
 
 
-def request_headers(email=None):
-    """Build OpenAlex request headers, joining the polite pool when an email is set."""
-    if email:
-        return {'User-Agent': f'{USER_AGENT} (mailto:{email})'}
+def request_headers():
+    """Build OpenAlex request headers."""
     return {'User-Agent': USER_AGENT}
 
 
-def request_json(url, params=None, email=None, session=None, timeout=60, attempts=4):
+def request_params(params=None, api_key=None):
+    """Copy query parameters, adding the API key when one is configured.
+
+    Requests without a key are served from a much smaller daily credit budget,
+    so the key is attached whenever it is available but never invented.
+    """
+    merged = dict(params or {})
+    if api_key:
+        merged['api_key'] = api_key
+    return merged
+
+
+def _budget_error(response):
+    """Describe an exhausted OpenAlex credit budget using the rate-limit headers."""
+    reset = response.headers.get('X-RateLimit-Reset')
+    try:
+        wait = f' Budget resets in {round(float(reset) / 3600, 1)} hours.' if reset else ''
+    except (TypeError, ValueError):
+        wait = ''
+    return ('OpenAlex daily credit budget is exhausted.'
+            f'{wait} Configure an API key with ps_openalex_key or OPENALEX_API_KEY '
+            'to raise the budget.')
+
+
+def request_json(url, params=None, api_key=None, session=None, timeout=60, attempts=4):
     """Request an OpenAlex endpoint with bounded retry/backoff behavior.
 
     Returns the decoded JSON payload, or ``None`` for a 404 response so
-    single-work lookups can miss without retrying.
+    single-work lookups can miss without retrying. Rejected keys and exhausted
+    credit budgets raise immediately, because neither clears within the retry
+    window.
     """
     session = session or requests
-    headers = request_headers(email)
+    headers = request_headers()
+    params = request_params(params, api_key)
     last_error = None
     for attempt in range(attempts):
         try:
-            response = session.get(url, params=params or {}, headers=headers, timeout=timeout)
+            response = session.get(url, params=params, headers=headers, timeout=timeout)
             if response.status_code == 404:
                 return None
+            if response.status_code == 401:
+                raise RuntimeError('OpenAlex rejected the API key. Set a valid key with '
+                                   'ps_openalex_key or OPENALEX_API_KEY, or unset it to use '
+                                   'the smaller keyless budget.')
+            if response.status_code == 429:
+                raise RuntimeError(_budget_error(response))
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError) as error:
@@ -70,9 +99,9 @@ def work_url(identifier):
     return f'{WORKS_URL}/{quote(str(identifier), safe=":/")}'
 
 
-def get_work(identifier, email=None, session=None):
+def get_work(identifier, api_key=None, session=None):
     """Fetch one OpenAlex work record, returning ``None`` when it does not exist."""
-    return request_json(work_url(identifier), email=email, session=session)
+    return request_json(work_url(identifier), api_key=api_key, session=session)
 
 
 def work_id(work):

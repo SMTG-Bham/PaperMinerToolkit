@@ -650,12 +650,12 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
 
     This function performs the following steps:
     1. Replaces OpenAlex JSON requests with prepared multi-page payloads.
-    2. Replaces the configured polite-pool email and tqdm with local fakes.
+    2. Replaces the configured API key and tqdm with local fakes.
     3. Calls `openalex_search` for more than one page.
 
     Asserts:
         - Requests carry the search query, shrinking per-page limits, and cursors.
-        - The polite-pool email is sent as the mailto parameter.
+        - The configured API key is passed to every request.
         - Results from multiple pages are returned up to the requested count.
     """
 
@@ -676,15 +676,15 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
 
     first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
 
-    def fake_request_json(url, params=None, email=None, **_):
-        calls.append({'url': url, 'params': dict(params), 'email': email})
+    def fake_request_json(url, params=None, api_key=None, **_):
+        calls.append({'url': url, 'params': dict(params), 'api_key': api_key})
         if len(calls) == 1:
             return {'results': first_page, 'meta': {'next_cursor': 'cursor-2'}}
         return {'results': [{'id': 'https://openalex.org/W200', 'title': 'paper 200'}],
                 'meta': {'next_cursor': 'cursor-3'}}
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
-    monkeypatch.setattr(search.openalex, 'configured_email', lambda: 'person@example.ac.uk')
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: 'oa-key')
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
     rows = search.openalex_search('solid electrolyte', count=201)
@@ -693,8 +693,8 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
     assert calls[0]['params']['search'] == 'solid electrolyte'
     assert calls[0]['params']['per-page'] == 200
     assert calls[0]['params']['cursor'] == '*'
-    assert calls[0]['params']['mailto'] == 'person@example.ac.uk'
-    assert calls[0]['email'] == 'person@example.ac.uk'
+    assert calls[0]['api_key'] == 'oa-key'
+    assert calls[1]['api_key'] == 'oa-key'
     assert calls[1]['params']['per-page'] == 1
     assert calls[1]['params']['cursor'] == 'cursor-2'
     assert len(rows) == 201
@@ -702,18 +702,18 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
     assert rows['paper_id'].iloc[-1] == 'openalex:W200'
 
 
-def test_openalex_search_stops_without_next_cursor_and_omits_mailto(monkeypatch):
+def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch):
     """
-    Test OpenAlex search stop behavior and anonymous-pool requests.
+    Test OpenAlex search stop behavior and keyless requests.
 
     This function performs the following steps:
     1. Replaces OpenAlex JSON requests with a single page lacking a next cursor.
-    2. Replaces the configured polite-pool email with None.
+    2. Replaces the configured API key with None.
     3. Calls `openalex_search` for more results than exist.
 
     Asserts:
         - Pagination stops when no next cursor is returned.
-        - Requests omit the mailto parameter when no email is configured.
+        - Requests carry no API key when none is configured.
     """
 
     class FakeTqdm:
@@ -731,19 +731,19 @@ def test_openalex_search_stops_without_next_cursor_and_omits_mailto(monkeypatch)
 
     calls = []
 
-    def fake_request_json(url, params=None, email=None, **_):
-        calls.append({'params': dict(params), 'email': email})
+    def fake_request_json(url, params=None, api_key=None, **_):
+        calls.append({'params': dict(params), 'api_key': api_key})
         return {'results': [{'id': 'https://openalex.org/W1', 'title': 'only'}], 'meta': {}}
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
-    monkeypatch.setattr(search.openalex, 'configured_email', lambda: None)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
     rows = search.openalex_search('query', count=50)
 
     assert len(calls) == 1
-    assert 'mailto' not in calls[0]['params']
-    assert calls[0]['email'] is None
+    assert 'api_key' not in calls[0]['params']
+    assert calls[0]['api_key'] is None
     assert rows['paper_id'].tolist() == ['openalex:W1']
 
 

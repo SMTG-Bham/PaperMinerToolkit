@@ -26,7 +26,7 @@ from paperscraper.settings import (get_model_profile,
                                    update_core_key,
                                    update_elsevier_key,
                                    update_openai_key,
-                                   update_openalex_email,
+                                   update_openalex_key,
                                    update_unpaywall_email)
 from paperscraper.utilities import reset, status
 
@@ -496,9 +496,9 @@ def update_unpaywall_api_email():
     update_unpaywall_email()
 
 
-def update_openalex_api_email():
-    """Prompt for and save an OpenAlex email address."""
-    update_openalex_email()
+def update_openalex_api_key():
+    """Prompt for and save an OpenAlex API key."""
+    update_openalex_key()
 
 
 def update_openai_api_key():
