@@ -3,11 +3,16 @@
 #
 # Searching and downloading are network- and CPU-bound and never touch the
 # model, so they must not run in the gaudi queue. Run this on a login node for
-# a small corpus, or inside an htc job for a large one:
+# a small corpus, or submit fetch_corpus.sbatch for a large one:
 #
 #   interactive -c 4 -t 0-2
 #   ./examples/sol_gaudi/fetch_corpus.sh
 #   ./examples/sol_gaudi/fetch_corpus.sh "polymer biodegradation OECD 310" bio.db 100
+#
+# The third argument caps results per source and defaults to everything the
+# sources have. An unbounded query against a broad search term can return tens of
+# thousands of papers and download for many hours - pass a number to bound it, or
+# submit fetch_corpus.sbatch instead of running this interactively.
 #
 # The polymer and polymer_db recipes key off reported biodegradation tests, so
 # queries naming the test standard (OECD 301, OECD 310, ASTM D6400, ISO 14855)
@@ -20,7 +25,16 @@ set -euo pipefail
 
 QUERY="${1:-biodegradable polymer OECD 301 biodegradation}"
 DB="${2:-papers.db}"
-COUNT="${3:-10}"
+
+# Every paper the sources will give us. ps_search has no "unlimited" flag: each
+# backend loops until it has COUNT records or the provider runs out, so a number
+# larger than any real result set is how you ask for everything. Scopus stops at
+# its own total, CORE and OpenAlex stop when a short page comes back.
+#
+# COUNT is per source, not in total. --source all queries Scopus, CORE and
+# OpenAlex with the same number and merges the results on DOI, so the corpus
+# ends up somewhere between the largest single source and the sum of all three.
+COUNT="${3:-1000000}"
 PS_ENV="${PS_ENV:-paperscraper}"
 
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"

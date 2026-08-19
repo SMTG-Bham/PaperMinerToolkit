@@ -50,6 +50,11 @@ sbatch examples/sol_gaudi/fetch_corpus.sbatch
 sbatch examples/sol_gaudi/scrape_gaudi.sbatch
 ```
 
+`install.sbatch` also works submitted from `examples/sol_gaudi` — it walks up
+from the submit directory to find the checkout. The other two still expect the
+repository root, since `papers.db` should land there rather than beside the
+scripts.
+
 Wait for each to finish before the next — the corpus has to exist before the
 scrape, and the environment before either. Watch progress with
 `tail -f ps-install-<jobid>.log`.
@@ -79,6 +84,19 @@ source activate paperscraper
 [`build_tools/environment.yml`](../environment.yml) supplies only the interpreter;
 every dependency comes from `pyproject.toml`. Use `source activate`, never
 `mamba activate` — the latter writes cruft into your shell configuration.
+
+`install.sbatch` does this for you, and **rebuilds from scratch by default**: if
+`$PS_ENV` already exists it is removed and recreated, so every run gives the same
+environment regardless of what the last one left behind. Pass `PS_FORCE=0` to
+reuse an existing environment instead:
+
+```bash
+sbatch --export=ALL,PS_FORCE=0 examples/sol_gaudi/install.sbatch
+```
+
+It only ever touches `$PS_ENV` — no other environment on the account — and
+refuses outright if that name resolves to a prefix you do not own, which is what
+keeps a typo away from ASU's shared environments.
 
 ## 3. Install the package, without dragging in CUDA
 
@@ -179,6 +197,20 @@ Naming the test standard — OECD 301, OECD 310, ASTM D6400, ISO 14855 — tends
 surface papers with extractable results rather than reviews, which matters
 because the biodegradation fields are only filled when a paper states them.
 
+The third argument is the result cap, and it now defaults to **everything the
+sources will return**. Two things to know about it:
+
+- It is **per source, not in total.** `--source all` asks Scopus, CORE and
+  OpenAlex for that many each, then merges on DOI, so the corpus lands between
+  the largest single source and the sum of the three.
+- There is no "unlimited" flag in `ps_search`. Each backend loops until it has
+  the requested number or the provider runs out, so the default is simply a
+  number larger than any real result set. Scopus stops at its own total, CORE
+  and OpenAlex stop when a short page comes back.
+
+Bound it with a number while you are testing a new query — a broad term can
+return tens of thousands of papers, and `ps_download` then fetches all of them.
+
 For a corpus large enough that you do not want to sit in an interactive session
 waiting on rate limits, submit it instead:
 
@@ -188,10 +220,21 @@ sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch
 ```
 
 That runs on `htc` with no accelerator requested, since neither stage calls the
-model. `htc` caps wall time at four hours but runs uninterrupted; for a bigger
-corpus switch the header to `-p general`, which allows up to a week on the
-`public` QOS. Submit from the repository root so `papers.db` lands there rather
-than in the scheduler's spool directory.
+model. `htc` caps wall time at four hours but runs uninterrupted. Submit from the
+repository root so `papers.db` lands there rather than in the scheduler's spool
+directory.
+
+**The four-hour cap and an unbounded `PS_COUNT` interact badly on a large
+corpus**, and the two halves of the job behave differently if it is killed:
+
+- `ps_search` upserts on DOI, so re-running it costs little and adds nothing
+  twice.
+- `ps_download` walks every row in the corpus and has **no skip for assets it
+  already holds** — only abstracts short-circuit. A job that dies at the wall
+  clock re-downloads everything on the next submit.
+
+So either bound `PS_COUNT` so the fetch finishes inside four hours, or switch the
+header to `-p general -t 1-00:00:00`, which the `public` QOS allows up to a week.
 
 A batch job does not reliably inherit your shell environment, so put the
 credentials in a file only you can read and the script will source it:
@@ -223,6 +266,35 @@ Watch it with `tail -f ps-gaudi-<jobid>.log`.
 **Start with `PS_COUNT=1`.** A single paper exercises prompt construction, the
 chat call, and JSON parsing end to end, and fails in about a minute instead of
 four hours.
+
+### Scraping the whole corpus
+
+`PS_COUNT` is empty by default, which means every paper in `papers.db`. A corpus
+worth building is normally bigger than one four-hour Gaudi allocation, so expect
+the job to be killed part-way through. That is fine, and it is the intended way
+to run this:
+
+- Every paper's outcome is committed to `papers.db` as it happens, so a job that
+  hits the wall clock loses only the paper in flight.
+- `ps_scrape` skips any stage already marked `succeeded`, so re-submitting the
+  same job continues where the last one stopped. Finished papers cost
+  milliseconds each.
+- The job now ends with a **Remaining work** section: how many papers are done,
+  how many are left, and the command to continue. Resubmit until it says
+  `Corpus fully scraped.`
+
+```bash
+sbatch examples/sol_gaudi/scrape_gaudi.sbatch   # repeat until nothing remains
+```
+
+**Do not use `PS_COUNT` to pace a long run.** `--count` slices the *ordered
+corpus*, not the unfinished part of it, so a second job with `PS_COUNT=50` would
+re-select the same first 50 papers, find them already succeeded, and do no new
+work. Use it for testing (`PS_COUNT=1`), never for resuming.
+
+The one thing to watch is the CSV: `ps_scrape --output` appends across runs, and
+`ps_store` matches against the existing columns, so keep one file per recipe and
+let successive jobs grow it.
 
 ### Choosing a recipe
 

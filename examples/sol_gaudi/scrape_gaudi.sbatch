@@ -61,7 +61,15 @@ PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
 
 PS_DB="${PS_DB:-papers.db}"
 PS_MODE="${PS_MODE:-text}"
-PS_COUNT="${PS_COUNT:-}"            # empty means every eligible paper
+# Empty means every paper in the corpus, which is the intended setting: the
+# scrape is resumable, so a run that hits the wall clock is continued simply by
+# submitting again, and finished papers are skipped in seconds.
+#
+# Do not set PS_COUNT to resume a partial run. --count slices the *ordered
+# corpus*, not the unfinished part of it, so a second job with --count 50 would
+# re-select the same first 50 papers, find them already succeeded, and do no new
+# work. It is for testing a pipeline (PS_COUNT=1), not for pacing a long run.
+PS_COUNT="${PS_COUNT:-}"
 
 # polymer: 36 fields, including the 8 biodegradation ones (test standard,
 #   medium, extent, duration, mechanism, organisms, certification). ~450 output
@@ -264,6 +272,44 @@ if not rows:
     print("none")
 for err, n in rows:
     print(f"[{n}x] {err}")
+PY
+
+# --- What is left ----------------------------------------------------------
+# A corpus large enough to need this script is larger than one four-hour
+# allocation, so the normal end state is "partly done". Say so explicitly, and
+# print the command that continues it.
+echo "=== Remaining work ==="
+python - "$PS_DB" "$PS_MODE" <<'PY'
+import sqlite3
+import sys
+
+db_path, mode = sys.argv[1], sys.argv[2]
+stages = {
+    'abstract': ['abstract_scrape_status'],
+    'text': ['text_scrape_status'],
+    'images': ['image_scrape_status'],
+    'text-images': ['text_scrape_status', 'image_scrape_status'],
+}[mode]
+
+con = sqlite3.connect(db_path)
+total = con.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
+remaining = 0
+for column in stages:
+    # column comes from the table above, never from user input.
+    done = con.execute(
+        f"SELECT COUNT(*) FROM papers WHERE COALESCE({column}, '') = 'succeeded'"
+    ).fetchone()[0]
+    print(f'{column}: {done} of {total} succeeded, {total - done} to go')
+    remaining = max(remaining, total - done)
+
+if remaining:
+    print()
+    print(f'{remaining} papers still to scrape. The scrape is resumable and skips')
+    print('what already succeeded, so continue it by submitting the same job again:')
+    print(f'  sbatch --export=ALL,PS_DB={db_path} examples/sol_gaudi/scrape_gaudi.sbatch')
+else:
+    print()
+    print('Corpus fully scraped.')
 PY
 
 echo "=== Done ==="

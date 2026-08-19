@@ -6,7 +6,7 @@
 # rather than compute bound, so this asks for few cores and a lot of wall clock.
 #
 #   sbatch examples/sol_gaudi/fetch_corpus.sbatch
-#   sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch
+#   sbatch --export=ALL,PS_COUNT=500 examples/sol_gaudi/fetch_corpus.sbatch   # bound it
 #   sbatch --export=ALL,PS_QUERY="polymer biodegradation OECD 310",PS_DB=bio.db \
 #          examples/sol_gaudi/fetch_corpus.sbatch
 #
@@ -31,9 +31,14 @@
 # Deliberately no -G. Search and download never call the model, and a Gaudi card
 # would sit idle for the whole job waiting on Crossref and Unpaywall.
 #
-# htc caps wall time at 4 hours but runs without interruption. For a corpus large
-# enough to need longer, switch to the general partition, which allows up to a
-# week on the public QOS:
+# htc caps wall time at 4 hours but runs without interruption.
+#
+# Mind that against the unbounded PS_COUNT below. Search is cheap and re-running
+# it is nearly free, because ps_search upserts on DOI. Download is not: ps_download
+# walks every row in the corpus and has no skip for assets it already has, so a
+# job killed at the wall clock re-downloads from the start on the next submit.
+# If the corpus is big enough for that to bite, either bound PS_COUNT so the job
+# finishes inside four hours, or move to a partition that allows longer:
 #
 #   #SBATCH -p general
 #   #SBATCH -t 1-00:00:00
@@ -42,7 +47,9 @@ set -euo pipefail
 
 PS_QUERY="${PS_QUERY:-biodegradable polymer OECD 301 biodegradation}"
 PS_DB="${PS_DB:-papers.db}"
-PS_COUNT="${PS_COUNT:-50}"
+# Every paper the sources will give us, per source. See fetch_corpus.sh for what
+# the number means; set it to something small while testing a new query.
+PS_COUNT="${PS_COUNT:-1000000}"
 PS_SECRETS="${PS_SECRETS:-$HOME/.paperscraper_env}"
 
 # Run from wherever the job was submitted so papers.db lands next to the repo,
