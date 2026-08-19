@@ -98,7 +98,7 @@ set -u
 # torch just as well, and the mismatch only surfaces once vllm_gaudi imports
 # habana_frameworks — minutes into a cold start. Check it now instead.
 echo "=== Checking the vLLM environment ==="
-python - <<'PY'
+python -u - <<'PY'
 import importlib.metadata as metadata
 import importlib.util
 import pathlib
@@ -110,15 +110,23 @@ for name in ("torch", "torchvision", "habana_frameworks"):
     # find_spec locates a package without importing it, so a mismatched pair is
     # reported here rather than raising on the way in.
     spec = importlib.util.find_spec(name)
-    if spec is None or not spec.origin:
+    if spec is None:
         sys.exit(f"ERROR: {name} is not importable in {prefix}.")
-    origin = pathlib.Path(spec.origin).resolve()
+    if spec.origin and spec.origin != "namespace":
+        locations = [pathlib.Path(spec.origin).resolve().parent]
+    else:
+        # habana_frameworks is a namespace package: no top-level __init__.py, so
+        # no origin, only the directories the package spans.
+        locations = [pathlib.Path(p).resolve() for p in (spec.submodule_search_locations or [])]
+    if not locations:
+        sys.exit(f"ERROR: {name} is not importable in {prefix}.")
     try:
         version = metadata.version(name)
     except metadata.PackageNotFoundError:
         version = "?"
-    print(f"{name} {version} from {origin.parent}")
-    if prefix not in origin.parents:
+    shown = ", ".join(str(location) for location in locations)
+    print(f"{name} {version} from {shown}")
+    if any(prefix not in location.parents for location in locations):
         shadowed.append(name)
 
 if shadowed:
