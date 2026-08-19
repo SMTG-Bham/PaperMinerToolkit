@@ -29,16 +29,39 @@
 #SBATCH -N 1
 #SBATCH -G 1
 #SBATCH -c 18
+# ASU's Gaudi examples all request -t 0-4. Eight hours is the point of running a
+# long-lived server, but if the submit is rejected for exceeding the QOS limit,
+# that is this line.
 #SBATCH -t 0-08:00:00
 #SBATCH -o vllm-gaudi-%j.log
 
 set -euo pipefail
 
 PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+
+# ASU's own Gaudi examples serve at --max-model-len 8192, which is unusable here:
+# a single 10000-token completion does not fit inside it, so every request would
+# 400. Hence 32768, paid for with the memory knobs below.
 PS_MAX_MODEL_LEN="${PS_MAX_MODEL_LEN:-32768}"
+
+# Gaudi-specific launch flags, taken from https://docs.rc.asu.edu/vllm/. None of
+# them are vLLM defaults and all three matter on HPU: 128 is the block size the
+# Gaudi backend is tuned for, and holding utilisation and concurrent sequences
+# down leaves device memory free for HPU graph capture during warmup. Lower
+# PS_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
+PS_BLOCK_SIZE="${PS_BLOCK_SIZE:-128}"
+PS_GPU_MEMORY_UTILIZATION="${PS_GPU_MEMORY_UTILIZATION:-0.80}"
+PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
+
 PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"
 ENDPOINT_FILE="${ENDPOINT_FILE:-$HOME/vllm_endpoint.txt}"
 
+# Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
+# sys.path, ahead of the environment's own. One `pip install torch` made there
+# with nothing activated shadows Habana's patched build for every later job, and
+# the only symptom is an AssertionError deep inside vllm_gaudi about a
+# compile-time/run-time PyTorch mismatch. Ignore user site for the whole job.
+export PYTHONNOUSERSITE=1
 export PT_HPU_LAZY_MODE=1
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 mkdir -p "$HF_HOME"
@@ -57,6 +80,44 @@ module load mamba/latest
 source activate "$PS_VLLM_ENV"
 set -u
 
+# PYTHONNOUSERSITE covers ~/.local, but PYTHONPATH or a stray .pth file shadows
+# torch just as well, and the mismatch only surfaces once vllm_gaudi imports
+# habana_frameworks — minutes into a cold start. Check it now instead.
+echo "=== Checking the vLLM environment ==="
+python - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
+import pathlib
+import sys
+
+prefix = pathlib.Path(sys.prefix).resolve()
+shadowed = []
+for name in ("torch", "torchvision", "habana_frameworks"):
+    # find_spec locates a package without importing it, so a mismatched pair is
+    # reported here rather than raising on the way in.
+    spec = importlib.util.find_spec(name)
+    if spec is None or not spec.origin:
+        sys.exit(f"ERROR: {name} is not importable in {prefix}.")
+    origin = pathlib.Path(spec.origin).resolve()
+    try:
+        version = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        version = "?"
+    print(f"{name} {version} from {origin.parent}")
+    if prefix not in origin.parents:
+        shadowed.append(name)
+
+if shadowed:
+    sys.exit(
+        f"ERROR: shadowed by another install: {', '.join(shadowed)}\n"
+        f"       These resolve outside {prefix}, so the Habana build is not the\n"
+        "       one that loads and vLLM will fail during startup. Fix it with\n"
+        "         python -m pip uninstall -y torch torchvision torchaudio\n"
+        "       run with no environment active, or move the offending directory\n"
+        "       aside. Never install into the shared vLLM environment itself."
+    )
+PY
+
 PORT="$(shuf -i 8000-9000 -n 1)"
 
 # Bind to 0.0.0.0 so client jobs on other nodes can reach it. Sol is behind a
@@ -70,4 +131,7 @@ exec python -m vllm.entrypoints.openai.api_server \
   --model "$PS_MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
-  --max-model-len "$PS_MAX_MODEL_LEN"
+  --max-model-len "$PS_MAX_MODEL_LEN" \
+  --block-size "$PS_BLOCK_SIZE" \
+  --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \
+  --max-num-seqs "$PS_MAX_NUM_SEQS"

@@ -82,6 +82,17 @@ every dependency comes from `pyproject.toml`. Use `source activate`, never
 
 ## 3. Install the package, without dragging in CUDA
 
+ASU's [vLLM page](https://docs.rc.asu.edu/vllm/) tells you to use the `mamba`
+module or an apptainer image, and — verbatim — "Do not use `uv`, `conda`, or
+`pip`, or docker." That rule is about building your own inference stack, and the
+PyTorch-mismatch entry under Troubleshooting is exactly what it exists to
+prevent. What follows stays inside it: the environment comes from the `mamba`
+module, torch and vLLM are only ever the shared `gaudi-pytorch-vllm` copies, and
+`pip` installs nothing but PaperScraper and its pure-Python dependencies into an
+environment of our own — never the shared one, never `~/.local`. If your group
+reads the rule more strictly than that, build a `.sif` and run the scraper from
+it instead; nothing in PaperScraper needs the host environment.
+
 `pyproject.toml` depends on `headroom-ai[image,ml]`, whose `ml` extra requires
 `torch`. Left alone, pip resolves that to the CUDA build and pulls several GB of
 `nvidia-*` wheels and `triton` that are useless on a Gaudi node. PaperScraper only
@@ -108,11 +119,13 @@ carry a `+cpu` suffix.
 
 `install.sbatch` checks all of this and fails the job if any of it is wrong: a
 torch build without `+cpu`, any surviving `nvidia-*` or `triton` package, a
-missing `ps_*` console script, or a failing test. It also pre-caches the
-tokenizer for `PS_MODEL`, so the Gaudi job does not need the network for the
-chunk-sizing lookup. Pass `PS_PREFETCH_WEIGHTS=1` to download the model weights
-too, which keeps tens of GB of transfer out of your four-hour accelerator
-allocation:
+missing `ps_*` console script, or a failing test. It neither reads nor writes
+`~/.local` (`PYTHONNOUSERSITE=1`, `PIP_USER=0`), since a wheel landing there
+shadows both this environment and the shared Gaudi one — see Troubleshooting. It
+also pre-caches the tokenizer for `PS_MODEL`, so the Gaudi job does not need the
+network for the chunk-sizing lookup. Pass `PS_PREFETCH_WEIGHTS=1` to download
+the model weights too, which keeps tens of GB of transfer out of your four-hour
+accelerator allocation:
 
 ```bash
 sbatch --export=ALL,PS_PREFETCH_WEIGHTS=1 examples/sol_gaudi/install.sbatch
@@ -307,6 +320,30 @@ PS_MAX_MODEL_LEN  >=  PS_INPUT_TOKEN_LIMIT + 11000
 Setting the two equal is the most likely way to lose a four-hour allocation:
 `scrape_gaudi.sbatch` refuses to launch if the gap is too small.
 
+Note that the top row is ASU's own default — their Gaudi examples all serve at
+`--max-model-len 8192`. Copy that number and nothing works, because the
+hardcoded 10000-token completion does not fit in it on its own. This is the one
+place these scripts deliberately depart from ASU's, and the memory knobs below
+are how they pay for it.
+
+### Gaudi launch flags
+
+Beyond the context length, the scripts pass the three flags ASU's Gaudi examples
+use. They are not vLLM defaults, and they are HPU-specific:
+
+| Knob | Default | Why |
+| --- | --- | --- |
+| `PS_BLOCK_SIZE` | `128` | the KV block size the Gaudi backend is tuned for |
+| `PS_GPU_MEMORY_UTILIZATION` | `0.80` | leaves device memory free for HPU graph capture |
+| `PS_MAX_NUM_SEQS` | `16` | caps concurrent sequences, and so KV cache growth |
+
+If warmup dies on an allocation failure, lower `PS_GPU_MEMORY_UTILIZATION`
+before touching anything else:
+
+```bash
+sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 examples/sol_gaudi/scrape_gaudi.sbatch
+```
+
 ### Adding vision
 
 PaperScraper keeps separate `text` and `vision` profiles, so the text model does
@@ -332,8 +369,31 @@ Raise `PS_STARTUP_TIMEOUT`, or uncomment `VLLM_SKIP_WARMUP=true` while iterating
 but leave warmup on for real runs, since it buys steady-state throughput.
 
 **vLLM exits during startup.** Almost always the model: unsupported architecture
-on Gaudi 2, or it does not fit. Try a smaller model, lower `PS_MAX_MODEL_LEN`, or
-reduce `--max-num-seqs`.
+on Gaudi 2, or it does not fit. Try a smaller model, or lower
+`PS_MAX_MODEL_LEN`, `PS_GPU_MEMORY_UTILIZATION`, or `PS_MAX_NUM_SEQS` — see
+Gaudi launch flags above.
+
+**vLLM exits during startup with a PyTorch version mismatch.** The log shows
+`Failed to load plugin hpu` and `AssertionError: Error: Compile-time major/minor
+PyTorch version 2.7 differs from run-time 2.11.0+cu130`, then dies with
+`RuntimeError: operator torchvision::nms does not exist`. One cause behind both:
+a torch wheel under `~/.local/lib/python3.12/site-packages` is being imported
+instead of the shared environment's Habana build, and the environment's
+torchvision — compiled against the Habana build — then fails to register its
+operators. Conda environments, unlike venvs, keep user site on `sys.path` *ahead*
+of their own, so a single `pip install torch` run with no environment active
+breaks every Gaudi job from then on. The job scripts set `PYTHONNOUSERSITE=1` and
+check the resolved paths before loading the model, but clear the stray copy too —
+anything else importing torch on this account hits the same problem:
+
+```bash
+ls ~/.local/lib/python3.12/site-packages | grep -iE 'torch|nvidia|triton'
+python3.12 -m pip uninstall -y torch torchvision torchaudio
+```
+
+Run the uninstall with no environment active, so pip targets user site. If pip
+reports the packages are not installed, that interpreter is not the one that owns
+the directory — move the offending package directories aside by hand instead.
 
 **Chunking looks wrong and nothing is logged.** PaperScraper falls back to a
 `len/3` character estimate whenever the tokenizer fails to load, and it does so
@@ -363,6 +423,12 @@ node and submit only `papers.db` into the job. The corpus is self-contained.
 
 ## Before committing changes to these scripts
 
-The scripts use `-p gaudi -q public -G 1`, which is what ASU's vLLM documentation
-shows. Other ASU pages show `--partition=sol-gaudi --gres=gaudi:1` and
-`--gres=gpu:hl225:8`. Run `sinfo -s` once on Sol and pin whichever is real.
+The scripts use `-p gaudi -q public -N 1 -G 1 -c 18`, matching ASU's
+[vLLM page](https://docs.rc.asu.edu/vllm/) line for line, including `-G` rather
+than `--gres`. Other ASU pages show `--partition=sol-gaudi --gres=gaudi:1` and
+`--gres=gpu:hl225:8`; treat the vLLM page as authoritative for this workload, and
+if a submit is rejected, run `sinfo -s` before editing anything.
+
+`serve_gaudi.sbatch` is the one deliberate exception: it asks for `-t 0-08:00:00`
+where ASU's examples use `-t 0-4`, because a server outliving several client jobs
+is the whole point of it. A rejected submit means the QOS disagrees; lower it.

@@ -49,6 +49,13 @@ if [[ ! -f pyproject.toml || ! -f build_tools/environment.yml ]]; then
   exit 1
 fi
 
+# Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
+# sys.path, ahead of the environment's own — so a wheel landing there shadows
+# this environment and ASU's shared Gaudi one for every later job. Neither read
+# user site nor let pip write to it.
+export PYTHONNOUSERSITE=1
+export PIP_USER=0
+
 # Keep caches off /home, which is capped at 100 GiB.
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/scratch/$USER/pip}"
@@ -99,12 +106,17 @@ pip install -e ".[test]"
 # --- 3. Assert the install is actually CUDA-free ----------------------------
 echo "=== Verifying ==="
 python - <<'PY'
+import pathlib
 import sys
 import torch
-print(f"torch {torch.__version__}")
+print(f"torch {torch.__version__} from {pathlib.Path(torch.__file__).parent}")
 if not torch.__version__.endswith("+cpu"):
     sys.exit(f"ERROR: expected a +cpu torch build, got {torch.__version__}. "
              "A CUDA wheel was pulled in; rerun with PS_FORCE=1.")
+prefix = pathlib.Path(sys.prefix).resolve()
+if prefix not in pathlib.Path(torch.__file__).resolve().parents:
+    sys.exit(f"ERROR: torch resolved outside {prefix}. Something on sys.path is "
+             "shadowing the environment; remove it before running any job.")
 PY
 
 cuda_pkgs="$(pip list --format=freeze | grep -cE '^(nvidia-|triton)' || true)"

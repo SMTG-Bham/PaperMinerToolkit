@@ -41,9 +41,23 @@ PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 #     PS_MAX_MODEL_LEN >= PS_INPUT_TOKEN_LIMIT + 11000
 #
 # Set them equal and every single request comes back HTTP 400.
+#
+# ASU's own Gaudi examples serve at --max-model-len 8192, which is unusable here:
+# a single 10000-token completion does not fit inside it, so every request would
+# 400 before the prompt is even counted. Hence 32768, paid for with the memory
+# knobs below.
 PS_MAX_MODEL_LEN="${PS_MAX_MODEL_LEN:-32768}"
 PS_INPUT_TOKEN_LIMIT="${PS_INPUT_TOKEN_LIMIT:-20000}"
 PS_OUTPUT_RESERVE="${PS_OUTPUT_RESERVE:-11000}"
+
+# Gaudi-specific launch flags, taken from https://docs.rc.asu.edu/vllm/. None of
+# them are vLLM defaults and all three matter on HPU: 128 is the block size the
+# Gaudi backend is tuned for, and holding utilisation and concurrent sequences
+# down leaves device memory free for HPU graph capture during warmup. Lower
+# PS_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
+PS_BLOCK_SIZE="${PS_BLOCK_SIZE:-128}"
+PS_GPU_MEMORY_UTILIZATION="${PS_GPU_MEMORY_UTILIZATION:-0.80}"
+PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
 
 PS_DB="${PS_DB:-papers.db}"
 PS_MODE="${PS_MODE:-text}"
@@ -69,6 +83,12 @@ PS_RUN_STORE="${PS_RUN_STORE:-1}"   # ps_store also calls the model, so do it wh
 PS_STARTUP_TIMEOUT="${PS_STARTUP_TIMEOUT:-3600}"
 
 # --- Gaudi and cache environment -------------------------------------------
+# Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
+# sys.path, ahead of the environment's own. One `pip install torch` made there
+# with nothing activated shadows Habana's patched build for every later job, and
+# the only symptom is an AssertionError deep inside vllm_gaudi about a
+# compile-time/run-time PyTorch mismatch. Ignore user site for the whole job.
+export PYTHONNOUSERSITE=1
 export PT_HPU_LAZY_MODE=1
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 mkdir -p "$HF_HOME"
@@ -83,6 +103,7 @@ mkdir -p "$HF_HOME"
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "model=$PS_MODEL max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
+echo "block_size=$PS_BLOCK_SIZE gpu_mem_util=$PS_GPU_MEMORY_UTILIZATION max_num_seqs=$PS_MAX_NUM_SEQS"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
 if [[ ! -f "$PS_DB" ]]; then
@@ -114,6 +135,49 @@ set -u
 PORT="$(shuf -i 8000-9000 -n 1)"
 BASE_URL="http://127.0.0.1:${PORT}/v1"
 
+# --- Preflight: torch must come from the vLLM environment -------------------
+# PYTHONNOUSERSITE covers ~/.local, but PYTHONPATH or a stray .pth file shadows
+# torch just as well. Check before paying for a model load: the mismatch only
+# surfaces once vllm_gaudi imports habana_frameworks, minutes into a cold start,
+# and the traceback that follows blames torchvision rather than the cause.
+echo "=== Checking the vLLM environment ==="
+(
+  activate_env "$PS_VLLM_ENV"
+  python - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
+import pathlib
+import sys
+
+prefix = pathlib.Path(sys.prefix).resolve()
+shadowed = []
+for name in ("torch", "torchvision", "habana_frameworks"):
+    # find_spec locates a package without importing it, so a mismatched pair is
+    # reported here rather than raising on the way in.
+    spec = importlib.util.find_spec(name)
+    if spec is None or not spec.origin:
+        sys.exit(f"ERROR: {name} is not importable in {prefix}.")
+    origin = pathlib.Path(spec.origin).resolve()
+    try:
+        version = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        version = "?"
+    print(f"{name} {version} from {origin.parent}")
+    if prefix not in origin.parents:
+        shadowed.append(name)
+
+if shadowed:
+    sys.exit(
+        f"ERROR: shadowed by another install: {', '.join(shadowed)}\n"
+        f"       These resolve outside {prefix}, so the Habana build is not the\n"
+        "       one that loads and vLLM will fail during startup. Fix it with\n"
+        "         python -m pip uninstall -y torch torchvision torchaudio\n"
+        "       run with no environment active, or move the offending directory\n"
+        "       aside. Never install into the shared vLLM environment itself."
+    )
+PY
+)
+
 # --- Start vLLM -------------------------------------------------------------
 # The subshell is load-bearing: activating our env later in the parent shell
 # would otherwise clobber the interpreter the server is running under.
@@ -123,7 +187,10 @@ BASE_URL="http://127.0.0.1:${PORT}/v1"
     --model "$PS_MODEL" \
     --host 127.0.0.1 \
     --port "$PORT" \
-    --max-model-len "$PS_MAX_MODEL_LEN"
+    --max-model-len "$PS_MAX_MODEL_LEN" \
+    --block-size "$PS_BLOCK_SIZE" \
+    --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \
+    --max-num-seqs "$PS_MAX_NUM_SEQS"
 ) &
 VLLM_PID=$!
 
