@@ -37,6 +37,10 @@ jobs:
         run: |
           pytest --cov=paperscraper --cov-report=term-missing --cov-report=xml
 
+      - name: Validate NumPy-style docstrings
+        run: |
+          ruff check paperscraper tests
+
       - name: Compile Python sources and examples
         run: |
           python -m compileall paperscraper examples

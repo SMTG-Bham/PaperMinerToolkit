@@ -59,18 +59,7 @@ def read_papers_corpus(path):
 
 
 def test_store_results_reports_missing_scraped_materials_file(tmp_path, capsys):
-    """
-    Test storing results when the temporary scraped materials file is missing.
-
-    This function performs the following steps:
-    1. Builds paths for missing scraped materials and output materials files.
-    2. Calls `store_results`.
-    3. Captures the printed output.
-
-    Asserts:
-        - A helpful message is printed.
-        - No output materials file is created.
-    """
+    """Test storing results when the temporary scraped materials file is missing."""
     in_path = tmp_path / 'missing.csv'
     out_path = tmp_path / 'materials.csv'
 
@@ -82,18 +71,7 @@ def test_store_results_reports_missing_scraped_materials_file(tmp_path, capsys):
 
 
 def test_store_results_reports_empty_scraped_materials_file(tmp_path, capsys):
-    """
-    Test storing results when the temporary scraped materials file is empty.
-
-    This function performs the following steps:
-    1. Writes an empty scraped materials CSV.
-    2. Calls `store_results`.
-    3. Captures the printed output.
-
-    Asserts:
-        - A helpful message is printed.
-        - No output materials file is created.
-    """
+    """Test storing results when the temporary scraped materials file is empty."""
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
     pd.DataFrame(columns=['Name']).to_csv(in_path)
@@ -106,21 +84,7 @@ def test_store_results_reports_empty_scraped_materials_file(tmp_path, capsys):
 
 
 def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers(tmp_path, monkeypatch, capsys):
-    """
-    Test storing converted results in noninteractive mode.
-
-    This function performs the following steps:
-    1. Writes scraped materials with a matched name column, a unit-bearing conductivity column, and an unknown column.
-    2. Replaces recipe loading and unit conversion with deterministic local helpers.
-    3. Calls `store_results` with `assume_yes=True`.
-    4. Reloads the materials CSV file and paper corpus.
-
-    Asserts:
-        - The unknown column is skipped in noninteractive mode.
-        - Unit-bearing columns are converted when unit conversion is enabled.
-        - The temporary scraped materials file is removed after storing.
-        - Only the paper represented in the stored batch is marked as stored.
-    """
+    """Test storing converted results in noninteractive mode."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
@@ -135,6 +99,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
 
     def fake_convert_units(series, field, unit, model_config=None):
+        """Validate conversion arguments and return deterministic values."""
         assert field == 'Conductivity'
         assert unit == 'S cm^-1'
         assert model_config == {'provider': 'test'}
@@ -164,18 +129,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
 
 
 def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path, monkeypatch):
-    """
-    Test storing results with an unmatched column in interactive mode.
-
-    This function performs the following steps:
-    1. Writes scraped materials with an unmatched column.
-    2. Replaces recipe loading with a minimal recipe.
-    3. Calls `store_results` without `assume_yes`.
-
-    Asserts:
-        - An unmatched scraped materials column raises `RuntimeError`.
-        - The original scraped materials file is left in place.
-    """
+    """Test storing results with an unmatched column in interactive mode."""
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
@@ -195,20 +149,7 @@ def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path
 
 
 def test_store_results_appends_existing_materials_without_unit_conversion(tmp_path, monkeypatch):
-    """
-    Test appending to an existing materials CSV without unit conversion.
-
-    This function performs the following steps:
-    1. Writes existing materials, new scraped materials, and a paper corpus.
-    2. Replaces recipe loading with a minimal recipe.
-    3. Calls `store_results` with unit conversion disabled.
-    4. Reloads the output materials CSV.
-
-    Asserts:
-        - New rows are appended after existing material rows.
-        - Unit-bearing columns are not converted when unit conversion is disabled.
-        - The output index is reset after appending.
-    """
+    """Test appending to an existing materials CSV without unit conversion."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
@@ -238,19 +179,7 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
 
 
 def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monkeypatch):
-    """
-    Test storing results when the user rejects the temporary converted data.
-
-    This function performs the following steps:
-    1. Writes scraped materials and a paper corpus.
-    2. Replaces recipe loading and interactive input.
-    3. Calls `store_results` and rejects the conversion prompt.
-
-    Asserts:
-        - No materials CSV is written.
-        - The scraped materials file remains available.
-        - The temporary converted materials file is removed.
-    """
+    """Test storing results when the user rejects the temporary converted data."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'

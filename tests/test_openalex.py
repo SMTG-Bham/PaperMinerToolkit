@@ -35,15 +35,18 @@ class FakeResponse:
     """Prepared OpenAlex JSON response with a configurable status code."""
 
     def __init__(self, payload, status_code=200):
+        """Initialize the response test double."""
         self.payload = payload
         self.status_code = status_code
         self.headers = {}
 
     def raise_for_status(self):
+        """Validate the prepared response status."""
         if self.status_code >= 400:
             raise requests.HTTPError(f'{self.status_code} error', response=self)
 
     def json(self):
+        """Return the prepared JSON payload."""
         return self.payload
 
 
@@ -51,10 +54,12 @@ class FakeSession:
     """Return prepared OpenAlex responses and record request arguments."""
 
     def __init__(self, responses):
+        """Initialize the session with prepared responses."""
         self.responses = iter(responses)
         self.calls = []
 
     def get(self, url, params, headers, timeout):
+        """Return the next prepared response and record the request."""
         self.calls.append({
             'url': url,
             'params': dict(params),

@@ -21,25 +21,77 @@ DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 
 
 def conservative_token_estimate(text: str) -> int:
-    """Estimate tokens conservatively when no model tokenizer is available."""
+    """Estimate tokens when no model tokenizer is available.
+
+    Parameters
+    ----------
+    text : str
+        Text to estimate.
+
+    Returns
+    -------
+    int
+        Zero for missing or empty input; otherwise one token per three
+        characters, rounded up.
+    """
     if not isinstance(text, str) or text == '':
         return 0
     return max(1, math.ceil(len(text) / 3))
 
 
 def _provider_name(model_config=None, provider: str | None = None) -> str:
-    """Return a normalized provider name from explicit input or a model config."""
+    """Resolve and normalize a provider name.
+
+    Parameters
+    ----------
+    model_config : object, optional
+        Object that may expose a ``provider`` attribute.
+    provider : str, optional
+        Explicit provider name, which takes precedence over ``model_config``.
+
+    Returns
+    -------
+    str
+        Lowercase provider name with underscores replaced by hyphens.
+    """
     value = provider or getattr(model_config, 'provider', '') or ''
     return str(value).lower().replace('_', '-')
 
 
 def _model_name(model_config=None, model: str | None = None) -> str:
-    """Return the selected model name from explicit input or a model config."""
+    """Resolve a model name from explicit input or configuration.
+
+    Parameters
+    ----------
+    model_config : object, optional
+        Object that may expose a ``name`` attribute.
+    model : str, optional
+        Explicit model name, which takes precedence over ``model_config``.
+
+    Returns
+    -------
+    str
+        Resolved model name, falling back to the package default.
+    """
     return model or getattr(model_config, 'name', None) or DEFAULT_MODEL
 
 
 def openai_token_count(text: str, model: str | None = None) -> int:
-    """Count text tokens with the OpenAI tokenizer selected for ``model``."""
+    """Count text tokens with an OpenAI tokenizer.
+
+    Parameters
+    ----------
+    text : str
+        Text to tokenize.
+    model : str, optional
+        OpenAI model used to select an encoding. Unknown models use
+        ``o200k_base``.
+
+    Returns
+    -------
+    int
+        Number of encoded tokens.
+    """
     model = model or DEFAULT_MODEL
     try:
         encoding = tiktoken.encoding_for_model(model)
@@ -49,7 +101,28 @@ def openai_token_count(text: str, model: str | None = None) -> int:
 
 
 def anthropic_token_count(text: str, model_config) -> int:
-    """Count text tokens with Anthropic's Messages token counting endpoint."""
+    """Count text tokens with Anthropic's Messages API.
+
+    Parameters
+    ----------
+    text : str
+        Text to count as a single user message.
+    model_config : object
+        Configuration exposing model, API key, and optional base URL
+        attributes.
+
+    Returns
+    -------
+    int
+        Input token count reported by Anthropic.
+
+    Raises
+    ------
+    ValueError
+        If the configuration has no Anthropic API key.
+    requests.RequestException
+        If the token-counting request fails.
+    """
     api_key = getattr(model_config, 'api_key', None)
     if not api_key:
         raise ValueError('Anthropic token counting requires an API key.')
@@ -76,20 +149,63 @@ def anthropic_token_count(text: str, model_config) -> int:
 
 @lru_cache(maxsize=16)
 def _auto_tokenizer(model: str):
-    """Load and cache a Hugging Face tokenizer for a local model."""
+    """Load and cache a Hugging Face tokenizer.
+
+    Parameters
+    ----------
+    model : str
+        Hugging Face model identifier or local model path.
+
+    Returns
+    -------
+    transformers.PreTrainedTokenizerBase
+        Loaded tokenizer instance.
+    """
     transformers = importlib.import_module('transformers')
     return transformers.AutoTokenizer.from_pretrained(model)
 
 
 def transformers_token_count(text: str, model: str) -> int:
-    """Count text tokens with ``transformers.AutoTokenizer`` when available."""
+    """Count text tokens with a Hugging Face tokenizer.
+
+    Parameters
+    ----------
+    text : str
+        Text to tokenize.
+    model : str
+        Hugging Face model identifier or local model path.
+
+    Returns
+    -------
+    int
+        Number of encoded tokens, excluding special tokens.
+    """
     tokenizer = _auto_tokenizer(model)
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
 
 
 def count_text_tokens(text: str, model_config=None, model: str | None = None, provider: str | None = None) -> int:
-    """Count text tokens using the best tokenizer available for the model."""
+    """Count text tokens with the best available provider tokenizer.
+
+    Parameters
+    ----------
+    text : str
+        Text to tokenize. Non-string values return zero.
+    model_config : object, optional
+        Model configuration used to resolve provider credentials and model
+        details.
+    model : str, optional
+        Explicit model name override.
+    provider : str, optional
+        Explicit provider override.
+
+    Returns
+    -------
+    int
+        Provider token count, or a conservative estimate when tokenization
+        fails or the provider is unknown.
+    """
     if not isinstance(text, str):
         return 0
     provider_name = _provider_name(model_config, provider)
@@ -113,7 +229,22 @@ def count_text_tokens(text: str, model_config=None, model: str | None = None, pr
 
 
 def usable_input_token_limit(model_config=None, reserve_tokens: int = 2000, minimum: int = 1000) -> int:
-    """Return a model input budget after reserving room for prompts and metadata."""
+    """Calculate the usable model input token budget.
+
+    Parameters
+    ----------
+    model_config : object, optional
+        Configuration that may expose an ``input_token_limit`` attribute.
+    reserve_tokens : int, default=2000
+        Tokens reserved for prompts, metadata, and output framing.
+    minimum : int, default=1000
+        Minimum budget returned after applying the reserve.
+
+    Returns
+    -------
+    int
+        Usable input token budget.
+    """
     configured = getattr(model_config, 'input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT)
     try:
         configured = int(configured)
@@ -126,6 +257,23 @@ def prompt_token_reserve(prompt: str,
                          model_config=None,
                          buffer_tokens: int = 500,
                          minimum: int = 500) -> int:
-    """Estimate tokens to reserve for static prompts plus a small safety buffer."""
+    """Calculate a token reserve for a static prompt.
+
+    Parameters
+    ----------
+    prompt : str
+        Static prompt text included with model input.
+    model_config : object, optional
+        Model configuration passed to provider-aware token counting.
+    buffer_tokens : int, default=500
+        Safety buffer added to the prompt token count.
+    minimum : int, default=500
+        Minimum reserve returned.
+
+    Returns
+    -------
+    int
+        Prompt token count plus the buffer, bounded by ``minimum``.
+    """
     prompt_tokens = count_text_tokens(prompt or '', model_config=model_config)
     return max(minimum, prompt_tokens + int(buffer_tokens))

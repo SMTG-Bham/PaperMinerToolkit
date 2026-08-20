@@ -14,17 +14,7 @@ import paperscraper.search as search
 
 
 def test_elsevier_api_key_requires_configured_api_key(monkeypatch):
-    """
-    Test Elsevier API key lookup without a configured API key.
-
-    This function performs the following steps:
-    1. Replaces settings loading with an empty settings dictionary.
-    2. Calls `_elsevier_api_key`.
-    3. Captures the expected exception.
-
-    Asserts:
-        - Missing Elsevier API keys raise `ValueError`.
-    """
+    """Elsevier API key requires configured API key."""
     monkeypatch.setattr(search, 'load_settings', lambda: {})
 
     with pytest.raises(ValueError, match='Elsevier API key is not configured'):
@@ -32,39 +22,18 @@ def test_elsevier_api_key_requires_configured_api_key(monkeypatch):
 
 
 def test_elsevier_api_key_returns_configured_api_key(monkeypatch):
-    """
-    Test Elsevier API key lookup with a configured API key.
-
-    This function performs the following steps:
-    1. Replaces settings loading with an Elsevier API key.
-    2. Calls `_elsevier_api_key`.
-
-    Asserts:
-        - The configured API key is returned.
-    """
+    """Elsevier API key returns configured API key."""
     monkeypatch.setattr(search, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
 
     assert search._elsevier_api_key() == 'elsevier-key'
 
 
 def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
-    """
-    Test Elsevier document search pagination and count limiting.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a fake paginated response.
-    2. Replaces tqdm with a simple local helper.
-    3. Calls `document_search` with a count lower than total available results.
-
-    Asserts:
-        - Returned results are capped at the requested count.
-        - The first request uses the capped page size.
-        - The next page is requested.
-    """
-
+    """Document search caps count and paginates results."""
     urls = []
 
     def fake_get_json(api_key, url):
+        """Provide fake JSON retrieval for this test."""
         assert api_key == 'elsevier-key'
         urls.append(url)
         if len(urls) == 1:
@@ -84,16 +53,22 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
         }
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             self.updates = []
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, value):
+            """Record a progress update."""
             self.updates.append(value)
 
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
@@ -110,18 +85,7 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
 
 
 def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
-    """
-    Test Elsevier document search with no provider results.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a fake response returning zero total results.
-    2. Calls `document_search`.
-    3. Checks the returned DataFrame.
-
-    Asserts:
-        - Zero provider results return an empty DataFrame.
-    """
-
+    """Document search returns empty dataframe for zero results."""
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
         search.elsevier,
@@ -133,17 +97,7 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
 
 
 def test_document_search_without_get_all_returns_first_page_slice(monkeypatch):
-    """
-    Test Elsevier document search without pagination.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a fake first-page response.
-    2. Calls `document_search` with `get_all=False`.
-
-    Asserts:
-        - Only the requested number of first-page results are returned.
-    """
-
+    """Document search without get all returns first page slice."""
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
         search.elsevier,
@@ -163,22 +117,11 @@ def test_document_search_without_get_all_returns_first_page_slice(monkeypatch):
 
 
 def test_document_search_stops_when_next_link_is_missing(monkeypatch):
-    """
-    Test Elsevier document search pagination when the provider omits a next link.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a fake response containing fewer results than requested.
-    2. Omits a next-page link from the fake response.
-    3. Calls `document_search` with pagination enabled.
-
-    Asserts:
-        - The available first-page results are returned.
-        - Search stops without requesting another page.
-    """
-
+    """Document search stops when next link is missing."""
     calls = []
 
     def fake_get_json(*_):
+        """Provide fake JSON retrieval for this test."""
         calls.append(True)
         return {
             'search-results': {
@@ -189,16 +132,22 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
         }
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
@@ -212,24 +161,13 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
 
 
 def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch):
-    """
-    Test Elsevier document search stop behavior for non-Scopus indexes.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a fake non-Scopus paginated response.
-    2. Starts with 4,999 results and returns two more results on the next page.
-    3. Calls `document_search` for a non-Scopus index.
-
-    Asserts:
-        - Search stops after crossing the non-Scopus provider limit.
-        - The returned DataFrame includes the page that crosses that limit.
-    """
-
+    """Document search stops non-Scopus searches at the provider limit."""
     first_page = [{'dc:title': f'paper {index}'} for index in range(4999)]
 
     calls = []
 
     def fake_get_json(*_):
+        """Provide fake JSON retrieval for this test."""
         calls.append(True)
         if len(calls) == 1:
             return {
@@ -248,16 +186,22 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
         }
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
@@ -271,19 +215,7 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
 
 
 def test_first_returns_first_list_item_or_scalar_value():
-    """
-    Test provider value normalization to a scalar.
-
-    This function performs the following steps:
-    1. Passes a populated list to `_first`.
-    2. Passes an empty list to `_first`.
-    3. Passes a scalar value and a missing value to `_first`.
-
-    Asserts:
-        - Populated lists return their first item.
-        - Empty lists and missing values return an empty string.
-        - Scalar values are returned unchanged.
-    """
+    """First returns first list item or scalar value."""
     assert search._first(['10.1234/example']) == '10.1234/example'
     assert search._first([]) == ''
     assert search._first('value') == 'value'
@@ -291,18 +223,7 @@ def test_first_returns_first_list_item_or_scalar_value():
 
 
 def test_elsevier_rows_normalizes_provider_records():
-    """
-    Test Elsevier search row normalization.
-
-    This function performs the following steps:
-    1. Builds a raw Elsevier search results DataFrame.
-    2. Converts it with `_elsevier_rows`.
-    3. Reads the normalized row values.
-
-    Asserts:
-        - Provider-specific fields map to public paper columns.
-        - Elsevier rows are marked with source and retrieved metadata status.
-    """
+    """Elsevier rows normalize provider records."""
     raw = pd.DataFrame([{
         'dc:identifier': 'SCOPUS_ID:1',
         'prism:doi': '10.1234/example',
@@ -332,18 +253,7 @@ def test_elsevier_rows_normalizes_provider_records():
 
 
 def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
-    """
-    Test Elsevier record recasting keeps link lists intact.
-
-    This function performs the following steps:
-    1. Builds a raw Elsevier record with list-valued DOI and link fields.
-    2. Recasts the record into a DataFrame.
-    3. Converts the recast DataFrame to normalized paper rows.
-
-    Asserts:
-        - Non-link list fields are flattened to scalar values.
-        - Link lists are preserved long enough to select the full-text link.
-    """
+    """Recasting Elsevier records preserves links used for full-text selection."""
     recast = search._recast_elsevier_records([{
         'prism:doi': ['10.1234/example'],
         'link': [
@@ -358,18 +268,7 @@ def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
 
 
 def test_core_headers_include_optional_authorization(monkeypatch):
-    """
-    Test CORE API request header construction.
-
-    This function performs the following steps:
-    1. Replaces CORE API key lookup with no key.
-    2. Builds CORE headers.
-    3. Replaces CORE API key lookup with a configured key and rebuilds headers.
-
-    Asserts:
-        - User-Agent is always included.
-        - Authorization is only included when a CORE API key is available.
-    """
+    """CORE headers include optional authorization."""
     monkeypatch.setattr(search, '_core_api_key', lambda: None)
     assert search._core_headers() == {'User-Agent': 'PaperScraper/0.0.1'}
 
@@ -378,20 +277,7 @@ def test_core_headers_include_optional_authorization(monkeypatch):
 
 
 def test_core_field_helpers_extract_download_authors_journal_and_date():
-    """
-    Test CORE field extraction helpers.
-
-    This function performs the following steps:
-    1. Builds CORE work records with alternative field shapes.
-    2. Extracts download URLs, authors, journal names, and dates.
-    3. Compares the extracted values to expected strings.
-
-    Asserts:
-        - CORE download URLs use explicit URLs before generated API URLs.
-        - Author names are joined with semicolons.
-        - Journal dictionaries and scalar publisher fields are supported.
-        - Publication dates fall back across supported date fields.
-    """
+    """CORE field helpers extract download authors journal and date."""
     work = {
         'id': '123',
         'authors': [{'name': 'A. Author'}, {'fullName': 'B. Author'}, 'C. Author', {'name': ''}],
@@ -409,19 +295,7 @@ def test_core_field_helpers_extract_download_authors_journal_and_date():
 
 
 def test_core_rows_normalizes_work_records():
-    """
-    Test CORE work row normalization.
-
-    This function performs the following steps:
-    1. Builds CORE work records with IDs, DOI lists, titles, and journal metadata.
-    2. Converts them with `_core_rows`.
-    3. Reads the normalized row values.
-
-    Asserts:
-        - CORE IDs and DOI-only records produce stable paper IDs.
-        - CORE fields map to public paper columns.
-        - CORE rows include PDF URLs and retrieved metadata status.
-    """
+    """CORE rows normalize work records."""
     rows = search._core_rows([
         {
             'id': '123',
@@ -449,19 +323,7 @@ def test_core_rows_normalizes_work_records():
 
 
 def test_openalex_rows_normalizes_work_records():
-    """
-    Test OpenAlex work row normalization.
-
-    This function performs the following steps:
-    1. Builds OpenAlex work records with URL-form identifiers and inverted abstracts.
-    2. Converts them with `_openalex_rows`.
-    3. Reads the normalized row values.
-
-    Asserts:
-        - DOI-bearing and DOI-less records produce stable paper IDs.
-        - OpenAlex fields map to public paper columns.
-        - Inverted abstract indexes are reconstructed into plain abstract text.
-    """
+    """OpenAlex rows normalize work records."""
     rows = search._openalex_rows([
         {
             'id': 'https://openalex.org/W123',
@@ -494,41 +356,39 @@ def test_openalex_rows_normalizes_work_records():
 
 
 def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
-    """
-    Test CORE search pagination and stop conditions.
-
-    This function performs the following steps:
-    1. Replaces CORE request headers and HTTP GET calls with local fakes.
-    2. Replaces tqdm with a local fake progress object.
-    3. Calls `core_search` for more than one page.
-
-    Asserts:
-        - CORE requests use the expected limit and offset values.
-        - Results from multiple pages are returned.
-        - Pagination stops when total hits are reached.
-    """
-
+    """CORE search paginates and stops at total hits."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def __init__(self, payload):
+            """Initialize the test double."""
             self.payload = payload
 
         def raise_for_status(self):
+            """Validate the prepared response status."""
             return None
 
         def json(self):
+            """Return the prepared JSON payload."""
             return self.payload
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     calls = []
@@ -536,6 +396,7 @@ def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
     first_page = [{'id': str(index), 'title': f'paper {index}'} for index in range(100)]
 
     def fake_get(url, headers, params, timeout):
+        """Provide a fake HTTP GET implementation."""
         calls.append(params.copy())
         if len(calls) == 1:
             return FakeResponse({'results': first_page, 'totalHits': 101})
@@ -557,36 +418,35 @@ def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
 
 
 def test_core_search_stops_when_no_results(monkeypatch):
-    """
-    Test CORE search stop behavior when no results are returned.
-
-    This function performs the following steps:
-    1. Replaces CORE HTTP GET calls with an empty result payload.
-    2. Replaces tqdm with a local fake progress object.
-    3. Calls `core_search`.
-
-    Asserts:
-        - Empty CORE result pages return an empty normalized DataFrame.
-    """
-
+    """CORE search stops when no results."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def raise_for_status(self):
+            """Validate the prepared response status."""
             return None
 
         def json(self):
+            """Return the prepared JSON payload."""
             return {'results': []}
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     monkeypatch.setattr(search.requests, 'get', lambda *_, **__: FakeResponse())
@@ -596,42 +456,41 @@ def test_core_search_stops_when_no_results(monkeypatch):
 
 
 def test_core_search_stops_when_page_is_short(monkeypatch):
-    """
-    Test CORE search stop behavior when a page has fewer results than requested.
-
-    This function performs the following steps:
-    1. Replaces CORE HTTP GET calls with a short result page.
-    2. Replaces tqdm with a local fake progress object.
-    3. Calls `core_search`.
-
-    Asserts:
-        - The short result page is returned.
-        - CORE search stops after the short page.
-    """
-
+    """CORE search stops when page is short."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def raise_for_status(self):
+            """Validate the prepared response status."""
             return None
 
         def json(self):
+            """Return the prepared JSON payload."""
             return {'results': [{'id': '1', 'title': 'one'}]}
 
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     calls = []
 
     def fake_get(*args, **kwargs):
+        """Provide a fake HTTP GET implementation."""
         calls.append(kwargs['params'])
         return FakeResponse()
 
@@ -645,31 +504,24 @@ def test_core_search_stops_when_page_is_short(monkeypatch):
 
 
 def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
-    """
-    Test OpenAlex search cursor pagination and stop conditions.
-
-    This function performs the following steps:
-    1. Replaces OpenAlex JSON requests with prepared multi-page payloads.
-    2. Replaces the configured API key and tqdm with local fakes.
-    3. Calls `openalex_search` for more than one page.
-
-    Asserts:
-        - Requests carry the search query, shrinking per-page limits, and cursors.
-        - The configured API key is passed to every request.
-        - Results from multiple pages are returned up to the requested count.
-    """
-
+    """OpenAlex search paginates with cursor and stops at count."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     calls = []
@@ -677,6 +529,7 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
     first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
 
     def fake_request_json(url, params=None, api_key=None, **_):
+        """Provide fake OpenAlex JSON responses for this test."""
         calls.append({'url': url, 'params': dict(params), 'api_key': api_key})
         if len(calls) == 1:
             return {'results': first_page, 'meta': {'next_cursor': 'cursor-2'}}
@@ -703,35 +556,30 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
 
 
 def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch):
-    """
-    Test OpenAlex search stop behavior and keyless requests.
-
-    This function performs the following steps:
-    1. Replaces OpenAlex JSON requests with a single page lacking a next cursor.
-    2. Replaces the configured API key with None.
-    3. Calls `openalex_search` for more results than exist.
-
-    Asserts:
-        - Pagination stops when no next cursor is returned.
-        - Requests carry no API key when none is configured.
-    """
-
+    """OpenAlex search stops without next cursor and omits API key."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     calls = []
 
     def fake_request_json(url, params=None, api_key=None, **_):
+        """Provide fake OpenAlex JSON responses for this test."""
         calls.append({'params': dict(params), 'api_key': api_key})
         return {'results': [{'id': 'https://openalex.org/W1', 'title': 'only'}], 'meta': {}}
 
@@ -748,33 +596,13 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
 
 
 def test_search_for_papers_rejects_invalid_source():
-    """
-    Test validation of search source names.
-
-    This function performs the following steps:
-    1. Calls `search_for_papers` with an invalid source.
-    2. Captures the expected exception.
-
-    Asserts:
-        - Invalid source names raise `ValueError`.
-    """
+    """Search for papers rejects invalid source."""
     with pytest.raises(ValueError, match='source must be one of'):
         search.search_for_papers('query', source='bad')
 
 
 def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, capsys):
-    """
-    Test merging search results into a corpus database.
-
-    This function performs the following steps:
-    1. Replaces Elsevier search with a normalized one-row DataFrame.
-    2. Calls `search_for_papers`.
-    3. Reloads the written corpus paper rows.
-
-    Asserts:
-        - New search results are written to the requested corpus database.
-        - The summary reports one added result.
-    """
+    """Search for papers merges and writes results."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{
         'dc:identifier': 'SCOPUS_ID:1',
@@ -794,18 +622,7 @@ def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, caps
 
 
 def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, capsys):
-    """
-    Test merging search results into an existing corpus database.
-
-    This function performs the following steps:
-    1. Writes an existing corpus row with one DOI.
-    2. Replaces CORE search with a row using the same DOI and additional fields.
-    3. Calls `search_for_papers`.
-
-    Asserts:
-        - The existing row is updated instead of duplicated.
-        - The summary reports one updated row.
-    """
+    """Search for papers merges into existing corpus."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.upsert_paper(conn, {
@@ -835,20 +652,7 @@ def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, ca
 
 
 def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypatch, capsys):
-    """
-    Test optional storage of abstracts returned during search.
-
-    This function performs the following steps:
-    1. Writes an existing corpus row with a DOI.
-    2. Replaces CORE search with a matching row that includes an abstract.
-    3. Calls `search_for_papers` with `store_abstract=True`.
-    4. Reads the merged paper row and abstract asset from the corpus.
-
-    Asserts:
-        - The search result updates the existing corpus row instead of adding a duplicate.
-        - The abstract is stored as an `abstract` corpus asset.
-        - Abstract status and source are recorded on the matched paper row.
-    """
+    """Search for papers stores search time abstract assets."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.upsert_paper(conn, {
@@ -879,18 +683,7 @@ def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypa
 
 
 def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path, monkeypatch, capsys):
-    """
-    Test search output when all selected sources return no rows.
-
-    This function performs the following steps:
-    1. Replaces CORE search with an empty DataFrame.
-    2. Calls `search_for_papers`.
-    3. Captures the printed output.
-
-    Asserts:
-        - Empty search results print a zero-results message.
-        - No corpus database is written.
-    """
+    """Search for papers reports zero results when sources are empty."""
     db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: pd.DataFrame())
 
@@ -901,19 +694,7 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path,
 
 
 def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(monkeypatch, tmp_path, capsys):
-    """
-    Test source failure handling during paper search.
-
-    This function performs the following steps:
-    1. Replaces Elsevier search with a failure and CORE search with one successful result.
-    2. Calls `search_for_papers` with all sources.
-    3. Calls `search_for_papers` with the failing source selected directly.
-
-    Asserts:
-        - Failed sources are skipped when searching all sources.
-        - Directly selected failed sources re-raise their error.
-        - Successful fallback source results are still written.
-    """
+    """Search for papers skips failed source for all but raises for selected source."""
     db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
@@ -929,19 +710,7 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
 
 
 def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeypatch, tmp_path, capsys):
-    """
-    Test CORE failure handling during paper search.
-
-    This function performs the following steps:
-    1. Replaces Elsevier search with one successful result.
-    2. Replaces CORE search with a request failure.
-    3. Calls `search_for_papers` with all sources and with CORE selected directly.
-
-    Asserts:
-        - Failed CORE searches are skipped when searching all sources.
-        - Directly selected failed CORE searches re-raise their request error.
-        - Successful fallback Elsevier results are still written.
-    """
+    """Search for papers skips failed CORE for all but raises for CORE."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
@@ -963,19 +732,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
 
 
 def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex(monkeypatch, tmp_path, capsys):
-    """
-    Test OpenAlex failure handling during paper search.
-
-    This function performs the following steps:
-    1. Replaces Elsevier search with one successful result and CORE search with none.
-    2. Replaces OpenAlex search with a retry-exhaustion failure.
-    3. Calls `search_for_papers` with all sources and with OpenAlex selected directly.
-
-    Asserts:
-        - Failed OpenAlex searches are skipped when searching all sources.
-        - Directly selected failed OpenAlex searches re-raise their error.
-        - Successful fallback Elsevier results are still written.
-    """
+    """Search for papers skips failed OpenAlex for all but raises for OpenAlex."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
@@ -998,18 +755,7 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
 
 @pytest.mark.network
 def test_document_search_uses_real_elsevier_api_when_configured():
-    """
-    Test live Elsevier search with the user's configured API key.
-
-    This function performs the following steps:
-    1. Loads the user's real PaperScraper settings.
-    2. Verifies an Elsevier API key is configured.
-    3. Runs a one-result Elsevier document search.
-
-    Asserts:
-        - An Elsevier API key is configured.
-        - The live search returns no more than one result.
-    """
+    """Document search uses real Elsevier API when configured."""
     loaded = search.load_settings()
 
     assert loaded.get('elsevier_api_key'), 'Set elsevier_api_key or ELSEVIER_API_KEY before running network tests.'
@@ -1018,35 +764,14 @@ def test_document_search_uses_real_elsevier_api_when_configured():
 
 @pytest.mark.network
 def test_core_search_uses_real_core_api_when_configured():
-    """
-    Test live CORE search with the user's configured API key.
-
-    This function performs the following steps:
-    1. Loads the user's real PaperScraper settings and environment.
-    2. Verifies a CORE API key is configured.
-    3. Runs a one-result CORE search.
-
-    Asserts:
-        - A CORE API key is configured.
-        - The live search returns no more than one result.
-    """
+    """CORE search uses real CORE API when configured."""
     assert search._core_api_key(), 'Set core_api_key or CORE_API_KEY before running network tests.'
     assert len(search.core_search('solid electrolyte', count=1)) <= 1
 
 
 @pytest.mark.network
 def test_openalex_search_uses_real_openalex_api():
-    """
-    Test live OpenAlex search without credentials.
-
-    This function performs the following steps:
-    1. Runs a one-result OpenAlex search against the live API.
-    2. Reads the returned normalized rows.
-
-    Asserts:
-        - The live search returns no more than one result.
-        - Returned rows carry the openalex source label.
-    """
+    """OpenAlex search uses real OpenAlex API."""
     rows = search.openalex_search('solid electrolyte', count=1)
 
     assert len(rows) <= 1

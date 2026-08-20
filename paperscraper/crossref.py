@@ -17,7 +17,23 @@ REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'au
 
 
 def normalize_orcid(value: str):
-    """Return a bare, validated ORCID identifier."""
+    """Normalize and validate an ORCID identifier.
+
+    Parameters
+    ----------
+    value : str
+        Bare ORCID or ORCID URL.
+
+    Returns
+    -------
+    str
+        Upper-case, hyphenated ORCID identifier.
+
+    Raises
+    ------
+    ValueError
+        If the identifier format or checksum is invalid.
+    """
     orcid = str(value or '').strip().rstrip('/').split('/')[-1].upper()
     if not ORCID_PATTERN.fullmatch(orcid):
         raise ValueError(f'Invalid ORCID: {value}')
@@ -33,14 +49,38 @@ def normalize_orcid(value: str):
 
 
 def _normalize_text(value):
-    """Create a comparable lower-case key from human-readable metadata."""
+    """Normalize human-readable metadata for comparison.
+
+    Parameters
+    ----------
+    value : object
+        Value to normalize as text.
+
+    Returns
+    -------
+    str
+        Lower-case ASCII comparison key.
+    """
     value = unicodedata.normalize('NFKD', str(value or ''))
     value = ''.join(character for character in value if not unicodedata.combining(character))
     return re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
 
 
 def _given_names_match(target, candidate):
-    """Match full given names exactly, allowing initials on either side."""
+    """Compare given names while allowing initials.
+
+    Parameters
+    ----------
+    target : str
+        Requested given names.
+    candidate : str
+        Deposited given names to compare.
+
+    Returns
+    -------
+    bool
+        Whether the normalized names match.
+    """
     target_parts = _normalize_text(target).split()
     candidate_parts = _normalize_text(candidate).split()
     if not target_parts or not candidate_parts:
@@ -53,7 +93,25 @@ def _given_names_match(target, candidate):
 
 
 def _matching_authors(work, author_name):
-    """Return Crossref author records matching a supplied human name."""
+    """Find Crossref authors matching a human name.
+
+    Parameters
+    ----------
+    work : dict
+        Crossref work record containing author metadata.
+    author_name : str
+        Given and family names to match.
+
+    Returns
+    -------
+    list of dict
+        Matching Crossref author records.
+
+    Raises
+    ------
+    ValueError
+        If ``author_name`` does not contain given and family names.
+    """
     parts = _normalize_text(author_name).split()
     if len(parts) < 2:
         raise ValueError('Author name must include given and family names.')
@@ -68,7 +126,18 @@ def _matching_authors(work, author_name):
 
 
 def _author_orcid(author):
-    """Return a normalized author ORCID, ignoring malformed deposited values."""
+    """Read a valid ORCID from an author record.
+
+    Parameters
+    ----------
+    author : dict
+        Crossref author record.
+
+    Returns
+    -------
+    str
+        Normalized ORCID, or an empty string for malformed values.
+    """
     try:
         return normalize_orcid(author.get('ORCID'))
     except ValueError:
@@ -76,7 +145,30 @@ def _author_orcid(author):
 
 
 def work_matches_author(work, author_name=None, orcid=None, affiliation=None):
-    """Return whether a Crossref work contains the requested author identity."""
+    """Check whether a work contains the requested author identity.
+
+    Parameters
+    ----------
+    work : dict
+        Crossref work record.
+    author_name : str, optional
+        Human-readable author name to match when no ORCID is supplied.
+    orcid : str, optional
+        ORCID identifier to match exactly.
+    affiliation : str, optional
+        Affiliation fragment required on a matching author record.
+
+    Returns
+    -------
+    bool
+        Whether the requested identity is present.
+
+    Raises
+    ------
+    ValueError
+        If ``orcid`` is invalid or ``author_name`` lacks both given and family
+        names.
+    """
     authors = work.get('author') or []
     if orcid:
         expected = normalize_orcid(orcid)
@@ -99,7 +191,31 @@ def work_matches_author(work, author_name=None, orcid=None, affiliation=None):
 
 
 def _request_page(session, params, email, timeout=60, attempts=4):
-    """Request one Crossref page with bounded retry/backoff behavior."""
+    """Request one Crossref page with bounded retries.
+
+    Parameters
+    ----------
+    session : requests.Session-like
+        HTTP session used for the request.
+    params : dict
+        Crossref query parameters.
+    email : str
+        Contact email included in the user agent.
+    timeout : float, optional
+        Request timeout in seconds.
+    attempts : int, optional
+        Maximum number of request attempts.
+
+    Returns
+    -------
+    dict
+        Crossref response message.
+
+    Raises
+    ------
+    RuntimeError
+        If every request attempt fails or returns an invalid payload.
+    """
     headers = {'User-Agent': f'PaperScraper/0.0.1 (mailto:{email})'}
     last_error = None
     for attempt in range(attempts):
@@ -127,7 +243,37 @@ def author_works(orcid=None,
                  max_results=500,
                  page_size=200,
                  session=None):
-    """Retrieve DOI-bearing Crossref works for one author identity."""
+    """Retrieve DOI-bearing works for one author.
+
+    Parameters
+    ----------
+    orcid : str, optional
+        ORCID identifier used for exact server-side filtering.
+    author_name : str, optional
+        Given and family names used for search and local filtering.
+    affiliation : str, optional
+        Affiliation fragment required on the matched author record.
+    email : str, optional
+        Contact email for Crossref polite-pool requests.
+    max_results : int or None, optional
+        Maximum accepted works, or ``None`` for no explicit limit.
+    page_size : int, optional
+        Number of records requested per Crossref page.
+    session : requests.Session-like, optional
+        HTTP session, primarily for connection reuse or testing.
+
+    Returns
+    -------
+    list of dict
+        Unique matching Crossref work records.
+
+    Raises
+    ------
+    ValueError
+        If identity, contact, or pagination options are invalid.
+    RuntimeError
+        If a Crossref request exhausts its retries.
+    """
     if bool(orcid) == bool(author_name):
         raise ValueError('Provide exactly one of orcid or author_name.')
     if not email or '@' not in email:
@@ -170,14 +316,36 @@ def author_works(orcid=None,
 
 
 def _first(value):
-    """Return the first non-empty value from a Crossref list-like field."""
+    """Select the first non-empty Crossref field value.
+
+    Parameters
+    ----------
+    value : object
+        Scalar or list Crossref field value.
+
+    Returns
+    -------
+    str
+        First non-empty string, or an empty string.
+    """
     if isinstance(value, list):
         return next((str(item).strip() for item in value if str(item).strip()), '')
     return str(value or '').strip()
 
 
 def _publication_date(work):
-    """Return the best available Crossref publication date as ISO-like text."""
+    """Extract the best available Crossref publication date.
+
+    Parameters
+    ----------
+    work : dict
+        Crossref work record.
+
+    Returns
+    -------
+    str
+        ISO-like publication date, or an empty string.
+    """
     for key in ['published-print', 'published-online', 'published', 'issued', 'created']:
         value = work.get(key) or {}
         parts = value.get('date-parts') if isinstance(value, dict) else None
@@ -188,7 +356,18 @@ def _publication_date(work):
 
 
 def crossref_work_to_paper(work):
-    """Map one Crossref work into the PaperScraper corpus schema."""
+    """Map a Crossref work to the corpus schema.
+
+    Parameters
+    ----------
+    work : dict
+        Crossref work record.
+
+    Returns
+    -------
+    dict
+        Normalized paper metadata suitable for corpus insertion.
+    """
     doi = str(work.get('DOI') or '').strip().lower()
     authors = '; '.join(
         ' '.join(part for part in [str(author.get('given') or '').strip(),
@@ -216,7 +395,41 @@ def import_author_works(db_path,
                         max_results=500,
                         review_csv=None,
                         session=None):
-    """Discover an author's Crossref works, write a review CSV, and upsert a corpus."""
+    """Discover and import an author's Crossref works.
+
+    Parameters
+    ----------
+    db_path : str or path-like
+        Destination corpus database.
+    email : str
+        Contact email for Crossref requests.
+    orcid : str, optional
+        ORCID identifier for exact author discovery.
+    author_name : str, optional
+        Author name used when no ORCID is supplied.
+    affiliation : str, optional
+        Affiliation fragment required on the matched author record.
+    max_results : int or None, optional
+        Maximum number of works to import.
+    review_csv : str or path-like, optional
+        CSV path for a human-readable import review.
+    session : requests.Session-like, optional
+        HTTP session used for discovery.
+
+    Returns
+    -------
+    dict
+        Counts of found, added, and updated papers.
+
+    Raises
+    ------
+    ValueError
+        If the author identity, contact email, result limit, or ORCID is
+        invalid.
+    RuntimeError
+        If a Crossref request exhausts its retries or the corpus schema is
+        newer than this package supports.
+    """
     works = author_works(
         orcid=orcid,
         author_name=author_name,

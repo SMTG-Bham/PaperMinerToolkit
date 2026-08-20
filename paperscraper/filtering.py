@@ -25,12 +25,52 @@ SNIPPET_CONTEXT = 80
 
 
 def _require_type(value, expected_type, label):
+    """Validate a value's type.
+
+    Parameters
+    ----------
+    value : object
+        Value to validate.
+    expected_type : type
+        Required Python type.
+    label : str
+        Human-readable field label for errors.
+
+    Returns
+    -------
+    object
+        The original validated value.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not an instance of ``expected_type``.
+    """
     if not isinstance(value, expected_type):
         raise ValueError(f'{label} must be {expected_type.__name__}.')
     return value
 
 
 def _normalize_rule(rule, label):
+    """Normalize one regular-expression rule.
+
+    Parameters
+    ----------
+    rule : dict
+        Rule containing a name and pattern.
+    label : str
+        Rule location used in validation errors.
+
+    Returns
+    -------
+    dict
+        Normalized rule name and pattern.
+
+    Raises
+    ------
+    ValueError
+        If the rule is malformed or empty.
+    """
     _require_type(rule, dict, label)
     name = str(rule.get('name') or '').strip()
     pattern = rule.get('pattern')
@@ -42,7 +82,27 @@ def _normalize_rule(rule, label):
 
 
 def normalize_regex_definition(definition, fields=None, timeout_ms=None):
-    """Validate and return a deterministic regex filter definition."""
+    """Normalize a regular-expression filter definition.
+
+    Parameters
+    ----------
+    definition : dict
+        Raw filter definition.
+    fields : iterable of str, optional
+        Content fields overriding those in the definition.
+    timeout_ms : int, optional
+        Per-field matching timeout overriding the definition.
+
+    Returns
+    -------
+    dict
+        Validated deterministic filter definition.
+
+    Raises
+    ------
+    ValueError
+        If names, rules, fields, or options are invalid.
+    """
     _require_type(definition, dict, 'Filter definition')
     name = str(definition.get('name') or '').strip()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
@@ -104,7 +164,29 @@ def normalize_regex_definition(definition, fields=None, timeout_ms=None):
 
 
 def load_regex_definition(path, fields=None, timeout_ms=None):
-    """Load, validate, and normalize a JSON regex filter definition."""
+    """Load and normalize a JSON filter definition.
+
+    Parameters
+    ----------
+    path : str or path-like
+        JSON definition file.
+    fields : iterable of str, optional
+        Content fields overriding the file.
+    timeout_ms : int, optional
+        Matching timeout overriding the file.
+
+    Returns
+    -------
+    dict
+        Validated filter definition.
+
+    Raises
+    ------
+    OSError
+        If the definition file cannot be read.
+    ValueError
+        If the JSON or filter definition is invalid.
+    """
     try:
         definition = json.loads(Path(path).read_text(encoding='utf-8'))
     except json.JSONDecodeError as error:
@@ -113,7 +195,23 @@ def load_regex_definition(path, fields=None, timeout_ms=None):
 
 
 def compile_regex_definition(definition):
-    """Compile all patterns before any corpus state is changed."""
+    """Compile every pattern in a filter definition.
+
+    Parameters
+    ----------
+    definition : dict
+        Normalized filter definition.
+
+    Returns
+    -------
+    dict
+        Include and exclude rules paired with compiled expressions.
+
+    Raises
+    ------
+    ValueError
+        If any regular expression is invalid.
+    """
     flags = regex.VERSION1
     if not definition['case_sensitive']:
         flags |= regex.IGNORECASE
@@ -129,6 +227,18 @@ def compile_regex_definition(definition):
 
 
 def _decode_text_asset(asset):
+    """Decode and trim a stored text asset.
+
+    Parameters
+    ----------
+    asset : dict or None
+        Corpus asset row containing binary content.
+
+    Returns
+    -------
+    str or None
+        Usable text without references, or ``None``.
+    """
     if asset is None:
         return None
     text = asset['content'].decode('utf-8', errors='replace')
@@ -137,7 +247,23 @@ def _decode_text_asset(asset):
 
 
 def _paper_content(conn, paper, fields):
-    """Load selected raw fields and return content, sources, and unavailable reasons."""
+    """Load the selected raw content fields for a paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : dict
+        Corpus paper row.
+    fields : iterable of str
+        Content fields to load.
+
+    Returns
+    -------
+    tuple of dict, dict, and list of str
+        Available content, the source of each field, and reasons that requested
+        fields were unavailable.
+    """
     content = {}
     sources = {}
     unavailable = []
@@ -199,11 +325,43 @@ def _paper_content(conn, paper, fields):
 
 
 def _snippet(text, start, end):
+    """Return normalized context surrounding a matched text span.
+
+    Parameters
+    ----------
+    text : str
+        Complete text containing the match.
+    start : int
+        Inclusive match start offset.
+    end : int
+        Exclusive match end offset.
+
+    Returns
+    -------
+    str
+        Whitespace-normalized context around the match.
+    """
     snippet = text[max(0, start - SNIPPET_CONTEXT):min(len(text), end + SNIPPET_CONTEXT)]
     return re.sub(r'\s+', ' ', snippet).strip()
 
 
 def _match_rule(expression, content, timeout_seconds):
+    """Collect bounded matches for one expression across content fields.
+
+    Parameters
+    ----------
+    expression : regex.Pattern
+        Compiled regular expression to evaluate.
+    content : dict[str, str]
+        Content keyed by field name.
+    timeout_seconds : float
+        Maximum matching time for each field, in seconds.
+
+    Returns
+    -------
+    tuple of list of dict and list of str
+        Match evidence and fields whose evaluation timed out.
+    """
     matches = []
     timed_out = []
     for field, text in content.items():
@@ -231,7 +389,25 @@ def _match_rule(expression, content, timeout_seconds):
 
 
 def evaluate_regex_paper(conn, paper, definition, compiled):
-    """Evaluate one normalized definition against one corpus paper."""
+    """Evaluate one regex definition against one corpus paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : dict
+        Corpus paper row to evaluate.
+    definition : dict
+        Normalized regex filter definition.
+    compiled : dict
+        Compiled include and exclude rules.
+
+    Returns
+    -------
+    tuple of str, dict, and str
+        Filter status, structured match evidence, and a joined unavailable
+        reason.
+    """
     content, sources, unavailable = _paper_content(conn, paper, definition['fields'])
     timeout_seconds = definition['timeout_ms'] / 1000
     evidence_matches = []
@@ -281,7 +457,23 @@ def evaluate_regex_paper(conn, paper, definition, compiled):
 
 
 def active_filter_stack(conn):
-    """Return active filter rows in expression order with decoded definitions."""
+    """Return active filters in expression order.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    list of dict
+        Filter rows with decoded definitions.
+
+    Raises
+    ------
+    json.JSONDecodeError
+        If a stored filter definition is invalid JSON.
+    """
     rows = conn.execute(
         'SELECT * FROM corpus_filters ORDER BY stack_position, filter_id'
     ).fetchall()
@@ -294,7 +486,18 @@ def active_filter_stack(conn):
 
 
 def filter_expression(filters):
-    """Return the explicit left-to-right expression for an active filter stack."""
+    """Build the explicit expression for an active filter stack.
+
+    Parameters
+    ----------
+    filters : sequence of dict
+        Active filters in evaluation order.
+
+    Returns
+    -------
+    str
+        Parenthesized left-to-right expression, or an empty string.
+    """
     if not filters:
         return ''
     expression = filters[0]['name']
@@ -304,7 +507,27 @@ def filter_expression(filters):
 
 
 def combine_status(left, right, operator):
-    """Combine two filter decisions with three-valued Boolean logic."""
+    """Combine two filter decisions with three-valued Boolean logic.
+
+    Parameters
+    ----------
+    left : {'excluded', 'included', 'unavailable'}
+        Left-hand filter decision.
+    right : {'excluded', 'included', 'unavailable'}
+        Right-hand filter decision.
+    operator : {'and', 'or'}
+        Boolean operator joining the decisions.
+
+    Returns
+    -------
+    str
+        Combined filter status.
+
+    Raises
+    ------
+    ValueError
+        If either status or the operator is unsupported.
+    """
     if left not in FILTER_STATUSES or right not in FILTER_STATUSES:
         raise ValueError('Unknown filter status.')
     if operator == 'and':
@@ -323,6 +546,13 @@ def combine_status(left, right, operator):
 
 
 def _recompute_filter_state(conn):
+    """Rebuild final per-paper decisions from the active filter stack.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection whose filter state is updated.
+    """
     filters = active_filter_stack(conn)
     conn.execute('DELETE FROM paper_filter_state')
     if not filters:
@@ -348,7 +578,19 @@ def _recompute_filter_state(conn):
 
 
 def filter_overview(conn):
-    """Return active stack metadata and per-filter/final status totals."""
+    """Summarize the active filter stack and its decisions.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    dict
+        Active filters, their expression, final status counts, and unavailable
+        reason counts.
+    """
     filters = active_filter_stack(conn)
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
     for item in filters:
@@ -383,7 +625,35 @@ def filter_overview(conn):
 
 def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
                        replace=False, timeout_ms=None):
-    """Apply or explicitly replace one named regex filter in a corpus."""
+    """Apply or replace one named regex filter in a corpus.
+
+    Parameters
+    ----------
+    db_path : str or pathlib.Path
+        Path to the SQLite paper corpus.
+    rules_path : str or pathlib.Path
+        Path to the JSON regex definition.
+    fields : iterable of str or None, optional
+        Content fields overriding the definition.
+    join_operator : {'and', 'or'} or None, optional
+        Operator joining this filter to the preceding active filter.
+    replace : bool, default=False
+        Whether to replace an active filter with the same name.
+    timeout_ms : int or None, optional
+        Per-field regex timeout overriding the definition.
+
+    Returns
+    -------
+    dict
+        Updated filter overview.
+
+    Raises
+    ------
+    OSError
+        If the rules file cannot be read.
+    ValueError
+        If the definition, join operator, or replacement request is invalid.
+    """
     definition = load_regex_definition(rules_path, fields=fields, timeout_ms=timeout_ms)
     compiled = compile_regex_definition(definition)
     if join_operator is not None:
@@ -466,7 +736,27 @@ def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
 
 
 def reset_filters(db_path, name=None, all_filters=False):
-    """Remove one named filter or the complete active stack and recompute state."""
+    """Remove filters and recompute final paper decisions.
+
+    Parameters
+    ----------
+    db_path : str or pathlib.Path
+        Path to the SQLite paper corpus.
+    name : str or None, optional
+        Name of the single filter to remove.
+    all_filters : bool, default=False
+        Whether to remove the complete active stack.
+
+    Returns
+    -------
+    dict
+        Updated filter overview.
+
+    Raises
+    ------
+    ValueError
+        If exactly one removal mode is not selected or ``name`` is not active.
+    """
     if bool(name) == bool(all_filters):
         raise ValueError('Choose exactly one of a filter name or all filters.')
     with connect(db_path) as conn:
@@ -500,7 +790,18 @@ def reset_filters(db_path, name=None, all_filters=False):
 
 
 def current_filter_statuses(conn):
-    """Return current final statuses keyed by paper id."""
+    """Return current final statuses keyed by paper ID.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    dict[str, str]
+        Final filter status for each evaluated paper ID.
+    """
     return {
         row['paper_id']: row['status']
         for row in conn.execute('SELECT paper_id, status FROM paper_filter_state')

@@ -12,7 +12,25 @@ from paperscraper.metadata import metadata_from_pdf
 
 
 def import_pdfs(papers_dir: str, db_path: str = 'papers.db', use_crossref: bool = True):
-    """Import all PDFs in ``papers_dir`` into ``db_path``."""
+    """Import local PDF files into a paper corpus.
+
+    Parameters
+    ----------
+    papers_dir : str
+        Directory containing the PDF files to import.
+    db_path : str, optional
+        Path to the destination corpus database.
+    use_crossref : bool, optional
+        Whether to enrich discovered DOI metadata with Crossref.
+
+    Raises
+    ------
+    NotADirectoryError
+        If ``papers_dir`` is not a directory.
+    RuntimeError
+        If the directory contains no PDF files or the corpus schema is newer
+        than this package supports.
+    """
     pdf_dir = Path(papers_dir)
     if not pdf_dir.is_dir():
         raise NotADirectoryError(f'{papers_dir} is not a directory.')

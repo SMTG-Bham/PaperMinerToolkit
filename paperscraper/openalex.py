@@ -22,21 +22,50 @@ USER_AGENT = 'PaperScraper/0.0.1'
 
 
 def configured_api_key(settings=None):
-    """Return the configured OpenAlex API key, if one is available."""
+    """Return the configured OpenAlex API key.
+
+    Parameters
+    ----------
+    settings : dict or None, optional
+        Settings mapping to inspect before the environment.
+
+    Returns
+    -------
+    str or None
+        Configured API key, or ``None`` when no key is available.
+    """
     settings = settings or load_settings()
     return settings.get('openalex_api_key') or os.environ.get('OPENALEX_API_KEY')
 
 
 def request_headers():
-    """Build OpenAlex request headers."""
+    """Build OpenAlex request headers.
+
+    Returns
+    -------
+    dict[str, str]
+        Headers containing the PaperScraper user agent.
+    """
     return {'User-Agent': USER_AGENT}
 
 
 def request_params(params=None, api_key=None):
-    """Copy query parameters, adding the API key when one is configured.
+    """Copy query parameters and add an API key when configured.
 
     Requests without a key are served from a much smaller daily credit budget,
     so the key is attached whenever it is available but never invented.
+
+    Parameters
+    ----------
+    params : dict or None, optional
+        Query parameters to copy.
+    api_key : str or None, optional
+        OpenAlex API key to add.
+
+    Returns
+    -------
+    dict
+        Copied parameters, optionally including ``api_key``.
     """
     merged = dict(params or {})
     if api_key:
@@ -59,10 +88,31 @@ def _budget_error(response):
 def request_json(url, params=None, api_key=None, session=None, timeout=60, attempts=4):
     """Request an OpenAlex endpoint with bounded retry/backoff behavior.
 
-    Returns the decoded JSON payload, or ``None`` for a 404 response so
-    single-work lookups can miss without retrying. Rejected keys and exhausted
-    credit budgets raise immediately, because neither clears within the retry
-    window.
+    Parameters
+    ----------
+    url : str
+        OpenAlex endpoint URL.
+    params : dict or None, optional
+        Query parameters for the request.
+    api_key : str or None, optional
+        OpenAlex API key to attach.
+    session : module or object or None, optional
+        HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
+    timeout : int or float, default=60
+        Request timeout in seconds.
+    attempts : int, default=4
+        Maximum number of request attempts.
+
+    Returns
+    -------
+    dict or None
+        Decoded JSON payload, or ``None`` for a 404 response.
+
+    Raises
+    ------
+    RuntimeError
+        If the API key is rejected, the credit budget is exhausted, or all
+        request attempts fail.
     """
     session = session or requests
     headers = request_headers()
@@ -95,23 +145,76 @@ def request_json(url, params=None, api_key=None, session=None, timeout=60, attem
 
 
 def work_url(identifier):
-    """Build a single-work URL from a W-identifier or ``doi:``-prefixed DOI."""
+    """Build a single-work URL.
+
+    Parameters
+    ----------
+    identifier : str
+        OpenAlex W-identifier or ``doi:``-prefixed DOI.
+
+    Returns
+    -------
+    str
+        Encoded OpenAlex work URL.
+    """
     return f'{WORKS_URL}/{quote(str(identifier), safe=":/")}'
 
 
 def get_work(identifier, api_key=None, session=None):
-    """Fetch one OpenAlex work record, returning ``None`` when it does not exist."""
+    """Fetch one OpenAlex work record.
+
+    Parameters
+    ----------
+    identifier : str
+        OpenAlex W-identifier or ``doi:``-prefixed DOI.
+    api_key : str or None, optional
+        OpenAlex API key to attach.
+    session : module or object or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    dict or None
+        Work record, or ``None`` when the work does not exist.
+
+    Raises
+    ------
+    RuntimeError
+        If the OpenAlex request cannot be completed.
+    """
     return request_json(work_url(identifier), api_key=api_key, session=session)
 
 
 def work_id(work):
-    """Extract the short W-identifier from an OpenAlex work record."""
+    """Extract the short W-identifier from an OpenAlex work record.
+
+    Parameters
+    ----------
+    work : dict
+        OpenAlex work record.
+
+    Returns
+    -------
+    str
+        Short W-identifier, or an empty string when unavailable.
+    """
     identifier = str(work.get('id') or '')
     return identifier.rstrip('/').rsplit('/', 1)[-1] if identifier else ''
 
 
 def reconstruct_abstract(inverted_index):
-    """Rebuild plain abstract text from an OpenAlex inverted index."""
+    """Rebuild abstract text from an OpenAlex inverted index.
+
+    Parameters
+    ----------
+    inverted_index : dict or None
+        Mapping of tokens to their positions in the abstract.
+
+    Returns
+    -------
+    str
+        Reconstructed abstract, or an empty string for a missing index.
+    """
     if not isinstance(inverted_index, dict) or not inverted_index:
         return ''
     positions = [(position, token)
@@ -121,7 +224,18 @@ def reconstruct_abstract(inverted_index):
 
 
 def work_to_paper(work):
-    """Map an OpenAlex work record onto PaperScraper's paper schema."""
+    """Map an OpenAlex work onto PaperScraper's paper schema.
+
+    Parameters
+    ----------
+    work : dict
+        OpenAlex work record.
+
+    Returns
+    -------
+    dict
+        Normalized paper metadata.
+    """
     doi = clean_doi(work.get('doi')) if work.get('doi') else ''
     identifier = work_id(work)
     if doi:
@@ -151,7 +265,18 @@ def work_to_paper(work):
 
 
 def pdf_candidates(work):
-    """Return candidate PDF URLs for a work, most authoritative first."""
+    """Return candidate PDF URLs for an OpenAlex work.
+
+    Parameters
+    ----------
+    work : dict
+        OpenAlex work record.
+
+    Returns
+    -------
+    list[str]
+        Deduplicated PDF candidates, most authoritative first.
+    """
     candidates = [(work.get('best_oa_location') or {}).get('pdf_url')]
     for location in work.get('locations') or []:
         candidates.append((location or {}).get('pdf_url'))

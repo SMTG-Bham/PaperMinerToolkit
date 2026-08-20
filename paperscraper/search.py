@@ -44,11 +44,35 @@ def document_search(query: str,
                     count: int = 200,
                     get_all: bool = True,
                     search_fields: str = 'TITLE-ABS-KEY'):
-    """
-    Search Elsevier/Scopus and return at most ``count`` raw provider records.
+    """Search Elsevier and return raw provider records.
 
     This is a small replacement for the Elsapy search helper so PaperScraper can
     control pagination and treat ``count`` as a hard result cap.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    index : str, default='scopus'
+        Elsevier index to search.
+    count : int, default=200
+        Maximum number of records to return.
+    get_all : bool, default=True
+        Whether to follow provider pagination links.
+    search_fields : str, default='TITLE-ABS-KEY'
+        Elsevier fields in which to evaluate ``query``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Raw Elsevier records capped at ``count`` rows.
+
+    Raises
+    ------
+    ValueError
+        If no Elsevier API key is configured.
+    requests.RequestException
+        If an Elsevier request fails.
     """
     api_key = _elsevier_api_key()
     max_results = max(int(count), 1)
@@ -227,8 +251,24 @@ def _core_rows(works) -> pd.DataFrame:
 
 
 def core_search(query: str, count: int = 200):
-    """
-    Search CORE works and return at most ``count`` normalized paper rows.
+    """Search CORE works.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    requests.RequestException
+        If a CORE request fails.
     """
     url = 'https://api.core.ac.uk/v3/search/works'
     limit = min(max(int(count), 1), 100)
@@ -266,8 +306,24 @@ def _openalex_rows(works) -> pd.DataFrame:
 
 
 def openalex_search(query: str, count: int = 200):
-    """
-    Search OpenAlex works and return at most ``count`` normalized paper rows.
+    """Search OpenAlex works.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    RuntimeError
+        If an OpenAlex request cannot be completed.
     """
     api_key = openalex.configured_api_key()
     per_page = min(max(int(count), 1), 200)
@@ -318,8 +374,35 @@ def search_for_papers(query: str,
                       source: str = 'all',
                       count: int = 200,
                       store_abstract: bool = False):
-    """
-    Search the selected source(s) and merge results into ``db_path``.
+    """Search providers and merge results into a corpus.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    db_path : str, default='papers.db'
+        Path to the SQLite paper corpus.
+    source : {'all', 'core', 'elsevier', 'openalex'}, default='all'
+        Provider or provider set to search.
+    count : int, default=200
+        Maximum number of records requested from each provider.
+    store_abstract : bool, default=False
+        Whether to store search-result abstracts as corpus assets.
+
+    Returns
+    -------
+    None
+        Results are written directly to ``db_path``.
+
+    Raises
+    ------
+    ValueError
+        If ``source`` is unsupported or required provider configuration is
+        missing.
+    requests.RequestException
+        If the explicitly selected CORE provider fails.
+    RuntimeError
+        If the explicitly selected OpenAlex provider fails.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:

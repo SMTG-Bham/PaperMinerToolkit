@@ -287,6 +287,12 @@ Install the test dependencies and run the default test suite with:
 
 `pip install -e ".[test]"`
 
+Validate NumPy-style docstrings:
+
+`ruff check paperscraper tests`
+
+Run the test suite:
+
 `pytest`
 
 Unit tests live in `tests/` and should be split by source file, for example `tests/test_corpus.py` covers `paperscraper/corpus.py`. If test data files are needed, put them in `tests/data/`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.

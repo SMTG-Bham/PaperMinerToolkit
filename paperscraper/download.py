@@ -33,7 +33,30 @@ def _elsevier_api_key():
 
 
 def retrieve_document(uri):
-    """Retrieve an Elsevier full-text document into the temporary ``data`` folder."""
+    """Retrieve an Elsevier full-text document.
+
+    The decoded response is written to ``data/elsevier_document.json`` after
+    existing files in the directory are removed.
+
+    Parameters
+    ----------
+    uri : str
+        Elsevier full-text endpoint URL.
+
+    Returns
+    -------
+    None
+        The document is written to the local ``data`` directory. If the
+        request fails, an error is printed and no document is written.
+
+    Raises
+    ------
+    ValueError
+        If no Elsevier API key is configured.
+    OSError
+        If the output directory or its files cannot be created, removed, or
+        written.
+    """
     os.makedirs('data', exist_ok=True)
     for file in os.listdir('data'):
         os.remove(os.path.join('data', file))
@@ -52,7 +75,25 @@ def retrieve_document(uri):
 
 
 def json_to_text(filepath):
-    """Read an Elsevier JSON document and return its original text content."""
+    """Read original text from an Elsevier JSON document.
+
+    Parameters
+    ----------
+    filepath : str or os.PathLike
+        Path to the downloaded JSON document.
+
+    Returns
+    -------
+    str
+        Original text, or ``'failed'`` when text is missing or structured.
+
+    Raises
+    ------
+    OSError
+        If the document cannot be read.
+    json.JSONDecodeError
+        If the document is not valid JSON.
+    """
     with open(filepath, 'r', encoding='utf-8') as f:
         doc = json.load(f)
     text = doc.get('originalText')
@@ -64,7 +105,18 @@ def json_to_text(filepath):
 
 
 def elsevier_string_formatter(text: str):
-    """Clean common wrapper artifacts from Elsevier originalText output."""
+    """Clean wrapper artifacts from Elsevier original text.
+
+    Parameters
+    ----------
+    text : str
+        Raw ``originalText`` value.
+
+    Returns
+    -------
+    str
+        Cleaned article text.
+    """
     if text.count('Acknowledgements') == 2:
         text = text.split('Acknowledgements')[1]
     elif text.count('References') == 2:
@@ -515,7 +567,30 @@ def download_papers(db_path='papers.db',
                     download_format='text',
                     sources=None,
                     download_abstract=True):
-    """Download requested paper assets and update the corpus database in place."""
+    """Download paper assets and update a corpus in place.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike, default='papers.db'
+        Path to the SQLite paper corpus.
+    download_format : {'both', 'pdf', 'text'}, default='text'
+        Primary asset types to download.
+    sources : iterable of str or None, optional
+        Ordered PDF providers to try. ``all`` expands to configured providers.
+    download_abstract : bool, default=True
+        Whether to retrieve and store abstracts.
+
+    Returns
+    -------
+    None
+        Assets and status fields are written directly to the corpus.
+
+    Raises
+    ------
+    ValueError
+        If the format or source is invalid, or required provider configuration
+        is unavailable.
+    """
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')

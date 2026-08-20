@@ -47,13 +47,49 @@ DOI_RE = re.compile(r'\b10\.\d{4,9}/\S+', re.IGNORECASE)
 
 
 class TopicAnalyzer:
-    """Generate domain-aware unigram and bigram features for topic models."""
+    """Generate domain-aware features for topic models.
+
+    Parameters
+    ----------
+    domain_stopwords : iterable of str, optional
+        Domain-specific words to omit as standalone features.
+    ngram_max : int, default=2
+        Maximum n-gram size to emit.
+
+    Attributes
+    ----------
+    domain_stopwords : frozenset of str
+        Normalized collection of standalone features to omit.
+    ngram_max : int
+        Maximum configured n-gram size.
+    """
 
     def __init__(self, domain_stopwords=(), ngram_max=2):
+        """Initialize the topic analyzer.
+
+        Parameters
+        ----------
+        domain_stopwords : iterable of str, optional
+            Domain-specific words to omit as standalone features.
+        ngram_max : int, default=2
+            Maximum n-gram size to emit.
+        """
         self.domain_stopwords = frozenset(domain_stopwords)
         self.ngram_max = ngram_max
 
     def __call__(self, document):
+        """Extract topic-model features from a document.
+
+        Parameters
+        ----------
+        document : str
+            Normalized document text to analyze.
+
+        Returns
+        -------
+        list of str
+            Unigram and optional bigram features.
+        """
         features = []
         for segment in re.split(r'[.!?;:\n]+', document):
             tokens = [token for token in TOKEN_RE.findall(segment) if token not in ENGLISH_STOP_WORDS]
@@ -67,12 +103,29 @@ class TopicAnalyzer:
 
 
 def _utc_now():
-    """Return a stable UTC timestamp for model metadata."""
+    """Return a stable UTC timestamp for model metadata.
+
+    Returns
+    -------
+    str
+        ISO-8601 UTC timestamp with second precision.
+    """
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
 def normalize_topic_text(value):
-    """Normalize document text while preserving words and chemical formulae."""
+    """Normalize text while preserving words and chemical formulae.
+
+    Parameters
+    ----------
+    value : object
+        Document text or a value coercible to text.
+
+    Returns
+    -------
+    str
+        Unicode-normalized, case-folded plain text without URLs or DOIs.
+    """
     if value is None:
         return ''
     text = html.unescape(str(value))
@@ -85,7 +138,25 @@ def normalize_topic_text(value):
 
 
 def load_domain_stopwords(stopwords_file):
-    """Load one normalized corpus-specific stopword per non-comment line."""
+    """Load corpus-specific stopwords from a text file.
+
+    Parameters
+    ----------
+    stopwords_file : str, pathlib.Path, or None
+        File containing one word per non-comment line, or ``None``.
+
+    Returns
+    -------
+    list of str
+        Sorted unique normalized stopwords.
+
+    Raises
+    ------
+    OSError
+        If the stopword file cannot be read.
+    ValueError
+        If a non-comment line does not contain exactly one normalized word.
+    """
     if stopwords_file is None:
         return []
     path = Path(stopwords_file)
@@ -105,7 +176,23 @@ def load_domain_stopwords(stopwords_file):
 
 
 def _validate_text_fields(text_fields):
-    """Return unique text fields after checking they are supported."""
+    """Validate and deduplicate topic-model text fields.
+
+    Parameters
+    ----------
+    text_fields : iterable of str
+        Requested corpus text fields.
+
+    Returns
+    -------
+    tuple of str
+        Unique fields in first-seen order.
+
+    Raises
+    ------
+    ValueError
+        If no fields are supplied or any field is unsupported.
+    """
     fields = tuple(dict.fromkeys(text_fields))
     if not fields:
         raise ValueError('At least one topic-model text field is required.')
@@ -116,7 +203,25 @@ def _validate_text_fields(text_fields):
 
 
 def load_topic_documents(db_path, text_fields=('title', 'abstract')):
-    """Load normalized topic-model documents from corpus metadata and assets."""
+    """Load normalized topic-model documents from a corpus.
+
+    Parameters
+    ----------
+    db_path : str or pathlib.Path
+        Path to the SQLite paper corpus.
+    text_fields : iterable of str, default=('title', 'abstract')
+        Metadata and asset fields to combine into each document.
+
+    Returns
+    -------
+    list of dict
+        Paper metadata, normalized text, and token counts.
+
+    Raises
+    ------
+    ValueError
+        If any requested text field is unsupported.
+    """
     fields = _validate_text_fields(text_fields)
     asset_roles = [field for field in fields if field in {'abstract', 'text'}]
     with connect(db_path) as conn:
@@ -147,7 +252,18 @@ def load_topic_documents(db_path, text_fields=('title', 'abstract')):
 
 
 def _median(values):
-    """Return the median of numeric values without adding another dependency."""
+    """Calculate the median of numeric values.
+
+    Parameters
+    ----------
+    values : sequence of numbers
+        Values whose median is required.
+
+    Returns
+    -------
+    int or float
+        Median value, or zero for an empty sequence.
+    """
     if not values:
         return 0
     ordered = sorted(values)
@@ -158,7 +274,26 @@ def _median(values):
 
 
 def assess_topic_corpus(documents, num_topics):
-    """Return corpus-quality diagnostics and heuristic size warnings."""
+    """Assess corpus quality for LDA topic modeling.
+
+    Parameters
+    ----------
+    documents : sequence of dict
+        Topic documents containing ``token_count`` values.
+    num_topics : int
+        Requested number of latent topics.
+
+    Returns
+    -------
+    dict
+        Corpus counts, length diagnostics, and heuristic warnings.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two topics are requested or too few usable documents
+        exist.
+    """
     if num_topics < 2:
         raise ValueError('num_topics must be at least 2.')
     usable = [document for document in documents if document['token_count'] > 0]
@@ -201,13 +336,30 @@ def assess_topic_corpus(documents, num_topics):
 
 
 def _emit_warnings(messages):
-    """Emit corpus diagnostics through Python's warnings interface."""
+    """Emit corpus diagnostics through Python's warnings interface.
+
+    Parameters
+    ----------
+    messages : iterable of str
+        Warning messages to emit.
+    """
     for message in messages:
         warnings.warn(message, UserWarning, stacklevel=3)
 
 
 def _corpus_fingerprint(documents):
-    """Build a deterministic fingerprint from paper ids and normalized text."""
+    """Build a deterministic fingerprint for topic documents.
+
+    Parameters
+    ----------
+    documents : iterable of dict
+        Documents containing paper IDs and normalized text.
+
+    Returns
+    -------
+    str
+        SHA-256 hexadecimal digest.
+    """
     digest = hashlib.sha256()
     for document in sorted(documents, key=lambda item: item['paper_id']):
         digest.update(document['paper_id'].encode('utf-8'))
@@ -218,7 +370,22 @@ def _corpus_fingerprint(documents):
 
 
 def _topic_rows(model, vectorizer, top_terms):
-    """Return top weighted terms for each fitted topic."""
+    """Extract the highest-weighted terms from each fitted topic.
+
+    Parameters
+    ----------
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted LDA model.
+    vectorizer : sklearn.feature_extraction.text.CountVectorizer
+        Fitted feature vectorizer.
+    top_terms : int
+        Maximum terms to retain per topic.
+
+    Returns
+    -------
+    list of dict
+        Topic IDs, blank manual names, and weighted terms.
+    """
     feature_names = vectorizer.get_feature_names_out()
     rows = []
     for topic_id, weights in enumerate(model.components_):
@@ -232,12 +399,40 @@ def _topic_rows(model, vectorizer, top_terms):
 
 
 def _write_json(path, value):
-    """Write deterministic, readable JSON metadata."""
+    """Write deterministic, readable JSON metadata.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination JSON path.
+    value : object
+        JSON-serializable value to write.
+
+    Raises
+    ------
+    OSError
+        If the destination cannot be written.
+    TypeError
+        If ``value`` is not JSON serializable.
+    """
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
 def _write_topics(path, topic_rows):
-    """Write manually nameable topic summaries."""
+    """Write manually nameable topic summaries.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination CSV path.
+    topic_rows : iterable of dict
+        Topic IDs, names, and top-term lists.
+
+    Raises
+    ------
+    OSError
+        If the destination cannot be written.
+    """
     with Path(path).open('w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=['topic_id', 'topic_name', 'top_terms'])
         writer.writeheader()
@@ -250,7 +445,20 @@ def _write_topics(path, topic_rows):
 
 
 def _refresh_csv_topic_names(path, names):
-    """Refresh topic-name columns in an existing artifact CSV."""
+    """Refresh names in an existing topic artifact CSV.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Artifact CSV to update when it exists.
+    names : mapping of str to str
+        Manual names keyed by string topic ID.
+
+    Raises
+    ------
+    OSError
+        If the artifact cannot be read, rewritten, or replaced.
+    """
     path = Path(path)
     if not path.exists():
         return
@@ -273,7 +481,27 @@ def _refresh_csv_topic_names(path, names):
 
 
 def _topic_names(model_dir, num_topics):
-    """Load manual topic names, filling missing topic ids with blank names."""
+    """Load manual topic names from a model artifact.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Topic-model artifact directory.
+    num_topics : int
+        Number of topic IDs to include.
+
+    Returns
+    -------
+    dict[str, str]
+        Manual names keyed by topic ID, with missing names left blank.
+
+    Raises
+    ------
+    OSError
+        If the topic-name file cannot be read.
+    json.JSONDecodeError
+        If the topic-name file contains invalid JSON.
+    """
     path = Path(model_dir) / TOPIC_NAMES_FILENAME
     if path.exists():
         values = json.loads(path.read_text(encoding='utf-8'))
@@ -283,7 +511,26 @@ def _topic_names(model_dir, num_topics):
 
 
 def _write_predictions(path, documents, distributions, names, included_indices):
-    """Write long-form per-paper topic probabilities and skipped-paper states."""
+    """Write long-form topic predictions and skipped-paper states.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination CSV path.
+    documents : sequence of dict
+        Paper documents in output order.
+    distributions : iterable of array-like
+        Topic probability vectors for included documents.
+    names : mapping of str to str
+        Manual names keyed by string topic ID.
+    included_indices : iterable of int
+        Document indices corresponding to ``distributions``.
+
+    Raises
+    ------
+    OSError
+        If the destination cannot be written.
+    """
     distribution_by_index = dict(zip(included_indices, distributions))
     fieldnames = [
         'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
@@ -311,7 +558,26 @@ def _write_predictions(path, documents, distributions, names, included_indices):
 
 
 def _write_representatives(path, documents, distributions, names, count):
-    """Write the highest-probability papers for manual topic interpretation."""
+    """Write representative papers for manual topic interpretation.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination CSV path.
+    documents : sequence of dict
+        Documents corresponding to distribution rows.
+    distributions : numpy.ndarray
+        Per-document topic probabilities.
+    names : mapping of str to str
+        Manual names keyed by string topic ID.
+    count : int
+        Maximum representative papers per topic.
+
+    Raises
+    ------
+    OSError
+        If the destination cannot be written.
+    """
     fieldnames = ['topic_id', 'topic_name', 'rank', 'paper_id', 'probability', 'title', 'publication_date']
     with Path(path).open('w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -332,7 +598,27 @@ def _write_representatives(path, documents, distributions, names, count):
 
 
 def _prepare_output_directory(output_dir, overwrite):
-    """Create an artifact directory, rejecting accidental overwrite by default."""
+    """Prepare a topic-model artifact directory.
+
+    Parameters
+    ----------
+    output_dir : str or pathlib.Path
+        Artifact directory to create or reuse.
+    overwrite : bool
+        Whether a nonempty directory may be reused.
+
+    Returns
+    -------
+    pathlib.Path
+        Prepared artifact directory.
+
+    Raises
+    ------
+    OSError
+        If the directory cannot be inspected or created.
+    ValueError
+        If the directory is nonempty and ``overwrite`` is false.
+    """
     path = Path(output_dir)
     if path.exists() and any(path.iterdir()) and not overwrite:
         raise ValueError(f'Model directory is not empty: {path}. Pass overwrite=True to replace model files.')
@@ -341,7 +627,24 @@ def _prepare_output_directory(output_dir, overwrite):
 
 
 def _model_quality_metrics(model, matrix, distributions, topic_rows):
-    """Return quantitative diagnostics useful for comparing fitted models."""
+    """Calculate diagnostics for a fitted topic model.
+
+    Parameters
+    ----------
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted LDA model.
+    matrix : scipy.sparse.spmatrix
+        Document-term matrix used to fit the model.
+    distributions : numpy.ndarray
+        Per-document topic probabilities.
+    topic_rows : sequence of dict
+        Extracted topic terms.
+
+    Returns
+    -------
+    dict
+        Fit, topic-diversity, and dominant-topic balance metrics.
+    """
     dominant_topics = distributions.argmax(axis=1)
     dominant_counts = [int((dominant_topics == topic_id).sum()) for topic_id in range(distributions.shape[1])]
     proportions = [count / len(distributions) for count in dominant_counts if count]
@@ -377,7 +680,57 @@ def train_topic_model(db_path,
                       overwrite=False,
                       emit_warnings=True,
                       documents=None):
-    """Train and persist an LDA model and its inspection artifacts."""
+    """Train and persist an LDA model and its inspection artifacts.
+
+    Parameters
+    ----------
+    db_path : str or pathlib.Path
+        Path to the source SQLite paper corpus.
+    output_dir : str or pathlib.Path
+        Directory in which to store the model artifacts.
+    num_topics : int, default=10
+        Number of latent topics to fit.
+    text_fields : iterable of str, default=('title', 'abstract')
+        Corpus fields combined into each modeling document.
+    min_df : int, default=2
+        Minimum number of documents in which a feature must occur.
+    max_df : float, default=0.95
+        Maximum fraction of documents in which a feature may occur.
+    max_features : int, default=20000
+        Maximum retained vocabulary size.
+    learning_method : {'batch', 'online'}, default='online'
+        Scikit-learn LDA learning strategy.
+    max_iter : int, default=20
+        Maximum LDA training iterations.
+    random_state : int, default=0
+        Seed controlling model initialization.
+    top_terms : int, default=15
+        Number of terms exported for each topic.
+    representative_papers : int, default=5
+        Number of high-probability papers exported per topic.
+    stopwords_file : str, pathlib.Path, or None, optional
+        File containing domain-specific stopwords.
+    ngram_max : {1, 2}, default=2
+        Maximum feature n-gram size.
+    overwrite : bool, default=False
+        Whether to reuse a nonempty artifact directory.
+    emit_warnings : bool, default=True
+        Whether to emit heuristic corpus-quality warnings.
+    documents : sequence of dict or None, optional
+        Preloaded documents used instead of reading ``db_path``.
+
+    Returns
+    -------
+    dict
+        Artifact paths, configuration, quality report, fingerprint, and topics.
+
+    Raises
+    ------
+    OSError
+        If an input or artifact file cannot be read or written.
+    ValueError
+        If configuration, corpus size, or retained vocabulary is unsuitable.
+    """
     fields = _validate_text_fields(text_fields)
     if learning_method not in {'online', 'batch'}:
         raise ValueError('learning_method must be one of: online, batch')
@@ -522,7 +875,34 @@ def train_topic_model(db_path,
 
 
 def load_topic_model(model_dir):
-    """Load a trusted local LDA artifact and validate its format version."""
+    """Load and validate a trusted local LDA artifact.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Topic-model artifact directory.
+
+    Returns
+    -------
+    tuple
+        Fitted LDA model, fitted vectorizer, configuration, and manual names.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the model configuration is missing.
+    OSError
+        If an artifact cannot be read.
+    ValueError
+        If the artifact format version is unsupported.
+    json.JSONDecodeError
+        If JSON metadata is invalid.
+
+    Notes
+    -----
+    Joblib artifacts can execute code while loading and must come from a
+    trusted source.
+    """
     path = Path(model_dir)
     config_path = path / CONFIG_FILENAME
     if not config_path.exists():
@@ -540,7 +920,25 @@ def load_topic_model(model_dir):
 
 
 def topic_descriptions(model_dir):
-    """Return topic terms, manual names, and representative paper titles."""
+    """Load descriptions and representative papers for each topic.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Topic-model artifact directory.
+
+    Returns
+    -------
+    list of dict
+        Topic terms, manual names, and representative paper rows.
+
+    Raises
+    ------
+    OSError
+        If required artifacts cannot be read.
+    ValueError
+        If the artifact format version is unsupported.
+    """
     model, vectorizer, config, names = load_topic_model(model_dir)
     topics = _topic_rows(model, vectorizer, config['top_terms'])
     representatives = {topic_id: [] for topic_id in range(config['num_topics'])}
@@ -556,7 +954,30 @@ def topic_descriptions(model_dir):
 
 
 def set_topic_name(model_dir, topic_id, topic_name):
-    """Set one manual topic name and refresh human-readable artifact exports."""
+    """Set a manual topic name and refresh artifact exports.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Topic-model artifact directory.
+    topic_id : int
+        Zero-based topic identifier.
+    topic_name : str
+        Nonempty manual topic name.
+
+    Returns
+    -------
+    dict[str, str]
+        Updated names keyed by string topic ID.
+
+    Raises
+    ------
+    OSError
+        If model artifacts cannot be read or rewritten.
+    ValueError
+        If the artifact is unsupported, the ID is out of range, or the name is
+        empty.
+    """
     model, vectorizer, config, names = load_topic_model(model_dir)
     if topic_id < 0 or topic_id >= config['num_topics']:
         raise ValueError(f'topic_id must be between 0 and {config["num_topics"] - 1}.')
@@ -576,7 +997,29 @@ def set_topic_name(model_dir, topic_id, topic_name):
 
 
 def predict_topic_model(model_dir, db_path, output_path):
-    """Apply a saved topic model to a corpus and export long-form scores."""
+    """Apply a saved topic model and export long-form scores.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Topic-model artifact directory.
+    db_path : str or pathlib.Path
+        Path to the SQLite paper corpus to score.
+    output_path : str or pathlib.Path
+        Destination prediction CSV.
+
+    Returns
+    -------
+    dict
+        Counts of total, predicted, and skipped papers plus the output path.
+
+    Raises
+    ------
+    OSError
+        If model artifacts or the prediction destination cannot be accessed.
+    ValueError
+        If the model artifact is unsupported or the corpus contains no papers.
+    """
     model, vectorizer, config, names = load_topic_model(model_dir)
     documents = load_topic_documents(db_path, config['text_fields'])
     if not documents:
@@ -595,11 +1038,38 @@ def predict_topic_model(model_dir, db_path, output_path):
 
 
 def _topic_set_similarity(left_topics, right_topics):
-    """Return symmetric best-match Jaccard similarity between two topic sets."""
+    """Calculate symmetric best-match similarity between topic sets.
+
+    Parameters
+    ----------
+    left_topics : sequence of dict
+        First topic collection containing ``top_terms`` lists.
+    right_topics : sequence of dict
+        Second topic collection containing ``top_terms`` lists.
+
+    Returns
+    -------
+    float
+        Symmetric mean best-match Jaccard similarity from zero to one.
+    """
     left_sets = [set(topic['top_terms']) for topic in left_topics]
     right_sets = [set(topic['top_terms']) for topic in right_topics]
 
     def directional(source, targets):
+        """Calculate mean best-match similarity in one direction.
+
+        Parameters
+        ----------
+        source : sequence of set
+            Topic-term sets to score.
+        targets : sequence of set
+            Candidate topic-term sets for each source topic.
+
+        Returns
+        -------
+        float
+            Mean best-match Jaccard similarity, or zero for no source topics.
+        """
         scores = []
         for source_terms in source:
             candidates = [
@@ -614,7 +1084,20 @@ def _topic_set_similarity(left_topics, right_topics):
 
 
 def _write_model_comparison(path, rows):
-    """Write one compact quality-metric row for each comparison model."""
+    """Write quality metrics for a collection of comparison models.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination comparison CSV path.
+    rows : iterable of dict
+        Per-model configuration and quality metrics.
+
+    Raises
+    ------
+    OSError
+        If the destination cannot be written.
+    """
     fieldnames = [
         'num_topics', 'random_state', 'model_dir', 'documents_used', 'vocabulary_size',
         'perplexity', 'log_likelihood', 'topic_diversity', 'dominant_topic_balance',
@@ -646,7 +1129,53 @@ def compare_topic_models(db_path,
                          stopwords_file=None,
                          ngram_max=2,
                          overwrite=False):
-    """Train and compare several topic counts and random seeds on one corpus."""
+    """Train and compare topic counts and random seeds on one corpus.
+
+    Parameters
+    ----------
+    db_path : str or pathlib.Path
+        Path to the source SQLite paper corpus.
+    output_dir : str or pathlib.Path
+        Directory for comparison models and reports.
+    topic_counts : iterable of int, default=(5, 10)
+        Distinct topic counts to evaluate.
+    random_states : iterable of int, default=(0, 1)
+        Distinct model seeds to evaluate.
+    text_fields : iterable of str, default=('title', 'abstract')
+        Corpus fields combined into each modeling document.
+    min_df : int, default=2
+        Minimum number of documents in which a feature must occur.
+    max_df : float, default=0.95
+        Maximum fraction of documents in which a feature may occur.
+    max_features : int, default=20000
+        Maximum retained vocabulary size.
+    learning_method : {'batch', 'online'}, default='online'
+        Scikit-learn LDA learning strategy.
+    max_iter : int, default=20
+        Maximum LDA training iterations.
+    top_terms : int, default=15
+        Number of terms exported for each topic.
+    representative_papers : int, default=5
+        Number of high-probability papers exported per topic.
+    stopwords_file : str, pathlib.Path, or None, optional
+        File containing domain-specific stopwords.
+    ngram_max : {1, 2}, default=2
+        Maximum feature n-gram size.
+    overwrite : bool, default=False
+        Whether nonempty comparison directories may be reused.
+
+    Returns
+    -------
+    dict
+        Comparison paths, model count, and per-model metrics.
+
+    Raises
+    ------
+    OSError
+        If inputs or artifacts cannot be read or written.
+    ValueError
+        If the comparison grid or a training configuration is invalid.
+    """
     counts = tuple(dict.fromkeys(int(value) for value in topic_counts))
     seeds = tuple(dict.fromkeys(int(value) for value in random_states))
     if not counts or any(value < 2 for value in counts):

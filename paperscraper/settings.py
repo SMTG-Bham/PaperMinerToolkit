@@ -40,14 +40,46 @@ DEFAULT_SETTINGS = {
 
 
 def _float_setting(value, default):
-    """Convert an optional numeric setting to ``float`` with a default fallback."""
+    """Normalize an optional floating-point setting.
+
+    Parameters
+    ----------
+    value : object
+        Configured value. ``None`` and an empty string select the default.
+    default : float
+        Value returned when the configured value is missing.
+
+    Returns
+    -------
+    float
+        The default or the configured value converted to ``float``.
+
+    Raises
+    ------
+    ValueError
+        If a non-empty value cannot be converted to ``float``.
+    """
     if value is None or value == '':
         return default
     return float(value)
 
 
 def _capabilities(value, default=None):
-    """Normalize model capability settings into a list of capability names."""
+    """Normalize a model capability setting.
+
+    Parameters
+    ----------
+    value : str or list of str or None
+        Comma-separated capabilities, an existing list, or a missing value.
+    default : list of str, optional
+        Capabilities used when ``value`` is missing. Text-only capability is
+        used when both inputs are missing.
+
+    Returns
+    -------
+    list of str
+        Normalized capability names.
+    """
     if value is None or value == '':
         return default or ['text']
     if isinstance(value, str):
@@ -56,7 +88,21 @@ def _capabilities(value, default=None):
 
 
 def _merge_profile(default, configured):
-    """Overlay a configured model profile on top of default profile values."""
+    """Merge and normalize a configured model profile.
+
+    Parameters
+    ----------
+    default : dict
+        Default model profile values.
+    configured : dict or None
+        Stored or environment-derived overrides.
+
+    Returns
+    -------
+    dict
+        Merged profile with normalized capabilities, sampling values, and
+        input token limit.
+    """
     profile = default.copy()
     profile.update(configured or {})
     profile['capabilities'] = _capabilities(profile.get('capabilities'), default.get('capabilities'))
@@ -70,7 +116,18 @@ def _merge_profile(default, configured):
 
 
 def _env_profile(prefix):
-    """Collect model profile overrides from environment variables with ``prefix``."""
+    """Collect model profile overrides from environment variables.
+
+    Parameters
+    ----------
+    prefix : str
+        Environment variable prefix for the profile.
+
+    Returns
+    -------
+    dict
+        Defined, non-empty environment overrides keyed by profile field.
+    """
     env = {
         'provider': os.environ.get(f'{prefix}PROVIDER'),
         'model': os.environ.get(f'{prefix}NAME'),
@@ -85,7 +142,23 @@ def _env_profile(prefix):
 
 
 def load_settings():
-    """Load settings from disk and environment variables."""
+    """Load effective PaperScraper settings.
+
+    Values from the user config file are merged with package defaults, then
+    overridden by supported environment variables.
+
+    Returns
+    -------
+    dict
+        Effective credentials and normalized text and vision model profiles.
+
+    Raises
+    ------
+    RuntimeError
+        If the settings file exists but cannot be read or decoded.
+    ValueError
+        If a configured numeric profile value is invalid.
+    """
     try:
         with open(SETTINGS_FILE, mode='r', encoding='utf-8') as json_file:
             settings = json.load(json_file)
@@ -138,14 +211,36 @@ def load_settings():
 
 
 def save_settings(settings):
-    """Persist settings to the PaperScraper user config file."""
+    """Persist PaperScraper settings as JSON.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings to write to the user config file.
+    """
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
     with open(SETTINGS_FILE, mode='w', encoding='utf-8') as json_file:
         json.dump(settings, json_file, indent=2)
 
 
 def get_model_profile(profile: str):
-    """Return a named model profile after applying defaults and environment overrides."""
+    """Load an effective model profile by name.
+
+    Parameters
+    ----------
+    profile : str
+        Profile name, normally ``text`` or ``vision``.
+
+    Returns
+    -------
+    dict
+        Normalized model profile.
+
+    Raises
+    ------
+    KeyError
+        If the named profile does not exist.
+    """
     settings = load_settings()
     try:
         return settings['model_profiles'][profile]
@@ -154,7 +249,21 @@ def get_model_profile(profile: str):
 
 
 def infer_model_capabilities(profile: str, model: str):
-    """Infer whether a model profile should support text only or text plus vision."""
+    """Infer model capabilities from the profile and model name.
+
+    Parameters
+    ----------
+    profile : str
+        Model profile name.
+    model : str
+        Provider model identifier.
+
+    Returns
+    -------
+    list of str
+        Text-only capability, or text and vision capabilities for a vision
+        profile or vision-like model name.
+    """
     model_lower = (model or '').lower()
     vision_markers = ['vl',
                       'vision',
@@ -174,7 +283,29 @@ def infer_model_capabilities(profile: str, model: str):
 def set_model_profile(profile: str, provider: str, model: str, base_url=None, api_key=None, capabilities=None,
                       temperature=DEFAULT_TEMPERATURE, top_p=DEFAULT_TOP_P,
                       input_token_limit=DEFAULT_INPUT_TOKEN_LIMIT):
-    """Store a model profile for later text or vision extraction runs."""
+    """Store a model profile for extraction runs.
+
+    Parameters
+    ----------
+    profile : str
+        Profile name to create or replace.
+    provider : str
+        Model provider name.
+    model : str
+        Provider model identifier.
+    base_url : str, optional
+        Custom provider API base URL.
+    api_key : str, optional
+        Profile-specific provider credential.
+    capabilities : list of str or str, optional
+        Explicit capabilities. Capabilities are inferred when omitted.
+    temperature : float, default=DEFAULT_TEMPERATURE
+        Sampling temperature.
+    top_p : float, default=DEFAULT_TOP_P
+        Nucleus sampling probability mass.
+    input_token_limit : int, default=DEFAULT_INPUT_TOKEN_LIMIT
+        Maximum model input tokens before chunking.
+    """
     settings = load_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
     settings.setdefault('model_profiles', {})[profile] = {
@@ -191,7 +322,19 @@ def set_model_profile(profile: str, provider: str, model: str, base_url=None, ap
 
 
 def check_openai_api_key(api_key):
-    """Return whether an OpenAI API key can authenticate against the models API."""
+    """Validate an OpenAI API key against the models API.
+
+    Parameters
+    ----------
+    api_key : str
+        OpenAI API key to validate.
+
+    Returns
+    -------
+    bool
+        ``False`` for an authentication failure; ``True`` after a successful
+        model listing.
+    """
     client = openai.OpenAI(api_key=api_key)
     try:
         client.models.list()
@@ -202,7 +345,19 @@ def check_openai_api_key(api_key):
 
 
 def _mask_secret(value):
-    """Return a display-safe representation of a configured secret."""
+    """Mask a configured secret for display.
+
+    Parameters
+    ----------
+    value : object
+        Secret value, or a false value when no secret is configured.
+
+    Returns
+    -------
+    str
+        ``not set``, a fully masked short value, or the first and last four
+        characters of a longer value.
+    """
     if not value:
         return 'not set'
     value = str(value)
@@ -212,7 +367,19 @@ def _mask_secret(value):
 
 
 def _show_current_setting(settings, key, label, secret=True):
-    """Print the currently configured credential value before prompting."""
+    """Print a configured value before prompting for its replacement.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings containing the value to display.
+    key : str
+        Settings key to read.
+    label : str
+        Human-readable label included in the prompt.
+    secret : bool, default=True
+        Whether to mask the configured value.
+    """
     value = settings.get(key)
     if secret:
         value = _mask_secret(value)
@@ -222,7 +389,18 @@ def _show_current_setting(settings, key, label, secret=True):
 
 
 def update_openai_key(settings=True):
-    """Prompt for and save an OpenAI API key after validating it."""
+    """Prompt for, validate, and save an OpenAI API key.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered key fails OpenAI authentication.
+    """
     if settings:
         settings = load_settings()
     _show_current_setting(settings, 'openai_api_key', 'OpenAI API key')
@@ -235,7 +413,13 @@ def update_openai_key(settings=True):
 
 
 def update_anthropic_key(settings=True):
-    """Prompt for and save an Anthropic API key."""
+    """Prompt for and save an Anthropic API key.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+    """
     if settings:
         settings = load_settings()
     _show_current_setting(settings, 'anthropic_api_key', 'Anthropic API key')
@@ -245,7 +429,18 @@ def update_anthropic_key(settings=True):
 
 
 def check_elsevier_api_key(api_key):
-    """Return whether an Elsevier API key can run a minimal Scopus search."""
+    """Validate an Elsevier API key with a minimal Scopus search.
+
+    Parameters
+    ----------
+    api_key : str
+        Elsevier API key to validate.
+
+    Returns
+    -------
+    bool
+        ``True`` when the request succeeds, otherwise ``False``.
+    """
     try:
         url = elsevier.search_url('scopus', 'Test', 1, 'TITLE-ABS-KEY')
         elsevier.get_json(api_key, url)
@@ -256,7 +451,18 @@ def check_elsevier_api_key(api_key):
 
 
 def update_elsevier_key(settings=True):
-    """Prompt for, validate, and save an Elsevier API key."""
+    """Prompt for, validate, and save an Elsevier API key.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered key fails Elsevier validation.
+    """
     if settings:
         settings = load_settings()
     _show_current_setting(settings, 'elsevier_api_key', 'Elsevier API key')
@@ -269,7 +475,13 @@ def update_elsevier_key(settings=True):
 
 
 def update_core_key(settings=True):
-    """Prompt for and save a CORE API key."""
+    """Prompt for and save a CORE API key.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+    """
     if settings:
         settings = load_settings()
     _show_current_setting(settings, 'core_api_key', 'CORE API key')
@@ -279,7 +491,18 @@ def update_core_key(settings=True):
 
 
 def update_unpaywall_email(settings=True):
-    """Prompt for and save the email address sent to Unpaywall."""
+    """Prompt for and save the email address sent to Unpaywall.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered value does not contain an ``@`` character.
+    """
     if settings:
         settings = load_settings()
     _show_current_setting(settings, 'unpaywall_email', 'Unpaywall email', secret=False)
@@ -291,10 +514,19 @@ def update_unpaywall_email(settings=True):
 
 
 def check_openalex_api_key(api_key):
-    """Return whether OpenAlex accepts an API key.
+    """Check whether OpenAlex explicitly rejects an API key.
 
-    Only an explicit 401 counts as invalid. Any other status, or an unreachable
-    API, returns ``True`` so a network problem never blocks saving a good key.
+    Parameters
+    ----------
+    api_key : str
+        OpenAlex API key to validate.
+
+    Returns
+    -------
+    bool
+        ``False`` only for an HTTP 401 response. Other statuses and connection
+        failures return ``True`` so transient outages do not block saving a
+        key.
     """
     from paperscraper import openalex
 
@@ -311,9 +543,18 @@ def check_openalex_api_key(api_key):
 def update_openalex_key(settings=True):
     """Prompt for, validate, and save an OpenAlex API key.
 
-    OpenAlex still answers requests without a key, but from a much smaller
-    daily credit budget. A free key from https://openalex.org/settings/api
-    raises that budget tenfold.
+    OpenAlex permits unauthenticated requests with a smaller daily credit
+    budget; a free API key increases that budget.
+
+    Parameters
+    ----------
+    settings : dict or bool, default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If OpenAlex explicitly rejects the entered key.
     """
     if settings:
         settings = load_settings()

@@ -30,18 +30,7 @@ def sample_recipe():
 
 
 def test_validate_recipe_accepts_valid_recipe_and_adds_prompt_default():
-    """
-    Test validation of a valid recipe dictionary.
-
-    This function performs the following steps:
-    1. Builds a valid recipe without an `additional prompts` field.
-    2. Validates the recipe with `_validate_recipe`.
-    3. Checks the normalized recipe.
-
-    Asserts:
-        - The validated recipe keeps its original fields.
-        - The missing `additional prompts` field is added as an empty string.
-    """
+    """Test validation of a valid recipe dictionary."""
     recipe = sample_recipe()
     recipe.pop('additional prompts', None)
 
@@ -52,19 +41,7 @@ def test_validate_recipe_accepts_valid_recipe_and_adds_prompt_default():
 
 
 def test_validate_recipe_rejects_invalid_recipe_shapes():
-    """
-    Test recipe validation errors for invalid recipe shapes.
-
-    This function performs the following steps:
-    1. Validates a non-dictionary recipe.
-    2. Validates a dictionary missing required keys.
-    3. Validates a recipe with no search fields.
-
-    Asserts:
-        - Non-dictionary recipes raise `ValueError`.
-        - Recipes missing required keys raise `ValueError`.
-        - Recipes without search fields raise `ValueError`.
-    """
+    """Test recipe validation errors for invalid recipe shapes."""
     with pytest.raises(ValueError, match='must be a JSON object'):
         recipes._validate_recipe([], 'test')
 
@@ -76,18 +53,7 @@ def test_validate_recipe_rejects_invalid_recipe_shapes():
 
 
 def test_load_recipe_file_accepts_direct_and_named_recipe_files(tmp_path):
-    """
-    Test loading standalone recipe JSON files.
-
-    This function performs the following steps:
-    1. Writes a direct recipe object to a temporary JSON file.
-    2. Writes a named single-recipe object to another temporary JSON file.
-    3. Loads both recipe files.
-
-    Asserts:
-        - Direct recipe objects are loaded.
-        - Single named recipe objects are loaded.
-    """
+    """Test loading standalone recipe JSON files."""
     direct_path = tmp_path / 'direct.json'
     named_path = tmp_path / 'named.json'
     direct_path.write_text(json.dumps(sample_recipe()))
@@ -98,18 +64,7 @@ def test_load_recipe_file_accepts_direct_and_named_recipe_files(tmp_path):
 
 
 def test_load_recipe_file_rejects_invalid_json_and_ambiguous_files(tmp_path):
-    """
-    Test recipe file loading errors.
-
-    This function performs the following steps:
-    1. Writes invalid JSON to a temporary file.
-    2. Writes an ambiguous multi-recipe object to another temporary file.
-    3. Attempts to load both files.
-
-    Asserts:
-        - Invalid JSON raises `ValueError`.
-        - Ambiguous recipe files raise `ValueError`.
-    """
+    """Test recipe file loading errors."""
     invalid_path = tmp_path / 'invalid.json'
     ambiguous_path = tmp_path / 'ambiguous.json'
     invalid_path.write_text('{bad json')
@@ -123,19 +78,7 @@ def test_load_recipe_file_rejects_invalid_json_and_ambiguous_files(tmp_path):
 
 
 def test_load_recipe_reads_files_bundled_recipes_and_reports_missing(monkeypatch, tmp_path):
-    """
-    Test public recipe loading from paths and bundled recipes.
-
-    This function performs the following steps:
-    1. Writes a temporary recipe file and loads it through `load_recipe`.
-    2. Replaces the bundled recipes path with a temporary bundled recipe file.
-    3. Loads a bundled recipe and requests a missing bundled recipe.
-
-    Asserts:
-        - Path-based recipes are loaded directly.
-        - Bundled recipes are loaded by lower-case name.
-        - Missing bundled recipes raise `KeyError`.
-    """
+    """Test public recipe loading from paths and bundled recipes."""
     recipe_path = tmp_path / 'recipe.json'
     bundled_path = tmp_path / 'recipes.json'
     recipe_path.write_text(json.dumps(sample_recipe()))
@@ -150,18 +93,7 @@ def test_load_recipe_reads_files_bundled_recipes_and_reports_missing(monkeypatch
 
 
 def test_load_recipe_reports_missing_or_invalid_bundled_recipe_file(monkeypatch, tmp_path):
-    """
-    Test errors from the bundled recipe file.
-
-    This function performs the following steps:
-    1. Points `RECIPES_PATH` at a missing file.
-    2. Points `RECIPES_PATH` at an invalid JSON file.
-    3. Calls `load_recipe` in both cases.
-
-    Asserts:
-        - Missing bundled recipe files raise `FileNotFoundError`.
-        - Invalid bundled recipe JSON raises `ValueError`.
-    """
+    """Test errors from the bundled recipe file."""
     missing_path = tmp_path / 'missing.json'
     invalid_path = tmp_path / 'recipes.json'
 
@@ -206,19 +138,7 @@ def test_bundled_band_gap_recipe_uses_structured_lists_and_material_granularity(
 
 
 def test_field_columns_builds_recipe_columns_and_respects_existing_columns():
-    """
-    Test output column construction for recipe fields.
-
-    This function performs the following steps:
-    1. Builds columns for a sample recipe.
-    2. Builds columns when existing columns are supplied.
-    3. Compares the results to expected column lists.
-
-    Asserts:
-        - Unit-bearing fields include units in square brackets.
-        - Metadata fields are appended to new recipe columns.
-        - Existing columns are returned unchanged.
-    """
+    """Test output column construction for recipe fields."""
     columns = recipes.field_columns(sample_recipe())
 
     assert columns[:2] == ['Name', 'Conductivity [S cm^-1]']
@@ -227,20 +147,7 @@ def test_field_columns_builds_recipe_columns_and_respects_existing_columns():
 
 
 def test_aliases_for_includes_fields_prompts_aliases_and_metadata_fields():
-    """
-    Test alias construction for recipe and metadata fields.
-
-    This function performs the following steps:
-    1. Builds aliases for a sample recipe.
-    2. Reads aliases for recipe fields.
-    3. Reads aliases for metadata fields.
-
-    Asserts:
-        - Field names are aliases.
-        - Prompts are aliases.
-        - Explicit aliases are aliases.
-        - Metadata fields are aliases for themselves.
-    """
+    """Test alias construction for recipe and metadata fields."""
     aliases = recipes.aliases_for(sample_recipe())
 
     assert aliases['Name'] == {'name', 'material name', 'compound name'}
@@ -249,21 +156,7 @@ def test_aliases_for_includes_fields_prompts_aliases_and_metadata_fields():
 
 
 def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns(monkeypatch):
-    """
-    Test canonical matching of incoming scrape columns.
-
-    This function performs the following steps:
-    1. Defines output columns for a sample recipe.
-    2. Matches an explicit alias to a unit-bearing output column.
-    3. Matches a direct metadata field and a fallback base-name field.
-    4. Matches an unknown field.
-
-    Asserts:
-        - Aliases map to their canonical output column.
-        - Metadata fields map directly.
-        - Columns missing from aliases can still match by base name.
-        - Unknown incoming columns return None.
-    """
+    """Test canonical matching of incoming scrape columns."""
     recipe = sample_recipe()
     columns = recipes.field_columns(recipe)
 

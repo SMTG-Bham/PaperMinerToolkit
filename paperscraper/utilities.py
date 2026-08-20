@@ -8,7 +8,18 @@ from paperscraper.corpus import PIPELINE_COLUMNS, connect, paper_rows, upsert_pa
 
 
 def reset(db_path: str = 'papers.db'):
-    """Reset all pipeline columns in a corpus database to their initial statuses."""
+    """Reset all corpus pipeline columns.
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Corpus database to reset.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
     with connect(db_path) as conn:
         for paper in paper_rows(conn):
             for column, default in PIPELINE_COLUMNS.items():
@@ -18,7 +29,18 @@ def reset(db_path: str = 'papers.db'):
 
 
 def status(db_path: str = 'papers.db'):
-    """Print a compact progress summary for a corpus database."""
+    """Print a compact corpus progress summary.
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Corpus database to summarize.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
     with connect(db_path) as conn:
         papers = paper_rows(conn)
     print('\nPaperScraper Progress Summary')

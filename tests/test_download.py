@@ -28,18 +28,7 @@ def read_corpus(db_path):
 
 
 def test_elsevier_api_key_requires_and_uses_configured_api_key(monkeypatch):
-    """
-    Test Elsevier API key lookup from settings.
-
-    This function performs the following steps:
-    1. Replaces settings loading with no Elsevier API key.
-    2. Calls `_elsevier_api_key` and captures the expected error.
-    3. Replaces settings loading with a configured Elsevier API key.
-
-    Asserts:
-        - Missing Elsevier API keys raise `ValueError`.
-        - Configured Elsevier API keys are returned.
-    """
+    """Elsevier API key requires and uses configured API key."""
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     with pytest.raises(ValueError, match='Elsevier API key is not configured'):
         download._elsevier_api_key()
@@ -49,28 +38,21 @@ def test_elsevier_api_key_requires_and_uses_configured_api_key(monkeypatch):
 
 
 def test_retrieve_document_clears_data_folder_and_writes_successful_document(tmp_path, monkeypatch):
-    """
-    Test Elsevier document retrieval into the temporary data folder.
-
-    This function performs the following steps:
-    1. Creates an existing file in a temporary data folder.
-    2. Replaces the Elsevier content request helper with a local fake.
-    3. Calls `retrieve_document`.
-
-    Asserts:
-        - Existing files in the data folder are removed.
-        - Successful document reads write a new document file.
-    """
+    """Retrieve document clears data folder and writes successful document."""
     monkeypatch.chdir(tmp_path)
     data_dir = tmp_path / 'data'
     data_dir.mkdir()
     (data_dir / 'old.json').write_text('old')
 
     class FakeResponse:
+        """Provide a response test double."""
+
         def json(self):
+            """Return the prepared JSON payload."""
             return {'originalText': 'new'}
 
     def fake_get_content(api_key, uri, accept, params):
+        """Provide fake content retrieval for this test."""
         assert api_key == 'elsevier-key'
         assert uri == 'full-text-uri'
         assert accept == 'application/json'
@@ -87,19 +69,7 @@ def test_retrieve_document_clears_data_folder_and_writes_successful_document(tmp
 
 
 def test_json_to_text_and_elsevier_string_formatter(tmp_path):
-    """
-    Test Elsevier JSON text extraction and wrapper cleanup.
-
-    This function performs the following steps:
-    1. Writes JSON files containing valid text, nested valid text, and a failed text dictionary.
-    2. Reads the files with `json_to_text`.
-    3. Formats Elsevier text with duplicate section wrappers and an AWS URL wrapper.
-
-    Asserts:
-        - String `originalText` values are returned.
-        - Dictionary `originalText` values return `failed`.
-        - Duplicate wrapper sections and AWS prefixes are removed.
-    """
+    """JSON to text and Elsevier string formatter."""
     text_path = tmp_path / 'text.json'
     nested_text_path = tmp_path / 'nested_text.json'
     failed_path = tmp_path / 'failed.json'
@@ -116,20 +86,7 @@ def test_json_to_text_and_elsevier_string_formatter(tmp_path):
 
 
 def test_full_text_uri_and_download_text_success_and_failure(tmp_path, monkeypatch):
-    """
-    Test Elsevier full-text URI extraction and text download behavior.
-
-    This function performs the following steps:
-    1. Extracts full-text URIs from valid and invalid paper links.
-    2. Replaces document retrieval with a helper that writes a temporary JSON document.
-    3. Downloads text to a target file and checks failure paths.
-
-    Asserts:
-        - Full-text links produce a URI.
-        - Missing full-text links return None.
-        - Successful text downloads write formatted text.
-        - Failed provider text returns False.
-    """
+    """Full text URI and download text success and failure."""
     monkeypatch.chdir(tmp_path)
     paper = {'elsevier_link': "some 'full-text-uri' full-text"}
     assert download._full_text_uri(paper) == 'full-text-uri'
@@ -154,6 +111,7 @@ def test_full_text_uri_and_download_text_success_and_failure(tmp_path, monkeypat
     }) == 'json-full-text-link'
 
     def fake_retrieve_document(_):
+        """Provide fake document retrieval for this test."""
         os.makedirs('data', exist_ok=True)
         with open('data/doc.json', 'w', encoding='utf-8') as f:
             json.dump({'originalText': 'downloaded text'}, f)
@@ -169,19 +127,7 @@ def test_full_text_uri_and_download_text_success_and_failure(tmp_path, monkeypat
 
 
 def test_pdf_urls_and_safe_filename_build_expected_values():
-    """
-    Test PDF URL and safe filename creation.
-
-    This function performs the following steps:
-    1. Builds Elsevier PDF URLs from DOI and full-text URI values.
-    2. Builds safe filenames from DOI, CORE ID, paper ID, and empty rows.
-    3. Compares outputs to expected strings.
-
-    Asserts:
-        - DOI values are URL-quoted for Elsevier PDF endpoints.
-        - Full-text URIs are included when present.
-        - Filename stems are sanitized and fall back in priority order.
-    """
+    """PDF URLs and safe filename build expected values."""
     paper = {'doi': '10.1234/a b', 'elsevier_link': "x 'uri' full-text"}
 
     assert download._pdf_urls(paper) == ['https://api.elsevier.com/content/article/doi/10.1234%2Fa+b', 'uri']
@@ -192,22 +138,12 @@ def test_pdf_urls_and_safe_filename_build_expected_values():
 
 
 def test_download_url_to_pdf_saves_only_pdf_responses(tmp_path, monkeypatch):
-    """
-    Test generic URL-to-PDF download behavior.
-
-    This function performs the following steps:
-    1. Calls `_download_url_to_pdf` with a missing URL.
-    2. Replaces HTTP GET with PDF, non-PDF, error status, and request exception responses.
-    3. Checks the returned success and error details.
-
-    Asserts:
-        - Missing URLs fail.
-        - PDF-like responses are written to disk.
-        - Non-PDF, HTTP error, and request exception responses fail with messages.
-    """
-
+    """Download URL to PDF saves only PDF responses."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def __init__(self, status_code=200, content=b'%PDF data', content_type='application/pdf'):
+            """Initialize the test double."""
             self.status_code = status_code
             self.content = content
             self.headers = {'Content-Type': content_type}
@@ -238,24 +174,14 @@ def test_download_url_to_pdf_saves_only_pdf_responses(tmp_path, monkeypatch):
 
 
 def test_download_unpaywall_pdf_handles_missing_config_and_pdf_candidates(tmp_path, monkeypatch):
-    """
-    Test Unpaywall PDF download behavior.
-
-    This function performs the following steps:
-    1. Checks missing DOI and missing email paths.
-    2. Replaces Unpaywall metadata lookup with PDF candidates.
-    3. Replaces URL download helper so the second candidate succeeds.
-
-    Asserts:
-        - Missing DOI and missing email fail with useful messages.
-        - Candidate PDF URLs are tried in order without duplicates.
-        - The successful PDF candidate URL is returned.
-    """
-
+    """Download Unpaywall PDF handles missing config and PDF candidates."""
     class FakeResponse:
+        """Provide a response test double."""
+
         status_code = 200
 
         def json(self):
+            """Return the prepared JSON payload."""
             return {
                 'best_oa_location': {'url_for_pdf': 'https://example.com/one.pdf'},
                 'oa_locations': [
@@ -275,6 +201,7 @@ def test_download_unpaywall_pdf_handles_missing_config_and_pdf_candidates(tmp_pa
     monkeypatch.setattr(download.requests, 'get', lambda *_, **__: FakeResponse())
 
     def fake_download(url, filepath):
+        """Provide a fake download implementation."""
         tried.append(url)
         return (url.endswith('two.pdf'), 'failed')
 
@@ -288,19 +215,7 @@ def test_download_unpaywall_pdf_handles_missing_config_and_pdf_candidates(tmp_pa
 
 
 def test_core_headers_and_core_pdf_download(tmp_path, monkeypatch):
-    """
-    Test CORE headers and PDF download source selection.
-
-    This function performs the following steps:
-    1. Builds CORE headers without and with an API key.
-    2. Replaces URL-to-PDF download with a local fake.
-    3. Downloads a CORE PDF from stored URL and generated CORE ID URL paths.
-
-    Asserts:
-        - CORE authorization is included only when configured.
-        - Stored PDF URLs are tried before generated CORE download URLs.
-        - Missing CORE download URLs fail.
-    """
+    """CORE headers and CORE PDF download."""
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     monkeypatch.delenv('CORE_API_KEY', raising=False)
     assert download._core_headers() == {'User-Agent': 'PaperScraper/0.0.1'}
@@ -311,6 +226,7 @@ def test_core_headers_and_core_pdf_download(tmp_path, monkeypatch):
     tried = []
 
     def fake_download(url, filepath, headers=None):
+        """Provide a fake download implementation."""
         tried.append((url, headers))
         return True, ''
 
@@ -334,19 +250,7 @@ def test_core_headers_and_core_pdf_download(tmp_path, monkeypatch):
 
 
 def test_download_openalex_pdf_handles_missing_doi_lookup_failure_and_candidates(tmp_path, monkeypatch):
-    """
-    Test OpenAlex PDF download behavior.
-
-    This function performs the following steps:
-    1. Checks missing identifier, failed lookup, and missing work paths.
-    2. Replaces the OpenAlex work lookup with prepared PDF candidates.
-    3. Replaces the URL download helper so the second candidate succeeds.
-
-    Asserts:
-        - Rows without a DOI or OpenAlex paper ID fail with a useful message.
-        - OpenAlex W-identifiers from paper IDs are used when no DOI exists.
-        - Candidate PDF URLs are tried in order and the winning URL is returned.
-    """
+    """Download OpenAlex PDF handles missing DOI lookup failure and candidates."""
     pdf_path = str(tmp_path / 'paper.pdf')
     assert download._download_openalex_pdf({'doi': ''}, pdf_path) == (False, 'missing DOI')
 
@@ -372,6 +276,7 @@ def test_download_openalex_pdf_handles_missing_doi_lookup_failure_and_candidates
     identifiers = []
 
     def fake_get_work(identifier, **_):
+        """Provide fake work retrieval for this test."""
         identifiers.append(identifier)
         return {
             'best_oa_location': {'pdf_url': 'https://example.com/one.pdf'},
@@ -382,6 +287,7 @@ def test_download_openalex_pdf_handles_missing_doi_lookup_failure_and_candidates
     tried = []
 
     def fake_download(url, filepath):
+        """Provide a fake download implementation."""
         tried.append(url)
         return (url.endswith('two.pdf'), 'failed')
 
@@ -397,21 +303,7 @@ def test_download_openalex_pdf_handles_missing_doi_lookup_failure_and_candidates
 
 
 def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch):
-    """
-    Test abstract cleanup and provider source selection.
-
-    This function performs the following steps:
-    1. Cleans HTML, entities, whitespace, and list values from abstract text.
-    2. Extracts abstract text from nested provider payloads.
-    3. Replaces CORE and Elsevier abstract fetchers with local helpers.
-    4. Calls `_download_abstract` for CORE, Elsevier, and missing-source rows.
-
-    Asserts:
-        - Provider abstract text is normalized to plain text.
-        - CORE abstracts are preferred when a CORE ID is available.
-        - Elsevier abstracts are used when configured and CORE is unavailable.
-        - Missing sources return a useful failure.
-    """
+    """Abstract helpers clean provider text and try sources."""
     assert download._clean_abstract(' A&nbsp;<b>solid</b>\n electrolyte ') == 'A solid electrolyte'
     assert download._clean_abstract(['First', 'Second']) == 'First Second'
     assert download._abstract_from_mapping({'outer': {'dc:description': '<p>Nested abstract</p>'}}) == 'Nested abstract'
@@ -431,30 +323,23 @@ def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch):
 
 
 def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatch):
-    """
-    Test CORE and Elsevier abstract metadata requests.
-
-    This function performs the following steps:
-    1. Replaces CORE HTTP requests with successful, missing, and error responses.
-    2. Replaces Elsevier content requests with successful and missing-abstract responses.
-    3. Calls the provider-specific abstract download helpers.
-
-    Asserts:
-        - CORE and Elsevier abstract payloads are parsed into plain text.
-        - Missing IDs, missing abstracts, and HTTP errors return failure details.
-    """
-
+    """CORE and Elsevier abstract downloads parse provider payloads."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def __init__(self, payload=None, status_code=200):
+            """Initialize the test double."""
             self.payload = payload or {}
             self.status_code = status_code
 
         def json(self):
+            """Return the prepared JSON payload."""
             return self.payload
 
     core_calls = []
 
     def fake_get(url, headers, timeout):
+        """Provide a fake HTTP GET implementation."""
         core_calls.append((url, headers, timeout))
         return FakeResponse({'abstract': '<p>CORE abstract</p>'})
 
@@ -493,21 +378,7 @@ def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatc
 
 
 def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkeypatch):
-    """
-    Test PDF source configuration resolution.
-
-    This function performs the following steps:
-    1. Resolves `all` with configured Unpaywall, CORE, and Elsevier settings.
-    2. Resolves `all` with no credentials configured at all.
-    3. Resolves an explicit list containing duplicate sources.
-    4. Resolves an invalid source.
-
-    Asserts:
-        - `all` expands to configured sources plus OpenAlex, which needs no key.
-        - `all` still includes OpenAlex when nothing is configured, since keyless access works.
-        - Explicit source lists are de-duplicated while preserving order.
-        - Invalid source names raise `ValueError`.
-    """
+    """Configured sources resolve ``all``, deduplicate, and reject invalid values."""
     monkeypatch.setattr(
         download,
         'load_settings',
@@ -530,18 +401,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(monkey
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(tmp_path, monkeypatch):
-    """
-    Test trying PDF download sources in order.
-
-    This function performs the following steps:
-    1. Replaces source downloaders with failing and successful local helpers.
-    2. Calls `_download_pdf_from_sources`.
-    3. Replaces all source downloaders with failing helpers.
-
-    Asserts:
-        - Sources are tried until one succeeds.
-        - Errors are collected when all sources fail.
-    """
+    """Download PDF from sources handles existing success and failures."""
     pdf_path = tmp_path / 'paper.pdf'
     monkeypatch.setattr(download, '_download_unpaywall_pdf', lambda *_: (False, 'no oa pdf'))
     monkeypatch.setattr(download, '_download_core_pdf', lambda *_: (True, 'https://core/pdf'))
@@ -560,17 +420,7 @@ def test_download_pdf_from_sources_handles_existing_success_and_failures(tmp_pat
 
 
 def test_should_try_elsevier_text_detects_full_text_links():
-    """
-    Test detection of Elsevier full-text availability.
-
-    This function performs the following steps:
-    1. Checks rows with a full-text Elsevier link and DOI fallback.
-    2. Checks rows with abstract-only and missing links.
-
-    Asserts:
-        - Full-text links and DOI rows return True.
-        - Missing or non-full-text links return False.
-    """
+    """Elsevier text eligibility detects full-text links and DOI fallbacks."""
     assert download._should_try_elsevier_text({'elsevier_link': "has 'full-text-link' full-text"}) is True
     assert download._should_try_elsevier_text({
         'elsevier_link': 'https://api.elsevier.com/content/article/eid/1-s2.0-S1005030226004123',
@@ -581,19 +431,7 @@ def test_should_try_elsevier_text_detects_full_text_links():
 
 
 def test_download_papers_validates_configuration(tmp_path, monkeypatch):
-    """
-    Test download configuration validation.
-
-    This function performs the following steps:
-    1. Calls `download_papers` with an invalid format.
-    2. Disables Elsevier text availability and requests text downloads.
-    3. Disables all PDF sources and requests PDF downloads.
-
-    Asserts:
-        - Invalid download formats raise `ValueError`.
-        - Text downloads require an Elsevier API key.
-        - PDF downloads require at least one configured PDF source.
-    """
+    """Download papers validates configuration."""
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{'paper_id': 'paper-1'}])
 
@@ -610,32 +448,24 @@ def test_download_papers_validates_configuration(tmp_path, monkeypatch):
 
 
 def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch, capsys):
-    """
-    Test downloading text and PDFs for papers in a corpus database.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one Elsevier full-text row.
-    2. Replaces configured source checks and download helpers with local fakes.
-    3. Calls `download_papers` for both text and PDF downloads.
-
-    Asserts:
-        - Text and PDF paths are left empty because corpus storage is authoritative.
-        - Text and PDF statuses are marked as succeeded.
-        - PDF source URL details are copied back to `pdf_url`.
-        - Downloaded text and PDF files are stored as corpus assets.
-    """
-
+    """Download papers updates text and PDF statuses."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -649,11 +479,13 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch, ca
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
     def fake_download_text(paper, filepath):
+        """Provide fake text download behavior for this test."""
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('text')
         return True
 
     def fake_download_pdf_from_sources(paper, filepath, sources):
+        """Provide fake PDF download behavior for this test."""
         with open(filepath, 'wb') as f:
             f.write(b'%PDF text')
         return True, 'unpaywall', 'https://oa/pdf'
@@ -682,30 +514,24 @@ def test_download_papers_updates_text_and_pdf_statuses(tmp_path, monkeypatch, ca
 
 
 def test_download_papers_persists_openalex_pdf_source_and_url(tmp_path, monkeypatch):
-    """
-    Test corpus updates after a successful OpenAlex PDF download.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one DOI-bearing row.
-    2. Replaces source resolution and PDF download with OpenAlex fakes.
-    3. Calls `download_papers` for PDFs only.
-
-    Asserts:
-        - The OpenAlex source label and winning URL are written back to the row.
-        - The downloaded PDF is stored as a corpus asset.
-    """
-
+    """Download papers persists OpenAlex PDF source and URL."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -715,6 +541,7 @@ def test_download_papers_persists_openalex_pdf_source_and_url(tmp_path, monkeypa
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
     def fake_download_pdf_from_sources(paper, filepath, sources):
+        """Provide fake PDF download behavior for this test."""
         assert sources == ['openalex']
         with open(filepath, 'wb') as f:
             f.write(b'%PDF text')
@@ -734,32 +561,24 @@ def test_download_papers_persists_openalex_pdf_source_and_url(tmp_path, monkeypa
 
 
 def test_download_papers_downloads_abstract_by_default(tmp_path, monkeypatch, capsys):
-    """
-    Test default abstract downloading during corpus downloads.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one paper row.
-    2. Replaces abstract downloading and progress reporting with local helpers.
-    3. Calls `download_papers` without passing an abstract option.
-    4. Reads the updated paper row and stored abstract asset.
-
-    Asserts:
-        - Abstract downloading runs by default.
-        - Abstract status and source are recorded on the paper row.
-        - Abstract text is stored as a compressed corpus asset.
-    """
-
+    """Download papers downloads abstract by default."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -782,32 +601,24 @@ def test_download_papers_downloads_abstract_by_default(tmp_path, monkeypatch, ca
 
 
 def test_download_papers_skips_abstract_download_when_asset_already_exists(tmp_path, monkeypatch, capsys):
-    """
-    Test avoiding duplicate abstract downloads.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one paper and an existing abstract asset.
-    2. Replaces abstract downloading with a helper that fails if called.
-    3. Calls `download_papers` with default abstract downloading enabled.
-    4. Reads the paper row and abstract asset.
-
-    Asserts:
-        - Existing abstract assets prevent provider abstract downloads.
-        - The existing abstract asset remains unchanged.
-        - Abstract status is marked succeeded and keeps the existing source.
-    """
-
+    """Download papers skips abstract download when asset already exists."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -843,17 +654,7 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(tmp_p
 
 
 def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
-    """
-    Test Elsevier document retrieval when the provider read fails.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier content request helper with a fake request failure.
-    2. Calls `retrieve_document`.
-    3. Captures the printed output.
-
-    Asserts:
-        - A failed document read prints a failure message.
-    """
+    """Retrieve document reports failed read."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
@@ -868,22 +669,12 @@ def test_retrieve_document_reports_failed_read(tmp_path, monkeypatch, capsys):
 
 
 def test_full_text_uri_and_download_text_handle_malformed_or_empty_retrieval(tmp_path, monkeypatch):
-    """
-    Test malformed full-text links and empty text retrieval folders.
-
-    This function performs the following steps:
-    1. Extracts a URI from a malformed full-text link.
-    2. Replaces document retrieval with a helper that creates an empty data folder.
-    3. Calls `_download_text`.
-
-    Asserts:
-        - Malformed full-text links return None.
-        - Text downloads fail when no temporary document is retrieved.
-    """
+    """Full text URI and download text handle malformed or empty retrieval."""
     monkeypatch.chdir(tmp_path)
     assert download._full_text_uri({'elsevier_link': 'full-text without quoted uri'}) is None
 
     def fake_retrieve_document(_):
+        """Provide fake document retrieval for this test."""
         os.makedirs('data', exist_ok=True)
 
     monkeypatch.setattr(download, 'retrieve_document', fake_retrieve_document)
@@ -892,22 +683,12 @@ def test_full_text_uri_and_download_text_handle_malformed_or_empty_retrieval(tmp
 
 
 def test_download_pdf_requires_key_and_handles_success_and_failures(tmp_path, monkeypatch, capsys):
-    """
-    Test Elsevier PDF download behavior.
-
-    This function performs the following steps:
-    1. Calls `_download_pdf` without an Elsevier API key.
-    2. Replaces settings and HTTP GET calls with local fake responses.
-    3. Exercises HTTP error, request exception, non-PDF, and PDF success paths.
-
-    Asserts:
-        - Missing Elsevier API keys raise `ValueError`.
-        - PDF responses are written to disk and return True.
-        - Failed candidate responses return False and print the last error.
-    """
-
+    """Download PDF requires key and handles success and failures."""
     class FakeResponse:
+        """Provide a response test double."""
+
         def __init__(self, status_code=200, content=b'%PDF data', content_type='application/pdf'):
+            """Initialize the test double."""
             self.status_code = status_code
             self.content = content
             self.headers = {'Content-Type': content_type}
@@ -921,6 +702,7 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(tmp_path, mo
     monkeypatch.setattr(download, '_pdf_urls', lambda _: ['bad-status', 'bad-request', 'bad-content', 'good-pdf'])
 
     def fake_get_content(api_key, url, accept, params):
+        """Provide fake content retrieval for this test."""
         assert api_key == 'elsevier-key'
         assert accept == 'application/pdf'
         assert params == {'httpAccept': 'application/pdf'}
@@ -948,27 +730,19 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(tmp_path, mo
 
 
 def test_download_unpaywall_pdf_handles_metadata_errors_and_missing_candidates(tmp_path, monkeypatch):
-    """
-    Test Unpaywall metadata error and no-candidate paths.
-
-    This function performs the following steps:
-    1. Replaces Unpaywall email lookup with a configured email.
-    2. Replaces metadata requests with an HTTP error response and a request exception.
-    3. Replaces metadata requests with a response containing no PDF URLs.
-
-    Asserts:
-        - HTTP error responses return an Unpaywall status message.
-        - Request exceptions return the exception message.
-        - Metadata without PDF URLs returns a no-URL message.
-    """
-
+    """Download Unpaywall PDF handles metadata errors and missing candidates."""
     class ErrorResponse:
+        """Provide a response test double that raises an error."""
+
         status_code = 500
 
     class EmptyResponse:
+        """Provide a response test double with no metadata."""
+
         status_code = 200
 
         def json(self):
+            """Return the prepared JSON payload."""
             return {'best_oa_location': None, 'oa_locations': []}
 
     monkeypatch.setattr(download, '_unpaywall_email', lambda settings=None: 'person@example.com')
@@ -996,17 +770,7 @@ def test_download_unpaywall_pdf_handles_metadata_errors_and_missing_candidates(t
 
 
 def test_download_core_pdf_returns_last_error_when_candidates_fail(tmp_path, monkeypatch):
-    """
-    Test CORE PDF download failure details.
-
-    This function performs the following steps:
-    1. Replaces URL-to-PDF download with a helper that always fails.
-    2. Calls `_download_core_pdf` with stored URL and CORE ID candidates.
-    3. Checks the returned error message.
-
-    Asserts:
-        - The final failed candidate error is returned.
-    """
+    """Download CORE PDF returns last error when candidates fail."""
     monkeypatch.setattr(download, '_download_url_to_pdf', lambda *_, **__: (False, 'candidate failed'))
 
     assert download._download_core_pdf(
@@ -1016,18 +780,7 @@ def test_download_core_pdf_returns_last_error_when_candidates_fail(tmp_path, mon
 
 
 def test_elsevier_configured_reads_settings(monkeypatch):
-    """
-    Test Elsevier configuration detection.
-
-    This function performs the following steps:
-    1. Replaces settings loading with no Elsevier API key.
-    2. Replaces settings loading with an Elsevier API key.
-    3. Calls `_elsevier_configured` for both cases.
-
-    Asserts:
-        - Missing Elsevier API keys return False.
-        - Configured Elsevier API keys return True.
-    """
+    """Elsevier configured reads settings."""
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     assert download._elsevier_configured() is False
 
@@ -1036,17 +789,7 @@ def test_elsevier_configured_reads_settings(monkeypatch):
 
 
 def test_download_pdf_from_sources_collects_exceptions(tmp_path, monkeypatch):
-    """
-    Test PDF source download exception handling.
-
-    This function performs the following steps:
-    1. Replaces the Unpaywall downloader with a helper that raises an exception.
-    2. Calls `_download_pdf_from_sources`.
-    3. Checks the aggregated error string.
-
-    Asserts:
-        - Exceptions from individual source downloaders are captured as source errors.
-    """
+    """Download PDF from sources collects exceptions."""
     monkeypatch.setattr(download, '_download_unpaywall_pdf', lambda *_: (_ for _ in ()).throw(RuntimeError('boom')))
 
     ok, error, detail = download._download_pdf_from_sources({}, str(tmp_path / 'paper.pdf'), ['unpaywall'])
@@ -1057,30 +800,24 @@ def test_download_pdf_from_sources_collects_exceptions(tmp_path, monkeypatch):
 
 
 def test_download_papers_records_text_and_pdf_failures(tmp_path, monkeypatch):
-    """
-    Test failed text and PDF downloads in the main download loop.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one Elsevier full-text row.
-    2. Replaces download helpers with failing local helpers.
-    3. Calls `download_papers` for both text and PDF downloads.
-
-    Asserts:
-        - Failed text downloads are marked failed.
-        - Failed PDF downloads are marked failed with the source error.
-    """
-
+    """Download papers records text and PDF failures."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -1104,30 +841,24 @@ def test_download_papers_records_text_and_pdf_failures(tmp_path, monkeypatch):
 
 
 def test_download_papers_records_initial_text_download_exception(tmp_path, monkeypatch):
-    """
-    Test exception handling during the initial Elsevier text download attempt.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one Elsevier full-text row.
-    2. Replaces text downloading with a helper that raises an exception.
-    3. Calls `download_papers` for text downloads.
-
-    Asserts:
-        - The text download status is marked failed.
-        - The exception message is recorded as the last error.
-    """
-
+    """Download papers records initial text download exception."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -1149,31 +880,24 @@ def test_download_papers_records_initial_text_download_exception(tmp_path, monke
 
 
 def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_pdf(tmp_path, monkeypatch):
-    """
-    Test exception handling and Elsevier text retrieval after an open-access PDF succeeds.
-
-    This function performs the following steps:
-    1. Writes corpus rows covering text exception, PDF exception, and OA PDF success rows.
-    2. Replaces download helpers with local helpers that raise or succeed by row.
-    3. Calls `download_papers` for PDF downloads.
-
-    Asserts:
-        - PDF exceptions are recorded as failed PDF downloads.
-        - Open-access PDF success can trigger Elsevier text retrieval even in PDF mode.
-        - Text exceptions after open-access PDF success are recorded as failed text downloads.
-    """
-
+    """Download papers records download exceptions and Elsevier text after OA PDF."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -1186,6 +910,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
     def fake_download_pdf_from_sources(paper, filepath, sources):
+        """Provide fake PDF download behavior for this test."""
         if paper['paper_id'] == 'paper:pdf-error':
             raise RuntimeError('pdf exploded')
         with open(filepath, 'wb') as f:
@@ -1193,6 +918,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
         return True, 'core', 'https://core/pdf'
 
     def fake_download_text(paper, filepath):
+        """Provide fake text download behavior for this test."""
         raise RuntimeError('text exploded')
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
@@ -1209,31 +935,24 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
 
 
 def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, monkeypatch):
-    """
-    Test successful Elsevier text retrieval after an open-access PDF download.
-
-    This function performs the following steps:
-    1. Writes a corpus database with one Elsevier full-text row.
-    2. Replaces PDF and text download helpers with successful local helpers.
-    3. Calls `download_papers` for PDF downloads.
-
-    Asserts:
-        - The PDF download is marked succeeded.
-        - The follow-up Elsevier text download is marked succeeded.
-        - The text source is recorded while the file path remains empty.
-    """
-
+    """Download papers downloads Elsevier text after OA PDF success."""
     class FakeTqdm:
+        """Provide a progress-bar test double."""
+
         def __init__(self, *args, **kwargs):
+            """Initialize the test double."""
             return None
 
         def __enter__(self):
+            """Enter the test-double context."""
             return self
 
         def __exit__(self, *_):
+            """Exit the test-double context."""
             return False
 
         def update(self, _):
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -1247,6 +966,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
     def fake_download_pdf_from_sources(paper, filepath, sources):
+        """Provide fake PDF download behavior for this test."""
         with open(filepath, 'wb') as f:
             f.write(b'%PDF data')
         return True, 'core', 'https://core/pdf'
@@ -1254,6 +974,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
     def fake_download_text(paper, filepath):
+        """Provide fake text download behavior for this test."""
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('elsevier text')
         return True
@@ -1271,19 +992,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(tmp_path, 
 
 @pytest.mark.network
 def test_download_unpaywall_pdf_uses_real_api(tmp_path):
-    """
-    Test real Unpaywall metadata lookup and PDF download.
-
-    This function performs the following steps:
-    1. Loads the user's configured Unpaywall email.
-    2. Calls `_download_unpaywall_pdf` for a known open-access DOI.
-    3. Reads the downloaded file header.
-
-    Asserts:
-        - An Unpaywall email is configured.
-        - The Unpaywall API locates and downloads a PDF.
-        - The downloaded file starts with a PDF header.
-    """
+    """Download Unpaywall PDF uses real API."""
     assert download._unpaywall_email(), (
         'Set unpaywall_email in ~/.config/.pscraperrc.json or UNPAYWALL_EMAIL before running network tests.'
     )
@@ -1297,18 +1006,7 @@ def test_download_unpaywall_pdf_uses_real_api(tmp_path):
 
 @pytest.mark.network
 def test_download_openalex_pdf_uses_real_api(tmp_path):
-    """
-    Test real OpenAlex metadata lookup and PDF download.
-
-    This function performs the following steps:
-    1. Uses an OpenAlex open-access search to find a small set of candidate works.
-    2. Attempts to download each candidate's PDF through `_download_openalex_pdf`.
-    3. Reads the first successfully downloaded file header.
-
-    Asserts:
-        - At least one OpenAlex candidate can be downloaded, using OPENALEX_API_KEY when set.
-        - The downloaded file starts with a PDF header.
-    """
+    """Download OpenAlex PDF uses real API."""
     from paperscraper import openalex
 
     payload = openalex.request_json(openalex.WORKS_URL,
@@ -1332,19 +1030,7 @@ def test_download_openalex_pdf_uses_real_api(tmp_path):
 
 @pytest.mark.network
 def test_download_core_pdf_uses_real_api_when_configured(tmp_path):
-    """
-    Test real CORE search and PDF download.
-
-    This function performs the following steps:
-    1. Verifies that a CORE API key is configured.
-    2. Uses CORE search to find a small set of candidate works.
-    3. Attempts to download the first available PDF candidate through `_download_core_pdf`.
-
-    Asserts:
-        - A CORE API key is configured.
-        - At least one CORE candidate can be downloaded as a PDF.
-        - The downloaded file starts with a PDF header.
-    """
+    """Download CORE PDF uses real API when configured."""
     assert download._core_headers().get('Authorization'), (
         'Set core_api_key in ~/.config/.pscraperrc.json or CORE_API_KEY before running network tests.'
     )
@@ -1364,18 +1050,7 @@ def test_download_core_pdf_uses_real_api_when_configured(tmp_path):
 
 @pytest.mark.network
 def test_download_elsevier_pdf_uses_real_api_when_entitled(tmp_path):
-    """
-    Test real Elsevier PDF download when the configured account is entitled.
-
-    This function performs the following steps:
-    1. Verifies that an Elsevier API key is configured.
-    2. Attempts to download a known Elsevier article PDF.
-    3. Checks the downloaded file when the account has PDF entitlement.
-
-    Asserts:
-        - An Elsevier API key is configured.
-        - Entitled accounts download a valid PDF.
-    """
+    """Download Elsevier PDF uses real API when entitled."""
     assert download.load_settings().get('elsevier_api_key'), (
         'Set elsevier_api_key in ~/.config/.pscraperrc.json or ELSEVIER_API_KEY before running network tests.'
     )

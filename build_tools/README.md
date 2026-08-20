@@ -23,6 +23,7 @@ pip install -e ".[test]"
 Verify the install:
 
 ```bash
+ruff check paperscraper tests
 pytest
 ```
 

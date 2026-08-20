@@ -29,20 +29,7 @@ def sample_paper(paper_id='demo:1'):
 
 
 def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_path):
-    """
-    Test SQLite corpus storage for paper assets.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Stores two paper text assets with identical content.
-    3. Reads back one stored text asset and corpus statistics.
-
-    Asserts:
-        - Both paper rows are stored.
-        - Identical content is deduplicated into one blob.
-        - Stored gzip content is smaller than the original repeated text.
-        - Readback content is decompressed to the original bytes.
-    """
+    """Test SQLite corpus storage for paper assets."""
     db_path = tmp_path / 'corpus.db'
     text = 'Lithium solid electrolyte storage demo. ' * 50
 
@@ -132,18 +119,7 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path):
 
 
 def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
-    """
-    Test uncompressed blob storage and missing asset lookup.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Stores a dummy PDF blob without compression.
-    3. Reads back the PDF asset and asks for a missing text asset.
-
-    Asserts:
-        - Uncompressed blobs are read back unchanged.
-        - Missing paper-role assets return `None`.
-    """
+    """Test uncompressed blob storage and missing asset lookup."""
     pdf = b'%PDF-1.4\n% dummy pdf\n'
 
     with corpus.connect(tmp_path / 'corpus.db') as conn:
@@ -189,18 +165,7 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
 
 
 def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
-    """
-    Test corpus compression validation.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Attempts to store a blob with an unsupported compression codec.
-    3. Attempts to decompress bytes with an unsupported codec.
-
-    Asserts:
-        - Unknown storage compression codecs raise `ValueError`.
-        - Unknown decompression codecs raise `ValueError`.
-    """
+    """Test corpus compression validation."""
     with corpus.connect(tmp_path / 'corpus.db') as conn:
         with pytest.raises(ValueError, match='compression must be one of'):
             corpus.store_blob(conn, b'data', kind='text', mime_type='text/plain', compression='brotli')
@@ -209,20 +174,7 @@ def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
 
 
 def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_path):
-    """
-    Test corpus helper conversion branches.
-
-    This function performs the following steps:
-    1. Serializes missing and pre-serialized metadata values.
-    2. Writes a temporary text file and prepares it as blob content.
-    3. Prepares byte values from an iterable of integer byte values.
-
-    Asserts:
-        - Missing metadata becomes an empty JSON object.
-        - Existing JSON text is passed through unchanged.
-        - Path inputs are read as bytes.
-        - Iterable byte values are converted to bytes.
-    """
+    """Test corpus helper conversion branches."""
     text_path = tmp_path / 'paper.txt'
     text_path.write_text('paper text')
 
@@ -233,22 +185,7 @@ def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_pa
 
 
 def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
-    """
-    Test corpus paper upserts and duplicate merging.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Inserts one paper with DOI, title, source, and metadata.
-    3. Inserts another paper with the same DOI and additional empty-field values.
-    4. Reloads the stored paper rows from the corpus.
-
-    Asserts:
-        - Duplicate DOI rows are merged into one corpus paper.
-        - Existing populated values are preserved during the merge.
-        - New empty-field values are copied from the incoming row.
-        - Source names are combined without duplication.
-        - Metadata JSON from a direct paper upsert is preserved.
-    """
+    """Test corpus paper upserts and duplicate merging."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         paper_id = corpus.upsert_paper(conn, {
             'paper_id': 'elsevier:1',
@@ -278,20 +215,7 @@ def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
 
 
 def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path):
-    """
-    Test fallback paper IDs and title/year duplicate matching.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Inserts a paper without provider IDs so the corpus creates a fallback ID.
-    3. Inserts a second paper with the same normalized title and publication year.
-    4. Reloads the corpus paper rows.
-
-    Asserts:
-        - Missing provider IDs are replaced with a stable fallback paper ID.
-        - Matching title/year rows update the existing paper rather than adding a duplicate.
-        - Integer pipeline count fields are coerced to integers.
-    """
+    """Test fallback paper IDs and title/year duplicate matching."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         added, updated = corpus.upsert_papers(conn, [{
             'title': 'Lithium Solid Electrolyte',

@@ -19,17 +19,7 @@ FIXTURE_DOI = '10.1002/aenm.70977'
 
 
 def test_import_pdfs_rejects_missing_directory(tmp_path):
-    """
-    Test validation of the PDF import directory.
-
-    This function performs the following steps:
-    1. Builds a path to a directory that does not exist.
-    2. Calls `import_pdfs` with that missing directory.
-    3. Captures the expected exception.
-
-    Asserts:
-        - A missing PDF directory raises `NotADirectoryError`.
-    """
+    """Test validation of the PDF import directory."""
     missing_dir = tmp_path / 'missing'
 
     with pytest.raises(NotADirectoryError):
@@ -37,17 +27,7 @@ def test_import_pdfs_rejects_missing_directory(tmp_path):
 
 
 def test_import_pdfs_rejects_directory_without_pdfs(tmp_path):
-    """
-    Test PDF import behavior for an empty directory.
-
-    This function performs the following steps:
-    1. Creates an empty temporary directory.
-    2. Calls `import_pdfs` with that directory.
-    3. Captures the expected exception.
-
-    Asserts:
-        - A directory without PDF files raises `RuntimeError`.
-    """
+    """Test PDF import behavior for an empty directory."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
 
@@ -56,20 +36,7 @@ def test_import_pdfs_rejects_directory_without_pdfs(tmp_path):
 
 
 def test_import_pdfs_writes_imported_rows_with_metadata(tmp_path, monkeypatch, capsys):
-    """
-    Test importing a fixture PDF into a new corpus database with metadata.
-
-    This function performs the following steps:
-    1. Copies the fixture PDF from the test data folder into a temporary PDF directory.
-    2. Replaces PDF metadata extraction with deterministic metadata.
-    3. Calls `import_pdfs` and reloads the written corpus rows and PDF asset.
-
-    Asserts:
-        - One row is written for the fixture PDF.
-        - The extracted metadata is preserved.
-        - The imported PDF is marked as an external source with a downloaded PDF in the corpus.
-        - The import summary reports added rows, DOI count, and Crossref enrichment count.
-    """
+    """Test importing a fixture PDF into a new corpus database with metadata."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     pdf_path = papers_dir / FIXTURE_PDF.name
@@ -109,22 +76,7 @@ def test_import_pdfs_writes_imported_rows_with_metadata(tmp_path, monkeypatch, c
 
 
 def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(tmp_path, monkeypatch, capsys):
-    """
-    Test importing a fixture PDF that matches an existing corpus row.
-
-    This function performs the following steps:
-    1. Writes an existing corpus row with a matching DOI.
-    2. Copies the fixture PDF from the test data folder into a temporary PDF directory.
-    3. Replaces PDF metadata extraction with deterministic metadata.
-    4. Calls `import_pdfs` and reloads the merged corpus rows and PDF asset.
-
-    Asserts:
-        - The matching PDF updates the existing row instead of adding a duplicate.
-        - Existing metadata is preserved when already populated.
-        - Empty corpus fields are filled from the imported PDF row.
-        - The imported PDF asset is linked to the existing paper id.
-        - The import summary reports one matched existing row.
-    """
+    """Test importing a fixture PDF that matches an existing corpus row."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     pdf_path = papers_dir / FIXTURE_PDF.name

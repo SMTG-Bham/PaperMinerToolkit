@@ -1,3 +1,5 @@
+"""Test provider-aware token counting and budget calculations."""
+
 import os
 import types
 
@@ -33,46 +35,29 @@ def live_anthropic_config():
 
 
 def test_conservative_token_estimate_handles_missing_and_text_values():
-    """
-    Test conservative token estimates.
-
-    This function performs the following steps:
-    1. Counts tokens for missing and empty values.
-    2. Counts tokens for a short text value.
-    3. Compares the result to the conservative character heuristic.
-
-    Asserts:
-        - Missing and empty values return zero tokens.
-        - Text values are estimated with roughly one token per three characters.
-    """
+    """Estimate text conservatively and map missing values to zero."""
     assert tokenizer.conservative_token_estimate(None) == 0
     assert tokenizer.conservative_token_estimate('') == 0
     assert tokenizer.conservative_token_estimate('abcdefghij') == 4
 
 
 def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch):
-    """
-    Test OpenAI token counting with automatic tokenizer selection and fallbacks.
-
-    This function performs the following steps:
-    1. Replaces `tiktoken.encoding_for_model` with a fake model-specific encoding.
-    2. Counts tokens for an OpenAI model.
-    3. Replaces model-specific lookup with a failure and provides a fallback encoding.
-
-    Asserts:
-        - OpenAI token counting asks tiktoken for the configured model encoding.
-        - The fallback encoding is used when the model-specific lookup fails.
-    """
+    """Select the model encoding and fall back for unknown OpenAI models."""
     calls = {}
 
     class FakeEncoding:
+        """Encode text by splitting it on a configured separator."""
+
         def __init__(self, separator=' '):
+            """Store the token separator."""
             self.separator = separator
 
         def encode(self, text):
+            """Split text into fake tokens."""
             return text.split(self.separator)
 
     def fake_encoding_for_model(model):
+        """Record the model and return its fake encoding."""
         calls['model'] = model
         return FakeEncoding()
 
@@ -88,6 +73,7 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch):
     fallback_calls = {}
 
     def fake_get_encoding(name):
+        """Record and return the fallback encoding."""
         fallback_calls['name'] = name
         return FakeEncoding(separator='|')
 
@@ -97,29 +83,22 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch):
 
 
 def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch):
-    """
-    Test Anthropic token counting through the Messages count_tokens endpoint.
-
-    This function performs the following steps:
-    1. Replaces HTTP POST with a fake response that records request details.
-    2. Counts tokens for an Anthropic model config.
-    3. Reads the recorded request payload and headers.
-
-    Asserts:
-        - The Anthropic count_tokens endpoint is called.
-        - Model, messages, API key, version, and base URL are passed through.
-        - The returned `input_tokens` value is used.
-    """
+    """Call Anthropic's Messages token-counting endpoint."""
     calls = {}
 
     class FakeResponse:
+        """Provide a successful Anthropic token-count response."""
+
         def raise_for_status(self):
+            """Record that the response status was checked."""
             calls['raised'] = True
 
         def json(self):
+            """Return the fake input token count."""
             return {'input_tokens': 12}
 
     def fake_post(url, headers, json, timeout):
+        """Record an Anthropic request and return the fake response."""
         calls['url'] = url
         calls['headers'] = headers
         calls['json'] = json
@@ -146,36 +125,14 @@ def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch):
 
 
 def test_anthropic_token_count_requires_api_key():
-    """
-    Test Anthropic token counting without an API key.
-
-    This function performs the following steps:
-    1. Builds an Anthropic model config without an API key.
-    2. Calls `anthropic_token_count`.
-    3. Captures the expected exception.
-
-    Asserts:
-        - Missing Anthropic API keys raise `ValueError`.
-    """
+    """Require an API key for Anthropic token counting."""
     with pytest.raises(ValueError, match='requires an API key'):
         tokenizer.anthropic_token_count('paper text', config(provider='anthropic', api_key=None))
 
 
 @pytest.mark.network
 def test_anthropic_token_count_uses_real_count_tokens_api():
-    """
-    Test live Anthropic token counting with the user's configured credentials.
-
-    This function performs the following steps:
-    1. Loads the user's real PaperScraper settings.
-    2. Builds an Anthropic model config from an Anthropic profile or test-model override.
-    3. Calls Anthropic's live Messages count_tokens endpoint.
-
-    Asserts:
-        - An Anthropic API key is configured.
-        - An Anthropic model name is configured.
-        - The live count_tokens endpoint returns a positive integer token count.
-    """
+    """Count tokens with the live Anthropic API and configured credentials."""
     model_config = live_anthropic_config()
 
     assert model_config.api_key, (
@@ -191,30 +148,25 @@ def test_anthropic_token_count_uses_real_count_tokens_api():
 
 
 def test_transformers_token_count_uses_auto_tokenizer(monkeypatch):
-    """
-    Test local-model token counting with a Hugging Face tokenizer.
-
-    This function performs the following steps:
-    1. Clears the tokenizer cache.
-    2. Replaces dynamic imports with a fake `transformers` module.
-    3. Counts tokens for a local model.
-
-    Asserts:
-        - `AutoTokenizer.from_pretrained` is called for the configured model.
-        - The tokenizer's encoded token count is returned.
-    """
+    """Count local-model tokens with a Hugging Face tokenizer."""
     calls = {}
     tokenizer._auto_tokenizer.cache_clear()
 
     class FakeTokenizer:
+        """Provide deterministic encoded tokens."""
+
         def encode(self, text, add_special_tokens=False):
+            """Record encoding arguments and return three tokens."""
             calls['text'] = text
             calls['add_special_tokens'] = add_special_tokens
             return [1, 2, 3]
 
     class FakeAutoTokenizer:
+        """Provide a fake pretrained tokenizer factory."""
+
         @staticmethod
         def from_pretrained(model):
+            """Record the model and return a fake tokenizer."""
             calls['model'] = model
             return FakeTokenizer()
 
@@ -230,20 +182,7 @@ def test_transformers_token_count_uses_auto_tokenizer(monkeypatch):
 
 
 def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch):
-    """
-    Test provider-aware token count routing and fallback behavior.
-
-    This function performs the following steps:
-    1. Replaces each provider-specific tokenizer with local fakes.
-    2. Counts tokens for OpenAI, Anthropic, local, unknown, and non-string inputs.
-    3. Makes provider-specific tokenizers fail to exercise fallback estimates.
-
-    Asserts:
-        - Provider-specific token counters are selected from the model config.
-        - Unknown providers use the conservative estimate.
-        - Failed provider tokenizers fall back to the conservative estimate.
-        - Non-string inputs return zero tokens.
-    """
+    """Route token counts by provider and fall back on failures."""
     monkeypatch.setattr(tokenizer, 'openai_token_count', lambda text, model: 5)
     monkeypatch.setattr(tokenizer, 'anthropic_token_count', lambda text, model_config: 6)
     monkeypatch.setattr(tokenizer, 'transformers_token_count', lambda text, model: 7)
@@ -277,19 +216,7 @@ def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch):
 
 
 def test_usable_input_token_limit_uses_configured_limit_with_reserve_and_fallback():
-    """
-    Test usable input token budget calculation.
-
-    This function performs the following steps:
-    1. Builds model configs with valid and invalid input token limits.
-    2. Calculates usable budgets with reserved prompt space.
-    3. Calculates a budget whose reserve would otherwise make it too small.
-
-    Asserts:
-        - Configured input token limits are reduced by reserved tokens.
-        - Invalid configured values fall back to the default.
-        - The returned value does not go below the minimum budget.
-    """
+    """Reserve tokens from valid, invalid, and minimal input budgets."""
     assert tokenizer.usable_input_token_limit(config(input_token_limit=64000), reserve_tokens=2000) == 62000
     assert tokenizer.usable_input_token_limit(config(input_token_limit='bad'), reserve_tokens=2000) == (
         tokenizer.DEFAULT_INPUT_TOKEN_LIMIT - 2000
@@ -298,22 +225,11 @@ def test_usable_input_token_limit_uses_configured_limit_with_reserve_and_fallbac
 
 
 def test_prompt_token_reserve_counts_prompt_and_adds_buffer(monkeypatch):
-    """
-    Test prompt reserve calculation.
-
-    This function performs the following steps:
-    1. Replaces text token counting with a deterministic fake.
-    2. Calculates reserve tokens for a prompt and model config.
-    3. Calculates reserve tokens for a tiny prompt with a larger minimum.
-
-    Asserts:
-        - Prompt token count and buffer tokens are added together.
-        - The minimum reserve is respected.
-        - The model config is passed to token counting.
-    """
+    """Add a safety buffer to prompt tokens while respecting a minimum."""
     calls = []
 
     def fake_count(text, model_config=None):
+        """Record the model config and count whitespace-delimited words."""
         calls.append((text, model_config))
         return len(text.split())
 

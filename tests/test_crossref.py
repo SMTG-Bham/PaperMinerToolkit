@@ -29,12 +29,15 @@ class FakeResponse:
     """Successful requests response containing one prepared Crossref message."""
 
     def __init__(self, message):
+        """Store a prepared Crossref response message."""
         self.message = message
 
     def raise_for_status(self):
+        """Represent a successful HTTP status check."""
         return None
 
     def json(self):
+        """Return the prepared message as a response payload."""
         return {'message': self.message}
 
 
@@ -42,10 +45,12 @@ class FakeSession:
     """Return prepared Crossref pages and record request arguments."""
 
     def __init__(self, messages):
+        """Initialize the session with prepared response messages."""
         self.messages = iter(messages)
         self.calls = []
 
     def get(self, url, params, headers, timeout):
+        """Record a GET request and return the next prepared response."""
         self.calls.append({
             'url': url,
             'params': params.copy(),
@@ -71,10 +76,14 @@ def test_request_page_ignores_malformed_retry_after(monkeypatch):
     response.headers['Retry-After'] = 'not-a-number'
 
     class RetrySession:
+        """Fail the first request before returning a successful response."""
+
         def __init__(self):
+            """Initialize the request counter."""
             self.calls = 0
 
         def get(self, *args, **kwargs):
+            """Raise once, then return an empty successful response."""
             self.calls += 1
             if self.calls == 1:
                 raise requests.HTTPError('rate limited', response=response)

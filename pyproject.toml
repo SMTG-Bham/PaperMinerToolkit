@@ -43,6 +43,7 @@ dependencies = [
 test = [
   "pytest",
   "pytest-cov",
+  "ruff",
 ]
 
 [project.urls]
@@ -97,6 +98,13 @@ addopts = [
   "-m",
   "not network and not slow",
 ]
+
+[tool.ruff.lint]
+select = ["D"]
+extend-select = ["D212"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.coverage.run]
 source = ["paperscraper"]

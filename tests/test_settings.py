@@ -51,37 +51,14 @@ def isolated_settings_file(tmp_path, monkeypatch):
 
 
 def test_float_setting_uses_defaults_and_converts_values():
-    """
-    Test conversion of optional float settings.
-
-    This function performs the following steps:
-    1. Passes None and an empty string to `_float_setting`.
-    2. Passes a numeric string to `_float_setting`.
-    3. Compares each output to the expected default or converted float.
-
-    Asserts:
-        - Missing values return the supplied default.
-        - Numeric strings are converted to floats.
-    """
+    """Convert numeric settings and use defaults for missing values."""
     assert settings._float_setting(None, 0.5) == 0.5
     assert settings._float_setting('', 0.5) == 0.5
     assert settings._float_setting('0.25', 0.5) == 0.25
 
 
 def test_capabilities_normalizes_missing_strings_and_lists():
-    """
-    Test normalization of model capability settings.
-
-    This function performs the following steps:
-    1. Passes missing values to `_capabilities`.
-    2. Passes a comma-separated capability string.
-    3. Passes an already-normalized list.
-
-    Asserts:
-        - Missing values default to text or the supplied default.
-        - Comma-separated strings become trimmed lists.
-        - Lists are returned unchanged.
-    """
+    """Normalize missing, string, and list capability settings."""
     assert settings._capabilities(None) == ['text']
     assert settings._capabilities('', ['text', 'vision']) == ['text', 'vision']
     assert settings._capabilities('text, vision') == ['text', 'vision']
@@ -89,19 +66,7 @@ def test_capabilities_normalizes_missing_strings_and_lists():
 
 
 def test_merge_profile_applies_defaults_and_coerces_types():
-    """
-    Test merging of stored model profile values with defaults.
-
-    This function performs the following steps:
-    1. Defines a configured profile with string capabilities and numeric strings.
-    2. Merges it with the default model profile.
-    3. Checks inherited and coerced fields.
-
-    Asserts:
-        - Configured values override defaults.
-        - Missing values are inherited from defaults.
-        - Capabilities and generation parameters are normalized.
-    """
+    """Merge profile defaults while coercing configured value types."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
         {
@@ -122,17 +87,7 @@ def test_merge_profile_applies_defaults_and_coerces_types():
 
 
 def test_merge_profile_defaults_missing_input_token_limit():
-    """
-    Test defaulting of missing model input token limits.
-
-    This function performs the following steps:
-    1. Defines a configured profile with an empty input token limit.
-    2. Merges it with the default model profile.
-    3. Reads the normalized input token limit from the merged profile.
-
-    Asserts:
-        - Empty input token limits are replaced with the package default.
-    """
+    """Default an empty model input token limit."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
         {'input_token_limit': ''},
@@ -142,18 +97,7 @@ def test_merge_profile_defaults_missing_input_token_limit():
 
 
 def test_env_profile_collects_only_defined_values(monkeypatch):
-    """
-    Test model profile environment variable collection.
-
-    This function performs the following steps:
-    1. Sets selected environment variables for one model profile prefix.
-    2. Leaves unrelated profile variables unset.
-    3. Calls `_env_profile` with the selected prefix.
-
-    Asserts:
-        - Defined environment values are returned.
-        - Undefined values are omitted from the result.
-    """
+    """Collect only defined environment values for a model profile."""
     monkeypatch.setenv('PAPERSCRAPER_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERSCRAPER_MODEL_NAME', 'qwen')
     monkeypatch.setenv('PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT', '120000')
@@ -164,19 +108,7 @@ def test_env_profile_collects_only_defined_values(monkeypatch):
 
 
 def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file):
-    """
-    Test loading settings with no user config file.
-
-    This function performs the following steps:
-    1. Points `SETTINGS_FILE` at a path that does not exist.
-    2. Calls `load_settings`.
-    3. Checks the default text and vision model profiles.
-
-    Asserts:
-        - Default model profiles are present.
-        - Text defaults to text capability only.
-        - Vision defaults to text and vision capabilities.
-    """
+    """Load default model profiles when the config file is missing."""
     loaded = settings.load_settings()
 
     assert loaded['model_profiles']['text']['capabilities'] == ['text']
@@ -184,19 +116,7 @@ def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_set
 
 
 def test_load_settings_merges_file_and_environment_overrides(isolated_settings_file, monkeypatch):
-    """
-    Test settings precedence between config file values and environment variables.
-
-    This function performs the following steps:
-    1. Writes API keys and a text model profile to the temporary config file.
-    2. Sets environment overrides for API keys and the text model profile.
-    3. Calls `load_settings`.
-
-    Asserts:
-        - Environment API keys override file API keys.
-        - Environment model settings override stored model profile values.
-        - Non-overridden profile fields are preserved or defaulted.
-    """
+    """Apply environment overrides after values loaded from the config file."""
     isolated_settings_file.write_text(json.dumps({
         'elsevier_api_key': 'file-elsevier',
         'model_profiles': {
@@ -224,18 +144,7 @@ def test_load_settings_merges_file_and_environment_overrides(isolated_settings_f
 
 
 def test_load_settings_reports_invalid_config_file(isolated_settings_file):
-    """
-    Test error handling for an unreadable settings file.
-
-    This function performs the following steps:
-    1. Writes invalid JSON to the temporary settings file.
-    2. Calls `load_settings`.
-    3. Captures the expected runtime error.
-
-    Asserts:
-        - Invalid JSON is reported as a `RuntimeError`.
-        - The error message includes the settings file path.
-    """
+    """Report invalid JSON with the config file path."""
     isolated_settings_file.write_text('{not-json')
 
     with pytest.raises(RuntimeError, match=str(isolated_settings_file)):
@@ -243,17 +152,7 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file):
 
 
 def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file, monkeypatch):
-    """
-    Test environment overrides for all stored service credentials.
-
-    This function performs the following steps:
-    1. Writes file-based API settings to the temporary settings file.
-    2. Sets environment variables for each supported API setting.
-    3. Calls `load_settings`.
-
-    Asserts:
-        - Elsevier, OpenAI, Anthropic, CORE, Unpaywall, and OpenAlex environment values override file values.
-    """
+    """Override every stored service credential from the environment."""
     isolated_settings_file.write_text(json.dumps({
         'elsevier_api_key': 'file-elsevier',
         'openai_api_key': 'file-openai',
@@ -280,17 +179,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file, monkeypatch):
-    """
-    Test environment overrides for the vision model profile.
-
-    This function performs the following steps:
-    1. Sets environment variables for the vision model profile.
-    2. Calls `load_settings`.
-    3. Reads the merged vision profile.
-
-    Asserts:
-        - Vision model provider, model, base URL, API key, capabilities, temperature, and top-p are overridden.
-    """
+    """Override the complete vision model profile from the environment."""
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_NAME', 'qwen-vl')
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_BASE_URL', 'http://127.0.0.1:8000/v1')
@@ -313,18 +202,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
 
 
 def test_save_settings_writes_json_to_config_file(isolated_settings_file):
-    """
-    Test writing settings to disk.
-
-    This function performs the following steps:
-    1. Saves a settings dictionary with `save_settings`.
-    2. Reads the temporary config file as JSON.
-    3. Compares the saved content to the original settings.
-
-    Asserts:
-        - The settings file is created.
-        - Saved JSON preserves the supplied key/value pairs.
-    """
+    """Write supplied settings as JSON to the config file."""
     settings.save_settings({'core_api_key': 'core-key'})
 
     assert isolated_settings_file.is_file()
@@ -332,18 +210,7 @@ def test_save_settings_writes_json_to_config_file(isolated_settings_file):
 
 
 def test_get_model_profile_returns_profile_and_rejects_missing_profile(isolated_settings_file):
-    """
-    Test access to named model profiles.
-
-    This function performs the following steps:
-    1. Loads the default text model profile.
-    2. Requests a non-existent model profile.
-    3. Captures the expected exception.
-
-    Asserts:
-        - The text profile is returned.
-        - Missing profile names raise `KeyError`.
-    """
+    """Return named model profiles and reject unknown names."""
     assert settings.get_model_profile('text')['provider'] == 'openai'
 
     with pytest.raises(KeyError):
@@ -351,36 +218,14 @@ def test_get_model_profile_returns_profile_and_rejects_missing_profile(isolated_
 
 
 def test_infer_model_capabilities_detects_vision_models():
-    """
-    Test model capability inference from profile and model name.
-
-    This function performs the following steps:
-    1. Infers capabilities for a normal text profile.
-    2. Infers capabilities for a vision profile.
-    3. Infers capabilities from a model name containing a vision marker.
-
-    Asserts:
-        - Text profiles default to text-only capability.
-        - Vision profiles include text and vision capabilities.
-        - Vision-like model names include text and vision capabilities.
-    """
+    """Infer vision capability from the profile or model name."""
     assert settings.infer_model_capabilities('text', 'gpt-4') == ['text']
     assert settings.infer_model_capabilities('vision', 'gpt-4') == ['text', 'vision']
     assert settings.infer_model_capabilities('text', 'Qwen/Qwen3-VL-30B') == ['text', 'vision']
 
 
 def test_set_model_profile_persists_profile_values(isolated_settings_file):
-    """
-    Test storing a model profile.
-
-    This function performs the following steps:
-    1. Calls `set_model_profile` with a local model configuration.
-    2. Reloads settings from the temporary config file.
-    3. Checks that the stored profile values were persisted.
-
-    Asserts:
-        - Provider, model, base URL, API key, capabilities, and generation settings are saved.
-    """
+    """Persist every configured model profile value."""
     settings.set_model_profile(
         'text',
         'local',
@@ -407,17 +252,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file):
 
 
 def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive Anthropic API key storage.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake Anthropic key response.
-    2. Calls `update_anthropic_key`.
-    3. Reloads settings from the temporary config file.
-
-    Asserts:
-        - The entered Anthropic API key is saved.
-    """
+    """Prompt for and save an Anthropic API key."""
     settings.save_settings({'anthropic_api_key': 'old-anthropic-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'anthropic-key')
 
@@ -429,24 +264,20 @@ def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monk
 
 
 def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch):
-    """
-    Test successful OpenAI API key validation without calling the live API.
-
-    This function performs the following steps:
-    1. Replaces the OpenAI client with a local fake client.
-    2. Calls `check_openai_api_key` with a placeholder key.
-    3. Checks the validation result.
-
-    Asserts:
-        - A client whose model listing succeeds returns `True`.
-    """
+    """Accept an OpenAI key when listing models succeeds."""
 
     class FakeModels:
+        """Provide a successful fake models resource."""
+
         def list(self):
+            """Return an empty model listing."""
             return []
 
     class FakeOpenAI:
+        """Provide a fake authenticated OpenAI client."""
+
         def __init__(self, api_key):
+            """Store the API key and expose the fake models resource."""
             self.api_key = api_key
             self.models = FakeModels()
 
@@ -456,27 +287,25 @@ def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch):
 
 
 def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
-    """
-    Test failed OpenAI API key validation without calling the live API.
-
-    This function performs the following steps:
-    1. Replaces the OpenAI authentication error with a local exception.
-    2. Replaces the OpenAI client with a local fake client that raises that exception.
-    3. Calls `check_openai_api_key` with a placeholder key.
-
-    Asserts:
-        - A client whose model listing raises an authentication error returns `False`.
-    """
+    """Reject an OpenAI key when listing models fails authentication."""
 
     class FakeAuthenticationError(Exception):
+        """Represent a fake OpenAI authentication failure."""
+
         pass
 
     class FakeModels:
+        """Provide a model resource that rejects authentication."""
+
         def list(self):
+            """Raise the fake authentication error."""
             raise FakeAuthenticationError()
 
     class FakeOpenAI:
+        """Provide a fake unauthenticated OpenAI client."""
+
         def __init__(self, api_key):
+            """Store the API key and expose the failing models resource."""
             self.api_key = api_key
             self.models = FakeModels()
 
@@ -487,17 +316,7 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
 
 
 def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive OpenAI API key storage after successful validation.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake OpenAI key response.
-    2. Replaces OpenAI API key validation with a successful local result.
-    3. Calls `update_openai_key` and reloads the temporary settings file.
-
-    Asserts:
-        - The entered OpenAI API key is saved after validation succeeds.
-    """
+    """Prompt for, validate, and save an OpenAI API key."""
     settings.save_settings({'openai_api_key': 'old-openai-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openai-key')
     monkeypatch.setattr(settings, 'check_openai_api_key', lambda api_key: api_key == 'openai-key')
@@ -510,18 +329,7 @@ def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_fil
 
 
 def test_update_openai_key_rejects_invalid_key(isolated_settings_file, monkeypatch):
-    """
-    Test interactive OpenAI API key storage after failed validation.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake OpenAI key response.
-    2. Replaces OpenAI API key validation with a failed local result.
-    3. Calls `update_openai_key` and captures the expected error.
-
-    Asserts:
-        - A failed OpenAI API key validation raises `ValueError`.
-        - The invalid OpenAI API key is not saved.
-    """
+    """Reject and avoid saving an invalid OpenAI API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-openai-key')
     monkeypatch.setattr(settings, 'check_openai_api_key', lambda _: False)
 
@@ -532,17 +340,7 @@ def test_update_openai_key_rejects_invalid_key(isolated_settings_file, monkeypat
 
 
 def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive CORE API key storage.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake CORE key response.
-    2. Calls `update_core_key`.
-    3. Reloads settings from the temporary config file.
-
-    Asserts:
-        - The entered CORE API key is saved.
-    """
+    """Prompt for and save a CORE API key."""
     settings.save_settings({'core_api_key': 'old-core-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'core-key')
 
@@ -554,20 +352,11 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypat
 
 
 def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch):
-    """
-    Test successful Elsevier API key validation without calling the live API.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a local fake.
-    2. Calls `check_elsevier_api_key` with a placeholder key.
-    3. Checks the validation result.
-
-    Asserts:
-        - A client whose request succeeds returns `True`.
-    """
+    """Accept an Elsevier key when the validation request succeeds."""
     calls = {}
 
     def fake_get_json(api_key, url):
+        """Record Elsevier request arguments and return a response."""
         calls['api_key'] = api_key
         calls['url'] = url
         return {'ok': True}
@@ -580,17 +369,7 @@ def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch):
 
 
 def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
-    """
-    Test failed Elsevier API key validation without calling the live API.
-
-    This function performs the following steps:
-    1. Replaces the Elsevier JSON request helper with a local fake that raises an HTTP error.
-    2. Calls `check_elsevier_api_key` with a placeholder key.
-    3. Checks the validation result.
-
-    Asserts:
-        - A client whose request raises an HTTP error returns `False`.
-    """
+    """Reject an Elsevier key when the validation request fails."""
     monkeypatch.setattr(
         settings.elsevier,
         'get_json',
@@ -601,17 +380,7 @@ def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
 
 
 def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive Elsevier API key storage after successful validation.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake Elsevier key response.
-    2. Replaces Elsevier API key validation with a successful local result.
-    3. Calls `update_elsevier_key` and reloads the temporary settings file.
-
-    Asserts:
-        - The entered Elsevier API key is saved after validation succeeds.
-    """
+    """Prompt for, validate, and save an Elsevier API key."""
     settings.save_settings({'elsevier_api_key': 'old-elsevier-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'elsevier-key')
     monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda api_key: api_key == 'elsevier-key')
@@ -624,18 +393,7 @@ def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_f
 
 
 def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file, monkeypatch):
-    """
-    Test interactive Elsevier API key storage after failed validation.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake Elsevier key response.
-    2. Replaces Elsevier API key validation with a failed local result.
-    3. Calls `update_elsevier_key` and captures the expected error.
-
-    Asserts:
-        - A failed Elsevier API key validation raises `ValueError`.
-        - The invalid Elsevier API key is not saved.
-    """
+    """Reject and avoid saving an invalid Elsevier API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-elsevier-key')
     monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda _: False)
 
@@ -646,18 +404,7 @@ def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file, monkeyp
 
 
 def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive Unpaywall email validation and storage.
-
-    This function performs the following steps:
-    1. Enters a valid email and saves it with `update_unpaywall_email`.
-    2. Enters an invalid email in a second call.
-    3. Captures the expected validation error.
-
-    Asserts:
-        - A valid email address is saved.
-        - An invalid email address raises `ValueError`.
-    """
+    """Save a valid Unpaywall email and reject an invalid one."""
     settings.save_settings({'unpaywall_email': 'old@example.com'})
     monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
     settings.update_unpaywall_email()
@@ -671,20 +418,7 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
 
 
 def test_update_openalex_key_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
-    """
-    Test interactive OpenAlex API key validation and storage.
-
-    This function performs the following steps:
-    1. Replaces `input` with a fake OpenAlex key response.
-    2. Replaces OpenAlex API key validation with a successful local result.
-    3. Calls `update_openalex_key` and reloads the temporary settings file.
-    4. Repeats the call with validation failing.
-
-    Asserts:
-        - The stored key is masked when the current value is shown.
-        - A validated key is saved.
-        - A rejected key raises `ValueError`.
-    """
+    """Save a valid OpenAlex key and reject an invalid one."""
     settings.save_settings({'openalex_api_key': 'old-openalex-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openalex-key')
     monkeypatch.setattr(settings, 'check_openalex_api_key', lambda api_key: api_key == 'openalex-key')
@@ -701,21 +435,13 @@ def test_update_openalex_key_validates_and_saves_key(isolated_settings_file, mon
 
 
 def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
-    """
-    Test OpenAlex API key validation outcomes.
+    """Reject only explicit OpenAlex authentication failures."""
 
-    This function performs the following steps:
-    1. Replaces the rate-limit request with prepared status codes.
-    2. Replaces the request with one raising a connection error.
-    3. Calls `check_openalex_api_key` for each case.
-
-    Asserts:
-        - A 401 response marks the key invalid.
-        - A successful response marks the key valid.
-        - An unreachable API does not block saving the key.
-    """
     class FakeResponse:
+        """Provide a response with a configurable status code."""
+
         def __init__(self, status_code):
+            """Store the response status code."""
             self.status_code = status_code
 
     monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(401))
@@ -725,6 +451,7 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
     assert settings.check_openalex_api_key('good-key') is True
 
     def unreachable(*_, **__):
+        """Simulate an unreachable OpenAlex API."""
         raise settings.requests.ConnectionError('offline')
 
     monkeypatch.setattr(settings.requests, 'get', unreachable)
@@ -733,18 +460,7 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
 
 @pytest.mark.network
 def test_check_openai_api_key_validates_configured_key():
-    """
-    Test live OpenAI API key validation.
-
-    This function performs the following steps:
-    1. Loads the user's real PaperScraper settings.
-    2. Reads the configured OpenAI API key.
-    3. Validates the key against the OpenAI models API.
-
-    Asserts:
-        - An OpenAI API key is configured.
-        - The configured OpenAI API key authenticates successfully.
-    """
+    """Validate the configured OpenAI key against the live models API."""
     loaded = settings.load_settings()
     api_key = loaded.get('openai_api_key')
 
@@ -754,18 +470,7 @@ def test_check_openai_api_key_validates_configured_key():
 
 @pytest.mark.network
 def test_check_elsevier_api_key_validates_configured_key():
-    """
-    Test live Elsevier API key validation.
-
-    This function performs the following steps:
-    1. Loads the user's real PaperScraper settings.
-    2. Reads the configured Elsevier API key.
-    3. Validates the key against a minimal Elsevier Scopus request.
-
-    Asserts:
-        - An Elsevier API key is configured.
-        - The configured Elsevier API key authenticates successfully.
-    """
+    """Validate the configured Elsevier key against live Scopus search."""
     loaded = settings.load_settings()
     api_key = loaded.get('elsevier_api_key')
 

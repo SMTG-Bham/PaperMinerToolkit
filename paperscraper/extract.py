@@ -16,14 +16,43 @@ from paperscraper.tokenizer import count_text_tokens, prompt_token_reserve, usab
 
 
 def token_length(prompt, model=DEFAULT_MODEL, model_config=None, provider=None):
-    """Estimate token length for text, falling back to a character heuristic."""
+    """Estimate the token length of a prompt.
+
+    Parameters
+    ----------
+    prompt : object
+        Text to measure. Non-string values return an empty list for backward
+        compatibility.
+    model : str, optional
+        Model name used for tokenizer selection.
+    model_config : object, optional
+        Model configuration used for provider-aware token counting.
+    provider : str, optional
+        Provider name used when ``model_config`` is not supplied.
+
+    Returns
+    -------
+    int or list
+        Estimated token count, or an empty list for non-string input.
+    """
     if type(prompt) != str:
         return []
     return count_text_tokens(prompt, model_config=model_config, model=model, provider=provider)
 
 
 def _field_schema(recipe):
-    """Render recipe fields as a prompt-readable schema list."""
+    """Render recipe fields as a prompt-readable schema.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe containing ``search fields`` definitions.
+
+    Returns
+    -------
+    str
+        Newline-delimited schema entries.
+    """
     lines = []
     for field, config in recipe['search fields'].items():
         lines.append(f'- "{field}": {config["prompt"]}')
@@ -31,7 +60,18 @@ def _field_schema(recipe):
 
 
 def _example_record(recipe):
-    """Build a JSON example record from recipe example values."""
+    """Build a JSON example from recipe values.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe containing field examples.
+
+    Returns
+    -------
+    str
+        Pretty-printed JSON array containing one example record.
+    """
     record = {}
     for field, config in recipe['search fields'].items():
         record[field] = config['example']
@@ -39,7 +79,22 @@ def _example_record(recipe):
 
 
 def _base_extraction_prompt(recipe, source, source_rules):
-    """Build the shared extraction prompt for text or image sources."""
+    """Build the shared extraction prompt for a source type.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe defining the material type and fields.
+    source : str
+        Human-readable source description for the prompt.
+    source_rules : str
+        Source-specific extraction instructions.
+
+    Returns
+    -------
+    str
+        Complete model system prompt.
+    """
     material_type = recipe['material type']
     additional_prompts = recipe.get('additional prompts', '')
     return f'''You extract structured {material_type} materials data from a scientific {source}.
@@ -69,14 +124,38 @@ Example output shape:
 
 
 def build_text_extraction_prompt(recipe):
-    """Build the prompt used for extraction from paper text."""
+    """Build an extraction prompt for paper text.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe defining the requested output.
+
+    Returns
+    -------
+    str
+        Text extraction system prompt.
+    """
     source_rules = '''- Treat abstracts, captions, tables, experimental sections, results, and supporting text as valid evidence.
 - Do not use references, citations, or background discussion as evidence for the paper's own reported measurements unless the text clearly states the value belongs to this work.'''
     return _base_extraction_prompt(recipe, 'paper text', source_rules)
 
 
 def build_image_extraction_prompt(recipe, with_context=False):
-    """Build the prompt used for extraction from PDF images or rendered pages."""
+    """Build an extraction prompt for paper images.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe defining the requested output.
+    with_context : bool, optional
+        Whether accompanying paper text will be provided.
+
+    Returns
+    -------
+    str
+        Image extraction system prompt.
+    """
     context_rule = '- You may use the supplied paper text as context, but values should still be tied to the image, caption, table, plot labels, legend, or nearby visual evidence.' if with_context else '- Use only information visible in the supplied image or images, including captions, tables, plot labels, axes, legends, annotations, and readable text.'
     source_rules = f'''{context_rule}
 - Actively inspect figures and tables in the image for the requested properties, including captions, table headers, table rows, plot axes, legends, labels, annotations, and inset text.
@@ -87,20 +166,60 @@ def build_image_extraction_prompt(recipe, with_context=False):
 
 
 def build_scrape_prompt(recipe, source='text', with_context=False):
-    """Select the appropriate extraction prompt for a text or image source."""
+    """Select an extraction prompt for a source type.
+
+    Parameters
+    ----------
+    recipe : dict
+        Extraction recipe defining the requested output.
+    source : str, optional
+        Source type. ``"image"`` selects the image prompt; all other values
+        select the text prompt.
+    with_context : bool, optional
+        Whether image extraction will include paper text context.
+
+    Returns
+    -------
+    str
+        Source-specific extraction prompt.
+    """
     if source == 'image':
         return build_image_extraction_prompt(recipe, with_context=with_context)
     return build_text_extraction_prompt(recipe)
 
 
 def query_model(messages, model_config=None):
-    """Send extraction messages to the configured text model."""
+    """Send extraction messages to a text model.
+
+    Parameters
+    ----------
+    messages : list of dict
+        Provider-neutral chat messages.
+    model_config : ModelConfig, optional
+        Model configuration. The text profile is used by default.
+
+    Returns
+    -------
+    str
+        Model response text.
+    """
     config = model_config or ModelConfig.from_profile('text')
     return query_text(messages, config=config, max_output_tokens=10000)
 
 
 def _strip_fences(response):
-    """Remove surrounding Markdown code fences from a model response."""
+    """Remove surrounding Markdown code fences from a response.
+
+    Parameters
+    ----------
+    response : str
+        Raw model response.
+
+    Returns
+    -------
+    str
+        Response without an outer Markdown code fence.
+    """
     response = response.strip()
     fence = chr(96) * 3
     if response.startswith(fence):
@@ -110,7 +229,18 @@ def _strip_fences(response):
 
 
 def _json_decoder_scan(response):
-    """Scan a messy response for JSON objects or arrays."""
+    """Scan a mixed response for JSON objects and arrays.
+
+    Parameters
+    ----------
+    response : str
+        Model response that may contain prose around JSON values.
+
+    Returns
+    -------
+    list of dict
+        Object records decoded from the response.
+    """
     decoder = json.JSONDecoder()
     data = []
     index = 0
@@ -133,7 +263,23 @@ def _json_decoder_scan(response):
 
 
 def _extract_json_objects(response):
-    """Parse model output into a list of JSON object records."""
+    """Parse model output into JSON object records.
+
+    Parameters
+    ----------
+    response : str
+        Raw model response.
+
+    Returns
+    -------
+    list of dict
+        Parsed object records.
+
+    Raises
+    ------
+    ValueError
+        If the response contains no valid JSON objects.
+    """
     response = _strip_fences(response)
     try:
         parsed = json.loads(response)
@@ -162,7 +308,22 @@ def _extract_json_objects(response):
 
 
 def scrape_text(text, recipe, model_config=None):
-    """Extract structured material records from paper text."""
+    """Extract structured material records from paper text.
+
+    Parameters
+    ----------
+    text : str
+        Paper text to analyze.
+    recipe : dict
+        Extraction recipe defining the requested records.
+    model_config : ModelConfig, optional
+        Text model configuration.
+
+    Returns
+    -------
+    list of dict
+        Extracted material records.
+    """
     prompt = build_scrape_prompt(recipe, source='text')
     messages = [
         {'role': 'system', 'content': prompt},
@@ -173,7 +334,26 @@ def scrape_text(text, recipe, model_config=None):
 
 
 def scrape_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
-    """Extract structured material records from one or more paper images."""
+    """Extract structured material records from paper images.
+
+    Parameters
+    ----------
+    image_paths : list of str
+        Local paths to images to analyze together.
+    recipe : dict
+        Extraction recipe defining the requested records.
+    model_config : ModelConfig, optional
+        Vision model configuration.
+    context : str, optional
+        Paper text supplied as additional context.
+    compression_config : CompressionConfig, optional
+        Compression policy for the model payload.
+
+    Returns
+    -------
+    list of dict
+        Extracted material records.
+    """
     config = model_config or ModelConfig.from_profile('vision')
     prompt = build_scrape_prompt(recipe, source='image', with_context=context is not None)
     response = query_images(prompt,
@@ -186,7 +366,24 @@ def scrape_images(image_paths, recipe, model_config=None, context=None, compress
 
 
 def combine_material_records(text_materials, image_materials, recipe, model_config=None):
-    """Ask the text model to reconcile text-derived and image-derived records."""
+    """Reconcile text-derived and image-derived material records.
+
+    Parameters
+    ----------
+    text_materials : list of dict
+        Records extracted from paper text.
+    image_materials : list of dict
+        Records extracted from paper images.
+    recipe : dict
+        Extraction recipe defining the record schema.
+    model_config : ModelConfig, optional
+        Text model configuration used for reconciliation.
+
+    Returns
+    -------
+    list of dict
+        Reconciled material records.
+    """
     prompt = f'''You reconcile structured materials data extracted from the same paper.
 
 The text extractor and image extractor may describe the same material, composition, sample, or experiment. Compare both sets and merge records that refer to the same material or clearly corresponding experimental entry.
@@ -222,14 +419,46 @@ Example output shape:
 
 
 def scrape_pdf(filepath, recipe, model_config=None):
-    """Extract material records from text read directly from a PDF file."""
+    """Extract material records from a PDF file.
+
+    Parameters
+    ----------
+    filepath : str or path-like
+        Path to the source PDF.
+    recipe : dict
+        Extraction recipe defining the requested records.
+    model_config : ModelConfig, optional
+        Text model configuration.
+
+    Returns
+    -------
+    list of dict
+        Extracted material records.
+    """
     from paperscraper.documents import read_pdf_text
 
     return scrape_text(read_pdf_text(filepath), recipe, model_config=model_config)
 
 
 def convert_units(values, field, unit, model_config=None):
-    """Use the text model to convert extracted values into a target unit."""
+    """Convert extracted values into a target unit with a text model.
+
+    Parameters
+    ----------
+    values : sequence
+        Extracted values to convert.
+    field : str
+        Name of the measured field.
+    unit : str
+        Desired output unit.
+    model_config : ModelConfig, optional
+        Text model configuration.
+
+    Returns
+    -------
+    list
+        Converted values, with missing inputs represented by ``None``.
+    """
     prompt = f'Convert the following values of {field} to {unit}. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Only put values in square brackets if multiple values are provided on the line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None". Do not return the value as an addition. If text is given and cannot be meaningfully converted, return the same text. Convert "RT" or "Room temperature" to the equivalent of 298.15K. Do not use quotation marks. Make sure that there are as many output values as input.'
     values_str = ''
     memory = []

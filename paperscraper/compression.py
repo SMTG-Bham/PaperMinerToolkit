@@ -19,7 +19,21 @@ AUTO_RATIO_SAFETY_FACTOR = 0.95
 
 @dataclass(frozen=True)
 class CompressionConfig:
-    """User-selected Headroom compression settings for a scrape run."""
+    """Store Headroom compression settings for a scrape run.
+
+    Attributes
+    ----------
+    scope : str
+        Content to compress: ``"none"``, ``"text"``, ``"images"``, or
+        ``"both"``.
+    mode : str
+        Compression policy, either ``"auto"`` or ``"always"``.
+    ratio : float or str
+        Target compression ratio, or ``"auto"`` to derive one from the token
+        budget.
+    content_detection : bool
+        Whether Headroom should detect content types with Magika.
+    """
 
     scope: str = 'none'
     mode: str = 'auto'
@@ -27,7 +41,13 @@ class CompressionConfig:
     content_detection: bool = True
 
     def __post_init__(self):
-        """Normalize and validate compression options after initialization."""
+        """Normalize and validate compression options after initialization.
+
+        Raises
+        ------
+        ValueError
+            If the scope, mode, or compression ratio is invalid.
+        """
         scope = (self.scope or 'none').lower()
         mode = (self.mode or 'auto').lower()
         ratio = self.ratio
@@ -49,11 +69,23 @@ class CompressionConfig:
         object.__setattr__(self, 'content_detection', bool(self.content_detection))
 
     def includes_text(self):
-        """Return whether paper text or text context should be compressed."""
+        """Return whether paper text or text context should be compressed.
+
+        Returns
+        -------
+        bool
+            Whether the configured scope includes text.
+        """
         return self.scope in {'text', 'both'}
 
     def includes_images(self):
-        """Return whether image payloads should be compressed."""
+        """Return whether image payloads should be compressed.
+
+        Returns
+        -------
+        bool
+            Whether the configured scope includes images.
+        """
         return self.scope in {'images', 'both'}
 
 
@@ -61,18 +93,68 @@ def compression_config(scope: str = 'none',
                        mode: str = 'auto',
                        ratio: float | str = 'auto',
                        content_detection: bool = True) -> CompressionConfig:
-    """Build a normalized compression config from CLI or function options."""
+    """Build a normalized compression configuration.
+
+    Parameters
+    ----------
+    scope : str, optional
+        Content to compress.
+    mode : str, optional
+        Compression policy.
+    ratio : float or str, optional
+        Target compression ratio, or ``"auto"``.
+    content_detection : bool, optional
+        Whether to enable Headroom content detection.
+
+    Returns
+    -------
+    CompressionConfig
+        Validated compression settings.
+
+    Raises
+    ------
+    ValueError
+        If any option is invalid.
+    """
     return CompressionConfig(scope=scope, mode=mode, ratio=ratio, content_detection=content_detection)
 
 
 def _request_token_budget(prompt, model_config):
-    """Return the usable input budget after reserving space for the prompt."""
+    """Calculate the input budget remaining after prompt reservation.
+
+    Parameters
+    ----------
+    prompt : str
+        Prompt that shares the model context window with the content.
+    model_config : object
+        Model configuration used to determine token limits.
+
+    Returns
+    -------
+    int
+        Number of tokens available for content.
+    """
     reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
     return usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
 
 
 def ideal_compression_ratio(input_tokens, token_budget, config: CompressionConfig):
-    """Return the target compression ratio for an estimated request size."""
+    """Calculate the target compression ratio for a request.
+
+    Parameters
+    ----------
+    input_tokens : int
+        Estimated number of input tokens.
+    token_budget : int
+        Number of tokens available for input content.
+    config : CompressionConfig
+        Compression settings.
+
+    Returns
+    -------
+    float
+        Configured or automatically calculated compression ratio.
+    """
     if config.ratio != 'auto':
         return config.ratio
     if input_tokens <= 0:
@@ -82,7 +164,24 @@ def ideal_compression_ratio(input_tokens, token_budget, config: CompressionConfi
 
 
 def should_compress_text(text, prompt, model_config, config: CompressionConfig):
-    """Decide whether a text input should be compressed before model analysis."""
+    """Determine whether text should be compressed before analysis.
+
+    Parameters
+    ----------
+    text : object
+        Candidate text content.
+    prompt : str
+        Prompt that accompanies the content.
+    model_config : object
+        Model configuration used for token estimation.
+    config : CompressionConfig
+        Compression settings.
+
+    Returns
+    -------
+    bool
+        Whether the text should be compressed.
+    """
     if not config.includes_text() or not isinstance(text, str) or text == '':
         return False
     if config.mode == 'always':
@@ -91,7 +190,26 @@ def should_compress_text(text, prompt, model_config, config: CompressionConfig):
 
 
 def should_compress_images(image_paths, prompt, context, model_config, config: CompressionConfig):
-    """Decide whether an image request should be compressed before model analysis."""
+    """Determine whether an image request should be compressed.
+
+    Parameters
+    ----------
+    image_paths : sequence of str
+        Local image paths included in the request.
+    prompt : str
+        Prompt that accompanies the images.
+    context : str or None
+        Optional text context included in the request.
+    model_config : object
+        Model configuration used for token estimation.
+    config : CompressionConfig
+        Compression settings.
+
+    Returns
+    -------
+    bool
+        Whether the image request should be compressed.
+    """
     if not config.includes_images() or not image_paths:
         return False
     if config.mode == 'always':
@@ -102,7 +220,18 @@ def should_compress_images(image_paths, prompt, context, model_config, config: C
 
 
 def _image_size(image_path):
-    """Return image dimensions for a local file or ``None`` when unreadable."""
+    """Read the dimensions of a local image.
+
+    Parameters
+    ----------
+    image_path : str or path-like
+        Path to an image file.
+
+    Returns
+    -------
+    tuple of int or None
+        Image width and height, or ``None`` when dimensions cannot be read.
+    """
     try:
         from PIL import Image
         with Image.open(image_path) as image:
@@ -120,7 +249,20 @@ def _image_size(image_path):
 
 
 def estimate_image_tokens(image_paths, model_config=None):
-    """Estimate vision-model input tokens from image dimensions and provider."""
+    """Estimate image input tokens for a model provider.
+
+    Parameters
+    ----------
+    image_paths : sequence of str
+        Local image paths included in the request.
+    model_config : object, optional
+        Model configuration identifying the provider.
+
+    Returns
+    -------
+    int
+        Estimated number of image input tokens.
+    """
     provider = str(getattr(model_config, 'provider', '') or '').lower().replace('_', '-')
     total = 0
     for image_path in image_paths or []:
@@ -140,7 +282,18 @@ def estimate_image_tokens(image_paths, model_config=None):
 
 
 def _compressed_content(result):
-    """Extract compressed content from common Headroom result shapes."""
+    """Extract content from common Headroom result shapes.
+
+    Parameters
+    ----------
+    result : object
+        Value returned by a Headroom compressor.
+
+    Returns
+    -------
+    object
+        Extracted compressed content, or the string form of an unknown result.
+    """
     if isinstance(result, (str, list, tuple)):
         return result
     for name in ['compressed', 'content', 'text', 'output']:
@@ -156,7 +309,25 @@ def _compressed_content(result):
 
 
 def _universal_compressor(compression_ratio=0.5, content_detection=True):
-    """Create a Headroom universal compressor with PaperScraper safety defaults."""
+    """Create a Headroom compressor with safe defaults.
+
+    Parameters
+    ----------
+    compression_ratio : float, optional
+        Target output-to-input size ratio.
+    content_detection : bool, optional
+        Whether Headroom should detect content types with Magika.
+
+    Returns
+    -------
+    headroom.compression.UniversalCompressor
+        Configured universal compressor.
+
+    Raises
+    ------
+    RuntimeError
+        If the optional ``headroom-ai`` package is unavailable.
+    """
     try:
         from headroom.compression import UniversalCompressor, UniversalCompressorConfig
     except ImportError as e:
@@ -171,7 +342,29 @@ def _universal_compressor(compression_ratio=0.5, content_detection=True):
 
 
 def compress_content(content, prompt='', compression_ratio=0.5, content_detection=True):
-    """Compress text or provider-shaped message payloads with Headroom's universal compressor."""
+    """Compress content with Headroom's universal compressor.
+
+    Parameters
+    ----------
+    content : object
+        Text or provider-shaped message payload to compress.
+    prompt : str, optional
+        Prompt associated with the content. Reserved for compressor adapters.
+    compression_ratio : float, optional
+        Target output-to-input size ratio.
+    content_detection : bool, optional
+        Whether Headroom should detect content types with Magika.
+
+    Returns
+    -------
+    object
+        Compressed content, or the original content when compression is empty.
+
+    Raises
+    ------
+    RuntimeError
+        If the optional ``headroom-ai`` package is unavailable.
+    """
     compressor = _universal_compressor(
         compression_ratio=compression_ratio,
         content_detection=content_detection,
@@ -182,7 +375,24 @@ def compress_content(content, prompt='', compression_ratio=0.5, content_detectio
 
 
 def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
-    """Compress text only when the configured compression policy asks for it."""
+    """Apply compression to text when required by the configured policy.
+
+    Parameters
+    ----------
+    text : str
+        Text to evaluate and optionally compress.
+    prompt : str
+        Prompt that accompanies the text.
+    model_config : object
+        Model configuration used for token estimation.
+    config : CompressionConfig
+        Compression settings.
+
+    Returns
+    -------
+    object
+        Compressed content or the original text.
+    """
     if should_compress_text(text, prompt, model_config, config):
         input_tokens = count_text_tokens(text, model_config=model_config)
         token_budget = _request_token_budget(prompt, model_config)
@@ -200,7 +410,28 @@ def maybe_compress_image_messages(messages,
                                   context,
                                   model_config,
                                   config: CompressionConfig | None):
-    """Compress image messages only when the configured policy asks for it."""
+    """Apply compression to image messages when required by policy.
+
+    Parameters
+    ----------
+    messages : list
+        Provider-shaped messages containing image content.
+    image_paths : sequence of str
+        Local paths for images represented in ``messages``.
+    prompt : str
+        Prompt that accompanies the images.
+    context : str or None
+        Optional text context included in the request.
+    model_config : object
+        Model configuration used for token estimation.
+    config : CompressionConfig or None
+        Compression settings, or ``None`` to disable compression.
+
+    Returns
+    -------
+    object
+        Compressed messages or the original message list.
+    """
     if config is None or not should_compress_images(image_paths, prompt, context, model_config, config):
         return messages
     input_tokens = count_text_tokens(context or '', model_config=model_config) + estimate_image_tokens(

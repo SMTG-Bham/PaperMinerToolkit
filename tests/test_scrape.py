@@ -1,3 +1,5 @@
+"""Test scrape helpers and corpus extraction workflows."""
+
 import os
 
 import pandas as pd
@@ -45,15 +47,19 @@ class FakeTqdm:
     """Minimal progress-bar replacement for scrape unit tests."""
 
     def __init__(self, *args, **kwargs):
+        """Initialize progress update tracking."""
         self.updates = 0
 
     def __enter__(self):
+        """Return the fake progress bar from its context manager."""
         return self
 
     def __exit__(self, *_):
+        """Leave the progress context without suppressing errors."""
         return False
 
     def update(self, amount):
+        """Add an amount to the recorded progress."""
         self.updates += amount
 
 
@@ -64,6 +70,7 @@ class FakeModelConfig:
     required = []
 
     def __init__(self, profile, name=None, provider=None, base_url=None):
+        """Store fake model profile and connection values."""
         self.profile = profile
         self.name = name or f'{profile}-model'
         self.provider = provider
@@ -71,6 +78,7 @@ class FakeModelConfig:
 
     @classmethod
     def from_profile(cls, profile, name=None, provider=None, base_url=None):
+        """Record profile arguments and return a fake configuration."""
         cls.calls.append({
             'profile': profile,
             'name': name,
@@ -80,26 +88,17 @@ class FakeModelConfig:
         return cls(profile, name=name, provider=provider, base_url=base_url)
 
     def require(self, capability):
+        """Record a required model capability."""
         self.required.append(capability)
 
 
 def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
-    """
-    Test text chunking for short and long inputs.
-
-    This function performs the following steps:
-    1. Replaces token counting with a fake value below the split threshold.
-    2. Replaces token counting with a fake value above the split threshold.
-    3. Chunks representative short and long text values.
-
-    Asserts:
-        - Short text is returned as one chunk.
-        - Long text is split into the expected number of ordered chunks.
-    """
+    """Test model-aware text chunking for short and long inputs."""
     text_config = FakeModelConfig('text', name='model')
     reserve_calls = []
 
     def fake_reserve(prompt, model_config=None, buffer_tokens=500):
+        """Record token reservation arguments and return a fixed reserve."""
         reserve_calls.append({
             'prompt': prompt,
             'model_config': model_config,
@@ -108,10 +107,12 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
         return 750
 
     def fake_limit(model_config=None, reserve_tokens=2000):
+        """Validate the token reserve and return a fixed context limit."""
         assert reserve_tokens == 750
         return 120000
 
     def short_count(text, model_config=None):
+        """Return a token count that fits the configured context limit."""
         return 120000
 
     monkeypatch.setattr(scrape, 'prompt_token_reserve', fake_reserve)
@@ -128,23 +129,7 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
 
 
 def test_material_file_and_image_helpers_handle_common_inputs(tmp_path):
-    """
-    Test scrape helper functions for materials, files, paths, and image batches.
-
-    This function performs the following steps:
-    1. Appends paper provenance to extracted material records.
-    2. Writes material records into a new and then existing CSV.
-    3. Deletes an existing file and normalizes unsafe path parts.
-    4. Builds image output keys and image batches.
-    5. Calls image batching with invalid sizes.
-
-    Asserts:
-        - Material rows receive paper metadata and source fields.
-        - Material CSV writes and appends rows correctly.
-        - File deletion is quiet for existing and missing paths.
-        - Path keys and image batches are stable.
-        - Invalid image batch sizes raise `ValueError`.
-    """
+    """Test material, file, path, and image batching helpers."""
     row = pd.Series({
         'paper_id': 'doi:10.123/example',
         'doi': '10.123/example',
@@ -189,21 +174,7 @@ def test_material_file_and_image_helpers_handle_common_inputs(tmp_path):
 
 
 def test_select_papers_orders_and_limits_corpus_rows(monkeypatch):
-    """
-    Test scrape paper ordering and limiting helpers.
-
-    This function performs the following steps:
-    1. Defines representative paper rows with ids, titles, and publication dates.
-    2. Selects papers by publication date, title, paper id, corpus order, and count.
-    3. Replaces random shuffling with a deterministic reverse-order helper.
-    4. Calls the selection helper with invalid count and order values.
-
-    Asserts:
-        - Publication, title, paper id, and corpus order choices are applied.
-        - Count limits are applied after ordering.
-        - Random order delegates to the shuffle helper.
-        - Invalid selection options raise `ValueError`.
-    """
+    """Test paper ordering, limiting, and option validation."""
     papers = [
         {'paper_id': 'paper-2', 'title': 'Beta', 'publication_date': '2024-01-01'},
         {'paper_id': 'paper-1', 'title': 'Alpha', 'publication_date': '2026-01-01'},
@@ -233,17 +204,7 @@ def test_select_papers_orders_and_limits_corpus_rows(monkeypatch):
 
 
 def test_scrape_papers_rejects_invalid_modes(tmp_path):
-    """
-    Test scrape option validation.
-
-    This function performs the following steps:
-    1. Calls `scrape_papers` with an invalid scrape mode.
-    2. Calls `scrape_papers` with an invalid image context mode.
-    3. Calls `scrape_papers` with an invalid image extraction mode.
-
-    Asserts:
-        - Each invalid option raises a helpful `ValueError`.
-    """
+    """Test validation of scrape, image, compression, and selection options."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     db_path = tmp_path / 'papers.db'
@@ -269,23 +230,7 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path):
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_import_source(
         tmp_path, monkeypatch, capsys):
-    """
-    Test text-only scraping over downloaded text files.
-
-    This function performs the following steps:
-    1. Writes a corpus with one pending paper and one already-scraped paper.
-    2. Writes a matching text file for the pending paper.
-    3. Replaces recipe loading, model config, progress bar, token chunking, text reading, and text analysis.
-    4. Calls `scrape_papers` in text mode.
-    5. Reloads the output materials CSV and corpus state.
-
-    Asserts:
-        - Only the pending paper is analyzed when `force=False`.
-        - Extracted materials are written with text provenance.
-        - Text scrape status and material counts are updated.
-        - The source file used to populate the corpus remains untouched.
-        - A skipped-stage summary is printed.
-    """
+    """Test text scraping output, status updates, and source preservation."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     text_path = papers_dir / 'paper-1.txt'
@@ -306,6 +251,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_analyze_text(text, recipe, model_config=None):
+        """Record analyzed chunks and return a material record."""
         calls.setdefault('chunks', []).append(text)
         calls.setdefault('configs', []).append(model_config)
         return [{'Name': f'material from {text}'}]
@@ -378,20 +324,7 @@ def test_force_rescrape_replaces_previous_chunk_count(tmp_path, monkeypatch, cap
 
 
 def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_path, monkeypatch):
-    """
-    Test abstract-only scraping over corpus abstract assets.
-
-    This function performs the following steps:
-    1. Writes a corpus row with an abstract asset.
-    2. Replaces recipe loading, model config, progress bar, token chunking, document reading, and text analysis.
-    3. Calls `scrape_papers` in abstract mode.
-    4. Reloads the output materials and paper rows.
-
-    Asserts:
-        - The abstract asset is analyzed with the text model.
-        - Extracted materials are written with abstract provenance.
-        - Abstract scrape status and material counts are updated independently of full-text status.
-    """
+    """Test abstract scraping output and independent status updates."""
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
     write_corpus(db_path, [{
@@ -410,6 +343,7 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_pat
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_scrape_text(text, recipe, model_config=None):
+        """Record abstract analysis inputs and return a material record."""
         calls['text'] = text
         calls['model_config'] = model_config
         return [{'Name': 'abstract material'}]
@@ -432,20 +366,7 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_pat
 
 
 def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeypatch):
-    """
-    Test scrape ordering and count limiting in the main scrape loop.
-
-    This function performs the following steps:
-    1. Writes three corpus rows with matching text assets.
-    2. Replaces recipe loading, model configuration, progress, chunking, text reading, and text analysis.
-    3. Calls `scrape_papers` with a two-paper limit and paper-id ordering.
-    4. Reloads the output materials and corpus rows.
-
-    Asserts:
-        - Only the first two ordered papers are scraped.
-        - The third paper remains pending.
-        - Material rows are written in the selected order.
-    """
+    """Test ordering and count limits in the main scrape loop."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     for paper_id in ['paper-3', 'paper-1', 'paper-2']:
@@ -483,21 +404,7 @@ def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeyp
 
 
 def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, monkeypatch, capsys):
-    """
-    Test text scraping failure handling.
-
-    This function performs the following steps:
-    1. Writes a corpus record without a matching text or PDF asset.
-    2. Replaces recipe loading, model config, and progress bar with local fakes.
-    3. Calls `scrape_papers` in text mode.
-    4. Reloads the corpus state.
-
-    Asserts:
-        - The text scrape status is marked as failed.
-        - The missing-source error is recorded.
-        - No materials output file is created.
-        - A no-materials summary is printed.
-    """
+    """Test text scrape failure handling when no source asset exists."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     db_path = tmp_path / 'papers.db'
@@ -518,20 +425,7 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, mo
 
 
 def test_scrape_papers_records_abstract_failures_when_source_is_missing(tmp_path, monkeypatch):
-    """
-    Test abstract scraping failure handling.
-
-    This function performs the following steps:
-    1. Writes a corpus row without an abstract asset.
-    2. Replaces recipe loading, model config, and progress bar with local fakes.
-    3. Calls `scrape_papers` in abstract mode.
-    4. Reloads the paper rows.
-
-    Asserts:
-        - The abstract scrape status is marked as failed.
-        - The missing-abstract error is recorded.
-        - No materials output file is created.
-    """
+    """Test abstract scrape failure handling when no source asset exists."""
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
     write_corpus(db_path, [{'paper_id': 'missing-abstract'}])
@@ -548,20 +442,7 @@ def test_scrape_papers_records_abstract_failures_when_source_is_missing(tmp_path
 
 
 def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
-    """
-    Test scrape-time text compression before chunking and analysis.
-
-    This function performs the following steps:
-    1. Writes a corpus and matching text asset for one pending paper.
-    2. Replaces compression, chunking, and text analysis helpers with local fakes.
-    3. Calls `scrape_papers` with text compression enabled.
-    4. Reads the values recorded by the fake helpers.
-
-    Asserts:
-        - Text compression receives the full paper text and extraction prompt.
-        - Chunking receives the compressed text.
-        - Text analysis receives chunks made from the compressed text.
-    """
+    """Test that scrape-time text compression precedes chunking."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     (papers_dir / 'paper-1.txt').write_text('paper text')
@@ -576,6 +457,7 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'full paper text')
 
     def fake_compress(text, prompt, model_config, config):
+        """Record compression inputs and return compressed text."""
         calls['compress'] = {
             'text': text,
             'prompt_contains': 'paper text' in prompt,
@@ -587,10 +469,12 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
         return 'compressed paper text'
 
     def fake_chunks(text, model_config, prompt=''):
+        """Record chunking input and return one compressed chunk."""
         calls['chunk_text'] = text
         return ['compressed chunk']
 
     def fake_scrape_text(text, recipe, model_config=None):
+        """Record analyzed text and return a material record."""
         calls['analyzed_text'] = text
         return [{'Name': 'compressed material'}]
 
@@ -620,22 +504,7 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
 
 
 def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, monkeypatch):
-    """
-    Test combined text and image scraping.
-
-    This function performs the following steps:
-    1. Writes matching text and PDF files for a pending paper.
-    2. Replaces recipe loading, model config, progress bar, document reading, image extraction, and model analysis.
-    3. Calls `scrape_papers` in text-image mode with image cleanup enabled.
-    4. Reloads the output materials CSV and corpus state.
-
-    Asserts:
-        - Vision config is requested and checked for vision support.
-        - Text and image analysis both run.
-        - Reconciled text-image records are written when combining succeeds.
-        - Image metadata is recorded in the corpus.
-        - Extracted temporary image files are deleted.
-    """
+    """Test combined scraping, reconciliation, and image cleanup."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     text_path = papers_dir / 'paper-1.txt'
@@ -657,6 +526,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text context')
 
     def fake_extract_pdf_images(pdf_path_arg, output_dir, prefix, strategy, dpi):
+        """Create fake extracted images and record extraction options."""
         image_paths = [os.path.join(output_dir, f'{prefix}-1.png'), os.path.join(output_dir, f'{prefix}-2.png')]
         os.makedirs(output_dir, exist_ok=True)
         for path in image_paths:
@@ -671,16 +541,19 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
         return image_paths
 
     def fake_analyze_text(text, recipe, model_config=None):
+        """Record analyzed text and return a text-derived record."""
         calls['text'] = text
         return [{'Name': 'text LLZO'}]
 
     def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
+        """Record an image batch and return an image-derived record."""
         calls.setdefault('image_batches', []).append(image_paths)
         calls.setdefault('contexts', []).append(context)
         calls.setdefault('image_compression', []).append(compression_config)
         return [{'Name': f'image {len(image_paths)}'}]
 
     def fake_combine(text_materials, image_materials, recipe, model_config=None):
+        """Record source records and return a reconciled record."""
         calls['combine'] = (text_materials, image_materials, model_config.name)
         return [{'Name': 'combined LLZO'}]
 
@@ -734,20 +607,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
 
 
 def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_records(tmp_path, monkeypatch):
-    """
-    Test fallback behavior when text-image reconciliation returns no records.
-
-    This function performs the following steps:
-    1. Writes matching text and PDF files for one paper.
-    2. Replaces model and document helpers with local fakes that produce text and image records.
-    3. Replaces reconciliation with a fake that returns an empty list.
-    4. Calls `scrape_papers` in text-image mode.
-
-    Asserts:
-        - Text and image material rows are both preserved.
-        - The empty reconciliation result is recorded in `last_error`.
-        - Image rows include semicolon-separated image source paths.
-    """
+    """Test fallback rows when text-image reconciliation returns nothing."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     (papers_dir / 'paper-1.txt').write_text('paper text')
@@ -785,21 +645,7 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
 
 
 def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_import_source(tmp_path, monkeypatch):
-    """
-    Test image-only scraping with paper-text context.
-
-    This function performs the following steps:
-    1. Writes a corpus and matching PDF asset.
-    2. Replaces model, progress, PDF text, image extraction, and image analysis helpers with local fakes.
-    3. Calls `scrape_papers` in image-only mode.
-    4. Reloads the materials CSV and corpus state.
-
-    Asserts:
-        - PDF text is read as context when text was not already loaded.
-        - Image-derived material rows are written with image provenance.
-        - Image scrape status and counts are updated.
-        - The source PDF used to populate the corpus remains untouched.
-    """
+    """Test image scraping with text context and source preservation."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     pdf_path = papers_dir / 'paper-1.pdf'
@@ -818,6 +664,7 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
 
     def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
+        """Record image analysis inputs and return a material record."""
         calls['image_paths'] = image_paths
         calls['context'] = context
         calls['compression_config'] = compression_config
@@ -847,20 +694,7 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_
 
 
 def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatch, capsys):
-    """
-    Test image scraping skip behavior for already successful rows.
-
-    This function performs the following steps:
-    1. Writes a corpus record with an already successful image scrape status.
-    2. Replaces model configuration and progress helpers with local fakes.
-    3. Replaces image extraction with a fake that would fail if called.
-    4. Calls `scrape_papers` in image-only mode.
-
-    Asserts:
-        - Image extraction is not called.
-        - No materials file is written.
-        - The skipped image-stage summary is printed.
-    """
+    """Test skipping an already successful image stage."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     db_path = tmp_path / 'papers.db'
@@ -884,20 +718,7 @@ def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatc
 
 
 def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monkeypatch):
-    """
-    Test image scraping when no matching PDF exists.
-
-    This function performs the following steps:
-    1. Writes a corpus record without creating a PDF asset.
-    2. Replaces recipe loading, model config, and progress bar with local fakes.
-    3. Calls `scrape_papers` in image-only mode.
-    4. Reloads the corpus state.
-
-    Asserts:
-        - The image scrape status is marked as failed.
-        - The missing-PDF error is recorded.
-        - No materials CSV is created.
-    """
+    """Test image scrape failure handling when no PDF exists."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     db_path = tmp_path / 'papers.db'
@@ -917,20 +738,7 @@ def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monke
 
 
 def test_scrape_papers_records_image_failures(tmp_path, monkeypatch):
-    """
-    Test image scraping failure handling.
-
-    This function performs the following steps:
-    1. Writes a corpus and matching PDF asset.
-    2. Replaces image extraction with a fake returning no image paths.
-    3. Calls `scrape_papers` in image-only mode.
-    4. Reloads the corpus state.
-
-    Asserts:
-        - Image scrape status is marked as failed.
-        - The no-images error is recorded.
-        - No materials CSV is created.
-    """
+    """Test image scrape failure handling when extraction yields no images."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
     (papers_dir / 'paper-1.pdf').write_text('pdf bytes')

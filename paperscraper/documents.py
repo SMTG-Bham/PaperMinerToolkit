@@ -13,7 +13,19 @@ from pathlib import Path
 
 
 def read_pdf_text(pdf_path):
-    """Extract concatenated text from every page in a PDF file or binary stream."""
+    """Extract concatenated text from every page in a PDF.
+
+    Parameters
+    ----------
+    pdf_path : str or file-like object
+        PDF path or binary stream accepted by :class:`pypdf.PdfReader`.
+
+    Returns
+    -------
+    str
+        Page text in document order. Pages without extractable text contribute
+        an empty string.
+    """
     reader = PdfReader(pdf_path)
     text = ''
     for page in reader.pages:
@@ -23,12 +35,35 @@ def read_pdf_text(pdf_path):
 
 
 def read_pdf_bytes(content: bytes):
-    """Extract text directly from PDF bytes without materializing a temporary file."""
+    """Extract text directly from in-memory PDF bytes.
+
+    Parameters
+    ----------
+    content : bytes
+        Complete PDF file contents.
+
+    Returns
+    -------
+    str
+        Concatenated text from the PDF pages.
+    """
     return read_pdf_text(io.BytesIO(content))
 
 
 def trim_reference_section(text: str):
-    """Remove a trailing reference section identified by a standalone heading."""
+    """Remove a trailing reference section identified by a standalone heading.
+
+    Parameters
+    ----------
+    text : str
+        Document text to trim.
+
+    Returns
+    -------
+    str
+        Text before the final references heading, or the original text when no
+        heading is present.
+    """
     headings = list(re.finditer(
         r'(?im)^\s*(?:\d+(?:\.\d+)*[.)]?\s+)?(?:references|bibliography|literature cited)\s*$',
         text,
@@ -39,7 +74,25 @@ def trim_reference_section(text: str):
 
 
 def read_document_text(path: str, trim_references: bool = True):
-    """Read text from a TXT or PDF document, optionally trimming references."""
+    """Read text from a TXT or PDF document.
+
+    Parameters
+    ----------
+    path : str
+        Path to a ``.txt`` or ``.pdf`` document.
+    trim_references : bool, default=True
+        Whether to remove the trailing reference section from PDFs.
+
+    Returns
+    -------
+    str
+        Extracted document text.
+
+    Raises
+    ------
+    ValueError
+        If ``path`` does not have a supported extension.
+    """
     if path.lower().endswith('.txt'):
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
@@ -52,7 +105,18 @@ def read_document_text(path: str, trim_references: bool = True):
 
 
 def _load_fitz():
-    """Import PyMuPDF lazily and raise a helpful error if it is missing."""
+    """Import PyMuPDF lazily.
+
+    Returns
+    -------
+    module
+        Imported :mod:`fitz` module.
+
+    Raises
+    ------
+    RuntimeError
+        If PyMuPDF is not installed.
+    """
     try:
         import fitz
     except ImportError as e:
@@ -61,7 +125,22 @@ def _load_fitz():
 
 
 def _extract_embedded_pdf_images(doc, output_dir: str, prefix: str):
-    """Save unique embedded images from an opened PyMuPDF document."""
+    """Save unique embedded images from an opened PyMuPDF document.
+
+    Parameters
+    ----------
+    doc : fitz.Document
+        Open PyMuPDF document.
+    output_dir : str
+        Directory where extracted images are written.
+    prefix : str
+        Filename prefix for saved images.
+
+    Returns
+    -------
+    list of str
+        Paths to saved images in page and image order.
+    """
     saved = []
     seen_xrefs = set()
     for page_index in range(len(doc)):
@@ -83,7 +162,26 @@ def _extract_embedded_pdf_images(doc, output_dir: str, prefix: str):
 
 
 def _render_pdf_pages(fitz, doc, output_dir: str, prefix: str, dpi: int = 200):
-    """Render each PDF page to a PNG image file."""
+    """Render each PDF page to a PNG image file.
+
+    Parameters
+    ----------
+    fitz : module
+        Imported PyMuPDF module.
+    doc : fitz.Document
+        Open PyMuPDF document.
+    output_dir : str
+        Directory where rendered pages are written.
+    prefix : str
+        Filename prefix for rendered pages.
+    dpi : int, default=200
+        Render resolution in dots per inch.
+
+    Returns
+    -------
+    list of str
+        Paths to rendered page images in document order.
+    """
     saved = []
     zoom = dpi / 72
     render_matrix = fitz.Matrix(zoom, zoom)
@@ -101,7 +199,34 @@ def extract_pdf_images(pdf_path: str,
                        prefix: str | None = None,
                        strategy: str = 'auto',
                        dpi: int = 200):
-    """Extract embedded images or rendered pages from a PDF for vision scraping."""
+    """Extract images from a PDF for vision scraping.
+
+    Parameters
+    ----------
+    pdf_path : str
+        Path to the source PDF.
+    output_dir : str
+        Directory where image files are written.
+    prefix : str, optional
+        Filename prefix. The PDF stem is used when omitted.
+    strategy : {'auto', 'embedded', 'pages'}, default='auto'
+        Extraction strategy. ``auto`` uses embedded images when present and
+        otherwise renders complete pages.
+    dpi : int, default=200
+        Resolution used when rendering complete pages.
+
+    Returns
+    -------
+    list of str
+        Paths to extracted or rendered image files.
+
+    Raises
+    ------
+    ValueError
+        If ``strategy`` is not supported.
+    RuntimeError
+        If PyMuPDF is unavailable.
+    """
     if strategy not in {'auto', 'embedded', 'pages'}:
         raise ValueError('Image extraction strategy must be one of: auto, embedded, pages')
 

@@ -12,6 +12,7 @@ import paperscraper.scrape as scrape
 
 
 def _write_rules(path, name, pattern, fields=None, **overrides):
+    """Write a configurable regular-expression filter fixture."""
     definition = {
         'name': name,
         'fields': fields or ['title'],
@@ -26,6 +27,7 @@ def _write_rules(path, name, pattern, fields=None, **overrides):
 
 
 def _add_text(conn, paper, content, role='text'):
+    """Add a text asset to a test corpus."""
     corpus.add_asset(
         conn, paper, content, role=role, kind='text', mime_type='text/plain'
     )
@@ -212,7 +214,10 @@ def test_all_mode_case_sensitivity_and_timeout_classification():
     assert status == 'included'
 
     class TimeoutExpression:
+        """Represent an expression that always times out."""
+
         def finditer(self, text, timeout):
+            """Raise a timeout instead of returning matches."""
             raise TimeoutError
 
     matches, timed_out = filtering._match_rule(
@@ -255,21 +260,30 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path, monk
     filtering.apply_regex_filter(db_path, rules_path)
 
     class FakeModelConfig:
+        """Provide a minimal model configuration for scrape tests."""
+
         @classmethod
         def from_profile(cls, *args, **kwargs):
+            """Return a new fake configuration for any profile."""
             return cls()
 
     class FakeTqdm:
+        """Provide a no-op progress-bar context manager."""
+
         def __init__(self, *args, **kwargs):
+            """Accept and ignore progress-bar options."""
             pass
 
         def __enter__(self):
+            """Return the fake progress bar."""
             return self
 
         def __exit__(self, *_):
+            """Propagate exceptions raised inside the context."""
             return False
 
         def update(self, amount):
+            """Ignore a progress update."""
             pass
 
     calls = []
@@ -315,4 +329,5 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path, monk
     ],
 )
 def test_three_valued_status_combination(left, right, operator, expected):
+    """Combine representative three-valued filter decisions."""
     assert filtering.combine_status(left, right, operator) == expected

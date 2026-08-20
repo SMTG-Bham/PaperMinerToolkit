@@ -1,3 +1,5 @@
+"""Test compression policies, token estimates, and Headroom integration."""
+
 import builtins
 from pathlib import Path
 import sys
@@ -28,20 +30,7 @@ def provider_config(provider):
 
 
 def test_compression_config_normalizes_options_and_rejects_invalid_values():
-    """
-    Test compression configuration validation.
-
-    This function performs the following steps:
-    1. Builds a compression config with mixed-case options.
-    2. Attempts to build configs with invalid scope and mode values.
-    3. Reads scope membership helpers from the valid config.
-
-    Asserts:
-        - Scope and mode values are normalized.
-        - Compression ratio and content detection options are normalized.
-        - Text and image membership helpers reflect the selected scope.
-        - Invalid options raise helpful `ValueError` messages.
-    """
+    """Test compression option normalization and validation."""
     config = compression.CompressionConfig(scope='Both', mode='Always', ratio='0.5', content_detection=False)
 
     assert config.scope == 'both'
@@ -66,19 +55,7 @@ def test_compression_config_normalizes_options_and_rejects_invalid_values():
 
 
 def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch):
-    """
-    Test text compression policy decisions.
-
-    This function performs the following steps:
-    1. Builds compression configs for disabled, always-on, and automatic text compression.
-    2. Replaces token counting and budget helpers with deterministic local fakes.
-    3. Checks decisions for short and long text inputs.
-
-    Asserts:
-        - Disabled text compression returns `False`.
-        - Always-on text compression returns `True` for non-empty text.
-        - Automatic text compression compares text tokens against the usable input budget.
-    """
+    """Test text compression decisions across scopes, modes, and budgets."""
     cfg = model_config()
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 10)
     monkeypatch.setattr(compression, 'count_text_tokens', lambda text, model_config=None: len(text.split()))
@@ -105,19 +82,7 @@ def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch)
 
 
 def test_request_token_budget_reserves_prompt_tokens(monkeypatch):
-    """
-    Test compression request budget calculation.
-
-    This function performs the following steps:
-    1. Replaces prompt reserve and usable budget helpers with deterministic local fakes.
-    2. Calls `_request_token_budget` with a prompt and model config.
-    3. Reads the helper calls.
-
-    Asserts:
-        - Prompt reserve is calculated with the configured model.
-        - The usable budget receives the reserve token count.
-        - The usable budget value is returned.
-    """
+    """Test that request budgets reserve prompt tokens."""
     calls = {}
     cfg = model_config()
     monkeypatch.setattr(compression, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: calls.update({
@@ -141,20 +106,7 @@ def test_request_token_budget_reserves_prompt_tokens(monkeypatch):
 
 
 def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget():
-    """
-    Test compression ratio selection.
-
-    This function performs the following steps:
-    1. Builds compression configs with fixed and automatic ratios.
-    2. Calculates ratios for inputs below, near, and far above the token budget.
-    3. Reads the returned compression ratios.
-
-    Asserts:
-        - Fixed ratios pass through unchanged.
-        - Automatic ratios keep content unchanged when the request fits.
-        - Automatic ratios scale oversized requests to the usable budget with a safety margin.
-        - Automatic ratios do not go below the configured minimum.
-    """
+    """Test fixed and automatically calculated compression ratios."""
     assert compression.ideal_compression_ratio(1000, 100, compression.CompressionConfig(ratio=0.4)) == 0.4
     assert compression.ideal_compression_ratio(0, 100, compression.CompressionConfig(ratio='auto')) == 1.0
     assert compression.ideal_compression_ratio(100, 200, compression.CompressionConfig(ratio='auto')) == 1.0
@@ -165,19 +117,7 @@ def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget():
 
 
 def test_image_compression_decision_uses_scope_mode_and_estimated_request_tokens(monkeypatch):
-    """
-    Test image compression policy decisions.
-
-    This function performs the following steps:
-    1. Builds compression configs for disabled, always-on, and automatic image compression.
-    2. Replaces token counting and budget helpers with deterministic local fakes.
-    3. Checks decisions for empty, small, and large image requests.
-
-    Asserts:
-        - Disabled or empty image compression requests return `False`.
-        - Always-on image compression returns `True` when image paths are present.
-        - Automatic image compression estimates image and text context tokens against the usable input budget.
-    """
+    """Test image compression decisions across scopes, modes, and budgets."""
     cfg = model_config()
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 1500)
     monkeypatch.setattr(compression, 'count_text_tokens', lambda text, model_config=None: len(text.split()))
@@ -215,20 +155,7 @@ def test_image_compression_decision_uses_scope_mode_and_estimated_request_tokens
 
 
 def test_estimate_image_tokens_uses_provider_specific_dimension_estimates():
-    """
-    Test provider-specific image token estimates.
-
-    This function performs the following steps:
-    1. Reads image dimensions from PNG fixtures in `tests/data/images`.
-    2. Estimates image tokens for OpenAI, Anthropic, unknown, and unreadable images.
-    3. Compares the estimates to provider-specific formulas.
-
-    Asserts:
-        - OpenAI-style providers estimate one base cost plus 512px image tiles.
-        - Anthropic estimates from image pixel area.
-        - Unknown providers use the more conservative dimension estimate.
-        - Unreadable images use the fallback estimate.
-    """
+    """Test provider-specific image token estimates."""
     small = str(IMAGE_DIR / '512x512.png')
     large = str(IMAGE_DIR / '1024x1024.png')
     missing = str(IMAGE_DIR / 'missing.png')
@@ -243,21 +170,11 @@ def test_estimate_image_tokens_uses_provider_specific_dimension_estimates():
 
 
 def test_image_size_reads_png_dimensions_without_pillow(monkeypatch):
-    """
-    Test PNG header image dimension reading without Pillow.
-
-    This function performs the following steps:
-    1. Blocks Pillow imports for this test.
-    2. Reads a PNG fixture from `tests/data/images`.
-    3. Reads dimensions from a missing image path.
-
-    Asserts:
-        - PNG dimensions are returned from the file header.
-        - Unreadable paths return `None`.
-    """
+    """Test PNG header dimension parsing when Pillow is unavailable."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
+        """Block Pillow imports and delegate all others."""
         if name == 'PIL' or name.startswith('PIL.'):
             raise ImportError('missing pillow')
         return real_import(name, *args, **kwargs)
@@ -269,29 +186,27 @@ def test_image_size_reads_png_dimensions_without_pillow(monkeypatch):
 
 
 def test_image_size_uses_pillow_when_available(monkeypatch):
-    """
-    Test Pillow-backed image dimension reading.
+    """Test Pillow-backed image dimension reading."""
 
-    This function performs the following steps:
-    1. Installs a fake `PIL.Image` module in `sys.modules`.
-    2. Reads dimensions from a fake image path.
-    3. Checks the returned image size.
-
-    Asserts:
-        - The Pillow image reader path returns the image object's size.
-    """
     class FakeImage:
+        """Represent an image context manager with fixed dimensions."""
+
         size = (20, 30)
 
         def __enter__(self):
+            """Return the fake image from its context manager."""
             return self
 
         def __exit__(self, *_):
+            """Leave the fake image context without suppressing errors."""
             return False
 
     class FakeImageModule:
+        """Provide the subset of ``PIL.Image`` used by compression."""
+
         @staticmethod
         def open(image_path):
+            """Validate the path and return a fake image."""
             assert image_path == 'image.png'
             return FakeImage()
 
@@ -303,17 +218,7 @@ def test_image_size_uses_pillow_when_available(monkeypatch):
 
 
 def test_image_size_returns_none_for_readable_non_png_files(tmp_path):
-    """
-    Test image dimension handling for readable unsupported files.
-
-    This function performs the following steps:
-    1. Writes a readable non-PNG file.
-    2. Reads dimensions with `_image_size`.
-    3. Checks the returned value.
-
-    Asserts:
-        - Readable files without supported image headers return `None`.
-    """
+    """Test that readable non-PNG files have no inferred dimensions."""
     text_path = tmp_path / 'not-an-image.txt'
     text_path.write_text('not an image')
 
@@ -321,31 +226,26 @@ def test_image_size_returns_none_for_readable_non_png_files(tmp_path):
 
 
 def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
-    """
-    Test Headroom universal compressor integration.
-
-    This function performs the following steps:
-    1. Installs fake `headroom` and `headroom.compression` modules in `sys.modules`.
-    2. Calls `compress_content` with a prompt context.
-    3. Reads the fake compressor calls.
-
-    Asserts:
-        - Headroom's `UniversalCompressorConfig` is built with PaperScraper options.
-        - Headroom's `UniversalCompressor` is instantiated and called.
-        - The compressed content from the Headroom result is returned.
-    """
+    """Test integration with Headroom's universal compressor."""
     calls = {}
 
     class FakeUniversalCompressorConfig:
+        """Capture universal compressor configuration options."""
+
         def __init__(self, **kwargs):
+            """Store configuration options for assertions."""
             self.kwargs = kwargs
             calls['config'] = kwargs
 
     class FakeUniversalCompressor:
+        """Capture content passed to a universal compressor."""
+
         def __init__(self, config):
+            """Record the compressor configuration."""
             calls['compressor_config'] = config
 
         def compress(self, content):
+            """Record content and return a compressed result shape."""
             calls['content'] = content
             return types.SimpleNamespace(compressed='compressed content')
 
@@ -377,18 +277,7 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
 @pytest.mark.filterwarnings('ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning')
 @pytest.mark.filterwarnings('ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning')
 def test_compress_content_uses_real_headroom_universal_compressor():
-    """
-    Test real Headroom universal compression through the PaperScraper wrapper.
-
-    This function performs the following steps:
-    1. Skips the test when Headroom's universal compressor is not installed.
-    2. Compresses a small repetitive paper-like text with the real Headroom compressor.
-    3. Reads the returned compressed text.
-
-    Asserts:
-        - The real Headroom integration returns a non-empty string.
-        - The returned value is not longer than the original input text.
-    """
+    """Test real Headroom compression through the project wrapper."""
     headroom_compression = pytest.importorskip('headroom.compression')
     if not hasattr(headroom_compression, 'UniversalCompressor'):
         pytest.skip('Headroom universal compressor is not installed.')
@@ -406,19 +295,7 @@ def test_compress_content_uses_real_headroom_universal_compressor():
 
 
 def test_compressed_content_handles_common_result_shapes():
-    """
-    Test compressed content extraction from Headroom result shapes.
-
-    This function performs the following steps:
-    1. Passes string, list, object, dictionary, and fallback values to `_compressed_content`.
-    2. Reads the extracted content value from each result shape.
-    3. Compares the outputs to expected strings.
-
-    Asserts:
-        - Strings and lists are returned unchanged.
-        - Object and dictionary compressed/content fields are preferred.
-        - Unknown result shapes are converted to strings.
-    """
+    """Test content extraction from common Headroom result shapes."""
     message_payload = [{'role': 'user', 'content': []}]
     assert compression._compressed_content('already compressed') == 'already compressed'
     assert compression._compressed_content(message_payload) == message_payload
@@ -428,18 +305,7 @@ def test_compressed_content_handles_common_result_shapes():
 
 
 def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
-    """
-    Test conditional text compression wrapper.
-
-    This function performs the following steps:
-    1. Replaces the text compression decision helper with a fake returning `False`.
-    2. Calls `maybe_compress_text`.
-    3. Replaces the decision helper with a fake returning `True` and compression with a fake output.
-
-    Asserts:
-        - Text is returned unchanged when compression is not needed.
-        - Compressed text is returned when compression is requested.
-    """
+    """Test conditional text compression results."""
     cfg = model_config()
     policy = compression.CompressionConfig(scope='text')
     monkeypatch.setattr(compression, 'should_compress_text', lambda *args: False)
@@ -466,20 +332,11 @@ def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
 
 
 def test_compress_content_reports_missing_headroom_package(monkeypatch):
-    """
-    Test missing Headroom universal dependency errors.
-
-    This function performs the following steps:
-    1. Replaces Python imports with a fake that raises for `headroom.compression`.
-    2. Calls `compress_content`.
-    3. Captures the expected exception.
-
-    Asserts:
-        - Missing Headroom universal dependencies raise `RuntimeError`.
-    """
+    """Test the error reported when Headroom is unavailable."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
+        """Block Headroom imports and delegate all others."""
         if name == 'headroom' or name.startswith('headroom.'):
             raise ImportError('missing headroom')
         return real_import(name, *args, **kwargs)
@@ -491,18 +348,7 @@ def test_compress_content_reports_missing_headroom_package(monkeypatch):
 
 
 def test_maybe_compress_image_messages_returns_original_or_compressed_payload(monkeypatch):
-    """
-    Test conditional image compression wrapper.
-
-    This function performs the following steps:
-    1. Replaces the image compression decision helper with a fake returning `False`.
-    2. Calls `maybe_compress_image_messages`.
-    3. Replaces the decision helper with a fake returning `True` and compression with a fake payload.
-
-    Asserts:
-        - Messages are returned unchanged when compression is not needed.
-        - Compressed messages are returned when compression is requested.
-    """
+    """Test conditional image message compression results."""
     messages = [{'role': 'user', 'content': []}]
     cfg = model_config()
     policy = compression.CompressionConfig(scope='images')
