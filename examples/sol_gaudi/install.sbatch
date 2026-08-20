@@ -21,8 +21,8 @@
 # Options:
 #   PS_ENV=paperscraper            name of the environment to create
 #   PS_FORCE=0                     reuse an existing environment instead of rebuilding
-#   PS_MODEL=Qwen/Qwen2.5-7B-Instruct   model whose tokenizer to pre-cache
-#   PS_PREFETCH_WEIGHTS=1          also download the model weights (tens of GB)
+#   PS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507   model whose tokenizer to pre-cache
+#   PS_PREFETCH_WEIGHTS=1          also download the model weights (~61 GB for the default)
 #
 # When it finishes, from this same directory:
 #
@@ -41,7 +41,11 @@ set -euo pipefail
 
 PS_ENV="${PS_ENV:-paperscraper}"
 PS_FORCE="${PS_FORCE:-1}"
-PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+# Keep in step with the default in scrape_gaudi.sbatch: this only pre-caches
+# the tokenizer that sizes text chunks, and a tokenizer for the wrong model is
+# no better than none, since the lookup at scrape time misses and falls back to
+# a character estimate.
+PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
 PS_PREFETCH_WEIGHTS="${PS_PREFETCH_WEIGHTS:-0}"
 
 # Never touch ASU's shared vLLM environment. It is Python 3.10 (below this
@@ -251,7 +255,8 @@ fi
 
 if [[ "$PS_PREFETCH_WEIGHTS" == "1" ]]; then
   # Downloading weights here rather than in the Gaudi job keeps tens of GB of
-  # transfer out of a four-hour accelerator allocation. Into the cache, not
+  # transfer out of a four-hour accelerator allocation - ~61 GB for the default
+  # 30B model, which is worth doing once before the first scrape. Into the cache, not
   # --local-dir: a path-style --model would break the tokenizer lookup above.
   echo "=== Pre-fetching weights for $PS_MODEL ==="
   hf download "$PS_MODEL"

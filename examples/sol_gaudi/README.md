@@ -33,8 +33,8 @@ The runnable scripts live in this directory, alongside this guide:
 | [`install.sbatch`](install.sbatch) | `htc` | **Run this first.** Builds the environment and verifies it |
 | [`fetch_corpus.sh`](fetch_corpus.sh) | login node or interactive | Search and download; never touches the model |
 | [`fetch_corpus.sbatch`](fetch_corpus.sbatch) | `htc` | The same thing as a batch job, for corpora too big to babysit |
-| [`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) | `gaudi` | **Start here.** vLLM + scrape + store in one job |
-| [`serve_gaudi.sbatch`](serve_gaudi.sbatch) | `gaudi` | Long-lived server for reusing a warm model |
+| [`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) | `gaudi`, 4 cards | **Start here.** vLLM + scrape + store in one job |
+| [`serve_gaudi.sbatch`](serve_gaudi.sbatch) | `gaudi`, 4 cards | Long-lived server for reusing a warm model |
 
 Submit them in place, or copy them somewhere else and edit — every setting is an
 environment variable with a default.
@@ -271,10 +271,24 @@ sbatch scrape_gaudi.sbatch
 From this directory again, so the job finds `papers.db` where the corpus step
 left it and writes the CSVs and its log alongside.
 
-[`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) requests one Gaudi card, starts vLLM
-from the shared environment in a background subshell, waits for `/v1/models` to
-answer, then runs `ps_scrape` and `ps_store` from your environment against
-`127.0.0.1`. The server is killed on exit.
+[`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) requests four Gaudi cards, starts
+vLLM from the shared environment in a background subshell, waits for
+`/v1/models` to answer, then runs `ps_scrape` and `ps_store` from your
+environment against `127.0.0.1`. The server is killed on exit.
+
+Four cards because of the model. The default is
+[`Qwen/Qwen3-30B-A3B-Instruct-2507`](https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507),
+the only Qwen3 model on Intel's
+[validated list](https://docs.vllm.ai/projects/gaudi/en/latest/getting_started/validated_models.html)
+for Gaudi **2** — every other Qwen3 entry is validated on Gaudi 3 — and it is
+validated there at tensor parallel 4 or 8. `-G 4` and `--tensor-parallel-size 4`
+have to agree; the scripts refuse to start if they do not.
+
+If the four-card queue is slow, one card and the older model still work:
+
+```bash
+sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-7B-Instruct scrape_gaudi.sbatch
+```
 
 Override anything at submit time:
 
@@ -378,17 +392,50 @@ have failed the same way — silently, one paper at a time.
 
 ## 8. Scaling up
 
-The default is deliberately conservative: one card, a 7B text model, 32k context.
-Climb one rung at a time, confirming each works before the next.
+The default is four cards, a 30B-A3B text model, 32k context. Move one rung at a
+time, confirming each works before the next.
 
-1. **Text, 1 card** — the default. `Qwen/Qwen2.5-7B-Instruct`.
-2. **Text, 8 cards** — a 72B-class model. Change `-G 1` to `-G 8`, uncomment
-   `PT_HPU_ENABLE_LAZY_COLLECTIVES`, and add `--tensor-parallel-size 8`.
-3. **Vision** — see below.
-4. **Qwen3-VL** — the model in the CUDA notebook. Its Gaudi support is documented
-   against Gaudi **3**, and Sol has Gaudi **2**. Check what the shared environment
-   actually ships (`source activate gaudi-pytorch-vllm && pip show vllm`) before
-   spending queue time on it.
+1. **Text, 1 card** — `Qwen/Qwen2.5-7B-Instruct` at `PS_TENSOR_PARALLEL_SIZE=1`.
+   The cheapest thing to get queued, and the right rung for a first end-to-end
+   test with `PS_COUNT=1`.
+2. **Text, 4 cards** — the default, `Qwen/Qwen3-30B-A3B-Instruct-2507`.
+3. **Text, 8 cards** — the same model at `-G 8` and `PS_TENSOR_PARALLEL_SIZE=8`,
+   which Intel also validated. More KV headroom rather than a bigger model, so
+   spend it on `PS_MAX_MODEL_LEN` and `PS_MAX_NUM_SEQS`, not on the weights.
+4. **Vision** — see below.
+
+### Choosing a model
+
+`PS_MODEL` has to satisfy three things at once, and the default is the model that
+does.
+
+**It has to be validated on Gaudi 2.** Sol's cards are Gaudi 2, and Intel's
+[validated models list](https://docs.vllm.ai/projects/gaudi/en/latest/getting_started/validated_models.html)
+is the thing to check before spending queue time. Of the Qwen3 family, exactly one
+entry covers Gaudi 2 — `Qwen/Qwen3-30B-A3B-Instruct-2507`, at tensor parallel 4 or
+8, BF16 or FP8. Everything else Qwen3, including all the Qwen3-VL entries, is
+validated against Gaudi **3** only. That is also why the CUDA notebook's
+`Qwen/Qwen3-VL-30B-A3B-Instruct` is not the default here.
+
+**It must not be a thinking model.** `paperscraper/extract.py` asks for a
+10000-token completion and nothing more. A hybrid-thinking model — `Qwen3-8B`,
+anything `-Thinking-` — spends that budget reasoning before it writes any JSON,
+so records truncate or the response comes back with no JSON at all. The
+`-Instruct-2507` variants are non-thinking by design, which is what makes this one
+safe to point a rigid extraction pipeline at. Disabling thinking server-side needs
+`--default-chat-template-kwargs '{"enable_thinking": false}'`, which only exists in
+newer vLLM; do not assume the shared environment has it.
+
+**It has to fit.** 30.5B parameters at BF16 is roughly 61 GB of weights, about
+15 GB per card across four 96 GB Gaudi 2 cards, leaving the rest for KV cache and
+HPU graph capture. Only 3.3B parameters are active per token, so throughput is
+closer to a small dense model than the parameter count suggests.
+
+The model card recommends `temperature=0.7, top_p=0.8` for general use, while
+PaperScraper defaults to `temperature=0, top_p=1` so extraction is reproducible.
+Keep the deterministic defaults; if you see a run degenerate into repetition that
+eats the completion budget, `PAPERSCRAPER_MODEL_TEMPERATURE` and
+`PAPERSCRAPER_MODEL_TOP_P` override them per job.
 
 ### Context sizing — the one thing to get right
 
@@ -409,6 +456,12 @@ PS_MAX_MODEL_LEN  >=  PS_INPUT_TOKEN_LIMIT + 11000
 | 16384 | 5000 | `--mode abstract` only |
 | **32768** | **20000** | **default; full text in a few chunks** |
 | 65536 | 52000 | most papers in one chunk |
+
+The default model supports 262144 tokens natively, so the ceiling here is device
+memory rather than the model. At tensor parallel 4 the weights take about 15 GB
+of each card, which leaves enough KV cache for 65536 to be worth trying — raise
+`PS_MAX_MODEL_LEN` and `PS_INPUT_TOKEN_LIMIT` together, keeping the 11000-token
+gap.
 
 Setting the two equal is the most likely way to lose a four-hour allocation:
 `scrape_gaudi.sbatch` refuses to launch if the gap is too small.
@@ -440,13 +493,30 @@ sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 scrape_gaudi.sbatch
 ### Adding vision
 
 PaperScraper keeps separate `text` and `vision` profiles, so the text model does
-not have to change. Serve `Qwen/Qwen2.5-VL-7B-Instruct` (multimodal support for
-it is enabled in the Gaudi plugin) and set the vision profile:
+not have to change — but it does mean a second server, and `scrape_gaudi.sbatch`
+has no spare cards to put one on. Run the vision model as its own job with
+[`serve_gaudi.sbatch`](serve_gaudi.sbatch), on one card:
+
+```bash
+sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-VL-7B-Instruct,ENDPOINT_FILE=$PWD/vllm_vision_endpoint.txt \
+       serve_gaudi.sbatch
+cat vllm_vision_endpoint.txt     # -> <node>:<port>
+```
+
+`ENDPOINT_FILE` keeps it clear of a text server started the same way: both
+default to `vllm_endpoint.txt`, and the second job to start would overwrite the
+first.
+
+`Qwen/Qwen2.5-VL-7B-Instruct` is the vision model to reach for: it runs on one
+card and its multimodal support is enabled in the Gaudi plugin. Intel validated it
+on Gaudi 3, as it did every vision entry on that list, so on Sol's Gaudi 2 it is
+supported rather than proven — try it on a couple of papers before committing a
+run to it. Point the vision profile at the endpoint the job wrote:
 
 ```bash
 export PAPERSCRAPER_VISION_MODEL_PROVIDER=local
 export PAPERSCRAPER_VISION_MODEL_NAME=Qwen/Qwen2.5-VL-7B-Instruct
-export PAPERSCRAPER_VISION_MODEL_BASE_URL="http://127.0.0.1:${PORT}/v1"
+export PAPERSCRAPER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/v1"
 export PAPERSCRAPER_VISION_MODEL_CAPABILITIES=text,vision
 ```
 
@@ -465,6 +535,18 @@ but leave warmup on for real runs, since it buys steady-state throughput.
 on Gaudi 2, or it does not fit. Try a smaller model, or lower
 `PS_MAX_MODEL_LEN`, `PS_GPU_MEMORY_UTILIZATION`, or `PS_MAX_NUM_SEQS` — see
 Gaudi launch flags above.
+
+**The job dies immediately with a card-count error.** `PS_TENSOR_PARALLEL_SIZE`
+and the `-G` header have to agree, and both scripts check that against
+`SLURM_GPUS_ON_NODE` before loading anything. Change the header, or set both at
+submit time: `sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1 …`. Left
+unchecked this failure costs minutes of model load and then hangs on the first
+collective rather than exiting.
+
+**Responses arrive full of reasoning and short on JSON.** The model is a thinking
+one. `extract.py` asks for 10000 completion tokens and nothing more, so reasoning
+comes out of the same budget the records need. Use an `-Instruct-` variant — see
+Choosing a model above.
 
 **vLLM exits during startup with a PyTorch version mismatch.** The log shows
 `Failed to load plugin hpu` and `AssertionError: Error: Compile-time major/minor
@@ -516,11 +598,22 @@ node and submit only `papers.db` into the job. The corpus is self-contained.
 
 ## Before committing changes to these scripts
 
-The scripts use `-p gaudi -q public -N 1 -G 1 -c 18`, matching ASU's
-[vLLM page](https://docs.rc.asu.edu/vllm/) line for line, including `-G` rather
-than `--gres`. Other ASU pages show `--partition=sol-gaudi --gres=gaudi:1` and
-`--gres=gpu:hl225:8`; treat the vLLM page as authoritative for this workload, and
-if a submit is rejected, run `sinfo -s` before editing anything.
+The scripts use `-p gaudi -q public -N 1 -G 4 -c 18`, following ASU's
+[vLLM page](https://docs.rc.asu.edu/vllm/), including `-G` rather than `--gres`.
+The card count is the one number that differs from their single-card example, and
+it tracks their multi-card one: ASU's 72B job is `-G 8 -c 18` with
+`--tensor-parallel-size 8`, so cores do not scale with cards and `-c 18` stands.
+`PT_HPU_ENABLE_LAZY_COLLECTIVES=true` is set for the same reason — that page
+requires it for collectives across HPUs. Other ASU pages show
+`--partition=sol-gaudi --gres=gaudi:1` and `--gres=gpu:hl225:8`; treat the vLLM
+page as authoritative for this workload, and if a submit is rejected, run
+`sinfo -s` before editing anything.
+
+If you change `PS_MODEL`, check it against Intel's
+[validated models list](https://docs.vllm.ai/projects/gaudi/en/latest/getting_started/validated_models.html)
+for a Gaudi **2** entry and confirm the tensor parallel size it was validated at,
+then update the `-G` header, `PS_TENSOR_PARALLEL_SIZE`, and the tokenizer default
+in [`install.sbatch`](install.sbatch) together.
 
 `serve_gaudi.sbatch` is the one deliberate exception: it asks for `-t 0-08:00:00`
 where ASU's examples use `-t 0-4`, because a server outliving several client jobs

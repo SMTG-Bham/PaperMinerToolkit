@@ -18,7 +18,7 @@
 # is):
 #
 #   export PAPERSCRAPER_MODEL_PROVIDER=local
-#   export PAPERSCRAPER_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
+#   export PAPERSCRAPER_MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
 #   export PAPERSCRAPER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
 #   export PAPERSCRAPER_MODEL_CAPABILITIES=text
 #   export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
@@ -32,7 +32,7 @@
 #SBATCH -p gaudi
 #SBATCH -q public
 #SBATCH -N 1
-#SBATCH -G 1
+#SBATCH -G 4
 #SBATCH -c 18
 # ASU's Gaudi examples all request -t 0-4. Eight hours is the point of running a
 # long-lived server, but if the submit is rejected for exceeding the QOS limit,
@@ -47,7 +47,18 @@ set -euo pipefail
 # directory.
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
-PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+# Qwen3-30B-A3B-Instruct-2507 is the only Qwen3 model on Intel's validated list
+# for Gaudi 2, at tensor parallel 4 or 8 - hence -G 4 above. The -Instruct-2507
+# suffix is load-bearing: that variant is non-thinking by design, where a hybrid
+# thinking model would spend PaperScraper's hardcoded 10000-token completion
+# budget on reasoning before writing any JSON. 30.5B parameters at bf16 is ~61 GB
+# of weights, ~15 GB per card across four.
+PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+
+# Must equal the number of cards in the -G header above. ASU's own multi-card
+# example is -G 8 -c 18 with --tensor-parallel-size 8: the core count does not
+# scale with the cards, only -G and this do.
+PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
 
 # ASU's own Gaudi examples serve at --max-model-len 8192, which is unusable here:
 # a single 10000-token completion does not fit inside it, so every request would
@@ -79,13 +90,29 @@ export PT_HPU_LAZY_MODE=1
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 mkdir -p "$HF_HOME"
 
-# Multi-card only. Request the cards with -G 8 and add --tensor-parallel-size 8
-# to the launch below.
-# export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
+# Required for multi-card tensor parallelism: ASU's vLLM page states outright
+# that collective communication across HPUs needs it. Harmless on a single card,
+# so it is set unconditionally rather than tied to the tensor parallel size.
+export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "working directory: $PWD"
+echo "model=$PS_MODEL tp=$PS_TENSOR_PARALLEL_SIZE max_model_len=$PS_MAX_MODEL_LEN"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
+
+# vLLM shards across exactly --tensor-parallel-size devices, so a mismatch with
+# the -G allocation either dies during device discovery or hangs on the first
+# collective, minutes into the model load. SLURM_GPUS_ON_NODE is the allocation
+# as the scheduler granted it; hl-smi is not consulted, because on a shared node
+# it can report cards this job was not given.
+if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "$SLURM_GPUS_ON_NODE" =~ ^[0-9]+$ ]] \
+   && (( PS_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
+  echo "ERROR: PS_TENSOR_PARALLEL_SIZE ($PS_TENSOR_PARALLEL_SIZE) does not match the" >&2
+  echo "       $SLURM_GPUS_ON_NODE card(s) this job was allocated." >&2
+  echo "       Change the -G line in this script, or set both at submit time:" >&2
+  echo "         sbatch -G $PS_TENSOR_PARALLEL_SIZE serve_gaudi.sbatch" >&2
+  exit 1
+fi
 
 # Module and conda activation scripts routinely reference unset variables, which
 # would abort the job under `set -u`. Relax it around them only.
@@ -153,6 +180,7 @@ exec python -m vllm.entrypoints.openai.api_server \
   --model "$PS_MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
+  --tensor-parallel-size "$PS_TENSOR_PARALLEL_SIZE" \
   --max-model-len "$PS_MAX_MODEL_LEN" \
   --block-size "$PS_BLOCK_SIZE" \
   --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \

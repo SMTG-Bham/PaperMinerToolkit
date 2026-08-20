@@ -1,5 +1,5 @@
 #!/bin/bash
-# Scrape biodegradable polymer data with a local vLLM server on one Gaudi 2 card.
+# Scrape biodegradable polymer data with a local vLLM server on four Gaudi 2 cards.
 #
 # The job starts vLLM from ASU Research Computing's shared gaudi-pytorch-vllm
 # environment, waits for it to serve, then runs ps_scrape from our own
@@ -22,7 +22,7 @@
 #SBATCH -p gaudi
 #SBATCH -q public
 #SBATCH -N 1
-#SBATCH -G 1
+#SBATCH -G 4
 #SBATCH -c 18
 #SBATCH -t 0-04:00:00
 #SBATCH -o ps-gaudi-%j.log
@@ -38,7 +38,26 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 # PS_MODEL must be the exact Hugging Face repo id. PaperScraper loads the
 # matching tokenizer by that name for chunk sizing, so a mismatch silently
 # degrades to a character estimate.
-PS_MODEL="${PS_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+#
+# Qwen3-30B-A3B-Instruct-2507 is the only Qwen3 model on Intel's validated list
+# for Gaudi 2, and it is validated at tensor parallel 4 or 8 - hence -G 4 above.
+# The -Instruct-2507 suffix is load-bearing: that variant is non-thinking by
+# design. A hybrid thinking model (Qwen3-8B, any -Thinking- variant) spends the
+# hardcoded 10000-token completion budget on reasoning before it writes any
+# JSON, so records truncate or disappear entirely.
+#
+# 30.5B parameters at bf16 is ~61 GB of weights, ~15 GB per card across four,
+# leaving the rest of each 96 GB card for KV cache and HPU graph capture.
+PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+
+# Must equal the number of cards in the -G header above. ASU's own multi-card
+# example is -G 8 -c 18 with --tensor-parallel-size 8, so the core count does
+# not scale with the cards - only -G and this do. If the four-card queue is
+# slow, drop to one card and a smaller model at submit time:
+#
+#   sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-7B-Instruct \
+#          scrape_gaudi.sbatch
+PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
 
 # These two are NOT equal, and that is deliberate.
 #
@@ -83,7 +102,8 @@ PS_COUNT="${PS_COUNT:-}"
 # polymer: 36 fields, including the 8 biodegradation ones (test standard,
 #   medium, extent, duration, mechanism, organisms, certification). ~450 output
 #   tokens per record, so a sample series fits inside the 10000-token response
-#   ceiling. This is the right default on a 7B model.
+#   ceiling. It stays the default whatever the model: the ceiling belongs to the
+#   pipeline, not to the model serving it.
 # polymer_db: 86 fields, adding the full OECD 301/310 setup and the in vitro
 #   acid/base/hydrolytic/enzymatic degradation curves. ~1100 tokens per record,
 #   so a paper truncates after roughly 9 records. Use it when you need the whole
@@ -114,13 +134,14 @@ mkdir -p "$HF_HOME"
 # steady-state throughput, so leave it on for real runs.
 # export VLLM_SKIP_WARMUP=true
 
-# Multi-card only. Uncomment together with raising -G above 1, and add a
-# matching --tensor-parallel-size to the launch below.
-# export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
+# Required for multi-card tensor parallelism: ASU's vLLM page states outright
+# that collective communication across HPUs needs it. It is harmless on a single
+# card, so it is set unconditionally rather than tied to the tensor parallel size.
+export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "working directory: $PWD"
-echo "model=$PS_MODEL max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
+echo "model=$PS_MODEL tp=$PS_TENSOR_PARALLEL_SIZE max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
 echo "block_size=$PS_BLOCK_SIZE gpu_mem_util=$PS_GPU_MEMORY_UTILIZATION max_num_seqs=$PS_MAX_NUM_SEQS"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
@@ -138,6 +159,21 @@ if (( PS_MAX_MODEL_LEN < PS_INPUT_TOKEN_LIMIT + PS_OUTPUT_RESERVE )); then
   echo "       PS_INPUT_TOKEN_LIMIT ($PS_INPUT_TOKEN_LIMIT) + $PS_OUTPUT_RESERVE." >&2
   echo "       PaperScraper always requests a 10000-token completion, and vLLM counts" >&2
   echo "       prompt + completion against --max-model-len. Every request would 400." >&2
+  exit 1
+fi
+
+# Same reasoning for the card count. vLLM shards across exactly
+# --tensor-parallel-size devices, so a mismatch with the -G allocation either
+# dies during device discovery or hangs on the first collective - both minutes
+# in, after the weights have started loading. SLURM_GPUS_ON_NODE is the
+# allocation as the scheduler granted it; hl-smi is not consulted, because on a
+# shared node it can report cards this job was not given.
+if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "$SLURM_GPUS_ON_NODE" =~ ^[0-9]+$ ]] \
+   && (( PS_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
+  echo "ERROR: PS_TENSOR_PARALLEL_SIZE ($PS_TENSOR_PARALLEL_SIZE) does not match the" >&2
+  echo "       $SLURM_GPUS_ON_NODE card(s) this job was allocated." >&2
+  echo "       Change the -G line in this script, or set both at submit time:" >&2
+  echo "         sbatch -G $PS_TENSOR_PARALLEL_SIZE scrape_gaudi.sbatch" >&2
   exit 1
 fi
 
@@ -216,6 +252,7 @@ PY
     --model "$PS_MODEL" \
     --host 127.0.0.1 \
     --port "$PORT" \
+    --tensor-parallel-size "$PS_TENSOR_PARALLEL_SIZE" \
     --max-model-len "$PS_MAX_MODEL_LEN" \
     --block-size "$PS_BLOCK_SIZE" \
     --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \
