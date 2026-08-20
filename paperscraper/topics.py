@@ -5,6 +5,8 @@ corpus remains the source of paper metadata and text assets, while predictions
 are exported in a long CSV format suitable for later trend and filter stages.
 """
 
+from __future__ import annotations
+
 import csv
 import hashlib
 import html
@@ -14,12 +16,18 @@ import re
 import time
 import unicodedata
 import warnings
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from itertools import combinations
+from os import PathLike
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 import joblib
+import numpy as np
 import sklearn
+from numpy.typing import NDArray
+from scipy.sparse import spmatrix
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer
 
@@ -46,6 +54,26 @@ URL_RE = re.compile(r'https?://\S+', re.IGNORECASE)
 DOI_RE = re.compile(r'\b10\.\d{4,9}/\S+', re.IGNORECASE)
 
 
+class _TopicDocument(TypedDict):
+    """Normalized corpus document used by topic-model workflows."""
+
+    paper_id: str
+    doi: str
+    title: str
+    publication_date: str
+    text: str
+    token_count: int
+
+
+class _TopicRow(TypedDict):
+    """Exportable topic description."""
+
+    topic_id: int
+    topic_name: str
+    top_terms: list[str]
+    representative_papers: NotRequired[list[dict[str, str]]]
+
+
 class TopicAnalyzer:
     """Generate domain-aware features for topic models.
 
@@ -64,12 +92,12 @@ class TopicAnalyzer:
         Maximum configured n-gram size.
     """
 
-    def __init__(self, domain_stopwords=(), ngram_max=2):
+    def __init__(self, domain_stopwords: Iterable[str] = (), ngram_max: int = 2) -> None:
         """Initialize the topic analyzer.
 
         Parameters
         ----------
-        domain_stopwords : iterable of str, optional
+        domain_stopwords : Iterable[str], optional
             Domain-specific words to omit as standalone features.
         ngram_max : int, default=2
             Maximum n-gram size to emit.
@@ -77,7 +105,7 @@ class TopicAnalyzer:
         self.domain_stopwords = frozenset(domain_stopwords)
         self.ngram_max = ngram_max
 
-    def __call__(self, document):
+    def __call__(self, document: str) -> list[str]:
         """Extract topic-model features from a document.
 
         Parameters
@@ -87,7 +115,7 @@ class TopicAnalyzer:
 
         Returns
         -------
-        list of str
+        list[str]
             Unigram and optional bigram features.
         """
         features = []
@@ -102,7 +130,7 @@ class TopicAnalyzer:
         return features
 
 
-def _utc_now():
+def _utc_now() -> str:
     """Return a stable UTC timestamp for model metadata.
 
     Returns
@@ -113,7 +141,7 @@ def _utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def normalize_topic_text(value):
+def normalize_topic_text(value: object) -> str:
     """Normalize text while preserving words and chemical formulae.
 
     Parameters
@@ -137,17 +165,17 @@ def normalize_topic_text(value):
     return re.sub(r'\s+', ' ', text).strip()
 
 
-def load_domain_stopwords(stopwords_file):
+def load_domain_stopwords(stopwords_file: str | PathLike[str] | None) -> list[str]:
     """Load corpus-specific stopwords from a text file.
 
     Parameters
     ----------
-    stopwords_file : str, pathlib.Path, or None
+    stopwords_file : str, os.PathLike[str], or None
         File containing one word per non-comment line, or ``None``.
 
     Returns
     -------
-    list of str
+    list[str]
         Sorted unique normalized stopwords.
 
     Raises
@@ -175,17 +203,17 @@ def load_domain_stopwords(stopwords_file):
     return sorted(set(words))
 
 
-def _validate_text_fields(text_fields):
+def _validate_text_fields(text_fields: Iterable[str]) -> tuple[str, ...]:
     """Validate and deduplicate topic-model text fields.
 
     Parameters
     ----------
-    text_fields : iterable of str
+    text_fields : Iterable[str]
         Requested corpus text fields.
 
     Returns
     -------
-    tuple of str
+    tuple[str, ...]
         Unique fields in first-seen order.
 
     Raises
@@ -202,19 +230,22 @@ def _validate_text_fields(text_fields):
     return fields
 
 
-def load_topic_documents(db_path, text_fields=('title', 'abstract')):
+def load_topic_documents(
+    db_path: str | PathLike[str],
+    text_fields: Iterable[str] = ('title', 'abstract'),
+) -> list[_TopicDocument]:
     """Load normalized topic-model documents from a corpus.
 
     Parameters
     ----------
     db_path : str or pathlib.Path
         Path to the SQLite paper corpus.
-    text_fields : iterable of str, default=('title', 'abstract')
+    text_fields : Iterable[str], default=('title', 'abstract')
         Metadata and asset fields to combine into each document.
 
     Returns
     -------
-    list of dict
+    list[_TopicDocument]
         Paper metadata, normalized text, and token counts.
 
     Raises
@@ -251,12 +282,12 @@ def load_topic_documents(db_path, text_fields=('title', 'abstract')):
     return documents
 
 
-def _median(values):
+def _median(values: Sequence[int | float]) -> int | float:
     """Calculate the median of numeric values.
 
     Parameters
     ----------
-    values : sequence of numbers
+    values : Sequence[int or float]
         Values whose median is required.
 
     Returns
@@ -273,19 +304,22 @@ def _median(values):
     return (ordered[midpoint - 1] + ordered[midpoint]) / 2
 
 
-def assess_topic_corpus(documents, num_topics):
+def assess_topic_corpus(
+    documents: Sequence[_TopicDocument],
+    num_topics: int,
+) -> dict[str, Any]:
     """Assess corpus quality for LDA topic modeling.
 
     Parameters
     ----------
-    documents : sequence of dict
+    documents : Sequence[_TopicDocument]
         Topic documents containing ``token_count`` values.
     num_topics : int
         Requested number of latent topics.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Corpus counts, length diagnostics, and heuristic warnings.
 
     Raises
@@ -335,24 +369,24 @@ def assess_topic_corpus(documents, num_topics):
     }
 
 
-def _emit_warnings(messages):
+def _emit_warnings(messages: Iterable[str]) -> None:
     """Emit corpus diagnostics through Python's warnings interface.
 
     Parameters
     ----------
-    messages : iterable of str
+    messages : Iterable[str]
         Warning messages to emit.
     """
     for message in messages:
         warnings.warn(message, UserWarning, stacklevel=3)
 
 
-def _corpus_fingerprint(documents):
+def _corpus_fingerprint(documents: Iterable[_TopicDocument]) -> str:
     """Build a deterministic fingerprint for topic documents.
 
     Parameters
     ----------
-    documents : iterable of dict
+    documents : Iterable[_TopicDocument]
         Documents containing paper IDs and normalized text.
 
     Returns
@@ -369,7 +403,11 @@ def _corpus_fingerprint(documents):
     return digest.hexdigest()
 
 
-def _topic_rows(model, vectorizer, top_terms):
+def _topic_rows(
+    model: LatentDirichletAllocation,
+    vectorizer: CountVectorizer,
+    top_terms: int,
+) -> list[_TopicRow]:
     """Extract the highest-weighted terms from each fitted topic.
 
     Parameters
@@ -383,7 +421,7 @@ def _topic_rows(model, vectorizer, top_terms):
 
     Returns
     -------
-    list of dict
+    list[_TopicRow]
         Topic IDs, blank manual names, and weighted terms.
     """
     feature_names = vectorizer.get_feature_names_out()
@@ -398,14 +436,14 @@ def _topic_rows(model, vectorizer, top_terms):
     return rows
 
 
-def _write_json(path, value):
+def _write_json(path: str | PathLike[str], value: Any) -> None:
     """Write deterministic, readable JSON metadata.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Destination JSON path.
-    value : object
+    value : Any
         JSON-serializable value to write.
 
     Raises
@@ -418,14 +456,17 @@ def _write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
-def _write_topics(path, topic_rows):
+def _write_topics(
+    path: str | PathLike[str],
+    topic_rows: Iterable[_TopicRow],
+) -> None:
     """Write manually nameable topic summaries.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Destination CSV path.
-    topic_rows : iterable of dict
+    topic_rows : Iterable[_TopicRow]
         Topic IDs, names, and top-term lists.
 
     Raises
@@ -444,14 +485,17 @@ def _write_topics(path, topic_rows):
             })
 
 
-def _refresh_csv_topic_names(path, names):
+def _refresh_csv_topic_names(
+    path: str | PathLike[str],
+    names: Mapping[str, str],
+) -> None:
     """Refresh names in an existing topic artifact CSV.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Artifact CSV to update when it exists.
-    names : mapping of str to str
+    names : Mapping[str, str]
         Manual names keyed by string topic ID.
 
     Raises
@@ -480,12 +524,15 @@ def _refresh_csv_topic_names(path, names):
     temporary_path.replace(path)
 
 
-def _topic_names(model_dir, num_topics):
+def _topic_names(
+    model_dir: str | PathLike[str],
+    num_topics: int,
+) -> dict[str, str]:
     """Load manual topic names from a model artifact.
 
     Parameters
     ----------
-    model_dir : str or pathlib.Path
+    model_dir : str or os.PathLike[str]
         Topic-model artifact directory.
     num_topics : int
         Number of topic IDs to include.
@@ -510,20 +557,26 @@ def _topic_names(model_dir, num_topics):
     return {str(topic_id): str(values.get(str(topic_id), '')) for topic_id in range(num_topics)}
 
 
-def _write_predictions(path, documents, distributions, names, included_indices):
+def _write_predictions(
+    path: str | PathLike[str],
+    documents: Sequence[_TopicDocument],
+    distributions: Iterable[NDArray[np.float64]],
+    names: Mapping[str, str],
+    included_indices: Iterable[int],
+) -> None:
     """Write long-form topic predictions and skipped-paper states.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Destination CSV path.
-    documents : sequence of dict
+    documents : Sequence[_TopicDocument]
         Paper documents in output order.
-    distributions : iterable of array-like
+    distributions : Iterable[numpy.ndarray]
         Topic probability vectors for included documents.
-    names : mapping of str to str
+    names : Mapping[str, str]
         Manual names keyed by string topic ID.
-    included_indices : iterable of int
+    included_indices : Iterable[int]
         Document indices corresponding to ``distributions``.
 
     Raises
@@ -557,18 +610,24 @@ def _write_predictions(path, documents, distributions, names, included_indices):
                 })
 
 
-def _write_representatives(path, documents, distributions, names, count):
+def _write_representatives(
+    path: str | PathLike[str],
+    documents: Sequence[_TopicDocument],
+    distributions: NDArray[np.float64],
+    names: Mapping[str, str],
+    count: int,
+) -> None:
     """Write representative papers for manual topic interpretation.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Destination CSV path.
-    documents : sequence of dict
+    documents : Sequence[_TopicDocument]
         Documents corresponding to distribution rows.
     distributions : numpy.ndarray
         Per-document topic probabilities.
-    names : mapping of str to str
+    names : Mapping[str, str]
         Manual names keyed by string topic ID.
     count : int
         Maximum representative papers per topic.
@@ -597,12 +656,15 @@ def _write_representatives(path, documents, distributions, names, count):
                 })
 
 
-def _prepare_output_directory(output_dir, overwrite):
+def _prepare_output_directory(
+    output_dir: str | PathLike[str],
+    overwrite: bool,
+) -> Path:
     """Prepare a topic-model artifact directory.
 
     Parameters
     ----------
-    output_dir : str or pathlib.Path
+    output_dir : str or os.PathLike[str]
         Artifact directory to create or reuse.
     overwrite : bool
         Whether a nonempty directory may be reused.
@@ -626,7 +688,12 @@ def _prepare_output_directory(output_dir, overwrite):
     return path
 
 
-def _model_quality_metrics(model, matrix, distributions, topic_rows):
+def _model_quality_metrics(
+    model: LatentDirichletAllocation,
+    matrix: spmatrix,
+    distributions: NDArray[np.float64],
+    topic_rows: Sequence[_TopicRow],
+) -> dict[str, Any]:
     """Calculate diagnostics for a fitted topic model.
 
     Parameters
@@ -637,12 +704,12 @@ def _model_quality_metrics(model, matrix, distributions, topic_rows):
         Document-term matrix used to fit the model.
     distributions : numpy.ndarray
         Per-document topic probabilities.
-    topic_rows : sequence of dict
+    topic_rows : Sequence[_TopicRow]
         Extracted topic terms.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Fit, topic-diversity, and dominant-topic balance metrics.
     """
     dominant_topics = distributions.argmax(axis=1)
@@ -663,34 +730,34 @@ def _model_quality_metrics(model, matrix, distributions, topic_rows):
     }
 
 
-def train_topic_model(db_path,
-                      output_dir,
-                      num_topics=10,
-                      text_fields=('title', 'abstract'),
-                      min_df=2,
-                      max_df=0.95,
-                      max_features=20000,
-                      learning_method='online',
-                      max_iter=20,
-                      random_state=0,
-                      top_terms=15,
-                      representative_papers=5,
-                      stopwords_file=None,
-                      ngram_max=2,
-                      overwrite=False,
-                      emit_warnings=True,
-                      documents=None):
+def train_topic_model(db_path: str | PathLike[str],
+                      output_dir: str | PathLike[str],
+                      num_topics: int = 10,
+                      text_fields: Iterable[str] = ('title', 'abstract'),
+                      min_df: int = 2,
+                      max_df: float = 0.95,
+                      max_features: int = 20000,
+                      learning_method: str = 'online',
+                      max_iter: int = 20,
+                      random_state: int = 0,
+                      top_terms: int = 15,
+                      representative_papers: int = 5,
+                      stopwords_file: str | PathLike[str] | None = None,
+                      ngram_max: int = 2,
+                      overwrite: bool = False,
+                      emit_warnings: bool = True,
+                      documents: Sequence[_TopicDocument] | None = None) -> dict[str, Any]:
     """Train and persist an LDA model and its inspection artifacts.
 
     Parameters
     ----------
-    db_path : str or pathlib.Path
+    db_path : str or os.PathLike[str]
         Path to the source SQLite paper corpus.
-    output_dir : str or pathlib.Path
+    output_dir : str or os.PathLike[str]
         Directory in which to store the model artifacts.
     num_topics : int, default=10
         Number of latent topics to fit.
-    text_fields : iterable of str, default=('title', 'abstract')
+    text_fields : Iterable[str], default=('title', 'abstract')
         Corpus fields combined into each modeling document.
     min_df : int, default=2
         Minimum number of documents in which a feature must occur.
@@ -708,7 +775,7 @@ def train_topic_model(db_path,
         Number of terms exported for each topic.
     representative_papers : int, default=5
         Number of high-probability papers exported per topic.
-    stopwords_file : str, pathlib.Path, or None, optional
+    stopwords_file : str, os.PathLike[str], or None, optional
         File containing domain-specific stopwords.
     ngram_max : {1, 2}, default=2
         Maximum feature n-gram size.
@@ -716,12 +783,12 @@ def train_topic_model(db_path,
         Whether to reuse a nonempty artifact directory.
     emit_warnings : bool, default=True
         Whether to emit heuristic corpus-quality warnings.
-    documents : sequence of dict or None, optional
+    documents : Sequence[_TopicDocument] or None, optional
         Preloaded documents used instead of reading ``db_path``.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Artifact paths, configuration, quality report, fingerprint, and topics.
 
     Raises
@@ -874,17 +941,19 @@ def train_topic_model(db_path,
     }
 
 
-def load_topic_model(model_dir):
+def load_topic_model(
+    model_dir: str | PathLike[str],
+) -> tuple[LatentDirichletAllocation, CountVectorizer, dict[str, Any], dict[str, str]]:
     """Load and validate a trusted local LDA artifact.
 
     Parameters
     ----------
-    model_dir : str or pathlib.Path
+    model_dir : str or os.PathLike[str]
         Topic-model artifact directory.
 
     Returns
     -------
-    tuple
+    tuple[LatentDirichletAllocation, CountVectorizer, dict[str, Any], dict[str, str]]
         Fitted LDA model, fitted vectorizer, configuration, and manual names.
 
     Raises
@@ -919,17 +988,17 @@ def load_topic_model(model_dir):
     return model, vectorizer, config, names
 
 
-def topic_descriptions(model_dir):
+def topic_descriptions(model_dir: str | PathLike[str]) -> list[_TopicRow]:
     """Load descriptions and representative papers for each topic.
 
     Parameters
     ----------
-    model_dir : str or pathlib.Path
+    model_dir : str or os.PathLike[str]
         Topic-model artifact directory.
 
     Returns
     -------
-    list of dict
+    list[_TopicRow]
         Topic terms, manual names, and representative paper rows.
 
     Raises
@@ -953,12 +1022,16 @@ def topic_descriptions(model_dir):
     return topics
 
 
-def set_topic_name(model_dir, topic_id, topic_name):
+def set_topic_name(
+    model_dir: str | PathLike[str],
+    topic_id: int,
+    topic_name: str,
+) -> dict[str, str]:
     """Set a manual topic name and refresh artifact exports.
 
     Parameters
     ----------
-    model_dir : str or pathlib.Path
+    model_dir : str or os.PathLike[str]
         Topic-model artifact directory.
     topic_id : int
         Zero-based topic identifier.
@@ -996,21 +1069,25 @@ def set_topic_name(model_dir, topic_id, topic_name):
     return names
 
 
-def predict_topic_model(model_dir, db_path, output_path):
+def predict_topic_model(
+    model_dir: str | PathLike[str],
+    db_path: str | PathLike[str],
+    output_path: str | PathLike[str],
+) -> dict[str, int | str]:
     """Apply a saved topic model and export long-form scores.
 
     Parameters
     ----------
-    model_dir : str or pathlib.Path
+    model_dir : str or os.PathLike[str]
         Topic-model artifact directory.
-    db_path : str or pathlib.Path
+    db_path : str or os.PathLike[str]
         Path to the SQLite paper corpus to score.
-    output_path : str or pathlib.Path
+    output_path : str or os.PathLike[str]
         Destination prediction CSV.
 
     Returns
     -------
-    dict
+    dict[str, int or str]
         Counts of total, predicted, and skipped papers plus the output path.
 
     Raises
@@ -1037,14 +1114,17 @@ def predict_topic_model(model_dir, db_path, output_path):
     }
 
 
-def _topic_set_similarity(left_topics, right_topics):
+def _topic_set_similarity(
+    left_topics: Sequence[Mapping[str, Any]],
+    right_topics: Sequence[Mapping[str, Any]],
+) -> float:
     """Calculate symmetric best-match similarity between topic sets.
 
     Parameters
     ----------
-    left_topics : sequence of dict
+    left_topics : Sequence[Mapping[str, Any]]
         First topic collection containing ``top_terms`` lists.
-    right_topics : sequence of dict
+    right_topics : Sequence[Mapping[str, Any]]
         Second topic collection containing ``top_terms`` lists.
 
     Returns
@@ -1055,14 +1135,14 @@ def _topic_set_similarity(left_topics, right_topics):
     left_sets = [set(topic['top_terms']) for topic in left_topics]
     right_sets = [set(topic['top_terms']) for topic in right_topics]
 
-    def directional(source, targets):
+    def directional(source: Sequence[set[str]], targets: Sequence[set[str]]) -> float:
         """Calculate mean best-match similarity in one direction.
 
         Parameters
         ----------
-        source : sequence of set
+        source : Sequence[set[str]]
             Topic-term sets to score.
-        targets : sequence of set
+        targets : Sequence[set[str]]
             Candidate topic-term sets for each source topic.
 
         Returns
@@ -1083,14 +1163,17 @@ def _topic_set_similarity(left_topics, right_topics):
     return (directional(left_sets, right_sets) + directional(right_sets, left_sets)) / 2
 
 
-def _write_model_comparison(path, rows):
+def _write_model_comparison(
+    path: str | PathLike[str],
+    rows: Iterable[Mapping[str, Any]],
+) -> None:
     """Write quality metrics for a collection of comparison models.
 
     Parameters
     ----------
-    path : str or pathlib.Path
+    path : str or os.PathLike[str]
         Destination comparison CSV path.
-    rows : iterable of dict
+    rows : Iterable[Mapping[str, Any]]
         Per-model configuration and quality metrics.
 
     Raises
@@ -1114,34 +1197,34 @@ def _write_model_comparison(path, rows):
             })
 
 
-def compare_topic_models(db_path,
-                         output_dir,
-                         topic_counts=(5, 10),
-                         random_states=(0, 1),
-                         text_fields=('title', 'abstract'),
-                         min_df=2,
-                         max_df=0.95,
-                         max_features=20000,
-                         learning_method='online',
-                         max_iter=20,
-                         top_terms=15,
-                         representative_papers=5,
-                         stopwords_file=None,
-                         ngram_max=2,
-                         overwrite=False):
+def compare_topic_models(db_path: str | PathLike[str],
+                         output_dir: str | PathLike[str],
+                         topic_counts: Iterable[int] = (5, 10),
+                         random_states: Iterable[int] = (0, 1),
+                         text_fields: Iterable[str] = ('title', 'abstract'),
+                         min_df: int = 2,
+                         max_df: float = 0.95,
+                         max_features: int = 20000,
+                         learning_method: str = 'online',
+                         max_iter: int = 20,
+                         top_terms: int = 15,
+                         representative_papers: int = 5,
+                         stopwords_file: str | PathLike[str] | None = None,
+                         ngram_max: int = 2,
+                         overwrite: bool = False) -> dict[str, Any]:
     """Train and compare topic counts and random seeds on one corpus.
 
     Parameters
     ----------
-    db_path : str or pathlib.Path
+    db_path : str or os.PathLike[str]
         Path to the source SQLite paper corpus.
-    output_dir : str or pathlib.Path
+    output_dir : str or os.PathLike[str]
         Directory for comparison models and reports.
-    topic_counts : iterable of int, default=(5, 10)
+    topic_counts : Iterable[int], default=(5, 10)
         Distinct topic counts to evaluate.
-    random_states : iterable of int, default=(0, 1)
+    random_states : Iterable[int], default=(0, 1)
         Distinct model seeds to evaluate.
-    text_fields : iterable of str, default=('title', 'abstract')
+    text_fields : Iterable[str], default=('title', 'abstract')
         Corpus fields combined into each modeling document.
     min_df : int, default=2
         Minimum number of documents in which a feature must occur.
@@ -1157,7 +1240,7 @@ def compare_topic_models(db_path,
         Number of terms exported for each topic.
     representative_papers : int, default=5
         Number of high-probability papers exported per topic.
-    stopwords_file : str, pathlib.Path, or None, optional
+    stopwords_file : str, os.PathLike[str], or None, optional
         File containing domain-specific stopwords.
     ngram_max : {1, 2}, default=2
         Maximum feature n-gram size.
@@ -1166,7 +1249,7 @@ def compare_topic_models(db_path,
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Comparison paths, model count, and per-model metrics.
 
     Raises

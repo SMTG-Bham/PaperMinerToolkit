@@ -5,19 +5,85 @@ from PDFs, text/PDF path lookup for paper rows, and image extraction/rendering
 for figure or page-level model analysis.
 """
 
+from __future__ import annotations
+
 import io
 import os
 import re
+from os import PathLike
 from pypdf import PdfReader
 from pathlib import Path
+from types import TracebackType
+from typing import Any, BinaryIO, Protocol, Self
 
 
-def read_pdf_text(pdf_path):
+class _FitzPixmapLike(Protocol):
+    """Pixmap behavior used when rendering PDF pages."""
+
+    def save(self, filename: str) -> None:
+        """Write the pixmap to an image file."""
+        ...
+
+
+class _FitzPageLike(Protocol):
+    """PyMuPDF page behavior used by image extraction."""
+
+    def get_images(self, *, full: bool) -> list[tuple[int, ...]]:
+        """Return image descriptors embedded in the page."""
+        ...
+
+    def get_pixmap(self, *, matrix: object, alpha: bool) -> _FitzPixmapLike:
+        """Render the page to a pixmap."""
+        ...
+
+
+class _FitzDocumentLike(Protocol):
+    """PyMuPDF document behavior used by this module."""
+
+    def __len__(self) -> int:
+        """Return the page count."""
+        ...
+
+    def __getitem__(self, index: int) -> _FitzPageLike:
+        """Return one page by zero-based index."""
+        ...
+
+    def __enter__(self) -> Self:
+        """Enter the document context manager."""
+        ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        """Close the document when leaving its context."""
+        ...
+
+    def extract_image(self, xref: int) -> dict[str, Any]:
+        """Extract an embedded image by cross-reference number."""
+        ...
+
+
+class _FitzModuleLike(Protocol):
+    """PyMuPDF module behavior used by this module."""
+
+    def Matrix(self, x_zoom: float, y_zoom: float) -> object:
+        """Build a page-rendering transformation matrix."""
+        ...
+
+    def open(self, filename: str) -> _FitzDocumentLike:
+        """Open a PDF document."""
+        ...
+
+
+def read_pdf_text(pdf_path: str | PathLike[str] | BinaryIO) -> str:
     """Extract concatenated text from every page in a PDF.
 
     Parameters
     ----------
-    pdf_path : str or file-like object
+    pdf_path : str, os.PathLike[str], or BinaryIO
         PDF path or binary stream accepted by :class:`pypdf.PdfReader`.
 
     Returns
@@ -34,7 +100,7 @@ def read_pdf_text(pdf_path):
     return text
 
 
-def read_pdf_bytes(content: bytes):
+def read_pdf_bytes(content: bytes) -> str:
     """Extract text directly from in-memory PDF bytes.
 
     Parameters
@@ -50,7 +116,7 @@ def read_pdf_bytes(content: bytes):
     return read_pdf_text(io.BytesIO(content))
 
 
-def trim_reference_section(text: str):
+def trim_reference_section(text: str) -> str:
     """Remove a trailing reference section identified by a standalone heading.
 
     Parameters
@@ -73,7 +139,7 @@ def trim_reference_section(text: str):
     return text
 
 
-def read_document_text(path: str, trim_references: bool = True):
+def read_document_text(path: str, trim_references: bool = True) -> str:
     """Read text from a TXT or PDF document.
 
     Parameters
@@ -104,12 +170,12 @@ def read_document_text(path: str, trim_references: bool = True):
     raise ValueError(f'Unsupported document type: {path}')
 
 
-def _load_fitz():
+def _load_fitz() -> _FitzModuleLike:
     """Import PyMuPDF lazily.
 
     Returns
     -------
-    module
+    _FitzModuleLike
         Imported :mod:`fitz` module.
 
     Raises
@@ -124,12 +190,12 @@ def _load_fitz():
     return fitz
 
 
-def _extract_embedded_pdf_images(doc, output_dir: str, prefix: str):
+def _extract_embedded_pdf_images(doc: _FitzDocumentLike, output_dir: str, prefix: str) -> list[str]:
     """Save unique embedded images from an opened PyMuPDF document.
 
     Parameters
     ----------
-    doc : fitz.Document
+    doc : _FitzDocumentLike
         Open PyMuPDF document.
     output_dir : str
         Directory where extracted images are written.
@@ -138,7 +204,7 @@ def _extract_embedded_pdf_images(doc, output_dir: str, prefix: str):
 
     Returns
     -------
-    list of str
+    list[str]
         Paths to saved images in page and image order.
     """
     saved = []
@@ -161,14 +227,20 @@ def _extract_embedded_pdf_images(doc, output_dir: str, prefix: str):
     return saved
 
 
-def _render_pdf_pages(fitz, doc, output_dir: str, prefix: str, dpi: int = 200):
+def _render_pdf_pages(
+    fitz: _FitzModuleLike,
+    doc: _FitzDocumentLike,
+    output_dir: str,
+    prefix: str,
+    dpi: int = 200,
+) -> list[str]:
     """Render each PDF page to a PNG image file.
 
     Parameters
     ----------
-    fitz : module
+    fitz : _FitzModuleLike
         Imported PyMuPDF module.
-    doc : fitz.Document
+    doc : _FitzDocumentLike
         Open PyMuPDF document.
     output_dir : str
         Directory where rendered pages are written.
@@ -179,7 +251,7 @@ def _render_pdf_pages(fitz, doc, output_dir: str, prefix: str, dpi: int = 200):
 
     Returns
     -------
-    list of str
+    list[str]
         Paths to rendered page images in document order.
     """
     saved = []
@@ -198,7 +270,7 @@ def extract_pdf_images(pdf_path: str,
                        output_dir: str,
                        prefix: str | None = None,
                        strategy: str = 'auto',
-                       dpi: int = 200):
+                       dpi: int = 200) -> list[str]:
     """Extract images from a PDF for vision scraping.
 
     Parameters
@@ -217,7 +289,7 @@ def extract_pdf_images(pdf_path: str,
 
     Returns
     -------
-    list of str
+    list[str]
         Paths to extracted or rendered image files.
 
     Raises

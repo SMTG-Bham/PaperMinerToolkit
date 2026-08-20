@@ -5,7 +5,11 @@ materials CSV, including missing inputs, empty inputs, column matching, optional
 unit conversion, append behavior, user confirmation, and paper status updates.
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -14,7 +18,7 @@ import paperscraper.corpus as corpus
 import paperscraper.store as store
 
 
-def sample_recipe():
+def sample_recipe() -> dict[str, Any]:
     """Return a minimal recipe for store unit tests."""
     return {
         'material type': 'test material',
@@ -25,7 +29,7 @@ def sample_recipe():
     }
 
 
-def write_papers_corpus(path):
+def write_papers_corpus(path: Path) -> None:
     """Write a minimal paper corpus for store unit tests."""
     with corpus.connect(path) as conn:
         for row in [
@@ -52,13 +56,16 @@ def write_papers_corpus(path):
             corpus.upsert_paper(conn, row)
 
 
-def read_papers_corpus(path):
+def read_papers_corpus(path: Path) -> pd.DataFrame:
     """Read paper rows from a test corpus."""
     with corpus.connect(path) as conn:
         return pd.DataFrame(corpus.paper_rows(conn))
 
 
-def test_store_results_reports_missing_scraped_materials_file(tmp_path, capsys):
+def test_store_results_reports_missing_scraped_materials_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test storing results when the temporary scraped materials file is missing."""
     in_path = tmp_path / 'missing.csv'
     out_path = tmp_path / 'materials.csv'
@@ -70,7 +77,10 @@ def test_store_results_reports_missing_scraped_materials_file(tmp_path, capsys):
     assert not out_path.exists()
 
 
-def test_store_results_reports_empty_scraped_materials_file(tmp_path, capsys):
+def test_store_results_reports_empty_scraped_materials_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test storing results when the temporary scraped materials file is empty."""
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
@@ -83,7 +93,11 @@ def test_store_results_reports_empty_scraped_materials_file(tmp_path, capsys):
     assert not out_path.exists()
 
 
-def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers(tmp_path, monkeypatch, capsys):
+def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test storing converted results in noninteractive mode."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
@@ -98,7 +112,12 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     }).to_csv(in_path)
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
 
-    def fake_convert_units(series, field, unit, model_config=None):
+    def fake_convert_units(
+        series: pd.Series,
+        field: str,
+        unit: str,
+        model_config: dict[str, str] | None = None,
+    ) -> pd.Series:
         """Validate conversion arguments and return deterministic values."""
         assert field == 'Conductivity'
         assert unit == 'S cm^-1'
@@ -128,7 +147,10 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     assert not list(tmp_path.glob('.paperscraper-converted-*'))
 
 
-def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path, monkeypatch):
+def test_store_results_raises_for_unmatched_columns_in_interactive_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test storing results with an unmatched column in interactive mode."""
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
@@ -148,7 +170,10 @@ def test_store_results_raises_for_unmatched_columns_in_interactive_mode(tmp_path
     assert in_path.exists()
 
 
-def test_store_results_appends_existing_materials_without_unit_conversion(tmp_path, monkeypatch):
+def test_store_results_appends_existing_materials_without_unit_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test appending to an existing materials CSV without unit conversion."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
@@ -178,7 +203,10 @@ def test_store_results_appends_existing_materials_without_unit_conversion(tmp_pa
     assert materials['Conductivity [S cm^-1]'].tolist() == ['old', 'new']
 
 
-def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monkeypatch):
+def test_store_results_keeps_files_when_user_rejects_conversions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test storing results when the user rejects the temporary converted data."""
     monkeypatch.chdir(tmp_path)
     papers_path = tmp_path / 'papers.db'
@@ -201,7 +229,10 @@ def test_store_results_keeps_files_when_user_rejects_conversions(tmp_path, monke
     assert not list(tmp_path.glob('.paperscraper-converted-*'))
 
 
-def test_store_results_requires_paper_ids(tmp_path, monkeypatch):
+def test_store_results_requires_paper_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Reject batches that cannot be tied to corpus records."""
     in_path = tmp_path / 'scraped.csv'
     out_path = tmp_path / 'materials.csv'
@@ -219,7 +250,10 @@ def test_store_results_requires_paper_ids(tmp_path, monkeypatch):
     assert not out_path.exists()
 
 
-def test_store_results_is_retry_safe_for_identical_rows(tmp_path, monkeypatch):
+def test_store_results_is_retry_safe_for_identical_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Do not append a duplicate when an identical stored batch is retried."""
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
@@ -243,7 +277,10 @@ def test_store_results_is_retry_safe_for_identical_rows(tmp_path, monkeypatch):
     assert materials.loc[0, 'Paper id'] == 'paper-1'
 
 
-def test_store_results_preserves_existing_output_when_atomic_replace_fails(tmp_path, monkeypatch):
+def test_store_results_preserves_existing_output_when_atomic_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Leave the existing output, input batch, and corpus state intact on replacement failure."""
     papers_path = tmp_path / 'papers.db'
     in_path = tmp_path / 'scraped.csv'
@@ -271,7 +308,7 @@ def test_store_results_preserves_existing_output_when_atomic_replace_fails(tmp_p
     assert not list(tmp_path.glob('.paperscraper-converted-*'))
 
 
-def test_store_results_rejects_identical_input_and_output_paths(tmp_path):
+def test_store_results_rejects_identical_input_and_output_paths(tmp_path: Path) -> None:
     """Prevent the successful-store cleanup from deleting the output file."""
     path = tmp_path / 'materials.csv'
     pd.DataFrame({'Paper id': ['paper-1'], 'Name': ['LLZO']}).to_csv(path)

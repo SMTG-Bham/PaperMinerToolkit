@@ -6,9 +6,13 @@ endpoint, local models use Hugging Face tokenizers, and all
 paths fall back to a conservative character-based estimate.
 """
 
+from __future__ import annotations
+
 import importlib
 import math
+from collections.abc import Mapping
 from functools import lru_cache
+from typing import Protocol, TypeAlias
 
 import requests
 import tiktoken
@@ -18,6 +22,27 @@ from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT
 
 ANTHROPIC_VERSION = '2023-06-01'
 DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+
+
+class _ModelConfigLike(Protocol):
+    """Structural type required by provider-aware token helpers."""
+
+    provider: str
+    name: str
+    api_key: str | None
+    base_url: str | None
+    input_token_limit: int
+
+
+_ModelConfigSource: TypeAlias = _ModelConfigLike | Mapping[str, object]
+
+
+class _TokenizerLike(Protocol):
+    """Structural type returned by dynamically loaded tokenizers."""
+
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        """Encode text into integer token identifiers."""
+        ...
 
 
 def conservative_token_estimate(text: str) -> int:
@@ -39,12 +64,12 @@ def conservative_token_estimate(text: str) -> int:
     return max(1, math.ceil(len(text) / 3))
 
 
-def _provider_name(model_config=None, provider: str | None = None) -> str:
+def _provider_name(model_config: _ModelConfigSource | None = None, provider: str | None = None) -> str:
     """Resolve and normalize a provider name.
 
     Parameters
     ----------
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Object that may expose a ``provider`` attribute.
     provider : str, optional
         Explicit provider name, which takes precedence over ``model_config``.
@@ -58,12 +83,12 @@ def _provider_name(model_config=None, provider: str | None = None) -> str:
     return str(value).lower().replace('_', '-')
 
 
-def _model_name(model_config=None, model: str | None = None) -> str:
+def _model_name(model_config: _ModelConfigSource | None = None, model: str | None = None) -> str:
     """Resolve a model name from explicit input or configuration.
 
     Parameters
     ----------
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Object that may expose a ``name`` attribute.
     model : str, optional
         Explicit model name, which takes precedence over ``model_config``.
@@ -100,14 +125,14 @@ def openai_token_count(text: str, model: str | None = None) -> int:
     return len(encoding.encode(text))
 
 
-def anthropic_token_count(text: str, model_config) -> int:
+def anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     """Count text tokens with Anthropic's Messages API.
 
     Parameters
     ----------
     text : str
         Text to count as a single user message.
-    model_config : object
+    model_config : _ModelConfigSource
         Configuration exposing model, API key, and optional base URL
         attributes.
 
@@ -148,7 +173,7 @@ def anthropic_token_count(text: str, model_config) -> int:
 
 
 @lru_cache(maxsize=16)
-def _auto_tokenizer(model: str):
+def _auto_tokenizer(model: str) -> _TokenizerLike:
     """Load and cache a Hugging Face tokenizer.
 
     Parameters
@@ -158,7 +183,7 @@ def _auto_tokenizer(model: str):
 
     Returns
     -------
-    transformers.PreTrainedTokenizerBase
+    _TokenizerLike
         Loaded tokenizer instance.
     """
     transformers = importlib.import_module('transformers')
@@ -185,14 +210,19 @@ def transformers_token_count(text: str, model: str) -> int:
     return len(tokens)
 
 
-def count_text_tokens(text: str, model_config=None, model: str | None = None, provider: str | None = None) -> int:
+def count_text_tokens(
+    text: str,
+    model_config: _ModelConfigSource | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+) -> int:
     """Count text tokens with the best available provider tokenizer.
 
     Parameters
     ----------
     text : str
         Text to tokenize. Non-string values return zero.
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Model configuration used to resolve provider credentials and model
         details.
     model : str, optional
@@ -228,12 +258,16 @@ def count_text_tokens(text: str, model_config=None, model: str | None = None, pr
     return conservative_token_estimate(text)
 
 
-def usable_input_token_limit(model_config=None, reserve_tokens: int = 2000, minimum: int = 1000) -> int:
+def usable_input_token_limit(
+    model_config: _ModelConfigSource | None = None,
+    reserve_tokens: int = 2000,
+    minimum: int = 1000,
+) -> int:
     """Calculate the usable model input token budget.
 
     Parameters
     ----------
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Configuration that may expose an ``input_token_limit`` attribute.
     reserve_tokens : int, default=2000
         Tokens reserved for prompts, metadata, and output framing.
@@ -254,7 +288,7 @@ def usable_input_token_limit(model_config=None, reserve_tokens: int = 2000, mini
 
 
 def prompt_token_reserve(prompt: str,
-                         model_config=None,
+                         model_config: _ModelConfigSource | None = None,
                          buffer_tokens: int = 500,
                          minimum: int = 500) -> int:
     """Calculate a token reserve for a static prompt.
@@ -263,7 +297,7 @@ def prompt_token_reserve(prompt: str,
     ----------
     prompt : str
         Static prompt text included with model input.
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Model configuration passed to provider-aware token counting.
     buffer_tokens : int, default=500
         Safety buffer added to the prompt token count.

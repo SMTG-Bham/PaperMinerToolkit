@@ -6,8 +6,12 @@ share one implementation. OpenAlex meters access against a daily credit budget;
 requests without an API key still work but draw on a much smaller budget.
 """
 
+from __future__ import annotations
+
 import os
 import time
+from collections.abc import Mapping
+from typing import Any, Protocol, TypeAlias
 from urllib.parse import quote
 
 import requests
@@ -19,14 +23,45 @@ BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
 USER_AGENT = 'PaperScraper/0.0.1'
+_OpenAlexRecord: TypeAlias = dict[str, Any]
 
 
-def configured_api_key(settings=None):
+class _ResponseLike(Protocol):
+    """HTTP response surface used by OpenAlex helpers."""
+
+    status_code: int
+    headers: Mapping[str, str]
+
+    def raise_for_status(self) -> None:
+        """Raise when the response has an unsuccessful status."""
+        ...
+
+    def json(self) -> _OpenAlexRecord:
+        """Decode the response JSON object."""
+        ...
+
+
+class _HTTPClient(Protocol):
+    """HTTP client surface accepted for dependency injection."""
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, object],
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> _ResponseLike:
+        """Issue an HTTP GET request."""
+        ...
+
+
+def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
     """Return the configured OpenAlex API key.
 
     Parameters
     ----------
-    settings : dict or None, optional
+    settings : Mapping[str, str] or None, optional
         Settings mapping to inspect before the environment.
 
     Returns
@@ -38,7 +73,7 @@ def configured_api_key(settings=None):
     return settings.get('openalex_api_key') or os.environ.get('OPENALEX_API_KEY')
 
 
-def request_headers():
+def request_headers() -> dict[str, str]:
     """Build OpenAlex request headers.
 
     Returns
@@ -49,7 +84,10 @@ def request_headers():
     return {'User-Agent': USER_AGENT}
 
 
-def request_params(params=None, api_key=None):
+def request_params(
+    params: Mapping[str, object] | None = None,
+    api_key: str | None = None,
+) -> dict[str, object]:
     """Copy query parameters and add an API key when configured.
 
     Requests without a key are served from a much smaller daily credit budget,
@@ -57,14 +95,14 @@ def request_params(params=None, api_key=None):
 
     Parameters
     ----------
-    params : dict or None, optional
+    params : Mapping[str, object] or None, optional
         Query parameters to copy.
     api_key : str or None, optional
         OpenAlex API key to add.
 
     Returns
     -------
-    dict
+    dict[str, object]
         Copied parameters, optionally including ``api_key``.
     """
     merged = dict(params or {})
@@ -73,7 +111,7 @@ def request_params(params=None, api_key=None):
     return merged
 
 
-def _budget_error(response):
+def _budget_error(response: _ResponseLike) -> str:
     """Describe an exhausted OpenAlex credit budget using the rate-limit headers."""
     reset = response.headers.get('X-RateLimit-Reset')
     try:
@@ -85,18 +123,25 @@ def _budget_error(response):
             'to raise the budget.')
 
 
-def request_json(url, params=None, api_key=None, session=None, timeout=60, attempts=4):
+def request_json(
+    url: str,
+    params: Mapping[str, object] | None = None,
+    api_key: str | None = None,
+    session: _HTTPClient | None = None,
+    timeout: float = 60,
+    attempts: int = 4,
+) -> _OpenAlexRecord | None:
     """Request an OpenAlex endpoint with bounded retry/backoff behavior.
 
     Parameters
     ----------
     url : str
         OpenAlex endpoint URL.
-    params : dict or None, optional
+    params : Mapping[str, object] or None, optional
         Query parameters for the request.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : module or object or None, optional
+    session : _HTTPClient or None, optional
         HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -105,7 +150,7 @@ def request_json(url, params=None, api_key=None, session=None, timeout=60, attem
 
     Returns
     -------
-    dict or None
+    _OpenAlexRecord or None
         Decoded JSON payload, or ``None`` for a 404 response.
 
     Raises
@@ -144,7 +189,7 @@ def request_json(url, params=None, api_key=None, session=None, timeout=60, attem
     raise RuntimeError(f'OpenAlex request failed after {attempts} attempts: {last_error}') from last_error
 
 
-def work_url(identifier):
+def work_url(identifier: str) -> str:
     """Build a single-work URL.
 
     Parameters
@@ -160,7 +205,11 @@ def work_url(identifier):
     return f'{WORKS_URL}/{quote(str(identifier), safe=":/")}'
 
 
-def get_work(identifier, api_key=None, session=None):
+def get_work(
+    identifier: str,
+    api_key: str | None = None,
+    session: _HTTPClient | None = None,
+) -> _OpenAlexRecord | None:
     """Fetch one OpenAlex work record.
 
     Parameters
@@ -169,12 +218,12 @@ def get_work(identifier, api_key=None, session=None):
         OpenAlex W-identifier or ``doi:``-prefixed DOI.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : module or object or None, optional
+    session : _HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
     -------
-    dict or None
+    _OpenAlexRecord or None
         Work record, or ``None`` when the work does not exist.
 
     Raises
@@ -185,12 +234,12 @@ def get_work(identifier, api_key=None, session=None):
     return request_json(work_url(identifier), api_key=api_key, session=session)
 
 
-def work_id(work):
+def work_id(work: Mapping[str, Any]) -> str:
     """Extract the short W-identifier from an OpenAlex work record.
 
     Parameters
     ----------
-    work : dict
+    work : Mapping[str, Any]
         OpenAlex work record.
 
     Returns
@@ -202,12 +251,12 @@ def work_id(work):
     return identifier.rstrip('/').rsplit('/', 1)[-1] if identifier else ''
 
 
-def reconstruct_abstract(inverted_index):
+def reconstruct_abstract(inverted_index: Mapping[str, list[int]] | None) -> str:
     """Rebuild abstract text from an OpenAlex inverted index.
 
     Parameters
     ----------
-    inverted_index : dict or None
+    inverted_index : Mapping[str, list[int]] or None
         Mapping of tokens to their positions in the abstract.
 
     Returns
@@ -223,17 +272,17 @@ def reconstruct_abstract(inverted_index):
     return ' '.join(token for _, token in sorted(positions))
 
 
-def work_to_paper(work):
+def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
     """Map an OpenAlex work onto PaperScraper's paper schema.
 
     Parameters
     ----------
-    work : dict
+    work : Mapping[str, Any]
         OpenAlex work record.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Normalized paper metadata.
     """
     doi = clean_doi(work.get('doi')) if work.get('doi') else ''
@@ -264,12 +313,12 @@ def work_to_paper(work):
     }
 
 
-def pdf_candidates(work):
+def pdf_candidates(work: Mapping[str, Any]) -> list[str]:
     """Return candidate PDF URLs for an OpenAlex work.
 
     Parameters
     ----------
-    work : dict
+    work : Mapping[str, Any]
         OpenAlex work record.
 
     Returns

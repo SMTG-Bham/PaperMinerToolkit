@@ -1,6 +1,11 @@
 """Tests for persistent post-download corpus filtering."""
 
+from __future__ import annotations
+
 import json
+import sqlite3
+from pathlib import Path
+from typing import Any, NoReturn
 
 import pytest
 from click.testing import CliRunner
@@ -11,7 +16,13 @@ import paperscraper.filtering as filtering
 import paperscraper.scrape as scrape
 
 
-def _write_rules(path, name, pattern, fields=None, **overrides):
+def _write_rules(
+    path: Path,
+    name: str,
+    pattern: str,
+    fields: list[str] | None = None,
+    **overrides: Any,
+) -> Path:
     """Write a configurable regular-expression filter fixture."""
     definition = {
         'name': name,
@@ -26,14 +37,19 @@ def _write_rules(path, name, pattern, fields=None, **overrides):
     return path
 
 
-def _add_text(conn, paper, content, role='text'):
+def _add_text(
+    conn: sqlite3.Connection,
+    paper: dict[str, Any],
+    content: str,
+    role: str = 'text',
+) -> None:
     """Add a text asset to a test corpus."""
     corpus.add_asset(
         conn, paper, content, role=role, kind='text', mime_type='text/plain'
     )
 
 
-def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp_path):
+def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp_path: Path) -> None:
     """Positive matches win over missing fields while excludes remain a veto."""
     db_path = tmp_path / 'papers.db'
     papers = [
@@ -80,7 +96,7 @@ def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp
     assert evidence['paper:vetoed']['matched_exclude_rules'] == ['review']
 
 
-def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path, monkeypatch):
+def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """PDF-only papers are searchable, but matches in their references are ignored."""
     db_path = tmp_path / 'papers.db'
     paper = {'paper_id': 'paper:pdf', 'title': 'PDF paper'}
@@ -113,7 +129,7 @@ def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path, monkeypatc
     assert evidence['matched_exclude_rules'] == []
 
 
-def test_filters_combine_left_to_right_and_named_reset_recomputes_state(tmp_path):
+def test_filters_combine_left_to_right_and_named_reset_recomputes_state(tmp_path: Path) -> None:
     """Successive operators form an explicit left-associative expression."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -144,7 +160,7 @@ def test_filters_combine_left_to_right_and_named_reset_recomputes_state(tmp_path
     assert overview['counts'] == {'excluded': 0, 'included': 3, 'unavailable': 0}
 
 
-def test_duplicate_requires_replace_and_invalid_pattern_is_atomic(tmp_path):
+def test_duplicate_requires_replace_and_invalid_pattern_is_atomic(tmp_path: Path) -> None:
     """Definitions are compiled before existing persisted state can be changed."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -163,7 +179,7 @@ def test_duplicate_requires_replace_and_invalid_pattern_is_atomic(tmp_path):
     assert overview['counts']['included'] == 1
 
 
-def test_any_all_case_and_timeout_validation():
+def test_any_all_case_and_timeout_validation() -> None:
     """Definition normalization exposes stable defaults and validates unsafe input."""
     definition = filtering.normalize_regex_definition({
         'name': 'demo',
@@ -182,7 +198,7 @@ def test_any_all_case_and_timeout_validation():
         })
 
 
-def test_all_mode_case_sensitivity_and_timeout_classification():
+def test_all_mode_case_sensitivity_and_timeout_classification() -> None:
     """All-mode requires every rule, while timed-out undecided matches are unavailable."""
     raw = {
         'name': 'all-terms',
@@ -216,7 +232,7 @@ def test_all_mode_case_sensitivity_and_timeout_classification():
     class TimeoutExpression:
         """Represent an expression that always times out."""
 
-        def finditer(self, text, timeout):
+        def finditer(self, text: str, timeout: float) -> NoReturn:
             """Raise a timeout instead of returning matches."""
             raise TimeoutError
 
@@ -227,7 +243,7 @@ def test_all_mode_case_sensitivity_and_timeout_classification():
     assert timed_out == ['title']
 
 
-def test_filter_cli_applies_reports_and_resets(tmp_path):
+def test_filter_cli_applies_reports_and_resets(tmp_path: Path) -> None:
     """The three CLI entry points expose the persisted filter lifecycle."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -246,7 +262,7 @@ def test_filter_cli_applies_reports_and_resets(tmp_path):
     assert 'Active expression: none' in reset.output
 
 
-def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path, monkeypatch, capsys):
+def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Scraping intersects its normal selection with persisted included papers."""
     db_path = tmp_path / 'papers.db'
     papers = [
@@ -263,26 +279,26 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path, monk
         """Provide a minimal model configuration for scrape tests."""
 
         @classmethod
-        def from_profile(cls, *args, **kwargs):
+        def from_profile(cls, *args: Any, **kwargs: Any) -> FakeModelConfig:
             """Return a new fake configuration for any profile."""
             return cls()
 
     class FakeTqdm:
         """Provide a no-op progress-bar context manager."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Accept and ignore progress-bar options."""
             pass
 
-        def __enter__(self):
+        def __enter__(self) -> FakeTqdm:
             """Return the fake progress bar."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: Any) -> bool:
             """Propagate exceptions raised inside the context."""
             return False
 
-        def update(self, amount):
+        def update(self, amount: int) -> None:
             """Ignore a progress update."""
             pass
 
@@ -328,6 +344,6 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path, monk
         ('excluded', 'unavailable', 'or', 'unavailable'),
     ],
 )
-def test_three_valued_status_combination(left, right, operator, expected):
+def test_three_valued_status_combination(left: str, right: str, operator: str, expected: str) -> None:
     """Combine representative three-valued filter decisions."""
     assert filtering.combine_status(left, right, operator) == expected

@@ -4,6 +4,11 @@ This module centralizes Elsevier HTTP details so the rest of the package does
 not depend on the unsupported ``elsapy`` wrapper.
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
 from urllib.parse import quote_plus as url_encode
 
 import requests
@@ -34,7 +39,12 @@ def api_headers(api_key: str, accept: str = 'application/json') -> dict[str, str
     }
 
 
-def get_json(api_key: str, url: str, params: dict | None = None, timeout: int = 60) -> dict:
+def get_json(
+    api_key: str,
+    url: str,
+    params: Mapping[str, object] | None = None,
+    timeout: int = 60,
+) -> dict[str, Any]:
     """Request and decode an Elsevier JSON endpoint.
 
     Parameters
@@ -43,14 +53,14 @@ def get_json(api_key: str, url: str, params: dict | None = None, timeout: int = 
         Configured Elsevier API key.
     url : str
         Endpoint URL to request.
-    params : dict or None, optional
+    params : Mapping[str, object] or None, optional
         Query parameters for the request.
     timeout : int, default=60
         Request timeout in seconds.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Decoded JSON response body.
 
     Raises
@@ -66,7 +76,7 @@ def get_json(api_key: str, url: str, params: dict | None = None, timeout: int = 
 def get_content(api_key: str,
                 url: str,
                 accept: str,
-                params: dict | None = None,
+                params: Mapping[str, object] | None = None,
                 timeout: int = 60) -> requests.Response:
     """Request raw content from an Elsevier endpoint.
 

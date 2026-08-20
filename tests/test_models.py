@@ -5,7 +5,11 @@ OpenAI Responses clients, Anthropic Messages clients, OpenAI-compatible chat
 clients, and public query helpers without calling live model APIs.
 """
 
+from __future__ import annotations
+
 import types
+from pathlib import Path
+from typing import Any, NoReturn
 
 import pytest
 
@@ -13,7 +17,7 @@ from paperscraper.compression import CompressionConfig
 import paperscraper.models as models
 
 
-def text_config(**overrides):
+def text_config(**overrides: Any) -> models.ModelConfig:
     """Return a text-capable model config for model unit tests."""
     values = {
         'provider': 'openai',
@@ -27,7 +31,7 @@ def text_config(**overrides):
     return models.ModelConfig(**values)
 
 
-def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
+def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test profile settings, provider keys, and explicit overrides."""
     monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
         'provider': 'anthropic',
@@ -52,7 +56,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch):
     assert config.input_token_limit == 64000
 
 
-def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch):
+def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Do not send a provider override through another provider's URL or API key."""
     monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
         'provider': 'local',
@@ -81,7 +85,7 @@ def test_model_config_provider_override_drops_profile_specific_connection(monkey
         models.ModelConfig.from_profile('text', provider='anthropic')
 
 
-def test_model_config_generation_args_and_require():
+def test_model_config_generation_args_and_require() -> None:
     """Test generation arguments and capability validation."""
     config = text_config()
 
@@ -97,7 +101,7 @@ def test_model_config_generation_args_and_require():
         config.require('vision')
 
 
-def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path):
+def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path: Path) -> None:
     """Test local image encoding with an inferred MIME type."""
     image_path = tmp_path / 'image.png'
     image_path.write_bytes(b'image bytes')
@@ -105,7 +109,7 @@ def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path):
     assert models.image_to_data_url(str(image_path)) == 'data:image/png;base64,aW1hZ2UgYnl0ZXM='
 
 
-def test_base_model_client_methods_are_abstract():
+def test_base_model_client_methods_are_abstract() -> None:
     """Test that base model request methods are abstract."""
     client = models.BaseModelClient(text_config())
 
@@ -115,13 +119,13 @@ def test_base_model_client_methods_are_abstract():
         client.query_with_images('prompt', [])
 
 
-def test_openai_responses_client_extracts_text_from_response_shapes(monkeypatch):
+def test_openai_responses_client_extracts_text_from_response_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test text extraction from supported OpenAI response shapes."""
 
     class FakeOpenAI:
         """Capture OpenAI client initialization options."""
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             """Store client initialization options."""
             self.kwargs = kwargs
 
@@ -138,18 +142,18 @@ def test_openai_responses_client_extracts_text_from_response_shapes(monkeypatch)
         client._response_text(types.SimpleNamespace(output=[]))
 
 
-def test_openai_responses_client_queries_text_and_images(monkeypatch, tmp_path):
+def test_openai_responses_client_queries_text_and_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test OpenAI Responses text, image, and error paths."""
 
     class FakeResponses:
         """Capture Responses API calls and optionally raise errors."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Initialize response call tracking."""
             self.calls = []
             self.raise_error = False
 
-        def create(self, **kwargs):
+        def create(self, **kwargs: Any) -> types.SimpleNamespace:
             """Record a request and return or raise a fake response."""
             self.calls.append(kwargs)
             if self.raise_error:
@@ -161,7 +165,7 @@ def test_openai_responses_client_queries_text_and_images(monkeypatch, tmp_path):
 
         responses = FakeResponses()
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             """Attach the shared Responses API resource."""
             self.responses = FakeOpenAI.responses
 
@@ -188,14 +192,14 @@ def test_openai_responses_client_queries_text_and_images(monkeypatch, tmp_path):
         client.query_with_images('look', [str(image_path)])
 
 
-def test_openai_vision_client_applies_image_compression_config(monkeypatch, tmp_path):
+def test_openai_vision_client_applies_image_compression_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test that OpenAI vision requests apply image compression."""
     calls = {}
 
     class FakeResponses:
         """Capture a Responses API request."""
 
-        def create(self, **kwargs):
+        def create(self, **kwargs: Any) -> types.SimpleNamespace:
             """Record a request and return model text."""
             calls['request'] = kwargs
             return types.SimpleNamespace(output_text='model text')
@@ -203,11 +207,18 @@ def test_openai_vision_client_applies_image_compression_config(monkeypatch, tmp_
     class FakeOpenAI:
         """Expose a fake Responses API resource."""
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             """Initialize a fake Responses API resource."""
             self.responses = FakeResponses()
 
-    def fake_compress(messages, image_paths, prompt, context, model_config, compression_config):
+    def fake_compress(
+        messages: list[dict[str, Any]],
+        image_paths: list[str],
+        prompt: str,
+        context: str,
+        model_config: models.ModelConfig,
+        compression_config: CompressionConfig,
+    ) -> list[dict[str, Any]]:
         """Record compression inputs and return a compressed payload."""
         calls['compression'] = {
             'messages': messages,
@@ -237,23 +248,28 @@ def test_openai_vision_client_applies_image_compression_config(monkeypatch, tmp_
     assert calls['compression']['compression_config'] is compression_config
 
 
-def test_anthropic_messages_client_queries_text_and_images(monkeypatch, tmp_path):
+def test_anthropic_messages_client_queries_text_and_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test Anthropic text and image request construction."""
 
     class FakeResponse:
         """Provide a successful Anthropic HTTP response."""
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Accept the fake HTTP status."""
             return None
 
-        def json(self):
+        def json(self) -> dict[str, Any]:
             """Return two Anthropic text content blocks."""
             return {'content': [{'type': 'text', 'text': 'hello'}, {'type': 'text', 'text': ' world'}]}
 
     calls = []
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
         """Record an HTTP request and return a successful response."""
         calls.append({'url': url, 'headers': headers, 'json': json, 'timeout': timeout})
         return FakeResponse()
@@ -282,7 +298,7 @@ def test_anthropic_messages_client_queries_text_and_images(monkeypatch, tmp_path
     assert content[2]['source']['media_type'] == 'image/jpeg'
 
 
-def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(monkeypatch):
+def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid duplicate API versions and retain Anthropic validation messages."""
     calls = []
 
@@ -291,15 +307,20 @@ def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(m
 
         text = ''
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> NoReturn:
             """Raise an HTTP error associated with this response."""
             raise models.requests.HTTPError('400 Client Error', response=self)
 
-        def json(self):
+        def json(self) -> dict[str, Any]:
             """Return structured Anthropic validation detail."""
             return {'error': {'type': 'invalid_request_error', 'message': 'invalid sampling parameters'}}
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> ErrorResponse:
         """Record an HTTP request and return a validation error."""
         calls.append(url)
         return ErrorResponse()
@@ -315,7 +336,7 @@ def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(m
     assert calls == ['https://anthropic.example/v1/messages']
 
 
-def test_anthropic_messages_client_requires_key_and_wraps_errors(monkeypatch):
+def test_anthropic_messages_client_requires_key_and_wraps_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test Anthropic API key validation and request error wrapping."""
     no_key_client = models.AnthropicMessagesClient(text_config(provider='anthropic', api_key=None))
 
@@ -335,18 +356,18 @@ def test_anthropic_messages_client_requires_key_and_wraps_errors(monkeypatch):
         client.query([{'role': 'user', 'content': 'question'}])
 
 
-def test_openai_compatible_chat_client_queries_text_and_images(monkeypatch, tmp_path):
+def test_openai_compatible_chat_client_queries_text_and_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test OpenAI-compatible text, image, and error paths."""
 
     class FakeCompletions:
         """Capture chat completion calls and optionally raise errors."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Initialize completion call tracking."""
             self.calls = []
             self.raise_error = False
 
-        def create(self, **kwargs):
+        def create(self, **kwargs: Any) -> types.SimpleNamespace:
             """Record a request and return or raise a fake completion."""
             self.calls.append(kwargs)
             if self.raise_error:
@@ -359,7 +380,7 @@ def test_openai_compatible_chat_client_queries_text_and_images(monkeypatch, tmp_
 
         completions = FakeCompletions()
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             """Store options and attach the fake chat resource."""
             self.kwargs = kwargs
             self.chat = types.SimpleNamespace(completions=FakeOpenAI.completions)
@@ -386,7 +407,7 @@ def test_openai_compatible_chat_client_queries_text_and_images(monkeypatch, tmp_
         client.query([{'role': 'user', 'content': 'hello'}])
 
 
-def test_get_model_client_selects_providers_and_validates_local_base_url(monkeypatch):
+def test_get_model_client_selects_providers_and_validates_local_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test provider selection and local base URL validation."""
     monkeypatch.setattr(models.openai, 'OpenAI', lambda **_: types.SimpleNamespace())
 
@@ -402,19 +423,30 @@ def test_get_model_client_selects_providers_and_validates_local_base_url(monkeyp
         models.get_model_client(text_config(provider='unknown'))
 
 
-def test_query_helpers_delegate_to_selected_client(monkeypatch):
+def test_query_helpers_delegate_to_selected_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that public query helpers delegate to the selected client."""
 
     class FakeClient:
         """Provide deterministic text and image query methods."""
 
-        def query(self, messages, max_output_tokens):
+        def query(
+            self,
+            messages: list[dict[str, Any]],
+            max_output_tokens: int,
+        ) -> str:
             """Validate a text request and return a result."""
             assert messages == [{'role': 'user', 'content': 'hello'}]
             assert max_output_tokens == 5
             return 'text result'
 
-        def query_with_images(self, prompt, image_paths, context, max_output_tokens, compression_config=None):
+        def query_with_images(
+            self,
+            prompt: str,
+            image_paths: list[str],
+            context: str,
+            max_output_tokens: int,
+            compression_config: CompressionConfig | None = None,
+        ) -> str:
             """Validate an image request and return a result."""
             assert prompt == 'look'
             assert image_paths == ['image.png']

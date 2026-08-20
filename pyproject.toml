@@ -101,7 +101,9 @@ addopts = [
 
 [tool.ruff.lint]
 select = ["D"]
-extend-select = ["D212"]
+extend-select = ["ANN", "D212"]
+# Dynamic provider payloads and test doubles legitimately require Any.
+ignore = ["ANN401"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

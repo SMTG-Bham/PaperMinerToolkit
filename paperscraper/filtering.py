@@ -5,9 +5,15 @@ application order.  The generic SQLite tables deliberately keep filter
 definitions and paper-level decisions separate from scrape pipeline statuses.
 """
 
+from __future__ import annotations
+
 import json
 import re
+import sqlite3
+from collections.abc import Iterable, Mapping, Sequence
+from os import PathLike
 from pathlib import Path
+from typing import Any, Literal, TypeAlias, TypeVar
 
 import regex
 
@@ -22,23 +28,29 @@ DEFAULT_TIMEOUT_MS = 500
 MAX_MATCHES_PER_FIELD = 1000
 MAX_SNIPPETS_PER_FIELD = 3
 SNIPPET_CONTEXT = 80
+T = TypeVar('T')
+_FilterStatus: TypeAlias = Literal['included', 'excluded', 'unavailable']
+_RegexRule: TypeAlias = dict[str, str]
+_RegexDefinition: TypeAlias = dict[str, Any]
+_CompiledDefinition: TypeAlias = dict[str, list[tuple[_RegexRule, regex.Pattern]]]
+_FilterOverview: TypeAlias = dict[str, Any]
 
 
-def _require_type(value, expected_type, label):
+def _require_type(value: object, expected_type: type[T], label: str) -> T:
     """Validate a value's type.
 
     Parameters
     ----------
     value : object
         Value to validate.
-    expected_type : type
+    expected_type : type[T]
         Required Python type.
     label : str
         Human-readable field label for errors.
 
     Returns
     -------
-    object
+    T
         The original validated value.
 
     Raises
@@ -51,19 +63,19 @@ def _require_type(value, expected_type, label):
     return value
 
 
-def _normalize_rule(rule, label):
+def _normalize_rule(rule: object, label: str) -> _RegexRule:
     """Normalize one regular-expression rule.
 
     Parameters
     ----------
-    rule : dict
+    rule : object
         Rule containing a name and pattern.
     label : str
         Rule location used in validation errors.
 
     Returns
     -------
-    dict
+    _RegexRule
         Normalized rule name and pattern.
 
     Raises
@@ -81,21 +93,25 @@ def _normalize_rule(rule, label):
     return {'name': name, 'pattern': pattern}
 
 
-def normalize_regex_definition(definition, fields=None, timeout_ms=None):
+def normalize_regex_definition(
+    definition: object,
+    fields: Iterable[str] | None = None,
+    timeout_ms: int | None = None,
+) -> _RegexDefinition:
     """Normalize a regular-expression filter definition.
 
     Parameters
     ----------
-    definition : dict
+    definition : object
         Raw filter definition.
-    fields : iterable of str, optional
+    fields : Iterable[str] or None, optional
         Content fields overriding those in the definition.
     timeout_ms : int, optional
         Per-field matching timeout overriding the definition.
 
     Returns
     -------
-    dict
+    _RegexDefinition
         Validated deterministic filter definition.
 
     Raises
@@ -163,21 +179,25 @@ def normalize_regex_definition(definition, fields=None, timeout_ms=None):
     }
 
 
-def load_regex_definition(path, fields=None, timeout_ms=None):
+def load_regex_definition(
+    path: str | PathLike[str],
+    fields: Iterable[str] | None = None,
+    timeout_ms: int | None = None,
+) -> _RegexDefinition:
     """Load and normalize a JSON filter definition.
 
     Parameters
     ----------
-    path : str or path-like
+    path : str or os.PathLike[str]
         JSON definition file.
-    fields : iterable of str, optional
+    fields : Iterable[str] or None, optional
         Content fields overriding the file.
     timeout_ms : int, optional
         Matching timeout overriding the file.
 
     Returns
     -------
-    dict
+    _RegexDefinition
         Validated filter definition.
 
     Raises
@@ -194,17 +214,17 @@ def load_regex_definition(path, fields=None, timeout_ms=None):
     return normalize_regex_definition(definition, fields=fields, timeout_ms=timeout_ms)
 
 
-def compile_regex_definition(definition):
+def compile_regex_definition(definition: _RegexDefinition) -> _CompiledDefinition:
     """Compile every pattern in a filter definition.
 
     Parameters
     ----------
-    definition : dict
+    definition : _RegexDefinition
         Normalized filter definition.
 
     Returns
     -------
-    dict
+    _CompiledDefinition
         Include and exclude rules paired with compiled expressions.
 
     Raises
@@ -226,12 +246,12 @@ def compile_regex_definition(definition):
     return compiled
 
 
-def _decode_text_asset(asset):
+def _decode_text_asset(asset: Mapping[str, Any] | None) -> str | None:
     """Decode and trim a stored text asset.
 
     Parameters
     ----------
-    asset : dict or None
+    asset : Mapping[str, Any] or None
         Corpus asset row containing binary content.
 
     Returns
@@ -246,21 +266,25 @@ def _decode_text_asset(asset):
     return text if text.strip() else None
 
 
-def _paper_content(conn, paper, fields):
+def _paper_content(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    fields: Iterable[str],
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
     """Load the selected raw content fields for a paper.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : Mapping[str, Any]
         Corpus paper row.
-    fields : iterable of str
+    fields : Iterable[str]
         Content fields to load.
 
     Returns
     -------
-    tuple of dict, dict, and list of str
+    tuple[dict[str, str], dict[str, str], list[str]]
         Available content, the source of each field, and reasons that requested
         fields were unavailable.
     """
@@ -324,7 +348,7 @@ def _paper_content(conn, paper, fields):
     return content, sources, unavailable
 
 
-def _snippet(text, start, end):
+def _snippet(text: str, start: int, end: int) -> str:
     """Return normalized context surrounding a matched text span.
 
     Parameters
@@ -345,21 +369,25 @@ def _snippet(text, start, end):
     return re.sub(r'\s+', ' ', snippet).strip()
 
 
-def _match_rule(expression, content, timeout_seconds):
+def _match_rule(
+    expression: regex.Pattern,
+    content: Mapping[str, str],
+    timeout_seconds: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Collect bounded matches for one expression across content fields.
 
     Parameters
     ----------
     expression : regex.Pattern
         Compiled regular expression to evaluate.
-    content : dict[str, str]
+    content : Mapping[str, str]
         Content keyed by field name.
     timeout_seconds : float
         Maximum matching time for each field, in seconds.
 
     Returns
     -------
-    tuple of list of dict and list of str
+    tuple[list[dict[str, Any]], list[str]]
         Match evidence and fields whose evaluation timed out.
     """
     matches = []
@@ -388,23 +416,28 @@ def _match_rule(expression, content, timeout_seconds):
     return matches, timed_out
 
 
-def evaluate_regex_paper(conn, paper, definition, compiled):
+def evaluate_regex_paper(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    definition: _RegexDefinition,
+    compiled: _CompiledDefinition,
+) -> tuple[_FilterStatus, dict[str, Any], str]:
     """Evaluate one regex definition against one corpus paper.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : Mapping[str, Any]
         Corpus paper row to evaluate.
-    definition : dict
+    definition : _RegexDefinition
         Normalized regex filter definition.
-    compiled : dict
+    compiled : _CompiledDefinition
         Compiled include and exclude rules.
 
     Returns
     -------
-    tuple of str, dict, and str
+    tuple[_FilterStatus, dict[str, Any], str]
         Filter status, structured match evidence, and a joined unavailable
         reason.
     """
@@ -456,7 +489,7 @@ def evaluate_regex_paper(conn, paper, definition, compiled):
     return status, evidence, '; '.join(unavailable_reasons)
 
 
-def active_filter_stack(conn):
+def active_filter_stack(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return active filters in expression order.
 
     Parameters
@@ -466,7 +499,7 @@ def active_filter_stack(conn):
 
     Returns
     -------
-    list of dict
+    list[dict[str, Any]]
         Filter rows with decoded definitions.
 
     Raises
@@ -485,12 +518,12 @@ def active_filter_stack(conn):
     return filters
 
 
-def filter_expression(filters):
+def filter_expression(filters: Sequence[Mapping[str, Any]]) -> str:
     """Build the explicit expression for an active filter stack.
 
     Parameters
     ----------
-    filters : sequence of dict
+    filters : Sequence[Mapping[str, Any]]
         Active filters in evaluation order.
 
     Returns
@@ -506,7 +539,7 @@ def filter_expression(filters):
     return expression
 
 
-def combine_status(left, right, operator):
+def combine_status(left: str, right: str, operator: str) -> _FilterStatus:
     """Combine two filter decisions with three-valued Boolean logic.
 
     Parameters
@@ -545,7 +578,7 @@ def combine_status(left, right, operator):
     raise ValueError(f'Unknown join operator: {operator}')
 
 
-def _recompute_filter_state(conn):
+def _recompute_filter_state(conn: sqlite3.Connection) -> None:
     """Rebuild final per-paper decisions from the active filter stack.
 
     Parameters
@@ -577,7 +610,7 @@ def _recompute_filter_state(conn):
     )
 
 
-def filter_overview(conn):
+def filter_overview(conn: sqlite3.Connection) -> _FilterOverview:
     """Summarize the active filter stack and its decisions.
 
     Parameters
@@ -587,7 +620,7 @@ def filter_overview(conn):
 
     Returns
     -------
-    dict
+    _FilterOverview
         Active filters, their expression, final status counts, and unavailable
         reason counts.
     """
@@ -623,8 +656,12 @@ def filter_overview(conn):
     }
 
 
-def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
-                       replace=False, timeout_ms=None):
+def apply_regex_filter(db_path: str | PathLike[str],
+                       rules_path: str | PathLike[str],
+                       fields: Iterable[str] | None = None,
+                       join_operator: str | None = None,
+                       replace: bool = False,
+                       timeout_ms: int | None = None) -> _FilterOverview:
     """Apply or replace one named regex filter in a corpus.
 
     Parameters
@@ -633,7 +670,7 @@ def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
         Path to the SQLite paper corpus.
     rules_path : str or pathlib.Path
         Path to the JSON regex definition.
-    fields : iterable of str or None, optional
+    fields : Iterable[str] or None, optional
         Content fields overriding the definition.
     join_operator : {'and', 'or'} or None, optional
         Operator joining this filter to the preceding active filter.
@@ -644,7 +681,7 @@ def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
 
     Returns
     -------
-    dict
+    _FilterOverview
         Updated filter overview.
 
     Raises
@@ -735,7 +772,11 @@ def apply_regex_filter(db_path, rules_path, fields=None, join_operator=None,
         return filter_overview(conn)
 
 
-def reset_filters(db_path, name=None, all_filters=False):
+def reset_filters(
+    db_path: str | PathLike[str],
+    name: str | None = None,
+    all_filters: bool = False,
+) -> _FilterOverview:
     """Remove filters and recompute final paper decisions.
 
     Parameters
@@ -749,7 +790,7 @@ def reset_filters(db_path, name=None, all_filters=False):
 
     Returns
     -------
-    dict
+    _FilterOverview
         Updated filter overview.
 
     Raises
@@ -789,7 +830,7 @@ def reset_filters(db_path, name=None, all_filters=False):
         return filter_overview(conn)
 
 
-def current_filter_statuses(conn):
+def current_filter_statuses(conn: sqlite3.Connection) -> dict[str, _FilterStatus]:
     """Return current final statuses keyed by paper ID.
 
     Parameters
@@ -799,7 +840,7 @@ def current_filter_statuses(conn):
 
     Returns
     -------
-    dict[str, str]
+    dict[str, _FilterStatus]
         Final filter status for each evaluated paper ID.
     """
     return {

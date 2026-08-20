@@ -1,6 +1,12 @@
 """Unit tests for Crossref author discovery and corpus import."""
 
+from __future__ import annotations
+
+from collections.abc import Iterable
 import json
+from pathlib import Path
+from typing import Any
+
 import pandas as pd
 import pytest
 import requests
@@ -9,7 +15,13 @@ import paperscraper.corpus as corpus
 import paperscraper.crossref as crossref
 
 
-def work(doi, given='Jane A.', family='Smith', orcid='0000-0001-2345-6789', affiliation='Example University'):
+def work(
+    doi: str,
+    given: str = 'Jane A.',
+    family: str = 'Smith',
+    orcid: str = '0000-0001-2345-6789',
+    affiliation: str = 'Example University',
+) -> dict[str, Any]:
     """Return a minimal Crossref work record."""
     return {
         'DOI': doi,
@@ -28,15 +40,15 @@ def work(doi, given='Jane A.', family='Smith', orcid='0000-0001-2345-6789', affi
 class FakeResponse:
     """Successful requests response containing one prepared Crossref message."""
 
-    def __init__(self, message):
+    def __init__(self, message: dict[str, Any]) -> None:
         """Store a prepared Crossref response message."""
         self.message = message
 
-    def raise_for_status(self):
+    def raise_for_status(self) -> None:
         """Represent a successful HTTP status check."""
         return None
 
-    def json(self):
+    def json(self) -> dict[str, dict[str, Any]]:
         """Return the prepared message as a response payload."""
         return {'message': self.message}
 
@@ -44,12 +56,18 @@ class FakeResponse:
 class FakeSession:
     """Return prepared Crossref pages and record request arguments."""
 
-    def __init__(self, messages):
+    def __init__(self, messages: Iterable[dict[str, Any]]) -> None:
         """Initialize the session with prepared response messages."""
         self.messages = iter(messages)
         self.calls = []
 
-    def get(self, url, params, headers, timeout):
+    def get(
+        self,
+        url: str,
+        params: dict[str, str | int],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> FakeResponse:
         """Record a GET request and return the next prepared response."""
         self.calls.append({
             'url': url,
@@ -60,7 +78,7 @@ class FakeSession:
         return FakeResponse(next(self.messages))
 
 
-def test_normalize_orcid_accepts_urls_and_rejects_invalid_values():
+def test_normalize_orcid_accepts_urls_and_rejects_invalid_values() -> None:
     """Normalize canonical ORCID URLs without accepting malformed identifiers."""
     assert crossref.normalize_orcid('https://orcid.org/0000-0001-2345-6789') == '0000-0001-2345-6789'
     with pytest.raises(ValueError, match='Invalid ORCID'):
@@ -69,7 +87,7 @@ def test_normalize_orcid_accepts_urls_and_rejects_invalid_values():
         crossref.normalize_orcid('0000-0001-2345-678X')
 
 
-def test_request_page_ignores_malformed_retry_after(monkeypatch):
+def test_request_page_ignores_malformed_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fall back to exponential backoff when Retry-After is not numeric."""
     response = requests.Response()
     response.status_code = 429
@@ -78,11 +96,11 @@ def test_request_page_ignores_malformed_retry_after(monkeypatch):
     class RetrySession:
         """Fail the first request before returning a successful response."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Initialize the request counter."""
             self.calls = 0
 
-        def get(self, *args, **kwargs):
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
             """Raise once, then return an empty successful response."""
             self.calls += 1
             if self.calls == 1:
@@ -97,7 +115,7 @@ def test_request_page_ignores_malformed_retry_after(monkeypatch):
     assert sleeps == [1]
 
 
-def test_work_matches_exact_orcid_or_conservative_name_and_affiliation():
+def test_work_matches_exact_orcid_or_conservative_name_and_affiliation() -> None:
     """Match exact identities while rejecting different names and affiliations."""
     record = work('10.1/example')
     assert crossref.work_matches_author(record, orcid='0000-0001-2345-6789')
@@ -108,7 +126,7 @@ def test_work_matches_exact_orcid_or_conservative_name_and_affiliation():
     assert not crossref.work_matches_author(record, author_name='Jane A Smith', affiliation='Elsewhere')
 
 
-def test_author_works_uses_orcid_filter_polite_pool_and_cursor_pagination():
+def test_author_works_uses_orcid_filter_polite_pool_and_cursor_pagination() -> None:
     """Retrieve all unique DOI records over multiple Crossref cursor pages."""
     session = FakeSession([
         {'items': [work('10.1/one'), work('10.1/two')], 'next-cursor': 'next'},
@@ -130,7 +148,7 @@ def test_author_works_uses_orcid_filter_polite_pool_and_cursor_pagination():
     assert 'mailto:person@example.ac.uk' in session.calls[0]['headers']['User-Agent']
 
 
-def test_author_works_name_query_filters_false_positive_candidates():
+def test_author_works_name_query_filters_false_positive_candidates() -> None:
     """Post-filter Crossref's fuzzy author query before accepting records."""
     session = FakeSession([{
         'items': [work('10.1/right'), work('10.1/wrong', given='James')],
@@ -148,7 +166,7 @@ def test_author_works_name_query_filters_false_positive_candidates():
     assert session.calls[0]['params']['query.author'] == 'Jane A Smith'
 
 
-def test_import_author_works_writes_review_csv_and_corpus(tmp_path):
+def test_import_author_works_writes_review_csv_and_corpus(tmp_path: Path) -> None:
     """Map discovered works into both a reviewable CSV and SQLite corpus."""
     session = FakeSession([{'items': [work('10.1/one')], 'next-cursor': 'unused'}])
     db_path = tmp_path / 'supervisor.db'

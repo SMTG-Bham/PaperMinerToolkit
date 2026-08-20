@@ -1,11 +1,16 @@
 """Test Elsevier request helpers and URL construction."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
 import pytest
 
 import paperscraper.elsevier as elsevier
 
 
-def test_api_headers_include_key_accept_and_user_agent():
+def test_api_headers_include_key_accept_and_user_agent() -> None:
     """API headers include key accept and user agent."""
     assert elsevier.api_headers('elsevier-key') == {
         'X-ELS-APIKey': 'elsevier-key',
@@ -15,22 +20,27 @@ def test_api_headers_include_key_accept_and_user_agent():
     assert elsevier.api_headers('elsevier-key', accept='application/pdf')['Accept'] == 'application/pdf'
 
 
-def test_get_json_requests_elsevier_json_and_raises_status(monkeypatch):
+def test_get_json_requests_elsevier_json_and_raises_status(monkeypatch: pytest.MonkeyPatch) -> None:
     """Get JSON requests Elsevier JSON and raises status."""
     calls = {}
 
     class FakeResponse:
         """Provide a response test double."""
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Validate the prepared response status."""
             calls['raised'] = True
 
-        def json(self):
+        def json(self) -> dict[str, bool]:
             """Return the prepared JSON payload."""
             return {'ok': True}
 
-    def fake_get(url, headers, params, timeout):
+    def fake_get(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, Any],
+        timeout: float,
+    ) -> FakeResponse:
         """Provide a fake HTTP GET implementation."""
         calls['url'] = url
         calls['headers'] = headers
@@ -50,20 +60,25 @@ def test_get_json_requests_elsevier_json_and_raises_status(monkeypatch):
     assert calls['raised'] is True
 
 
-def test_get_content_requests_elsevier_raw_response(monkeypatch):
+def test_get_content_requests_elsevier_raw_response(monkeypatch: pytest.MonkeyPatch) -> None:
     """Get content requests Elsevier raw response."""
     calls = {}
 
     class FakeResponse:
         """Provide a response test double."""
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Validate the prepared response status."""
             calls['raised'] = True
 
     response = FakeResponse()
 
-    def fake_get(url, headers, params, timeout):
+    def fake_get(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, Any],
+        timeout: float,
+    ) -> FakeResponse:
         """Provide a fake HTTP GET implementation."""
         calls['headers'] = headers
         calls['params'] = params
@@ -77,7 +92,7 @@ def test_get_content_requests_elsevier_raw_response(monkeypatch):
     assert calls['raised'] is True
 
 
-def test_elsevier_url_builders_quote_query_and_doi_values():
+def test_elsevier_url_builders_quote_query_and_doi_values() -> None:
     """Elsevier URL builders quote query and DOI values."""
     scopus_url = elsevier.search_url('scopus', 'solid electrolyte', 10, 'TITLE-ABS-KEY')
     article_search_url = elsevier.search_url('article', 'solid electrolyte', 10, 'TITLE')

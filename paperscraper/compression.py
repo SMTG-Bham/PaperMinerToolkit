@@ -5,16 +5,29 @@ and model code can decide when to compress without depending on Headroom's
 objects directly.
 """
 
-import math
-from dataclasses import dataclass
+from __future__ import annotations
 
-from paperscraper.tokenizer import count_text_tokens, prompt_token_reserve, usable_input_token_limit
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+from os import PathLike
+from typing import Any, Protocol
+
+from paperscraper.tokenizer import _ModelConfigSource, count_text_tokens, prompt_token_reserve, usable_input_token_limit
 
 COMPRESSION_SCOPES = {'none', 'text', 'images', 'both'}
 COMPRESSION_MODES = {'auto', 'always'}
 FALLBACK_IMAGE_TOKEN_ESTIMATE = 1000
 MIN_COMPRESSION_RATIO = 0.05
 AUTO_RATIO_SAFETY_FACTOR = 0.95
+
+
+class _CompressorLike(Protocol):
+    """Structural interface implemented by Headroom compressors."""
+
+    def compress(self, content: Any) -> Any:
+        """Compress a provider payload."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -40,7 +53,7 @@ class CompressionConfig:
     ratio: float | str = 'auto'
     content_detection: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Normalize and validate compression options after initialization.
 
         Raises
@@ -68,7 +81,7 @@ class CompressionConfig:
         object.__setattr__(self, 'ratio', ratio)
         object.__setattr__(self, 'content_detection', bool(self.content_detection))
 
-    def includes_text(self):
+    def includes_text(self) -> bool:
         """Return whether paper text or text context should be compressed.
 
         Returns
@@ -78,7 +91,7 @@ class CompressionConfig:
         """
         return self.scope in {'text', 'both'}
 
-    def includes_images(self):
+    def includes_images(self) -> bool:
         """Return whether image payloads should be compressed.
 
         Returns
@@ -119,14 +132,14 @@ def compression_config(scope: str = 'none',
     return CompressionConfig(scope=scope, mode=mode, ratio=ratio, content_detection=content_detection)
 
 
-def _request_token_budget(prompt, model_config):
+def _request_token_budget(prompt: str, model_config: _ModelConfigSource | None) -> int:
     """Calculate the input budget remaining after prompt reservation.
 
     Parameters
     ----------
     prompt : str
         Prompt that shares the model context window with the content.
-    model_config : object
+    model_config : _ModelConfigSource or None
         Model configuration used to determine token limits.
 
     Returns
@@ -138,7 +151,7 @@ def _request_token_budget(prompt, model_config):
     return usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
 
 
-def ideal_compression_ratio(input_tokens, token_budget, config: CompressionConfig):
+def ideal_compression_ratio(input_tokens: int, token_budget: int, config: CompressionConfig) -> float:
     """Calculate the target compression ratio for a request.
 
     Parameters
@@ -163,7 +176,12 @@ def ideal_compression_ratio(input_tokens, token_budget, config: CompressionConfi
     return max(MIN_COMPRESSION_RATIO, min(1.0, ratio))
 
 
-def should_compress_text(text, prompt, model_config, config: CompressionConfig):
+def should_compress_text(
+    text: object,
+    prompt: str,
+    model_config: _ModelConfigSource | None,
+    config: CompressionConfig,
+) -> bool:
     """Determine whether text should be compressed before analysis.
 
     Parameters
@@ -172,7 +190,7 @@ def should_compress_text(text, prompt, model_config, config: CompressionConfig):
         Candidate text content.
     prompt : str
         Prompt that accompanies the content.
-    model_config : object
+    model_config : _ModelConfigSource or None
         Model configuration used for token estimation.
     config : CompressionConfig
         Compression settings.
@@ -189,18 +207,24 @@ def should_compress_text(text, prompt, model_config, config: CompressionConfig):
     return count_text_tokens(text, model_config=model_config) > _request_token_budget(prompt, model_config)
 
 
-def should_compress_images(image_paths, prompt, context, model_config, config: CompressionConfig):
+def should_compress_images(
+    image_paths: Sequence[str | PathLike[str]],
+    prompt: str,
+    context: str | None,
+    model_config: _ModelConfigSource | None,
+    config: CompressionConfig,
+) -> bool:
     """Determine whether an image request should be compressed.
 
     Parameters
     ----------
-    image_paths : sequence of str
+    image_paths : Sequence[str or os.PathLike[str]]
         Local image paths included in the request.
     prompt : str
         Prompt that accompanies the images.
     context : str or None
         Optional text context included in the request.
-    model_config : object
+    model_config : _ModelConfigSource or None
         Model configuration used for token estimation.
     config : CompressionConfig
         Compression settings.
@@ -219,7 +243,7 @@ def should_compress_images(image_paths, prompt, context, model_config, config: C
     return text_tokens + image_tokens > _request_token_budget(prompt, model_config)
 
 
-def _image_size(image_path):
+def _image_size(image_path: str | PathLike[str]) -> tuple[int, int] | None:
     """Read the dimensions of a local image.
 
     Parameters
@@ -229,7 +253,7 @@ def _image_size(image_path):
 
     Returns
     -------
-    tuple of int or None
+    tuple[int, int] or None
         Image width and height, or ``None`` when dimensions cannot be read.
     """
     try:
@@ -248,14 +272,17 @@ def _image_size(image_path):
     return None
 
 
-def estimate_image_tokens(image_paths, model_config=None):
+def estimate_image_tokens(
+    image_paths: Sequence[str | PathLike[str]],
+    model_config: _ModelConfigSource | None = None,
+) -> int:
     """Estimate image input tokens for a model provider.
 
     Parameters
     ----------
-    image_paths : sequence of str
+    image_paths : Sequence[str or os.PathLike[str]]
         Local image paths included in the request.
-    model_config : object, optional
+    model_config : _ModelConfigSource or None, optional
         Model configuration identifying the provider.
 
     Returns
@@ -281,17 +308,17 @@ def estimate_image_tokens(image_paths, model_config=None):
     return total
 
 
-def _compressed_content(result):
+def _compressed_content(result: Any) -> Any:
     """Extract content from common Headroom result shapes.
 
     Parameters
     ----------
-    result : object
+    result : Any
         Value returned by a Headroom compressor.
 
     Returns
     -------
-    object
+    Any
         Extracted compressed content, or the string form of an unknown result.
     """
     if isinstance(result, (str, list, tuple)):
@@ -308,7 +335,10 @@ def _compressed_content(result):
     return str(result)
 
 
-def _universal_compressor(compression_ratio=0.5, content_detection=True):
+def _universal_compressor(
+    compression_ratio: float = 0.5,
+    content_detection: bool = True,
+) -> _CompressorLike:
     """Create a Headroom compressor with safe defaults.
 
     Parameters
@@ -320,7 +350,7 @@ def _universal_compressor(compression_ratio=0.5, content_detection=True):
 
     Returns
     -------
-    headroom.compression.UniversalCompressor
+    _CompressorLike
         Configured universal compressor.
 
     Raises
@@ -341,12 +371,17 @@ def _universal_compressor(compression_ratio=0.5, content_detection=True):
     return UniversalCompressor(config)
 
 
-def compress_content(content, prompt='', compression_ratio=0.5, content_detection=True):
+def compress_content(
+    content: Any,
+    prompt: str = '',
+    compression_ratio: float = 0.5,
+    content_detection: bool = True,
+) -> Any:
     """Compress content with Headroom's universal compressor.
 
     Parameters
     ----------
-    content : object
+    content : Any
         Text or provider-shaped message payload to compress.
     prompt : str, optional
         Prompt associated with the content. Reserved for compressor adapters.
@@ -357,7 +392,7 @@ def compress_content(content, prompt='', compression_ratio=0.5, content_detectio
 
     Returns
     -------
-    object
+    Any
         Compressed content, or the original content when compression is empty.
 
     Raises
@@ -374,7 +409,12 @@ def compress_content(content, prompt='', compression_ratio=0.5, content_detectio
     return compressed if compressed else content
 
 
-def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
+def maybe_compress_text(
+    text: str,
+    prompt: str,
+    model_config: _ModelConfigSource | None,
+    config: CompressionConfig,
+) -> Any:
     """Apply compression to text when required by the configured policy.
 
     Parameters
@@ -383,14 +423,14 @@ def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
         Text to evaluate and optionally compress.
     prompt : str
         Prompt that accompanies the text.
-    model_config : object
+    model_config : _ModelConfigSource or None
         Model configuration used for token estimation.
     config : CompressionConfig
         Compression settings.
 
     Returns
     -------
-    object
+    Any
         Compressed content or the original text.
     """
     if should_compress_text(text, prompt, model_config, config):
@@ -404,32 +444,32 @@ def maybe_compress_text(text, prompt, model_config, config: CompressionConfig):
     return text
 
 
-def maybe_compress_image_messages(messages,
-                                  image_paths,
-                                  prompt,
-                                  context,
-                                  model_config,
-                                  config: CompressionConfig | None):
+def maybe_compress_image_messages(messages: list[dict[str, Any]],
+                                  image_paths: Sequence[str | PathLike[str]],
+                                  prompt: str,
+                                  context: str | None,
+                                  model_config: _ModelConfigSource | None,
+                                  config: CompressionConfig | None) -> Any:
     """Apply compression to image messages when required by policy.
 
     Parameters
     ----------
-    messages : list
+    messages : list[dict[str, Any]]
         Provider-shaped messages containing image content.
-    image_paths : sequence of str
+    image_paths : Sequence[str or os.PathLike[str]]
         Local paths for images represented in ``messages``.
     prompt : str
         Prompt that accompanies the images.
     context : str or None
         Optional text context included in the request.
-    model_config : object
+    model_config : _ModelConfigSource or None
         Model configuration used for token estimation.
     config : CompressionConfig or None
         Compression settings, or ``None`` to disable compression.
 
     Returns
     -------
-    object
+    Any
         Compressed messages or the original message list.
     """
     if config is None or not should_compress_images(image_paths, prompt, context, model_config, config):

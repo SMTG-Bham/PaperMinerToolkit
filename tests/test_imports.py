@@ -5,6 +5,8 @@ folder validation, empty-folder handling, metadata mapping, and merging imported
 PDFs with existing corpus rows.
 """
 
+from __future__ import annotations
+
 import shutil
 from pathlib import Path
 
@@ -18,7 +20,7 @@ FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'
 FIXTURE_DOI = '10.1002/aenm.70977'
 
 
-def test_import_pdfs_rejects_missing_directory(tmp_path):
+def test_import_pdfs_rejects_missing_directory(tmp_path: Path) -> None:
     """Test validation of the PDF import directory."""
     missing_dir = tmp_path / 'missing'
 
@@ -26,7 +28,7 @@ def test_import_pdfs_rejects_missing_directory(tmp_path):
         imports.import_pdfs(str(missing_dir))
 
 
-def test_import_pdfs_rejects_directory_without_pdfs(tmp_path):
+def test_import_pdfs_rejects_directory_without_pdfs(tmp_path: Path) -> None:
     """Test PDF import behavior for an empty directory."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -35,7 +37,11 @@ def test_import_pdfs_rejects_directory_without_pdfs(tmp_path):
         imports.import_pdfs(str(papers_dir))
 
 
-def test_import_pdfs_writes_imported_rows_with_metadata(tmp_path, monkeypatch, capsys):
+def test_import_pdfs_writes_imported_rows_with_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test importing a fixture PDF into a new corpus database with metadata."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -75,7 +81,11 @@ def test_import_pdfs_writes_imported_rows_with_metadata(tmp_path, monkeypatch, c
     assert '1 enriched via Crossref' in output
 
 
-def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(tmp_path, monkeypatch, capsys):
+def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test importing a fixture PDF that matches an existing corpus row."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()

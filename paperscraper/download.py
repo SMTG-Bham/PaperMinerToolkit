@@ -5,15 +5,21 @@ available, try PDFs from Unpaywall, OpenAlex, CORE, and Elsevier, and update
 per-paper download status in the SQLite paper corpus after each row.
 """
 
+from __future__ import annotations
+
 import ast
 import html
 import json
 import os
 import re
 import requests
+import sqlite3
 import tempfile
+from collections.abc import Iterable, Mapping
+from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
+from typing import Any, TypeAlias
 from urllib.parse import quote
 
 from paperscraper import elsevier, openalex
@@ -22,9 +28,10 @@ from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex'}
+_Paper: TypeAlias = dict[str, Any]
 
 
-def _elsevier_api_key():
+def _elsevier_api_key() -> str:
     """Return the configured Elsevier API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
@@ -32,7 +39,7 @@ def _elsevier_api_key():
     return api_key
 
 
-def retrieve_document(uri):
+def retrieve_document(uri: str) -> None:
     """Retrieve an Elsevier full-text document.
 
     The decoded response is written to ``data/elsevier_document.json`` after
@@ -74,12 +81,12 @@ def retrieve_document(uri):
         json.dump(response.json(), out_file)
 
 
-def json_to_text(filepath):
+def json_to_text(filepath: str | PathLike[str]) -> str:
     """Read original text from an Elsevier JSON document.
 
     Parameters
     ----------
-    filepath : str or os.PathLike
+    filepath : str or os.PathLike[str]
         Path to the downloaded JSON document.
 
     Returns
@@ -104,7 +111,7 @@ def json_to_text(filepath):
     return text or 'failed'
 
 
-def elsevier_string_formatter(text: str):
+def elsevier_string_formatter(text: str) -> str:
     """Clean wrapper artifacts from Elsevier original text.
 
     Parameters
@@ -127,7 +134,7 @@ def elsevier_string_formatter(text: str):
     return text
 
 
-def _full_text_uri(paper):
+def _full_text_uri(paper: Mapping[str, Any]) -> str | None:
     """Extract an Elsevier full-text URI or DOI retrieval URL from a paper row."""
     link = paper.get('elsevier_link')
     for value in _link_values(link):
@@ -140,7 +147,7 @@ def _full_text_uri(paper):
     return None
 
 
-def _link_values(link):
+def _link_values(link: object) -> list[Any]:
     """Return one or more Elsevier link values from strings, lists, or dictionaries."""
     if isinstance(link, list):
         return link
@@ -158,7 +165,7 @@ def _link_values(link):
     return [text]
 
 
-def _full_text_uri_from_link_value(value):
+def _full_text_uri_from_link_value(value: object) -> str | None:
     """Extract a full-text URI from one Elsevier link object or string."""
     if isinstance(value, dict):
         ref = str(value.get('@ref') or value.get('ref') or '').lower()
@@ -180,17 +187,17 @@ def _full_text_uri_from_link_value(value):
     return None
 
 
-def _is_elsevier_article_endpoint(value):
+def _is_elsevier_article_endpoint(value: str) -> bool:
     """Return whether a URL is an Elsevier article retrieval endpoint."""
     return 'api.elsevier.com/content/article/' in value.lower()
 
 
-def _has_value(value):
+def _has_value(value: object) -> bool:
     """Return whether a paper field contains a meaningful non-empty value."""
     return value is not None and str(value).strip() != ''
 
 
-def _set_status(paper, column: str, status: str, error: str | None = None):
+def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
     """Update a corpus paper status field and optional error text."""
     if column not in PIPELINE_COLUMNS:
         raise KeyError(f'Unknown pipeline status column: {column}')
@@ -201,7 +208,7 @@ def _set_status(paper, column: str, status: str, error: str | None = None):
         paper['last_error'] = ''
 
 
-def _download_text(paper, filepath):
+def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
     """Download Elsevier full text for one paper row to ``filepath``."""
     uri = _full_text_uri(paper)
     if not uri:
@@ -220,7 +227,7 @@ def _download_text(paper, filepath):
     return True
 
 
-def _pdf_urls(paper):
+def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
     """Build Elsevier PDF endpoint candidates for a normalized paper row."""
     urls = []
     doi = paper.get('doi')
@@ -232,7 +239,7 @@ def _pdf_urls(paper):
     return urls
 
 
-def _download_pdf(paper, filepath):
+def _download_pdf(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
     """Try to download an Elsevier PDF for one paper row."""
     api_key = _elsevier_api_key()
     params = {'httpAccept': 'application/pdf'}
@@ -257,7 +264,7 @@ def _download_pdf(paper, filepath):
     return False
 
 
-def _safe_filename(paper):
+def _safe_filename(paper: Mapping[str, Any]) -> str:
     """Create a filesystem-safe filename stem for a paper row."""
     for column in ['doi', 'core_id', 'paper_id']:
         value = paper.get(column)
@@ -269,13 +276,17 @@ def _safe_filename(paper):
     return 'paper'
 
 
-def _unpaywall_email(settings=None):
+def _unpaywall_email(settings: Mapping[str, str] | None = None) -> str | None:
     """Return the configured email address used for Unpaywall requests."""
     settings = settings or load_settings()
     return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL')
 
 
-def _download_url_to_pdf(url, filepath, headers=None):
+def _download_url_to_pdf(
+    url: str | None,
+    filepath: str | PathLike[str],
+    headers: Mapping[str, str] | None = None,
+) -> tuple[bool, str]:
     """Fetch a URL and save it only when the response appears to be a PDF."""
     if not url:
         return False, 'missing URL'
@@ -293,7 +304,10 @@ def _download_url_to_pdf(url, filepath, headers=None):
         return False, str(e)
 
 
-def _download_unpaywall_pdf(paper, filepath):
+def _download_unpaywall_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
     """Use Unpaywall metadata to locate and download an open-access PDF."""
     doi = paper.get('doi')
     if not _has_value(doi):
@@ -322,7 +336,7 @@ def _download_unpaywall_pdf(paper, filepath):
     return False, locals().get('last_error', 'no Unpaywall PDF URL found')
 
 
-def _core_headers():
+def _core_headers() -> dict[str, str]:
     """Build request headers for CORE downloads."""
     settings = load_settings()
     api_key = settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
@@ -332,7 +346,10 @@ def _core_headers():
     return headers
 
 
-def _download_core_pdf(paper, filepath):
+def _download_core_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
     """Download a PDF through CORE using a stored PDF URL or CORE work ID."""
     urls = []
     url = paper.get('pdf_url')
@@ -350,7 +367,10 @@ def _download_core_pdf(paper, filepath):
     return False, last_error
 
 
-def _download_openalex_pdf(paper, filepath):
+def _download_openalex_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
     """Use OpenAlex metadata to locate and download an open-access PDF."""
     doi = paper.get('doi')
     paper_id = str(paper.get('paper_id') or '')
@@ -375,7 +395,7 @@ def _download_openalex_pdf(paper, filepath):
     return False, last_error
 
 
-def _clean_abstract(value):
+def _clean_abstract(value: object) -> str:
     """Normalize provider abstract text to compact plain text."""
     if not _has_value(value):
         return ''
@@ -387,7 +407,7 @@ def _clean_abstract(value):
     return text
 
 
-def _abstract_from_mapping(value):
+def _abstract_from_mapping(value: object) -> str:
     """Return the first abstract-like text from a nested provider mapping."""
     if isinstance(value, dict):
         for key in ['abstract', 'dc:description', 'description', 'dcDescription']:
@@ -406,7 +426,7 @@ def _abstract_from_mapping(value):
     return ''
 
 
-def _core_work_url(paper):
+def _core_work_url(paper: Mapping[str, Any]) -> str | None:
     """Return a CORE work metadata URL for a paper row when possible."""
     core_id = paper.get('core_id')
     if not _has_value(core_id):
@@ -414,7 +434,7 @@ def _core_work_url(paper):
     return f'https://api.core.ac.uk/v3/works/{quote(str(core_id).strip(), safe="")}'
 
 
-def _download_core_abstract(paper):
+def _download_core_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
     """Fetch and return a CORE abstract for one paper row."""
     url = _core_work_url(paper)
     if not url:
@@ -431,7 +451,7 @@ def _download_core_abstract(paper):
     return False, 'no CORE abstract found', ''
 
 
-def _elsevier_abstract_urls(paper):
+def _elsevier_abstract_urls(paper: Mapping[str, Any]) -> list[str]:
     """Build Elsevier abstract endpoint candidates for a paper row."""
     urls = []
     link = paper.get('elsevier_link')
@@ -452,7 +472,7 @@ def _elsevier_abstract_urls(paper):
     return list(dict.fromkeys(urls))
 
 
-def _download_elsevier_abstract(paper):
+def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
     """Fetch and return an Elsevier abstract for one paper row."""
     urls = _elsevier_abstract_urls(paper)
     if not urls:
@@ -475,7 +495,7 @@ def _download_elsevier_abstract(paper):
     return False, last_error, ''
 
 
-def _download_abstract(paper):
+def _download_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
     """Fetch abstract text from available metadata providers."""
     errors = []
     if _has_value(paper.get('core_id')):
@@ -491,7 +511,7 @@ def _download_abstract(paper):
     return False, '; '.join(errors) or 'no abstract source available', ''
 
 
-def _configured_sources(sources):
+def _configured_sources(sources: Iterable[str] | None) -> list[str]:
     """Resolve requested PDF sources, expanding ``all`` to configured providers."""
     if not sources or 'all' in sources:
         settings = load_settings()
@@ -510,12 +530,16 @@ def _configured_sources(sources):
     return list(dict.fromkeys(sources))
 
 
-def _elsevier_configured():
+def _elsevier_configured() -> bool:
     """Return whether an Elsevier API key is available for downloads."""
     return bool(load_settings().get('elsevier_api_key'))
 
 
-def _download_pdf_from_sources(paper, filepath, sources):
+def _download_pdf_from_sources(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+    sources: Iterable[str],
+) -> tuple[bool, str, str]:
     """Try configured PDF sources in order and return success/source details."""
     downloader_by_source = {
         'unpaywall': _download_unpaywall_pdf,
@@ -536,12 +560,18 @@ def _download_pdf_from_sources(paper, filepath, sources):
     return False, '; '.join(errors), ''
 
 
-def _should_try_elsevier_text(paper):
+def _should_try_elsevier_text(paper: Mapping[str, Any]) -> bool:
     """Return whether a paper row advertises Elsevier full text."""
     return _full_text_uri(paper) is not None
 
 
-def _store_downloaded_asset(conn, paper, filepath, role, source):
+def _store_downloaded_asset(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+    role: str,
+    source: str,
+) -> None:
     """Store a downloaded text or PDF file in the corpus blob store."""
     if role in {'text', 'abstract'}:
         kind = 'text'
@@ -563,19 +593,19 @@ def _store_downloaded_asset(conn, paper, filepath, role, source):
     )
 
 
-def download_papers(db_path='papers.db',
-                    download_format='text',
-                    sources=None,
-                    download_abstract=True):
+def download_papers(db_path: str | PathLike[str] = 'papers.db',
+                    download_format: str = 'text',
+                    sources: Iterable[str] | None = None,
+                    download_abstract: bool = True) -> None:
     """Download paper assets and update a corpus in place.
 
     Parameters
     ----------
-    db_path : str or os.PathLike, default='papers.db'
+    db_path : str or os.PathLike[str], default='papers.db'
         Path to the SQLite paper corpus.
     download_format : {'both', 'pdf', 'text'}, default='text'
         Primary asset types to download.
-    sources : iterable of str or None, optional
+    sources : Iterable[str] or None, optional
         Ordered PDF providers to try. ``all`` expands to configured providers.
     download_abstract : bool, default=True
         Whether to retrieve and store abstracts.
@@ -623,7 +653,15 @@ def download_papers(db_path='papers.db',
     )
 
 
-def _download_paper(conn, paper, download_dir, download_format, sources, elsevier_text_available, download_abstract=True):
+def _download_paper(
+    conn: sqlite3.Connection,
+    paper: _Paper,
+    download_dir: str | PathLike[str],
+    download_format: str,
+    sources: Iterable[str],
+    elsevier_text_available: bool,
+    download_abstract: bool = True,
+) -> dict[str, int]:
     """Download requested assets for one corpus paper row."""
     filename = _safe_filename(paper)
     summary = {'texts': 0, 'pdfs': 0, 'abstracts': 0}

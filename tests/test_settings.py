@@ -6,7 +6,11 @@ tests are marked as network tests and read the user's real configuration only
 when explicitly requested.
 """
 
+from __future__ import annotations
+
 import json
+from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -41,7 +45,7 @@ MODEL_ENV_KEYS = [
 
 
 @pytest.fixture
-def isolated_settings_file(tmp_path, monkeypatch):
+def isolated_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point settings reads/writes at a temporary config file and clear env overrides."""
     settings_path = tmp_path / 'pscraperrc.json'
     monkeypatch.setattr(settings, 'SETTINGS_FILE', str(settings_path))
@@ -50,14 +54,14 @@ def isolated_settings_file(tmp_path, monkeypatch):
     return settings_path
 
 
-def test_float_setting_uses_defaults_and_converts_values():
+def test_float_setting_uses_defaults_and_converts_values() -> None:
     """Convert numeric settings and use defaults for missing values."""
     assert settings._float_setting(None, 0.5) == 0.5
     assert settings._float_setting('', 0.5) == 0.5
     assert settings._float_setting('0.25', 0.5) == 0.25
 
 
-def test_capabilities_normalizes_missing_strings_and_lists():
+def test_capabilities_normalizes_missing_strings_and_lists() -> None:
     """Normalize missing, string, and list capability settings."""
     assert settings._capabilities(None) == ['text']
     assert settings._capabilities('', ['text', 'vision']) == ['text', 'vision']
@@ -65,7 +69,7 @@ def test_capabilities_normalizes_missing_strings_and_lists():
     assert settings._capabilities(['text']) == ['text']
 
 
-def test_merge_profile_applies_defaults_and_coerces_types():
+def test_merge_profile_applies_defaults_and_coerces_types() -> None:
     """Merge profile defaults while coercing configured value types."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
@@ -86,7 +90,7 @@ def test_merge_profile_applies_defaults_and_coerces_types():
     assert merged['input_token_limit'] == 64000
 
 
-def test_merge_profile_defaults_missing_input_token_limit():
+def test_merge_profile_defaults_missing_input_token_limit() -> None:
     """Default an empty model input token limit."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
@@ -96,7 +100,7 @@ def test_merge_profile_defaults_missing_input_token_limit():
     assert merged['input_token_limit'] == settings.DEFAULT_INPUT_TOKEN_LIMIT
 
 
-def test_env_profile_collects_only_defined_values(monkeypatch):
+def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatch) -> None:
     """Collect only defined environment values for a model profile."""
     monkeypatch.setenv('PAPERSCRAPER_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERSCRAPER_MODEL_NAME', 'qwen')
@@ -107,7 +111,7 @@ def test_env_profile_collects_only_defined_values(monkeypatch):
     assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000'}
 
 
-def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file):
+def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file: Path) -> None:
     """Load default model profiles when the config file is missing."""
     loaded = settings.load_settings()
 
@@ -115,7 +119,7 @@ def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_set
     assert loaded['model_profiles']['vision']['capabilities'] == ['text', 'vision']
 
 
-def test_load_settings_merges_file_and_environment_overrides(isolated_settings_file, monkeypatch):
+def test_load_settings_merges_file_and_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Apply environment overrides after values loaded from the config file."""
     isolated_settings_file.write_text(json.dumps({
         'elsevier_api_key': 'file-elsevier',
@@ -143,7 +147,7 @@ def test_load_settings_merges_file_and_environment_overrides(isolated_settings_f
     assert loaded['model_profiles']['text']['temperature'] == 0.1
 
 
-def test_load_settings_reports_invalid_config_file(isolated_settings_file):
+def test_load_settings_reports_invalid_config_file(isolated_settings_file: Path) -> None:
     """Report invalid JSON with the config file path."""
     isolated_settings_file.write_text('{not-json')
 
@@ -151,7 +155,7 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file):
         settings.load_settings()
 
 
-def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file, monkeypatch):
+def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override every stored service credential from the environment."""
     isolated_settings_file.write_text(json.dumps({
         'elsevier_api_key': 'file-elsevier',
@@ -178,7 +182,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['openalex_api_key'] == 'env-openalex'
 
 
-def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file, monkeypatch):
+def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override the complete vision model profile from the environment."""
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERSCRAPER_VISION_MODEL_NAME', 'qwen-vl')
@@ -201,7 +205,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     assert profile['input_token_limit'] == 96000
 
 
-def test_save_settings_writes_json_to_config_file(isolated_settings_file):
+def test_save_settings_writes_json_to_config_file(isolated_settings_file: Path) -> None:
     """Write supplied settings as JSON to the config file."""
     settings.save_settings({'core_api_key': 'core-key'})
 
@@ -209,7 +213,7 @@ def test_save_settings_writes_json_to_config_file(isolated_settings_file):
     assert json.loads(isolated_settings_file.read_text()) == {'core_api_key': 'core-key'}
 
 
-def test_get_model_profile_returns_profile_and_rejects_missing_profile(isolated_settings_file):
+def test_get_model_profile_returns_profile_and_rejects_missing_profile(isolated_settings_file: Path) -> None:
     """Return named model profiles and reject unknown names."""
     assert settings.get_model_profile('text')['provider'] == 'openai'
 
@@ -217,14 +221,14 @@ def test_get_model_profile_returns_profile_and_rejects_missing_profile(isolated_
         settings.get_model_profile('missing')
 
 
-def test_infer_model_capabilities_detects_vision_models():
+def test_infer_model_capabilities_detects_vision_models() -> None:
     """Infer vision capability from the profile or model name."""
     assert settings.infer_model_capabilities('text', 'gpt-4') == ['text']
     assert settings.infer_model_capabilities('vision', 'gpt-4') == ['text', 'vision']
     assert settings.infer_model_capabilities('text', 'Qwen/Qwen3-VL-30B') == ['text', 'vision']
 
 
-def test_set_model_profile_persists_profile_values(isolated_settings_file):
+def test_set_model_profile_persists_profile_values(isolated_settings_file: Path) -> None:
     """Persist every configured model profile value."""
     settings.set_model_profile(
         'text',
@@ -251,7 +255,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file):
     assert profile['input_token_limit'] == 120000
 
 
-def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
+def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for and save an Anthropic API key."""
     settings.save_settings({'anthropic_api_key': 'old-anthropic-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'anthropic-key')
@@ -263,20 +267,20 @@ def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file, monk
     assert settings.load_settings()['anthropic_api_key'] == 'anthropic-key'
 
 
-def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch):
+def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Accept an OpenAI key when listing models succeeds."""
 
     class FakeModels:
         """Provide a successful fake models resource."""
 
-        def list(self):
+        def list(self) -> list[object]:
             """Return an empty model listing."""
             return []
 
     class FakeOpenAI:
         """Provide a fake authenticated OpenAI client."""
 
-        def __init__(self, api_key):
+        def __init__(self, api_key: str) -> None:
             """Store the API key and expose the fake models resource."""
             self.api_key = api_key
             self.models = FakeModels()
@@ -286,7 +290,7 @@ def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch):
     assert settings.check_openai_api_key('placeholder-openai-key') is True
 
 
-def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
+def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject an OpenAI key when listing models fails authentication."""
 
     class FakeAuthenticationError(Exception):
@@ -297,14 +301,14 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
     class FakeModels:
         """Provide a model resource that rejects authentication."""
 
-        def list(self):
+        def list(self) -> NoReturn:
             """Raise the fake authentication error."""
             raise FakeAuthenticationError()
 
     class FakeOpenAI:
         """Provide a fake unauthenticated OpenAI client."""
 
-        def __init__(self, api_key):
+        def __init__(self, api_key: str) -> None:
             """Store the API key and expose the failing models resource."""
             self.api_key = api_key
             self.models = FakeModels()
@@ -315,7 +319,7 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch):
     assert settings.check_openai_api_key('placeholder-openai-key') is False
 
 
-def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
+def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for, validate, and save an OpenAI API key."""
     settings.save_settings({'openai_api_key': 'old-openai-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openai-key')
@@ -328,7 +332,7 @@ def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_fil
     assert settings.load_settings()['openai_api_key'] == 'openai-key'
 
 
-def test_update_openai_key_rejects_invalid_key(isolated_settings_file, monkeypatch):
+def test_update_openai_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject and avoid saving an invalid OpenAI API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-openai-key')
     monkeypatch.setattr(settings, 'check_openai_api_key', lambda _: False)
@@ -339,7 +343,7 @@ def test_update_openai_key_rejects_invalid_key(isolated_settings_file, monkeypat
     assert 'openai_api_key' not in settings.load_settings()
 
 
-def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypatch, capsys):
+def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for and save a CORE API key."""
     settings.save_settings({'core_api_key': 'old-core-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'core-key')
@@ -351,11 +355,11 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file, monkeypat
     assert settings.load_settings()['core_api_key'] == 'core-key'
 
 
-def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch):
+def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Accept an Elsevier key when the validation request succeeds."""
     calls = {}
 
-    def fake_get_json(api_key, url):
+    def fake_get_json(api_key: str, url: str) -> dict[str, bool]:
         """Record Elsevier request arguments and return a response."""
         calls['api_key'] = api_key
         calls['url'] = url
@@ -368,7 +372,7 @@ def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch):
     assert 'content/search/scopus' in calls['url']
 
 
-def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
+def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject an Elsevier key when the validation request fails."""
     monkeypatch.setattr(
         settings.elsevier,
@@ -379,7 +383,7 @@ def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch):
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is False
 
 
-def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
+def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for, validate, and save an Elsevier API key."""
     settings.save_settings({'elsevier_api_key': 'old-elsevier-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'elsevier-key')
@@ -392,7 +396,7 @@ def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_f
     assert settings.load_settings()['elsevier_api_key'] == 'elsevier-key'
 
 
-def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file, monkeypatch):
+def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject and avoid saving an invalid Elsevier API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-elsevier-key')
     monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda _: False)
@@ -403,7 +407,7 @@ def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file, monkeyp
     assert 'elsevier_api_key' not in settings.load_settings()
 
 
-def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file, monkeypatch, capsys):
+def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Save a valid Unpaywall email and reject an invalid one."""
     settings.save_settings({'unpaywall_email': 'old@example.com'})
     monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
@@ -417,7 +421,7 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
         settings.update_unpaywall_email()
 
 
-def test_update_openalex_key_validates_and_saves_key(isolated_settings_file, monkeypatch, capsys):
+def test_update_openalex_key_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Save a valid OpenAlex key and reject an invalid one."""
     settings.save_settings({'openalex_api_key': 'old-openalex-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openalex-key')
@@ -434,13 +438,13 @@ def test_update_openalex_key_validates_and_saves_key(isolated_settings_file, mon
         settings.update_openalex_key()
 
 
-def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
+def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject only explicit OpenAlex authentication failures."""
 
     class FakeResponse:
         """Provide a response with a configurable status code."""
 
-        def __init__(self, status_code):
+        def __init__(self, status_code: int) -> None:
             """Store the response status code."""
             self.status_code = status_code
 
@@ -450,7 +454,7 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
     monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(200))
     assert settings.check_openalex_api_key('good-key') is True
 
-    def unreachable(*_, **__):
+    def unreachable(*_: object, **__: object) -> NoReturn:
         """Simulate an unreachable OpenAlex API."""
         raise settings.requests.ConnectionError('offline')
 
@@ -459,7 +463,7 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch):
 
 
 @pytest.mark.network
-def test_check_openai_api_key_validates_configured_key():
+def test_check_openai_api_key_validates_configured_key() -> None:
     """Validate the configured OpenAI key against the live models API."""
     loaded = settings.load_settings()
     api_key = loaded.get('openai_api_key')
@@ -469,7 +473,7 @@ def test_check_openai_api_key_validates_configured_key():
 
 
 @pytest.mark.network
-def test_check_elsevier_api_key_validates_configured_key():
+def test_check_elsevier_api_key_validates_configured_key() -> None:
     """Validate the configured Elsevier key against live Scopus search."""
     loaded = settings.load_settings()
     api_key = loaded.get('elsevier_api_key')

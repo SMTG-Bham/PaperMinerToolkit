@@ -5,8 +5,13 @@ small public paper schema and append or update rows without duplicating papers
 that appear in multiple sources.
 """
 
+from __future__ import annotations
+
 import html
 import os
+import sqlite3
+from collections.abc import Iterable, Mapping
+from typing import Any
 import pandas as pd
 import re
 import requests
@@ -20,7 +25,7 @@ SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
-def _elsevier_api_key():
+def _elsevier_api_key() -> str:
     """Return the configured Elsevier API key."""
     api_key = load_settings().get('elsevier_api_key')
     if not api_key:
@@ -28,7 +33,7 @@ def _elsevier_api_key():
     return api_key
 
 
-def _recast_elsevier_records(records) -> pd.DataFrame:
+def _recast_elsevier_records(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Flatten common one-item Elsevier list fields into scalar DataFrame values."""
     rows = []
     for record in records:
@@ -43,7 +48,7 @@ def document_search(query: str,
                     index: str = 'scopus',
                     count: int = 200,
                     get_all: bool = True,
-                    search_fields: str = 'TITLE-ABS-KEY'):
+                    search_fields: str = 'TITLE-ABS-KEY') -> pd.DataFrame:
     """Search Elsevier and return raw provider records.
 
     This is a small replacement for the Elsapy search helper so PaperScraper can
@@ -109,14 +114,14 @@ def document_search(query: str,
     return _recast_elsevier_records(results)
 
 
-def _first(value):
+def _first(value: object) -> object:
     """Return the first item from a list-like provider value, or the value itself."""
     if isinstance(value, list):
         return value[0] if value else ''
     return value or ''
 
 
-def _elsevier_link(value):
+def _elsevier_link(value: object) -> object:
     """Return the full-text Elsevier link when present, otherwise the first link value."""
     if isinstance(value, list):
         for item in value:
@@ -131,7 +136,7 @@ def _elsevier_link(value):
     return value or ''
 
 
-def _clean_search_abstract(value):
+def _clean_search_abstract(value: object) -> str:
     """Normalize a search-result abstract to compact plain text."""
     if value is None:
         return ''
@@ -143,7 +148,7 @@ def _clean_search_abstract(value):
     return text
 
 
-def _abstract_from_search_record(record):
+def _abstract_from_search_record(record: Mapping[str, Any]) -> str:
     """Extract an abstract-like field from one provider search record."""
     for key in ['abstract', 'dc:description', 'description', 'dcDescription']:
         abstract = _clean_search_abstract(record.get(key))
@@ -173,13 +178,13 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
-def _core_api_key():
+def _core_api_key() -> str | None:
     """Return the configured CORE API key, if one is available."""
     settings = load_settings()
     return settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
 
 
-def _core_headers():
+def _core_headers() -> dict[str, str]:
     """Build request headers for CORE API calls."""
     api_key = _core_api_key()
     headers = {'User-Agent': 'PaperScraper/0.0.1'}
@@ -188,7 +193,7 @@ def _core_headers():
     return headers
 
 
-def _core_download_url(work):
+def _core_download_url(work: Mapping[str, Any]) -> str:
     """Return the best CORE PDF download URL for a work record."""
     download_url = work.get('downloadUrl') or work.get('download_url')
     if download_url:
@@ -199,7 +204,7 @@ def _core_download_url(work):
     return ''
 
 
-def _core_authors(work):
+def _core_authors(work: Mapping[str, Any]) -> str:
     """Format CORE author data as a semicolon-separated author string."""
     authors = work.get('authors') or []
     names = []
@@ -211,7 +216,7 @@ def _core_authors(work):
     return '; '.join(name for name in names if name)
 
 
-def _core_journal(work):
+def _core_journal(work: Mapping[str, Any]) -> object:
     """Extract a journal or publisher name from a CORE work record."""
     journal = work.get('journal') or work.get('publisher') or ''
     if isinstance(journal, dict):
@@ -219,13 +224,13 @@ def _core_journal(work):
     return journal
 
 
-def _core_date(work):
+def _core_date(work: Mapping[str, Any]) -> object:
     """Extract the best available publication date/year from a CORE work record."""
     return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get(
         'year') or ''
 
 
-def _core_rows(works) -> pd.DataFrame:
+def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert CORE work records into normalized paper rows."""
     rows = []
     for work in works:
@@ -250,7 +255,7 @@ def _core_rows(works) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
-def core_search(query: str, count: int = 200):
+def core_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search CORE works.
 
     Parameters
@@ -294,7 +299,7 @@ def core_search(query: str, count: int = 200):
     return _core_rows(works)
 
 
-def _openalex_rows(works) -> pd.DataFrame:
+def _openalex_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert OpenAlex work records into normalized paper rows."""
     rows = []
     for work in works:
@@ -305,7 +310,7 @@ def _openalex_rows(works) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
-def openalex_search(query: str, count: int = 200):
+def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search OpenAlex works.
 
     Parameters
@@ -345,7 +350,10 @@ def openalex_search(query: str, count: int = 200):
     return _openalex_rows(works)
 
 
-def _store_search_abstracts(conn, papers):
+def _store_search_abstracts(
+    conn: sqlite3.Connection,
+    papers: Iterable[dict[str, Any]],
+) -> int:
     """Store search-result abstracts as corpus assets and return the stored count."""
     stored = 0
     for paper in papers:
@@ -373,7 +381,7 @@ def search_for_papers(query: str,
                       db_path: str = 'papers.db',
                       source: str = 'all',
                       count: int = 200,
-                      store_abstract: bool = False):
+                      store_abstract: bool = False) -> None:
     """Search providers and merge results into a corpus.
 
     Parameters

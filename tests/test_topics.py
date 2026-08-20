@@ -1,8 +1,12 @@
 """Tests for reproducible LDA training, inspection, naming, and prediction."""
 
+from __future__ import annotations
+
 import csv
 import json
 from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,7 +20,7 @@ THEME_TEXTS = [
 ]
 
 
-def build_topic_corpus(db_path, papers_per_theme=8):
+def build_topic_corpus(db_path: Path, papers_per_theme: int = 8) -> None:
     """Create a small corpus with three deliberately distinct themes."""
     with corpus.connect(db_path) as conn:
         for theme_id, theme_text in enumerate(THEME_TEXTS):
@@ -37,7 +41,7 @@ def build_topic_corpus(db_path, papers_per_theme=8):
                 )
 
 
-def train_small_model(db_path, model_dir):
+def train_small_model(db_path: Path, model_dir: Path) -> dict[str, Any]:
     """Train a fast deterministic model for topic tests."""
     return topics.train_topic_model(
         db_path,
@@ -55,7 +59,7 @@ def train_small_model(db_path, model_dir):
     )
 
 
-def test_normalize_topic_text_removes_markup_urls_and_dois():
+def test_normalize_topic_text_removes_markup_urls_and_dois() -> None:
     """Normalize boilerplate while retaining words and chemical formulae."""
     value = '<p>Li₇La₃Zr₂O₁₂ transport</p> https://example.test 10.1000/example'
 
@@ -64,7 +68,7 @@ def test_normalize_topic_text_removes_markup_urls_and_dois():
     assert normalized == 'li7la3zr2o12 transport'
 
 
-def test_domain_stopwords_preserve_meaningful_bigrams(tmp_path):
+def test_domain_stopwords_preserve_meaningful_bigrams(tmp_path: Path) -> None:
     """Suppress generic unigrams without removing phrases that contain them."""
     stopwords_path = tmp_path / 'stopwords.txt'
     stopwords_path.write_text(
@@ -86,7 +90,7 @@ def test_domain_stopwords_preserve_meaningful_bigrams(tmp_path):
     assert 'battery_performance' not in features
 
 
-def test_domain_stopwords_require_one_word_per_line(tmp_path):
+def test_domain_stopwords_require_one_word_per_line(tmp_path: Path) -> None:
     """Reject ambiguous multi-word stopword entries with a useful location."""
     path = tmp_path / 'stopwords.txt'
     path.write_text('solid electrolyte\n', encoding='utf-8')
@@ -95,7 +99,7 @@ def test_domain_stopwords_require_one_word_per_line(tmp_path):
         topics.load_domain_stopwords(path)
 
 
-def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path):
+def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path: Path) -> None:
     """Build one normalized document from a title and its latest abstract asset."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -111,7 +115,7 @@ def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path):
     assert 'full text' not in documents[0]['text']
 
 
-def test_train_topic_model_writes_reusable_manual_inspection_artifacts(tmp_path):
+def test_train_topic_model_writes_reusable_manual_inspection_artifacts(tmp_path: Path) -> None:
     """Train LDA, persist its complete artifact, and export normalized probabilities."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'
@@ -159,7 +163,7 @@ def test_train_topic_model_writes_reusable_manual_inspection_artifacts(tmp_path)
     assert all(total == pytest.approx(1.0) for total in probabilities.values())
 
 
-def test_set_topic_name_updates_manual_metadata_and_existing_exports(tmp_path):
+def test_set_topic_name_updates_manual_metadata_and_existing_exports(tmp_path: Path) -> None:
     """Manual names remain separate from the fitted model and propagate to exports."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'
@@ -179,7 +183,7 @@ def test_set_topic_name_updates_manual_metadata_and_existing_exports(tmp_path):
     assert all(row['topic_name'] == 'solid electrolyte research' for row in topic_zero_rows)
 
 
-def test_predict_topic_model_marks_documents_without_known_vocabulary(tmp_path):
+def test_predict_topic_model_marks_documents_without_known_vocabulary(tmp_path: Path) -> None:
     """Prediction exports distinguish scored papers from out-of-vocabulary papers."""
     training_db = tmp_path / 'training.db'
     prediction_db = tmp_path / 'prediction.db'
@@ -213,7 +217,7 @@ def test_predict_topic_model_marks_documents_without_known_vocabulary(tmp_path):
     assert [row['status'] for row in rows if row['paper_id'] == 'unknown'] == ['no_vocabulary_terms']
 
 
-def test_topic_training_rejects_invalid_corpora_and_accidental_overwrite(tmp_path):
+def test_topic_training_rejects_invalid_corpora_and_accidental_overwrite(tmp_path: Path) -> None:
     """Fail clearly for too many topics and non-empty artifact directories."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'
@@ -237,7 +241,7 @@ def test_topic_training_rejects_invalid_corpora_and_accidental_overwrite(tmp_pat
             )
 
 
-def test_compare_topic_models_exports_counts_seeds_metrics_and_stability(tmp_path):
+def test_compare_topic_models_exports_counts_seeds_metrics_and_stability(tmp_path: Path) -> None:
     """Train a comparison grid from one corpus and summarize model diagnostics."""
     db_path = tmp_path / 'papers.db'
     output_dir = tmp_path / 'comparison'
@@ -274,7 +278,7 @@ def test_compare_topic_models_exports_counts_seeds_metrics_and_stability(tmp_pat
                for row in summary['models'])
 
 
-def test_compare_topic_models_requires_multiple_configurations(tmp_path):
+def test_compare_topic_models_requires_multiple_configurations(tmp_path: Path) -> None:
     """Reject a comparison request that would train only one model."""
     with pytest.raises(ValueError, match='at least two'):
         topics.compare_topic_models(

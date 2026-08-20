@@ -5,16 +5,19 @@ compressed blobs, deduplicated content, paper asset links, and corpus storage
 statistics without touching the command-line workflow.
 """
 
+from __future__ import annotations
+
 import gzip
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import paperscraper.corpus as corpus
 
 
-def sample_paper(paper_id='demo:1'):
+def sample_paper(paper_id: str = 'demo:1') -> dict[str, Any]:
     """Return a minimal paper metadata dictionary for corpus tests."""
     return {
         'paper_id': paper_id,
@@ -28,7 +31,7 @@ def sample_paper(paper_id='demo:1'):
     }
 
 
-def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_path):
+def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_path: Path) -> None:
     """Test SQLite corpus storage for paper assets."""
     db_path = tmp_path / 'corpus.db'
     text = 'Lithium solid electrolyte storage demo. ' * 50
@@ -71,7 +74,7 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     assert stats['savings_fraction'] > 0
 
 
-def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path):
+def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: Path) -> None:
     """Add nullable chunk-count columns to an existing version-one corpus."""
     db_path = tmp_path / 'legacy.db'
     legacy_fields = [
@@ -118,7 +121,7 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path):
     assert {'corpus_filters', 'paper_filter_results', 'paper_filter_state'} <= tables
 
 
-def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
+def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path: Path) -> None:
     """Test uncompressed blob storage and missing asset lookup."""
     pdf = b'%PDF-1.4\n% dummy pdf\n'
 
@@ -142,7 +145,7 @@ def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
     assert missing is None
 
 
-def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
+def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path) -> None:
     """Load the latest asset per paper and role without returning unrelated roles."""
     with corpus.connect(tmp_path / 'corpus.db') as conn:
         paper = sample_paper('demo:assets')
@@ -164,7 +167,7 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
     assert assets[('demo:assets', 'abstract')]['source'] == 'second'
 
 
-def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
+def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path: Path) -> None:
     """Test corpus compression validation."""
     with corpus.connect(tmp_path / 'corpus.db') as conn:
         with pytest.raises(ValueError, match='compression must be one of'):
@@ -173,7 +176,7 @@ def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
         corpus._decompress(gzip.compress(b'data'), 'brotli')
 
 
-def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_path):
+def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_path: Path) -> None:
     """Test corpus helper conversion branches."""
     text_path = tmp_path / 'paper.txt'
     text_path.write_text('paper text')
@@ -184,7 +187,7 @@ def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_pa
     assert corpus._prepare_content([65, 66, 67]) == b'ABC'
 
 
-def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
+def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path: Path) -> None:
     """Test corpus paper upserts and duplicate merging."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         paper_id = corpus.upsert_paper(conn, {
@@ -214,7 +217,7 @@ def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
     assert rows[0]['metadata_json'] == '{"provider": "elsevier"}'
 
 
-def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path):
+def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path: Path) -> None:
     """Test fallback paper IDs and title/year duplicate matching."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         added, updated = corpus.upsert_papers(conn, [{

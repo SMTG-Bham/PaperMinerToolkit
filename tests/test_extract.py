@@ -1,13 +1,18 @@
 """Test prompt construction, response parsing, and extraction workflows."""
 
+from __future__ import annotations
+
 import json
+from collections.abc import Mapping
+from typing import Any, NoReturn
 
 import pytest
 
+from paperscraper.compression import CompressionConfig
 import paperscraper.extract as extract
 
 
-def sample_recipe():
+def sample_recipe() -> dict[str, Any]:
     """Return a minimal extraction recipe for tests."""
     return {
         'material type': 'solid electrolyte',
@@ -25,7 +30,7 @@ def sample_recipe():
     }
 
 
-def test_token_length_handles_non_strings_model_encodings_and_fallbacks(monkeypatch):
+def test_token_length_handles_non_strings_model_encodings_and_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test token length estimation for normal and fallback paths."""
     assert extract.token_length(None) == []
     monkeypatch.setattr(extract, 'count_text_tokens', lambda prompt, model_config=None, model=None, provider=None: 3)
@@ -33,7 +38,7 @@ def test_token_length_handles_non_strings_model_encodings_and_fallbacks(monkeypa
     assert extract.token_length('one two three', model_config={'provider': 'test'}) == 3
 
 
-def test_prompt_builders_include_recipe_schema_examples_and_source_rules():
+def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> None:
     """Test that prompt builders include recipe and source instructions."""
     recipe = sample_recipe()
 
@@ -52,7 +57,7 @@ def test_prompt_builders_include_recipe_schema_examples_and_source_rules():
     assert extract.build_scrape_prompt(recipe, source='image') == image_prompt
 
 
-def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch):
+def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that model queries use the text profile and output limit."""
     calls = {}
 
@@ -62,12 +67,16 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch):
         name = 'fake-text-model'
 
         @classmethod
-        def from_profile(cls, profile):
+        def from_profile(cls, profile: str) -> FakeConfig:
             """Record the requested profile and return a fake configuration."""
             calls['profile'] = profile
             return cls()
 
-    def fake_query_text(messages, config, max_output_tokens):
+    def fake_query_text(
+        messages: list[dict[str, str]],
+        config: FakeConfig,
+        max_output_tokens: int,
+    ) -> str:
         """Record a text query and return an empty JSON result."""
         calls['messages'] = messages
         calls['config'] = config
@@ -85,7 +94,7 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch):
     assert calls['max_output_tokens'] == 10000
 
 
-def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses():
+def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() -> None:
     """Test JSON extraction from clean, fenced, messy, and invalid responses."""
     assert extract._extract_json_objects('[{"Name": "LLZO"}, "skip"]') == [{'Name': 'LLZO'}]
     assert extract._extract_json_objects('{"Name": "LATP"}') == [{'Name': 'LATP'}]
@@ -101,19 +110,22 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses():
         extract._extract_json_objects('No records were found.')
 
 
-def test_extract_json_objects_uses_regex_fallback_after_decoder_scan_fails(monkeypatch):
+def test_extract_json_objects_uses_regex_fallback_after_decoder_scan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test regex recovery after the JSON decoder scan finds no records."""
     monkeypatch.setattr(extract, '_json_decoder_scan', lambda _: [])
 
     assert extract._extract_json_objects('noise {not json} then {"Name": "LLZO"}') == [{'Name': 'LLZO'}]
 
 
-def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monkeypatch):
+def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that extraction helpers delegate to model and document layers."""
     recipe = sample_recipe()
     calls = {}
 
-    def fake_query_model(messages, model_config=None):
+    def fake_query_model(
+        messages: list[dict[str, str]],
+        model_config: Mapping[str, str] | None = None,
+    ) -> str:
         """Record text messages and return one material record."""
         calls.setdefault('text_messages', []).append(messages)
         calls['text_config'] = model_config
@@ -123,12 +135,19 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         """Provide a minimal vision model configuration."""
 
         @classmethod
-        def from_profile(cls, profile):
+        def from_profile(cls, profile: str) -> dict[str, str]:
             """Record and return the requested profile."""
             calls['vision_profile'] = profile
             return {'profile': profile}
 
-    def fake_query_images(prompt, image_paths, config, context, max_output_tokens, compression_config=None):
+    def fake_query_images(
+        prompt: str,
+        image_paths: list[str],
+        config: dict[str, str],
+        context: str,
+        max_output_tokens: int,
+        compression_config: CompressionConfig | None = None,
+    ) -> str:
         """Record an image query and return one material record."""
         calls['image_prompt'] = prompt
         calls['image_paths'] = image_paths
@@ -163,11 +182,14 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['text_messages'][-1][1]['content'] == 'text from paper.pdf'
 
 
-def test_combine_material_records_sends_both_record_sets_for_reconciliation(monkeypatch):
+def test_combine_material_records_sends_both_record_sets_for_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that reconciliation sends both extracted record sets."""
     calls = {}
 
-    def fake_query_model(messages, model_config=None):
+    def fake_query_model(
+        messages: list[dict[str, str]],
+        model_config: Mapping[str, str] | None = None,
+    ) -> str:
         """Record reconciliation messages and return a merged record."""
         calls['messages'] = messages
         calls['model_config'] = model_config
@@ -192,7 +214,7 @@ def test_combine_material_records_sends_both_record_sets_for_reconciliation(monk
     assert output == [{'Name': 'merged', 'Conductivity': '1e-3 S cm^-1'}]
 
 
-def test_convert_units_preserves_missing_values_and_queries_only_real_values(monkeypatch):
+def test_convert_units_preserves_missing_values_and_queries_only_real_values(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that unit conversion preserves missing values and queries real ones."""
     calls = {}
 
@@ -202,12 +224,15 @@ def test_convert_units_preserves_missing_values_and_queries_only_real_values(mon
         name = 'fake-text-model'
 
         @classmethod
-        def from_profile(cls, profile):
+        def from_profile(cls, profile: str) -> FakeConfig:
             """Record the requested profile and return a fake configuration."""
             calls['profile'] = profile
             return cls()
 
-    def fake_query_model(messages, model_config=None):
+    def fake_query_model(
+        messages: list[dict[str, str]],
+        model_config: FakeConfig | None = None,
+    ) -> str:
         """Record a unit conversion query and return converted values."""
         calls['messages'] = messages
         calls['model_config'] = model_config
@@ -227,7 +252,7 @@ def test_convert_units_preserves_missing_values_and_queries_only_real_values(mon
     assert 'Convert the following values of Conductivity to S cm^-1' in calls['messages'][0]['content']
 
 
-def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypatch):
+def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that large conversion batches split only between complete values."""
 
     class FakeConfig:
@@ -236,20 +261,27 @@ def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypa
         name = 'fake-text-model'
 
         @classmethod
-        def from_profile(cls, _):
+        def from_profile(cls, _: str) -> FakeConfig:
             """Return a fake configuration for any profile."""
             return cls()
 
     chunks = []
     reserve_calls = []
 
-    def fake_query_model(messages, model_config=None):
+    def fake_query_model(
+        messages: list[dict[str, str]],
+        model_config: FakeConfig | None = None,
+    ) -> str:
         """Record a value chunk and return deterministic conversions."""
         chunk = messages[1]['content']
         chunks.append(chunk)
         return '\n'.join(f'converted {value}' for value in chunk.splitlines())
 
-    def fake_reserve(prompt, model_config=None, buffer_tokens=500):
+    def fake_reserve(
+        prompt: str,
+        model_config: FakeConfig | None = None,
+        buffer_tokens: int = 500,
+    ) -> int:
         """Record prompt reservation arguments and return a fixed reserve."""
         reserve_calls.append({
             'prompt': prompt,
@@ -275,7 +307,7 @@ def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypa
     assert output == ['converted alpha', 'converted beta', 'converted gamma']
 
 
-def test_convert_units_returns_missing_values_without_calling_model(monkeypatch):
+def test_convert_units_returns_missing_values_without_calling_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that all-missing values bypass the conversion model."""
 
     class FakeConfig:
@@ -284,11 +316,11 @@ def test_convert_units_returns_missing_values_without_calling_model(monkeypatch)
         name = 'fake-text-model'
 
         @classmethod
-        def from_profile(cls, _):
+        def from_profile(cls, _: str) -> FakeConfig:
             """Return a fake configuration for any profile."""
             return cls()
 
-    def fail_query_model(*_, **__):
+    def fail_query_model(*_: object, **__: object) -> NoReturn:
         """Fail if a model query is attempted."""
         raise AssertionError('query_model should not be called')
 

@@ -1,12 +1,20 @@
 """Unit tests for OpenAlex request helpers and work-record mapping."""
 
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import Any
+
 import pytest
 import requests
 
 import paperscraper.openalex as openalex
 
 
-def work(doi='https://doi.org/10.1234/Example.One', identifier='https://openalex.org/W123'):
+def work(
+    doi: str | None = 'https://doi.org/10.1234/Example.One',
+    identifier: str = 'https://openalex.org/W123',
+) -> dict[str, Any]:
     """Return a minimal OpenAlex work record."""
     return {
         'id': identifier,
@@ -34,18 +42,18 @@ def work(doi='https://doi.org/10.1234/Example.One', identifier='https://openalex
 class FakeResponse:
     """Prepared OpenAlex JSON response with a configurable status code."""
 
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
         """Initialize the response test double."""
         self.payload = payload
         self.status_code = status_code
         self.headers = {}
 
-    def raise_for_status(self):
+    def raise_for_status(self) -> None:
         """Validate the prepared response status."""
         if self.status_code >= 400:
             raise requests.HTTPError(f'{self.status_code} error', response=self)
 
-    def json(self):
+    def json(self) -> dict[str, Any]:
         """Return the prepared JSON payload."""
         return self.payload
 
@@ -53,12 +61,18 @@ class FakeResponse:
 class FakeSession:
     """Return prepared OpenAlex responses and record request arguments."""
 
-    def __init__(self, responses):
+    def __init__(self, responses: Iterable[FakeResponse]) -> None:
         """Initialize the session with prepared responses."""
         self.responses = iter(responses)
         self.calls = []
 
-    def get(self, url, params, headers, timeout):
+    def get(
+        self,
+        url: str,
+        params: Mapping[str, Any],
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> FakeResponse:
         """Return the next prepared response and record the request."""
         self.calls.append({
             'url': url,
@@ -69,7 +83,7 @@ class FakeSession:
         return next(self.responses)
 
 
-def test_reconstruct_abstract_orders_tokens_and_handles_missing_index():
+def test_reconstruct_abstract_orders_tokens_and_handles_missing_index() -> None:
     """Rebuild readable text from position lists and tolerate absent indexes."""
     assert openalex.reconstruct_abstract({'Despite': [0], 'growth': [2], 'the': [1]}) == 'Despite the growth'
     assert openalex.reconstruct_abstract({'is': [1, 3], 'It': [0], 'good': [2]}) == 'It is good is'
@@ -77,7 +91,7 @@ def test_reconstruct_abstract_orders_tokens_and_handles_missing_index():
     assert openalex.reconstruct_abstract({}) == ''
 
 
-def test_work_to_paper_maps_and_cleans_fields():
+def test_work_to_paper_maps_and_cleans_fields() -> None:
     """Clean URL-form DOIs and flatten nested OpenAlex fields into paper columns."""
     paper = openalex.work_to_paper(work())
     assert paper['paper_id'] == 'doi:10.1234/example.one'
@@ -91,7 +105,7 @@ def test_work_to_paper_maps_and_cleans_fields():
     assert paper['metadata_status'] == 'retrieved'
 
 
-def test_work_to_paper_without_doi_uses_openalex_identifier():
+def test_work_to_paper_without_doi_uses_openalex_identifier() -> None:
     """Fall back to the W-identifier and empty fields when data is missing."""
     record = work(doi=None)
     record['primary_location'] = None
@@ -110,7 +124,7 @@ def test_work_to_paper_without_doi_uses_openalex_identifier():
     assert openalex.work_to_paper({})['paper_id'] == ''
 
 
-def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch):
+def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sleep for Retry-After seconds when numeric and exponential backoff otherwise."""
     sleeps = []
     monkeypatch.setattr(openalex.time, 'sleep', sleeps.append)
@@ -128,14 +142,14 @@ def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch):
     assert sleeps == [7.0, 1]
 
 
-def test_request_json_returns_none_for_missing_work():
+def test_request_json_returns_none_for_missing_work() -> None:
     """Treat a 404 as a terminal miss instead of retrying."""
     session = FakeSession([FakeResponse({'error': 'not found'}, status_code=404)])
     assert openalex.request_json(openalex.WORKS_URL, session=session) is None
     assert len(session.calls) == 1
 
 
-def test_request_json_raises_after_exhausting_attempts(monkeypatch):
+def test_request_json_raises_after_exhausting_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Surface a RuntimeError containing the last error once retries run out."""
     monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
     session = FakeSession([FakeResponse({}, status_code=500), FakeResponse({}, status_code=500)])
@@ -143,7 +157,7 @@ def test_request_json_raises_after_exhausting_attempts(monkeypatch):
         openalex.request_json(openalex.WORKS_URL, session=session, attempts=2)
 
 
-def test_get_work_builds_doi_and_id_urls():
+def test_get_work_builds_doi_and_id_urls() -> None:
     """Request single works by DOI or W-identifier, sending the key when configured."""
     session = FakeSession([FakeResponse(work()), FakeResponse(work())])
 
@@ -157,7 +171,7 @@ def test_get_work_builds_doi_and_id_urls():
     assert 'api_key' not in session.calls[1]['params']
 
 
-def test_request_params_adds_api_key_only_when_configured():
+def test_request_params_adds_api_key_only_when_configured() -> None:
     """Copy caller parameters and attach the API key only when one is available."""
     params = {'search': 'solid electrolyte'}
 
@@ -168,7 +182,7 @@ def test_request_params_adds_api_key_only_when_configured():
     assert params == {'search': 'solid electrolyte'}
 
 
-def test_request_json_raises_immediately_for_a_rejected_api_key(monkeypatch):
+def test_request_json_raises_immediately_for_a_rejected_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail fast on 401 rather than retrying a key OpenAlex will keep rejecting."""
     monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
     session = FakeSession([FakeResponse({'error': 'Invalid or missing API key'}, status_code=401)])
@@ -179,7 +193,9 @@ def test_request_json_raises_immediately_for_a_rejected_api_key(monkeypatch):
     assert len(session.calls) == 1
 
 
-def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(monkeypatch):
+def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Fail fast on 429 and report the reset window, which outlasts any backoff."""
     monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
     exhausted = FakeResponse({}, status_code=429)
@@ -199,7 +215,7 @@ def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(mon
         openalex.request_json(openalex.WORKS_URL, session=session)
 
 
-def test_pdf_candidates_orders_and_deduplicates_urls():
+def test_pdf_candidates_orders_and_deduplicates_urls() -> None:
     """Prefer the best OA location, then other locations, then the OA landing URL."""
     assert openalex.pdf_candidates(work()) == [
         'https://example.org/best.pdf',
@@ -209,7 +225,7 @@ def test_pdf_candidates_orders_and_deduplicates_urls():
     assert openalex.pdf_candidates({}) == []
 
 
-def test_configured_api_key_prefers_settings_then_environment(monkeypatch):
+def test_configured_api_key_prefers_settings_then_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve the OpenAlex API key from settings before the environment."""
     monkeypatch.delenv('OPENALEX_API_KEY', raising=False)
     assert openalex.configured_api_key({'openalex_api_key': 'settings-key'}) == 'settings-key'
@@ -220,7 +236,7 @@ def test_configured_api_key_prefers_settings_then_environment(monkeypatch):
 
 
 @pytest.mark.network
-def test_get_work_uses_real_openalex_api():
+def test_get_work_uses_real_openalex_api() -> None:
     """Fetch one known open-access work from the live OpenAlex API."""
     record = openalex.get_work('doi:10.1371/journal.pone.0000308', api_key=openalex.configured_api_key())
     assert record is not None

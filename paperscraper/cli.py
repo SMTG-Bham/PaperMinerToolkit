@@ -4,6 +4,10 @@ This module maps installed ``ps_*`` commands to the underlying search, import,
 download, scrape, store, configuration, and maintenance functions.
 """
 
+from __future__ import annotations
+
+from typing import Any, Mapping
+
 import click
 from paperscraper.corpus import connect, corpus_stats
 from paperscraper.crossref import import_author_works
@@ -34,7 +38,7 @@ from paperscraper.settings import (get_model_profile,
 from paperscraper.utilities import reset, status
 
 
-def _format_bytes(size: int):
+def _format_bytes(size: int) -> str:
     """Format a byte count using compact binary units."""
     value = float(size)
     for unit in ['B', 'KiB', 'MiB', 'GiB']:
@@ -61,7 +65,7 @@ def _format_bytes(size: int):
               default=False,
               help='Store abstracts returned by search providers as corpus assets.')
 
-def paper_search(query: str, db_path: str, source: str, count: int, store_abstract: bool):
+def paper_search(query: str, db_path: str, source: str, count: int, store_abstract: bool) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
     search_for_papers(query, db_path, source=source, count=count, store_abstract=store_abstract)
 
@@ -73,7 +77,7 @@ def paper_search(query: str, db_path: str, source: str, count: int, store_abstra
               is_flag=True,
               default=False,
               help='Only scrape DOI from PDFs; skip Crossref metadata lookup.')
-def import_pdf_folder(dir: str, db_path: str, no_crossref: bool):
+def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
     """Import local PDFs into the paper corpus, optionally skipping Crossref lookup."""
     import_pdfs(dir, db_path, use_crossref=not no_crossref)
 
@@ -93,7 +97,7 @@ def import_author(db_path: str,
                   author_name: str | None,
                   affiliation: str | None,
                   max_results: int,
-                  review_csv: str):
+                  review_csv: str) -> None:
     """Import one author's DOI-bearing Crossref works into a corpus."""
     if bool(orcid) == bool(author_name):
         raise click.UsageError('Provide exactly one of --orcid or --author.')
@@ -136,16 +140,16 @@ def import_author(db_path: str,
 def download(
         db_path: str,
         download_format: str,
-        sources: tuple[str],
+        sources: tuple[str, ...],
         download_abstract: bool,
-):
+) -> None:
     """Download text and/or PDFs for rows in the paper corpus."""
     download_papers(db_path, download_format=download_format, sources=list(sources), download_abstract=download_abstract)
 
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def corpus_status(db_path: str):
+def corpus_status(db_path: str) -> None:
     """Print storage statistics for the paper corpus."""
     with connect(db_path) as conn:
         stats = corpus_stats(conn)
@@ -162,7 +166,7 @@ def corpus_status(db_path: str):
     click.echo(f'Storage saved: {stats["savings_fraction"]:.1%}')
 
 
-def _echo_filter_overview(db_path, overview):
+def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
     """Print a compact, explicit summary of the active filter stack."""
     click.echo(f'Corpus filters: {db_path}')
     if not overview['filters']:
@@ -207,8 +211,8 @@ def _echo_filter_overview(db_path, overview):
               help='Replace and reevaluate an active filter with the same name.')
 @click.option('--timeout-ms', type=click.IntRange(min=1), default=None,
               help='Override the per-pattern match timeout from the JSON definition.')
-def filter_regex(db_path: str, rules_path: str, fields: tuple[str],
-                 join_operator: str | None, replace: bool, timeout_ms: int | None):
+def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
+                 join_operator: str | None, replace: bool, timeout_ms: int | None) -> None:
     """Apply a named post-download regex filter to a paper corpus."""
     try:
         overview = apply_regex_filter(
@@ -226,7 +230,7 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str],
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def filter_status(db_path: str):
+def filter_status(db_path: str) -> None:
     """Show active corpus filters and their final paper decisions."""
     with connect(db_path) as conn:
         overview = filter_overview(conn)
@@ -238,7 +242,7 @@ def filter_status(db_path: str):
 @click.option('--name', default=None, help='Remove one active filter by name.')
 @click.option('--all', 'all_filters', is_flag=True, default=False,
               help='Remove every active filter.')
-def filter_reset(db_path: str, name: str | None, all_filters: bool):
+def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
     """Remove one or all active corpus filters."""
     try:
         overview = reset_filters(db_path, name=name, all_filters=all_filters)
@@ -274,7 +278,7 @@ def filter_reset(db_path: str, name: str | None, all_filters: bool):
 def topics_train(db_path: str,
                  model_dir: str,
                  num_topics: int,
-                 text_fields: tuple[str],
+                 text_fields: tuple[str, ...],
                  min_df: int,
                  max_df: float,
                  max_features: int,
@@ -285,7 +289,7 @@ def topics_train(db_path: str,
                  representative_papers: int,
                  stopwords_file: str | None,
                  ngram_max: int,
-                 overwrite: bool):
+                 overwrite: bool) -> None:
     """Train an LDA model and write inspectable, manually nameable artifacts."""
     try:
         summary = train_topic_model(
@@ -345,9 +349,9 @@ def topics_train(db_path: str,
               help='Replace known comparison and model artifact files.')
 def topics_compare(db_path: str,
                    output_dir: str,
-                   topic_counts: tuple[int],
-                   random_states: tuple[int],
-                   text_fields: tuple[str],
+                   topic_counts: tuple[int, ...],
+                   random_states: tuple[int, ...],
+                   text_fields: tuple[str, ...],
                    min_df: int,
                    max_df: float,
                    max_features: int,
@@ -357,7 +361,7 @@ def topics_compare(db_path: str,
                    representative_papers: int,
                    stopwords_file: str | None,
                    ngram_max: int,
-                   overwrite: bool):
+                   overwrite: bool) -> None:
     """Train several LDA configurations and export comparable diagnostics."""
     try:
         summary = compare_topic_models(
@@ -395,7 +399,7 @@ def topics_compare(db_path: str,
 @click.argument('model_dir', default='topic_model', type=click.Path(exists=True, file_okay=False))
 @click.option('--representatives', default=3, type=click.IntRange(min=0), show_default=True,
               help='Representative paper titles to print for each topic.')
-def topics_show(model_dir: str, representatives: int):
+def topics_show(model_dir: str, representatives: int) -> None:
     """Print top terms and representative papers for manual topic naming."""
     try:
         topics = topic_descriptions(model_dir)
@@ -413,7 +417,7 @@ def topics_show(model_dir: str, representatives: int):
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('topic_id', type=click.IntRange(min=0))
 @click.argument('topic_name', type=str)
-def topics_name(model_dir: str, topic_id: int, topic_name: str):
+def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
     """Assign a manual human-readable name to one fitted topic."""
     try:
         set_topic_name(model_dir, topic_id, topic_name)
@@ -426,7 +430,7 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str):
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_path', default='paper_topics.csv', type=click.Path())
-def topics_predict(model_dir: str, db_path: str, output_path: str):
+def topics_predict(model_dir: str, db_path: str, output_path: str) -> None:
     """Apply a saved LDA model to a corpus and export topic probabilities."""
     try:
         summary = predict_topic_model(model_dir, db_path, output_path)
@@ -533,7 +537,7 @@ def scrape(
         compression_mode: str,
         compression_ratio: str,
         compression_content_detection: bool,
-):
+) -> None:
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
         db_path,
@@ -570,37 +574,37 @@ def scrape(
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False,
               help='Store converted results without an interactive confirmation prompt.')
-def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool):
+def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool) -> None:
     """Store temporary scrape results in the final materials CSV."""
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
-def update_elsevier_api_key():
+def update_elsevier_api_key() -> None:
     """Prompt for and save an Elsevier API key."""
     update_elsevier_key()
 
 
-def update_core_api_key():
+def update_core_api_key() -> None:
     """Prompt for and save a CORE API key."""
     update_core_key()
 
 
-def update_unpaywall_api_email():
+def update_unpaywall_api_email() -> None:
     """Prompt for and save an Unpaywall email address."""
     update_unpaywall_email()
 
 
-def update_openalex_api_key():
+def update_openalex_api_key() -> None:
     """Prompt for and save an OpenAlex API key."""
     update_openalex_key()
 
 
-def update_openai_api_key():
+def update_openai_api_key() -> None:
     """Prompt for and save an OpenAI API key."""
     update_openai_key()
 
 
-def update_anthropic_api_key():
+def update_anthropic_api_key() -> None:
     """Prompt for and save an Anthropic API key."""
     update_anthropic_key()
 
@@ -630,7 +634,7 @@ def update_anthropic_api_key():
               show_default=True,
               help='Maximum input tokens to send to the model before chunking.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
-                 capabilities: tuple[str], temperature: float, top_p: float, input_token_limit: int):
+                 capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int) -> None:
     """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
     set_model_profile(
@@ -649,7 +653,7 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
 
 
 @click.command()
-def model_status():
+def model_status() -> None:
     """Print configured text and vision model profiles."""
     for profile in ['text', 'vision']:
         config = get_model_profile(profile)
@@ -660,13 +664,13 @@ def model_status():
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def reset_scraper(db_path: str):
+def reset_scraper(db_path: str) -> None:
     """Reset pipeline statuses in the paper corpus."""
     reset(db_path)
 
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def scraper_status(db_path: str):
+def scraper_status(db_path: str) -> None:
     """Print pipeline progress for the paper corpus."""
     status(db_path)

@@ -5,14 +5,20 @@ model calls, text/image reconciliation, status updates, and optional cleanup for
 the main ``ps_scrape`` command.
 """
 
+from __future__ import annotations
+
 import math
 import os
 import pandas as pd
 import random
 import re
+import sqlite3
 import sys
 import tempfile
+from collections.abc import Iterable, Mapping, Sequence
+from os import PathLike
 from tqdm import tqdm
+from typing import Any, TypeAlias
 
 from paperscraper.compression import compression_config, maybe_compress_text
 from paperscraper.documents import (extract_pdf_images,
@@ -23,29 +29,31 @@ from paperscraper.extract import build_scrape_prompt, combine_material_records, 
 from paperscraper.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
 from paperscraper.models import ModelConfig
 from paperscraper.recipes import load_recipe
-from paperscraper.tokenizer import prompt_token_reserve, usable_input_token_limit
+from paperscraper.tokenizer import _ModelConfigSource, prompt_token_reserve, usable_input_token_limit
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
 IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
 SCRAPE_ORDERS = {'corpus', 'random', 'publication-asc', 'publication-desc', 'title', 'paper-id'}
+_Paper: TypeAlias = dict[str, Any]
+_Material: TypeAlias = dict[str, Any]
 
 
-def _text_chunks(text: str, model_config, prompt: str = ''):
+def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
     """Split text into chunks that fit a model context window.
 
     Parameters
     ----------
     text : str
         Text to split.
-    model_config : ModelConfig
+    model_config : _ModelConfigSource
         Model configuration used to calculate the input budget.
     prompt : str, optional
         Prompt that shares the model context window with the text.
 
     Returns
     -------
-    list of str
+    list[str]
         One or more character-contiguous text chunks.
     """
     reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
@@ -64,20 +72,26 @@ def _text_chunks(text: str, model_config, prompt: str = ''):
     return chunks
 
 
-def _record_chunk_plan(row, stage, chunks, model_config, summary):
+def _record_chunk_plan(
+    row: _Paper,
+    stage: str,
+    chunks: Sequence[object],
+    model_config: _ModelConfigSource,
+    summary: dict[str, int],
+) -> None:
     """Record a chunk plan and warn about multi-request inputs.
 
     Parameters
     ----------
-    row : dict-like
+    row : _Paper
         Corpus row updated with the chunk count.
     stage : str
         Pipeline stage name used in row and summary keys.
-    chunks : sequence
+    chunks : Sequence[object]
         Planned model input chunks.
-    model_config : ModelConfig
+    model_config : _ModelConfigSource
         Model configuration used to describe the input limit.
-    summary : dict
+    summary : dict[str, int]
         Mutable scrape summary updated for multi-chunk inputs.
     """
     chunk_count = len(chunks)
@@ -100,23 +114,28 @@ def _record_chunk_plan(row, stage, chunks, model_config, summary):
     )
 
 
-def _append_materials(materials, row, source, source_path):
+def _append_materials(
+    materials: Iterable[_Material],
+    row: Mapping[str, Any],
+    source: str,
+    source_path: str | None,
+) -> list[_Material]:
     """Attach paper metadata and provenance to material records.
 
     Parameters
     ----------
-    materials : iterable of dict
+    materials : Iterable[_Material]
         Extracted material records to enrich.
-    row : dict-like
+    row : Mapping[str, Any]
         Corpus paper row supplying metadata.
     source : str
         Extraction source label.
-    source_path : str
+    source_path : str or None
         Source path or corpus asset identifier.
 
     Returns
     -------
-    list of dict
+    list[_Material]
         Enriched material records.
     """
     output = []
@@ -130,21 +149,25 @@ def _append_materials(materials, row, source, source_path):
     return output
 
 
-def _write_materials(materials, first_material, output_path):
+def _write_materials(
+    materials: list[_Material],
+    first_material: bool,
+    output_path: str | PathLike[str],
+) -> tuple[bool, int]:
     """Append extracted material records to a CSV file.
 
     Parameters
     ----------
-    materials : list of dict
+    materials : list[_Material]
         Material records to write.
     first_material : bool
         Whether this is the first write in the current scrape run.
-    output_path : str or path-like
+    output_path : str or os.PathLike[str]
         Destination CSV path.
 
     Returns
     -------
-    tuple of (bool, int)
+    tuple[bool, int]
         Updated first-write flag and number of records written.
     """
     if not materials:
@@ -159,24 +182,24 @@ def _write_materials(materials, first_material, output_path):
     return first_material, len(materials)
 
 
-def _delete_file(path):
+def _delete_file(path: str | PathLike[str] | None) -> None:
     """Delete a file when it exists.
 
     Parameters
     ----------
-    path : str or path-like or None
+    path : str, os.PathLike[str], or None
         File path to delete.
     """
     if path and os.path.isfile(path):
         os.remove(path)
 
 
-def _set_status(paper, column: str, status: str, error: str | None = None):
+def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
     """Update a paper's pipeline status and error message.
 
     Parameters
     ----------
-    paper : dict-like
+    paper : _Paper
         Corpus paper row to update.
     column : str
         Pipeline status column.
@@ -199,7 +222,7 @@ def _set_status(paper, column: str, status: str, error: str | None = None):
         paper['last_error'] = ''
 
 
-def _safe_path_part(value):
+def _safe_path_part(value: object) -> str:
     """Convert a value into a safe path fragment.
 
     Parameters
@@ -216,14 +239,17 @@ def _safe_path_part(value):
     return safe.strip('._') or 'paper'
 
 
-def _image_key_for_row(row, pdf_path):
+def _image_key_for_row(
+    row: Mapping[str, Any],
+    pdf_path: str | PathLike[str] | None,
+) -> str:
     """Choose a stable image-output key for a paper.
 
     Parameters
     ----------
-    row : dict-like
+    row : Mapping[str, Any]
         Corpus paper row.
-    pdf_path : str or path-like or None
+    pdf_path : str, os.PathLike[str], or None
         Materialized PDF path.
 
     Returns
@@ -237,7 +263,7 @@ def _image_key_for_row(row, pdf_path):
     return _safe_path_part(identifier.split(':')[-1])
 
 
-def _image_batches(image_paths, batch_size):
+def _image_batches(image_paths: list[str], batch_size: int | str) -> list[list[str]]:
     """Group image paths into vision request batches.
 
     Parameters
@@ -249,7 +275,7 @@ def _image_batches(image_paths, batch_size):
 
     Returns
     -------
-    list of list of str
+    list[list[str]]
         Ordered image batches.
 
     Raises
@@ -269,14 +295,18 @@ def _image_batches(image_paths, batch_size):
     return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
 
 
-def _asset_path(asset, temp_dir, fallback_name):
+def _asset_path(
+    asset: Mapping[str, Any] | None,
+    temp_dir: str | PathLike[str],
+    fallback_name: str,
+) -> str | None:
     """Materialize a corpus asset in a temporary directory.
 
     Parameters
     ----------
-    asset : dict or None
+    asset : Mapping[str, Any] or None
         Asset metadata and binary content.
-    temp_dir : str or path-like
+    temp_dir : str or os.PathLike[str]
         Directory in which to write the asset.
     fallback_name : str
         Filename used when the asset has no original filename.
@@ -297,21 +327,25 @@ def _asset_path(asset, temp_dir, fallback_name):
     return path
 
 
-def _paper_asset_paths(conn, paper, temp_dir):
+def _paper_asset_paths(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    temp_dir: str | PathLike[str],
+) -> dict[str, str | None]:
     """Materialize one paper's corpus assets as temporary files.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus database connection.
-    paper : dict-like
+    paper : Mapping[str, Any]
         Corpus paper row identifying the assets.
-    temp_dir : str or path-like
+    temp_dir : str or os.PathLike[str]
         Root temporary directory for materialized assets.
 
     Returns
     -------
-    dict
+    dict[str, str or None]
         Paths for the paper's abstract, text, and PDF assets.
     """
     paper_id = paper.get('paper_id')
@@ -328,12 +362,12 @@ def _paper_asset_paths(conn, paper, temp_dir):
     }
 
 
-def _publication_key(paper):
+def _publication_key(paper: Mapping[str, Any]) -> str:
     """Build a stable publication-date sort key.
 
     Parameters
     ----------
-    paper : dict-like
+    paper : Mapping[str, Any]
         Corpus paper row.
 
     Returns
@@ -344,12 +378,16 @@ def _publication_key(paper):
     return str(paper.get('publication_date') or '9999-99-99')
 
 
-def _select_papers(papers, scrape_order='corpus', scrape_count=None):
+def _select_papers(
+    papers: Iterable[_Paper],
+    scrape_order: str = 'corpus',
+    scrape_count: int | None = None,
+) -> list[_Paper]:
     """Order and optionally limit papers for a scrape run.
 
     Parameters
     ----------
-    papers : iterable
+    papers : Iterable[_Paper]
         Corpus paper rows.
     scrape_order : str, optional
         Selection order, such as corpus order, random order, or publication
@@ -359,7 +397,7 @@ def _select_papers(papers, scrape_order='corpus', scrape_count=None):
 
     Returns
     -------
-    list
+    list[_Paper]
         Selected paper rows.
 
     Raises
@@ -411,7 +449,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_mode: str = 'auto',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
-                  ):
+                  ) -> None:
     """Scrape corpus papers and write extracted material records.
 
     Parameters

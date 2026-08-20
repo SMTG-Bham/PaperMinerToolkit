@@ -1,9 +1,14 @@
 """Discover an author's works through Crossref and import their metadata."""
 
+from __future__ import annotations
+
 import re
 import time
 import unicodedata
+from collections.abc import Mapping
+from os import PathLike
 from pathlib import Path
+from typing import Any, Protocol, TypeAlias
 
 import pandas as pd
 import requests
@@ -14,14 +19,44 @@ from paperscraper.corpus import connect, find_paper, upsert_paper, upsert_papers
 CROSSREF_WORKS_URL = 'https://api.crossref.org/v1/works'
 ORCID_PATTERN = re.compile(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', re.IGNORECASE)
 REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources']
+_CrossrefRecord: TypeAlias = dict[str, Any]
 
 
-def normalize_orcid(value: str):
+class _CrossrefResponseLike(Protocol):
+    """HTTP response surface used by Crossref requests."""
+
+    headers: Mapping[str, str]
+
+    def raise_for_status(self) -> None:
+        """Raise when the response has an unsuccessful status."""
+        ...
+
+    def json(self) -> _CrossrefRecord:
+        """Decode the response JSON object."""
+        ...
+
+
+class _CrossrefSessionLike(Protocol):
+    """HTTP session surface accepted for dependency injection."""
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, str | int],
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> _CrossrefResponseLike:
+        """Issue an HTTP GET request."""
+        ...
+
+
+def normalize_orcid(value: str | None) -> str:
     """Normalize and validate an ORCID identifier.
 
     Parameters
     ----------
-    value : str
+    value : str or None
         Bare ORCID or ORCID URL.
 
     Returns
@@ -48,7 +83,7 @@ def normalize_orcid(value: str):
     return orcid
 
 
-def _normalize_text(value):
+def _normalize_text(value: object) -> str:
     """Normalize human-readable metadata for comparison.
 
     Parameters
@@ -66,14 +101,14 @@ def _normalize_text(value):
     return re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
 
 
-def _given_names_match(target, candidate):
+def _given_names_match(target: object, candidate: object) -> bool:
     """Compare given names while allowing initials.
 
     Parameters
     ----------
-    target : str
+    target : object
         Requested given names.
-    candidate : str
+    candidate : object
         Deposited given names to compare.
 
     Returns
@@ -92,19 +127,19 @@ def _given_names_match(target, candidate):
     return ''.join(part[0] for part in target_parts) == ''.join(part[0] for part in candidate_parts)
 
 
-def _matching_authors(work, author_name):
+def _matching_authors(work: _CrossrefRecord, author_name: str) -> list[_CrossrefRecord]:
     """Find Crossref authors matching a human name.
 
     Parameters
     ----------
-    work : dict
+    work : _CrossrefRecord
         Crossref work record containing author metadata.
     author_name : str
         Given and family names to match.
 
     Returns
     -------
-    list of dict
+    list[_CrossrefRecord]
         Matching Crossref author records.
 
     Raises
@@ -125,12 +160,12 @@ def _matching_authors(work, author_name):
     ]
 
 
-def _author_orcid(author):
+def _author_orcid(author: _CrossrefRecord) -> str:
     """Read a valid ORCID from an author record.
 
     Parameters
     ----------
-    author : dict
+    author : _CrossrefRecord
         Crossref author record.
 
     Returns
@@ -144,12 +179,17 @@ def _author_orcid(author):
         return ''
 
 
-def work_matches_author(work, author_name=None, orcid=None, affiliation=None):
+def work_matches_author(
+    work: _CrossrefRecord,
+    author_name: str | None = None,
+    orcid: str | None = None,
+    affiliation: str | None = None,
+) -> bool:
     """Check whether a work contains the requested author identity.
 
     Parameters
     ----------
-    work : dict
+    work : _CrossrefRecord
         Crossref work record.
     author_name : str, optional
         Human-readable author name to match when no ORCID is supplied.
@@ -190,14 +230,20 @@ def work_matches_author(work, author_name=None, orcid=None, affiliation=None):
     )
 
 
-def _request_page(session, params, email, timeout=60, attempts=4):
+def _request_page(
+    session: _CrossrefSessionLike,
+    params: dict[str, str | int],
+    email: str,
+    timeout: float = 60,
+    attempts: int = 4,
+) -> _CrossrefRecord:
     """Request one Crossref page with bounded retries.
 
     Parameters
     ----------
-    session : requests.Session-like
+    session : _CrossrefSessionLike
         HTTP session used for the request.
-    params : dict
+    params : dict[str, str or int]
         Crossref query parameters.
     email : str
         Contact email included in the user agent.
@@ -208,7 +254,7 @@ def _request_page(session, params, email, timeout=60, attempts=4):
 
     Returns
     -------
-    dict
+    _CrossrefRecord
         Crossref response message.
 
     Raises
@@ -236,13 +282,13 @@ def _request_page(session, params, email, timeout=60, attempts=4):
     raise RuntimeError(f'Crossref request failed after {attempts} attempts: {last_error}') from last_error
 
 
-def author_works(orcid=None,
-                 author_name=None,
-                 affiliation=None,
-                 email=None,
-                 max_results=500,
-                 page_size=200,
-                 session=None):
+def author_works(orcid: str | None = None,
+                 author_name: str | None = None,
+                 affiliation: str | None = None,
+                 email: str | None = None,
+                 max_results: int | None = 500,
+                 page_size: int = 200,
+                 session: _CrossrefSessionLike | None = None) -> list[_CrossrefRecord]:
     """Retrieve DOI-bearing works for one author.
 
     Parameters
@@ -259,12 +305,12 @@ def author_works(orcid=None,
         Maximum accepted works, or ``None`` for no explicit limit.
     page_size : int, optional
         Number of records requested per Crossref page.
-    session : requests.Session-like, optional
+    session : _CrossrefSessionLike or None, optional
         HTTP session, primarily for connection reuse or testing.
 
     Returns
     -------
-    list of dict
+    list[_CrossrefRecord]
         Unique matching Crossref work records.
 
     Raises
@@ -315,7 +361,7 @@ def author_works(orcid=None,
     return works
 
 
-def _first(value):
+def _first(value: object) -> str:
     """Select the first non-empty Crossref field value.
 
     Parameters
@@ -333,12 +379,12 @@ def _first(value):
     return str(value or '').strip()
 
 
-def _publication_date(work):
+def _publication_date(work: _CrossrefRecord) -> str:
     """Extract the best available Crossref publication date.
 
     Parameters
     ----------
-    work : dict
+    work : _CrossrefRecord
         Crossref work record.
 
     Returns
@@ -355,17 +401,17 @@ def _publication_date(work):
     return ''
 
 
-def crossref_work_to_paper(work):
+def crossref_work_to_paper(work: _CrossrefRecord) -> dict[str, Any]:
     """Map a Crossref work to the corpus schema.
 
     Parameters
     ----------
-    work : dict
+    work : _CrossrefRecord
         Crossref work record.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         Normalized paper metadata suitable for corpus insertion.
     """
     doi = str(work.get('DOI') or '').strip().lower()
@@ -387,19 +433,19 @@ def crossref_work_to_paper(work):
     }
 
 
-def import_author_works(db_path,
-                        email,
-                        orcid=None,
-                        author_name=None,
-                        affiliation=None,
-                        max_results=500,
-                        review_csv=None,
-                        session=None):
+def import_author_works(db_path: str | PathLike[str],
+                        email: str,
+                        orcid: str | None = None,
+                        author_name: str | None = None,
+                        affiliation: str | None = None,
+                        max_results: int | None = 500,
+                        review_csv: str | PathLike[str] | None = None,
+                        session: _CrossrefSessionLike | None = None) -> dict[str, int]:
     """Discover and import an author's Crossref works.
 
     Parameters
     ----------
-    db_path : str or path-like
+    db_path : str or os.PathLike[str]
         Destination corpus database.
     email : str
         Contact email for Crossref requests.
@@ -411,14 +457,14 @@ def import_author_works(db_path,
         Affiliation fragment required on the matched author record.
     max_results : int or None, optional
         Maximum number of works to import.
-    review_csv : str or path-like, optional
+    review_csv : str, os.PathLike[str], or None, optional
         CSV path for a human-readable import review.
-    session : requests.Session-like, optional
+    session : _CrossrefSessionLike or None, optional
         HTTP session used for discovery.
 
     Returns
     -------
-    dict
+    dict[str, int]
         Counts of found, added, and updated papers.
 
     Raises

@@ -4,12 +4,18 @@ This module tests the small SQLite corpus maintenance helpers used by the
 command-line interface to reset pipeline state and print progress.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
 import paperscraper.corpus as corpus
 import paperscraper.utilities as utilities
 from paperscraper.corpus import PIPELINE_COLUMNS
 
 
-def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path):
+def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path: Path) -> None:
     """Test resetting pipeline columns in a corpus database."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -37,7 +43,10 @@ def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path)
         assert row[column] == default
 
 
-def test_status_prints_pipeline_progress_summary(tmp_path, capsys):
+def test_status_prints_pipeline_progress_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test printing a progress summary for a corpus database."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:

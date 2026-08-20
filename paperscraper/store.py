@@ -5,18 +5,23 @@ converts units, appends accepted rows to the output file, and marks papers as
 stored once their scrape results have been persisted.
 """
 
+from __future__ import annotations
+
 import os
 import tempfile
+from collections.abc import Collection
+from os import PathLike
 from pathlib import Path
 
 import pandas as pd
 
 from paperscraper.corpus import connect, paper_rows, upsert_paper
 from paperscraper.extract import convert_units
+from paperscraper.models import ModelConfig
 from paperscraper.recipes import canonical_match, field_columns, load_recipe
 
 
-def _temporary_path(directory: Path, prefix: str, suffix: str):
+def _temporary_path(directory: Path, prefix: str, suffix: str) -> str:
     """Create and close a unique temporary file.
 
     Parameters
@@ -44,7 +49,7 @@ def _temporary_path(directory: Path, prefix: str, suffix: str):
     return path
 
 
-def _write_csv_atomically(data: pd.DataFrame, output_path: Path):
+def _write_csv_atomically(data: pd.DataFrame, output_path: Path) -> None:
     """Write a CSV before atomically replacing its destination.
 
     Parameters
@@ -68,7 +73,7 @@ def _write_csv_atomically(data: pd.DataFrame, output_path: Path):
             os.remove(temp_path)
 
 
-def _stored_paper_ids(data: pd.DataFrame):
+def _stored_paper_ids(data: pd.DataFrame) -> set[str]:
     """Extract non-empty paper identifiers from stored rows.
 
     Parameters
@@ -78,7 +83,7 @@ def _stored_paper_ids(data: pd.DataFrame):
 
     Returns
     -------
-    set of str
+    set[str]
         Unique non-empty paper identifiers.
 
     Raises
@@ -98,14 +103,17 @@ def _stored_paper_ids(data: pd.DataFrame):
     return paper_ids
 
 
-def _mark_stored_papers(db_path, paper_ids):
+def _mark_stored_papers(
+    db_path: str | PathLike[str],
+    paper_ids: Collection[str],
+) -> None:
     """Mark successfully scraped papers as stored.
 
     Parameters
     ----------
-    db_path : str or path-like
+    db_path : str or os.PathLike[str]
         Corpus database to update.
-    paper_ids : collection of str
+    paper_ids : Collection[str]
         Paper identifiers represented by the stored batch.
 
     Raises
@@ -126,23 +134,23 @@ def _mark_stored_papers(db_path, paper_ids):
             upsert_paper(conn, paper)
 
 
-def store_results(db_path='papers.db',
-                  in_filepath='temp_scraped_materials.csv',
-                  out_filepath='materials.csv',
-                  unit_conversion=True,
-                  recipe='sse',
-                  assume_yes=False,
-                  model_config=None,
-                  ):
+def store_results(db_path: str | PathLike[str] = 'papers.db',
+                  in_filepath: str | PathLike[str] = 'temp_scraped_materials.csv',
+                  out_filepath: str | PathLike[str] = 'materials.csv',
+                  unit_conversion: bool = True,
+                  recipe: str = 'sse',
+                  assume_yes: bool = False,
+                  model_config: ModelConfig | None = None,
+                  ) -> None:
     """Convert and append temporary scrape results.
 
     Parameters
     ----------
-    db_path : str, optional
+    db_path : str or os.PathLike[str], optional
         Corpus database whose paper statuses should be updated.
-    in_filepath : str, optional
+    in_filepath : str or os.PathLike[str], optional
         Temporary scraped-materials CSV to consume.
-    out_filepath : str, optional
+    out_filepath : str or os.PathLike[str], optional
         Final materials CSV to create or append.
     unit_conversion : bool, optional
         Whether to convert recipe fields with configured units.
@@ -150,7 +158,7 @@ def store_results(db_path='papers.db',
         Bundled recipe name or recipe JSON path.
     assume_yes : bool, optional
         Whether to accept conversions and skip unmatched columns without a prompt.
-    model_config : object, optional
+    model_config : ModelConfig or None, optional
         Model configuration forwarded to unit conversion.
 
     Raises

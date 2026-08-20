@@ -20,7 +20,7 @@ the full runtime and test stack:
 pip install -e ".[test]"
 ```
 
-Verify the install:
+Verify the install, docstrings, and function annotations:
 
 ```bash
 ruff check paperscraper tests

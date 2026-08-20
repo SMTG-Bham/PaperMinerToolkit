@@ -1,9 +1,12 @@
 """Test compression policies, token estimates, and Headroom integration."""
 
+from __future__ import annotations
+
 import builtins
 from pathlib import Path
 import sys
 import types
+from typing import Any
 
 import pytest
 
@@ -13,7 +16,7 @@ DATA_DIR = Path(__file__).resolve().parent / 'data'
 IMAGE_DIR = DATA_DIR / 'images'
 
 
-def model_config(input_token_limit=100):
+def model_config(input_token_limit: int = 100) -> types.SimpleNamespace:
     """Return a minimal model config for compression tests."""
     return types.SimpleNamespace(
         provider='openai',
@@ -22,14 +25,14 @@ def model_config(input_token_limit=100):
     )
 
 
-def provider_config(provider):
+def provider_config(provider: str) -> types.SimpleNamespace:
     """Return a minimal provider-specific model config for compression tests."""
     cfg = model_config()
     cfg.provider = provider
     return cfg
 
 
-def test_compression_config_normalizes_options_and_rejects_invalid_values():
+def test_compression_config_normalizes_options_and_rejects_invalid_values() -> None:
     """Test compression option normalization and validation."""
     config = compression.CompressionConfig(scope='Both', mode='Always', ratio='0.5', content_detection=False)
 
@@ -54,7 +57,7 @@ def test_compression_config_normalizes_options_and_rejects_invalid_values():
         compression.CompressionConfig(ratio=1.1)
 
 
-def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch):
+def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test text compression decisions across scopes, modes, and budgets."""
     cfg = model_config()
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 10)
@@ -81,7 +84,7 @@ def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch)
     ) is True
 
 
-def test_request_token_budget_reserves_prompt_tokens(monkeypatch):
+def test_request_token_budget_reserves_prompt_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that request budgets reserve prompt tokens."""
     calls = {}
     cfg = model_config()
@@ -105,7 +108,7 @@ def test_request_token_budget_reserves_prompt_tokens(monkeypatch):
     }
 
 
-def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget():
+def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget() -> None:
     """Test fixed and automatically calculated compression ratios."""
     assert compression.ideal_compression_ratio(1000, 100, compression.CompressionConfig(ratio=0.4)) == 0.4
     assert compression.ideal_compression_ratio(0, 100, compression.CompressionConfig(ratio='auto')) == 1.0
@@ -116,7 +119,7 @@ def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget():
     )
 
 
-def test_image_compression_decision_uses_scope_mode_and_estimated_request_tokens(monkeypatch):
+def test_image_compression_decision_uses_scope_mode_and_estimated_request_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test image compression decisions across scopes, modes, and budgets."""
     cfg = model_config()
     monkeypatch.setattr(compression, '_request_token_budget', lambda prompt, model_config: 1500)
@@ -154,7 +157,7 @@ def test_image_compression_decision_uses_scope_mode_and_estimated_request_tokens
     ) is True
 
 
-def test_estimate_image_tokens_uses_provider_specific_dimension_estimates():
+def test_estimate_image_tokens_uses_provider_specific_dimension_estimates() -> None:
     """Test provider-specific image token estimates."""
     small = str(IMAGE_DIR / '512x512.png')
     large = str(IMAGE_DIR / '1024x1024.png')
@@ -169,11 +172,11 @@ def test_estimate_image_tokens_uses_provider_specific_dimension_estimates():
     )
 
 
-def test_image_size_reads_png_dimensions_without_pillow(monkeypatch):
+def test_image_size_reads_png_dimensions_without_pillow(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test PNG header dimension parsing when Pillow is unavailable."""
     real_import = builtins.__import__
 
-    def fake_import(name, *args, **kwargs):
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
         """Block Pillow imports and delegate all others."""
         if name == 'PIL' or name.startswith('PIL.'):
             raise ImportError('missing pillow')
@@ -185,7 +188,7 @@ def test_image_size_reads_png_dimensions_without_pillow(monkeypatch):
     assert compression._image_size(str(IMAGE_DIR / 'missing.png')) is None
 
 
-def test_image_size_uses_pillow_when_available(monkeypatch):
+def test_image_size_uses_pillow_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test Pillow-backed image dimension reading."""
 
     class FakeImage:
@@ -193,11 +196,11 @@ def test_image_size_uses_pillow_when_available(monkeypatch):
 
         size = (20, 30)
 
-        def __enter__(self):
+        def __enter__(self) -> FakeImage:
             """Return the fake image from its context manager."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: Any) -> bool:
             """Leave the fake image context without suppressing errors."""
             return False
 
@@ -205,7 +208,7 @@ def test_image_size_uses_pillow_when_available(monkeypatch):
         """Provide the subset of ``PIL.Image`` used by compression."""
 
         @staticmethod
-        def open(image_path):
+        def open(image_path: str) -> FakeImage:
             """Validate the path and return a fake image."""
             assert image_path == 'image.png'
             return FakeImage()
@@ -217,7 +220,7 @@ def test_image_size_uses_pillow_when_available(monkeypatch):
     assert compression._image_size('image.png') == (20, 30)
 
 
-def test_image_size_returns_none_for_readable_non_png_files(tmp_path):
+def test_image_size_returns_none_for_readable_non_png_files(tmp_path: Path) -> None:
     """Test that readable non-PNG files have no inferred dimensions."""
     text_path = tmp_path / 'not-an-image.txt'
     text_path.write_text('not an image')
@@ -225,14 +228,14 @@ def test_image_size_returns_none_for_readable_non_png_files(tmp_path):
     assert compression._image_size(str(text_path)) is None
 
 
-def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
+def test_compress_content_uses_headroom_universal_compressor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test integration with Headroom's universal compressor."""
     calls = {}
 
     class FakeUniversalCompressorConfig:
         """Capture universal compressor configuration options."""
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             """Store configuration options for assertions."""
             self.kwargs = kwargs
             calls['config'] = kwargs
@@ -240,11 +243,11 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
     class FakeUniversalCompressor:
         """Capture content passed to a universal compressor."""
 
-        def __init__(self, config):
+        def __init__(self, config: FakeUniversalCompressorConfig) -> None:
             """Record the compressor configuration."""
             calls['compressor_config'] = config
 
-        def compress(self, content):
+        def compress(self, content: Any) -> types.SimpleNamespace:
             """Record content and return a compressed result shape."""
             calls['content'] = content
             return types.SimpleNamespace(compressed='compressed content')
@@ -276,7 +279,7 @@ def test_compress_content_uses_headroom_universal_compressor(monkeypatch):
 @pytest.mark.filterwarnings('ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning')
 @pytest.mark.filterwarnings('ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning')
 @pytest.mark.filterwarnings('ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning')
-def test_compress_content_uses_real_headroom_universal_compressor():
+def test_compress_content_uses_real_headroom_universal_compressor() -> None:
     """Test real Headroom compression through the project wrapper."""
     headroom_compression = pytest.importorskip('headroom.compression')
     if not hasattr(headroom_compression, 'UniversalCompressor'):
@@ -294,7 +297,7 @@ def test_compress_content_uses_real_headroom_universal_compressor():
     assert len(compressed) <= len(text)
 
 
-def test_compressed_content_handles_common_result_shapes():
+def test_compressed_content_handles_common_result_shapes() -> None:
     """Test content extraction from common Headroom result shapes."""
     message_payload = [{'role': 'user', 'content': []}]
     assert compression._compressed_content('already compressed') == 'already compressed'
@@ -304,7 +307,7 @@ def test_compressed_content_handles_common_result_shapes():
     assert compression._compressed_content(42) == '42'
 
 
-def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
+def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test conditional text compression results."""
     cfg = model_config()
     policy = compression.CompressionConfig(scope='text')
@@ -331,11 +334,11 @@ def test_maybe_compress_text_returns_original_or_compressed_value(monkeypatch):
     )
 
 
-def test_compress_content_reports_missing_headroom_package(monkeypatch):
+def test_compress_content_reports_missing_headroom_package(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test the error reported when Headroom is unavailable."""
     real_import = builtins.__import__
 
-    def fake_import(name, *args, **kwargs):
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
         """Block Headroom imports and delegate all others."""
         if name == 'headroom' or name.startswith('headroom.'):
             raise ImportError('missing headroom')
@@ -347,7 +350,7 @@ def test_compress_content_reports_missing_headroom_package(monkeypatch):
         compression.compress_content('paper text')
 
 
-def test_maybe_compress_image_messages_returns_original_or_compressed_payload(monkeypatch):
+def test_maybe_compress_image_messages_returns_original_or_compressed_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test conditional image message compression results."""
     messages = [{'role': 'user', 'content': []}]
     cfg = model_config()

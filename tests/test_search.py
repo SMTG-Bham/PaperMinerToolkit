@@ -5,6 +5,11 @@ normalization, pagination behavior, request headers, and merging search results
 into the paper corpus.
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Self
 
 import pandas as pd
 import pytest
@@ -13,7 +18,7 @@ import paperscraper.corpus as corpus
 import paperscraper.search as search
 
 
-def test_elsevier_api_key_requires_configured_api_key(monkeypatch):
+def test_elsevier_api_key_requires_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Elsevier API key requires configured API key."""
     monkeypatch.setattr(search, 'load_settings', lambda: {})
 
@@ -21,18 +26,21 @@ def test_elsevier_api_key_requires_configured_api_key(monkeypatch):
         search._elsevier_api_key()
 
 
-def test_elsevier_api_key_returns_configured_api_key(monkeypatch):
+def test_elsevier_api_key_returns_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Elsevier API key returns configured API key."""
     monkeypatch.setattr(search, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
 
     assert search._elsevier_api_key() == 'elsevier-key'
 
 
-def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
+def test_document_search_caps_count_and_paginates_results(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Document search caps count and paginates results."""
     urls = []
 
-    def fake_get_json(api_key, url):
+    def fake_get_json(api_key: str, url: str) -> dict[str, Any]:
         """Provide fake JSON retrieval for this test."""
         assert api_key == 'elsevier-key'
         urls.append(url)
@@ -55,19 +63,19 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             self.updates = []
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, value):
+        def update(self, value: int) -> None:
             """Record a progress update."""
             self.updates.append(value)
 
@@ -84,7 +92,7 @@ def test_document_search_caps_count_and_paginates_results(monkeypatch, capsys):
     assert urls[1] == 'next-url'
 
 
-def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
+def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search returns empty dataframe for zero results."""
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
@@ -96,7 +104,7 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch):
     assert search.document_search('missing').empty
 
 
-def test_document_search_without_get_all_returns_first_page_slice(monkeypatch):
+def test_document_search_without_get_all_returns_first_page_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search without get all returns first page slice."""
     monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
@@ -116,11 +124,11 @@ def test_document_search_without_get_all_returns_first_page_slice(monkeypatch):
     assert results['dc:title'].tolist() == ['first', 'second']
 
 
-def test_document_search_stops_when_next_link_is_missing(monkeypatch):
+def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search stops when next link is missing."""
     calls = []
 
-    def fake_get_json(*_):
+    def fake_get_json(*_: object) -> dict[str, Any]:
         """Provide fake JSON retrieval for this test."""
         calls.append(True)
         return {
@@ -134,19 +142,19 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
@@ -160,13 +168,13 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch):
     assert len(calls) == 1
 
 
-def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch):
+def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search stops non-Scopus searches at the provider limit."""
     first_page = [{'dc:title': f'paper {index}'} for index in range(4999)]
 
     calls = []
 
-    def fake_get_json(*_):
+    def fake_get_json(*_: object) -> dict[str, Any]:
         """Provide fake JSON retrieval for this test."""
         calls.append(True)
         if len(calls) == 1:
@@ -188,19 +196,19 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
@@ -214,7 +222,7 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
     assert len(calls) == 2
 
 
-def test_first_returns_first_list_item_or_scalar_value():
+def test_first_returns_first_list_item_or_scalar_value() -> None:
     """First returns first list item or scalar value."""
     assert search._first(['10.1234/example']) == '10.1234/example'
     assert search._first([]) == ''
@@ -222,7 +230,7 @@ def test_first_returns_first_list_item_or_scalar_value():
     assert search._first(None) == ''
 
 
-def test_elsevier_rows_normalizes_provider_records():
+def test_elsevier_rows_normalizes_provider_records() -> None:
     """Elsevier rows normalize provider records."""
     raw = pd.DataFrame([{
         'dc:identifier': 'SCOPUS_ID:1',
@@ -252,7 +260,7 @@ def test_elsevier_rows_normalizes_provider_records():
     assert row['metadata_status'] == 'retrieved'
 
 
-def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
+def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection() -> None:
     """Recasting Elsevier records preserves links used for full-text selection."""
     recast = search._recast_elsevier_records([{
         'prism:doi': ['10.1234/example'],
@@ -267,7 +275,7 @@ def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection():
     assert rows.loc[0, 'elsevier_link'] == 'full-text-link'
 
 
-def test_core_headers_include_optional_authorization(monkeypatch):
+def test_core_headers_include_optional_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE headers include optional authorization."""
     monkeypatch.setattr(search, '_core_api_key', lambda: None)
     assert search._core_headers() == {'User-Agent': 'PaperScraper/0.0.1'}
@@ -276,7 +284,7 @@ def test_core_headers_include_optional_authorization(monkeypatch):
     assert search._core_headers()['Authorization'] == 'Bearer core-key'
 
 
-def test_core_field_helpers_extract_download_authors_journal_and_date():
+def test_core_field_helpers_extract_download_authors_journal_and_date() -> None:
     """CORE field helpers extract download authors journal and date."""
     work = {
         'id': '123',
@@ -294,7 +302,7 @@ def test_core_field_helpers_extract_download_authors_journal_and_date():
     assert search._core_date(work) == 2024
 
 
-def test_core_rows_normalizes_work_records():
+def test_core_rows_normalizes_work_records() -> None:
     """CORE rows normalize work records."""
     rows = search._core_rows([
         {
@@ -322,7 +330,7 @@ def test_core_rows_normalizes_work_records():
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
 
-def test_openalex_rows_normalizes_work_records():
+def test_openalex_rows_normalizes_work_records() -> None:
     """OpenAlex rows normalize work records."""
     rows = search._openalex_rows([
         {
@@ -355,39 +363,39 @@ def test_openalex_rows_normalizes_work_records():
     assert rows.loc[1, 'abstract'] == ''
 
 
-def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
+def test_core_search_paginates_and_stops_at_total_hits(monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE search paginates and stops at total hits."""
     class FakeResponse:
         """Provide a response test double."""
 
-        def __init__(self, payload):
+        def __init__(self, payload: dict[str, Any]) -> None:
             """Initialize the test double."""
             self.payload = payload
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Validate the prepared response status."""
             return None
 
-        def json(self):
+        def json(self) -> dict[str, Any]:
             """Return the prepared JSON payload."""
             return self.payload
 
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
@@ -395,7 +403,12 @@ def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
 
     first_page = [{'id': str(index), 'title': f'paper {index}'} for index in range(100)]
 
-    def fake_get(url, headers, params, timeout):
+    def fake_get(
+        url: str,
+        headers: Mapping[str, str],
+        params: dict[str, Any],
+        timeout: float,
+    ) -> FakeResponse:
         """Provide a fake HTTP GET implementation."""
         calls.append(params.copy())
         if len(calls) == 1:
@@ -417,35 +430,35 @@ def test_core_search_paginates_and_stops_at_total_hits(monkeypatch):
     assert rows['paper_id'].iloc[-1] == 'core:100'
 
 
-def test_core_search_stops_when_no_results(monkeypatch):
+def test_core_search_stops_when_no_results(monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE search stops when no results."""
     class FakeResponse:
         """Provide a response test double."""
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Validate the prepared response status."""
             return None
 
-        def json(self):
+        def json(self) -> dict[str, list[object]]:
             """Return the prepared JSON payload."""
             return {'results': []}
 
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
@@ -455,41 +468,41 @@ def test_core_search_stops_when_no_results(monkeypatch):
     assert search.core_search('missing', count=3).empty
 
 
-def test_core_search_stops_when_page_is_short(monkeypatch):
+def test_core_search_stops_when_page_is_short(monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE search stops when page is short."""
     class FakeResponse:
         """Provide a response test double."""
 
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             """Validate the prepared response status."""
             return None
 
-        def json(self):
+        def json(self) -> dict[str, list[dict[str, str]]]:
             """Return the prepared JSON payload."""
             return {'results': [{'id': '1', 'title': 'one'}]}
 
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
     calls = []
 
-    def fake_get(*args, **kwargs):
+    def fake_get(*args: object, **kwargs: Any) -> FakeResponse:
         """Provide a fake HTTP GET implementation."""
         calls.append(kwargs['params'])
         return FakeResponse()
@@ -503,24 +516,24 @@ def test_core_search_stops_when_page_is_short(monkeypatch):
     assert len(calls) == 1
 
 
-def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
+def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search paginates with cursor and stops at count."""
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
@@ -528,7 +541,12 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
 
     first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
 
-    def fake_request_json(url, params=None, api_key=None, **_):
+    def fake_request_json(
+        url: str,
+        params: Mapping[str, Any] | None = None,
+        api_key: str | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
         """Provide fake OpenAlex JSON responses for this test."""
         calls.append({'url': url, 'params': dict(params), 'api_key': api_key})
         if len(calls) == 1:
@@ -555,30 +573,35 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch):
     assert rows['paper_id'].iloc[-1] == 'openalex:W200'
 
 
-def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch):
+def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search stops without next cursor and omits API key."""
     class FakeTqdm:
         """Provide a progress-bar test double."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: object, **kwargs: object) -> None:
             """Initialize the test double."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             """Enter the test-double context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: object) -> bool:
             """Exit the test-double context."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
             """Ignore a progress update."""
             return None
 
     calls = []
 
-    def fake_request_json(url, params=None, api_key=None, **_):
+    def fake_request_json(
+        url: str,
+        params: Mapping[str, Any] | None = None,
+        api_key: str | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
         """Provide fake OpenAlex JSON responses for this test."""
         calls.append({'params': dict(params), 'api_key': api_key})
         return {'results': [{'id': 'https://openalex.org/W1', 'title': 'only'}], 'meta': {}}
@@ -595,13 +618,17 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
     assert rows['paper_id'].tolist() == ['openalex:W1']
 
 
-def test_search_for_papers_rejects_invalid_source():
+def test_search_for_papers_rejects_invalid_source() -> None:
     """Search for papers rejects invalid source."""
     with pytest.raises(ValueError, match='source must be one of'):
         search.search_for_papers('query', source='bad')
 
 
-def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_merges_and_writes_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers merges and writes results."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{
@@ -621,7 +648,11 @@ def test_search_for_papers_merges_and_writes_results(tmp_path, monkeypatch, caps
     assert '1 new results and updated 0 existing rows' in output
 
 
-def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_merges_into_existing_corpus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers merges into existing corpus."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -651,7 +682,11 @@ def test_search_for_papers_merges_into_existing_corpus(tmp_path, monkeypatch, ca
     assert '0 new results and updated 1 existing rows' in output
 
 
-def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_stores_search_time_abstract_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers stores search time abstract assets."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -682,7 +717,11 @@ def test_search_for_papers_stores_search_time_abstract_assets(tmp_path, monkeypa
     assert 'Stored 1 search-time abstracts.' in output
 
 
-def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path, monkeypatch, capsys):
+def test_search_for_papers_reports_zero_results_when_sources_are_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers reports zero results when sources are empty."""
     db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: pd.DataFrame())
@@ -693,7 +732,11 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(tmp_path,
     assert not db_path.exists()
 
 
-def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(monkeypatch, tmp_path, capsys):
+def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers skips failed source for all but raises for selected source."""
     db_path = tmp_path / 'papers.db'
     monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
@@ -709,7 +752,11 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
         search.search_for_papers('query', source='elsevier', count=1)
 
 
-def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeypatch, tmp_path, capsys):
+def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers skips failed CORE for all but raises for CORE."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
@@ -731,7 +778,11 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(monkeyp
         search.search_for_papers('query', source='core', count=1)
 
 
-def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex(monkeypatch, tmp_path, capsys):
+def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Search for papers skips failed OpenAlex for all but raises for OpenAlex."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
@@ -754,7 +805,7 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
 
 
 @pytest.mark.network
-def test_document_search_uses_real_elsevier_api_when_configured():
+def test_document_search_uses_real_elsevier_api_when_configured() -> None:
     """Document search uses real Elsevier API when configured."""
     loaded = search.load_settings()
 
@@ -763,14 +814,14 @@ def test_document_search_uses_real_elsevier_api_when_configured():
 
 
 @pytest.mark.network
-def test_core_search_uses_real_core_api_when_configured():
+def test_core_search_uses_real_core_api_when_configured() -> None:
     """CORE search uses real CORE API when configured."""
     assert search._core_api_key(), 'Set core_api_key or CORE_API_KEY before running network tests.'
     assert len(search.core_search('solid electrolyte', count=1)) <= 1
 
 
 @pytest.mark.network
-def test_openalex_search_uses_real_openalex_api():
+def test_openalex_search_uses_real_openalex_api() -> None:
     """OpenAlex search uses real OpenAlex API."""
     rows = search.openalex_search('solid electrolyte', count=1)
 

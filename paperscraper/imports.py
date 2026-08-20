@@ -5,20 +5,27 @@ Crossref, stores the PDF bytes as corpus assets, and merges imported files with
 existing paper rows so local PDFs can join the same corpus as searched papers.
 """
 
+from __future__ import annotations
+
+from os import PathLike
 from pathlib import Path
 
 from paperscraper.corpus import add_asset, connect, find_paper, normalize_paper, upsert_papers
 from paperscraper.metadata import metadata_from_pdf
 
 
-def import_pdfs(papers_dir: str, db_path: str = 'papers.db', use_crossref: bool = True):
+def import_pdfs(
+    papers_dir: str | PathLike[str],
+    db_path: str | PathLike[str] = 'papers.db',
+    use_crossref: bool = True,
+) -> None:
     """Import local PDF files into a paper corpus.
 
     Parameters
     ----------
-    papers_dir : str
+    papers_dir : str or os.PathLike[str]
         Directory containing the PDF files to import.
-    db_path : str, optional
+    db_path : str or os.PathLike[str], optional
         Path to the destination corpus database.
     use_crossref : bool, optional
         Whether to enrich discovered DOI metadata with Crossref.

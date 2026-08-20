@@ -287,7 +287,7 @@ Install the test dependencies and run the default test suite with:
 
 `pip install -e ".[test]"`
 
-Validate NumPy-style docstrings:
+Validate NumPy-style docstrings and complete function annotations:
 
 `ruff check paperscraper tests`
 

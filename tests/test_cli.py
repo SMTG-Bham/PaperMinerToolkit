@@ -1,12 +1,18 @@
 """Test the PaperScraper command-line entry points."""
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
 from click.testing import CliRunner
 
 import paperscraper.cli as cli
 import paperscraper.corpus as corpus
 
 
-def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
+def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """Delegate paper searches with the requested source and result count."""
     calls = {}
     monkeypatch.setattr(
@@ -34,7 +40,7 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
     }
 
 
-def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
+def test_import_pdf_folder_passes_crossref_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate PDF imports with Crossref lookup disabled."""
     calls = {}
     papers_dir = tmp_path / 'papers'
@@ -59,7 +65,7 @@ def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
     }
 
 
-def test_import_author_validates_identity_and_reports_summary(monkeypatch, tmp_path):
+def test_import_author_validates_identity_and_reports_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate author discovery with exactly one identity selector."""
     calls = {}
     db_path = tmp_path / 'supervisor.db'
@@ -91,7 +97,7 @@ def test_import_author_validates_identity_and_reports_summary(monkeypatch, tmp_p
     assert 'exactly one' in invalid.output
 
 
-def test_download_passes_format_and_sources(monkeypatch, tmp_path):
+def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate downloads with the selected format and sources."""
     calls = {}
     db_path = tmp_path / 'papers.db'
@@ -119,7 +125,7 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
     }
 
 
-def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_path):
+def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Accept OpenAlex as a search and download source."""
     search_calls = {}
     monkeypatch.setattr(
@@ -148,7 +154,7 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_pat
     assert download_calls['sources'] == ['openalex']
 
 
-def test_corpus_status_prints_database_storage_statistics(tmp_path):
+def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
     """Print paper, blob, and storage statistics for a corpus."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
@@ -198,7 +204,7 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
     assert 'Storage saved:' in result.output
 
 
-def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp_path):
+def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Train the topic model with explicit fields and print corpus warnings."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
@@ -207,7 +213,7 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
     stopwords_path.write_text('battery\n')
     calls = {}
 
-    def fake_train(*args, **kwargs):
+    def fake_train(*args: Any, **kwargs: Any) -> dict[str, Any]:
         """Record training arguments and return a diagnostic summary."""
         calls['args'] = args
         calls['kwargs'] = kwargs
@@ -263,14 +269,14 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
     assert 'Trained 6 topics from 120 papers using 800 terms.' in result.output
 
 
-def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path):
+def test_topics_compare_delegates_grid_and_reports_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Train a topic-count and seed grid through the comparison command."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     output_dir = tmp_path / 'comparison'
     calls = {}
 
-    def fake_compare(*args, **kwargs):
+    def fake_compare(*args: Any, **kwargs: Any) -> dict[str, Any]:
         """Record comparison arguments and return an output summary."""
         calls['args'] = args
         calls['kwargs'] = kwargs
@@ -303,7 +309,7 @@ def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path)
     assert 'Trained 4 comparison models' in result.output
 
 
-def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
+def test_topic_inspection_naming_and_prediction_commands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Expose manual topic review, naming, and prediction through CLI commands."""
     model_dir = tmp_path / 'model'
     model_dir.mkdir()
@@ -348,13 +354,13 @@ def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
     assert 'Predicted topics for 9 of 10 papers' in predicted.output
 
 
-def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_path):
+def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate scraping with model, image, cleanup, and output options."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
 
-    def fake_scrape_papers(*args, **kwargs):
+    def fake_scrape_papers(*args: Any, **kwargs: Any) -> None:
         """Record arguments delegated to the scrape workflow."""
         calls['args'] = args
         calls['kwargs'] = kwargs
@@ -416,7 +422,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
     }
 
 
-def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
+def test_store_passes_files_recipe_and_assume_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate result storage with file, recipe, and confirmation options."""
     calls = {}
     db_path = tmp_path / 'papers.db'
@@ -447,7 +453,7 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
     }
 
 
-def test_key_update_entry_points_call_settings_helpers(monkeypatch):
+def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Delegate API configuration entry points to their settings helpers."""
     calls = []
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
@@ -467,7 +473,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch):
     assert calls == ['elsevier', 'core', 'unpaywall', 'openalex', 'openai', 'anthropic']
 
 
-def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch):
+def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     """Infer capabilities, save the model profile, and print its summary."""
     calls = {}
     monkeypatch.setattr(cli, 'infer_model_capabilities', lambda profile, model: ['text'])
@@ -511,7 +517,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
     assert 'Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000' in result.output
 
 
-def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
+def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: pytest.MonkeyPatch) -> None:
     """Save explicit model capabilities without running inference."""
     calls = {}
     monkeypatch.setattr(
@@ -543,7 +549,7 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
     assert calls['input_token_limit'] == cli.DEFAULT_INPUT_TOKEN_LIMIT
 
 
-def test_model_status_prints_text_and_vision_profiles(monkeypatch):
+def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     """Print configured text and vision model profiles."""
     profiles = {
         'text': {
@@ -574,7 +580,7 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
     assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000' in result.output
 
 
-def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch, tmp_path):
+def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate reset and status commands to maintenance helpers."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')

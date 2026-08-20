@@ -5,15 +5,19 @@ paper metadata, pipeline state, deduplicated text/PDF blobs, and paper-to-blob
 links in SQLite without including the extracted materials table.
 """
 
+from __future__ import annotations
+
 import gzip
 import hashlib
 import json
 import math
 import re
 import sqlite3
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 
 SCHEMA_VERSION = 3
@@ -54,9 +58,13 @@ PIPELINE_COLUMNS = {
     'last_error': '',
 }
 PAPER_FIELDS = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
+_Paper: TypeAlias = dict[str, Any]
+_PaperInput: TypeAlias = Mapping[str, Any]
+_BlobContent: TypeAlias = str | bytes | Path | Iterable[int]
+_Asset: TypeAlias = dict[str, Any]
 
 
-def utc_now():
+def utc_now() -> str:
     """Return the current UTC timestamp.
 
     Returns
@@ -67,12 +75,12 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def connect(db_path: str | Path):
+def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
     """Open and initialize a corpus database.
 
     Parameters
     ----------
-    db_path : str or pathlib.Path
+    db_path : str or os.PathLike[str]
         SQLite database path.
 
     Returns
@@ -91,7 +99,7 @@ def connect(db_path: str | Path):
     return conn
 
 
-def init_corpus(conn):
+def init_corpus(conn: sqlite3.Connection) -> None:
     """Create or migrate the corpus schema.
 
     Parameters
@@ -205,7 +213,7 @@ def init_corpus(conn):
     conn.commit()
 
 
-def _paper_column_type(column):
+def _paper_column_type(column: str) -> str:
     """Resolve the SQLite type for a paper column.
 
     Parameters
@@ -230,7 +238,7 @@ def _paper_column_type(column):
     return 'TEXT'
 
 
-def _has_value(value) -> bool:
+def _has_value(value: object) -> bool:
     """Check whether a value contains meaningful content.
 
     Parameters
@@ -253,7 +261,7 @@ def _has_value(value) -> bool:
     return str(value).strip() != ''
 
 
-def _clean_doi(value):
+def _clean_doi(value: object) -> str:
     """Normalize a DOI-like value for matching.
 
     Parameters
@@ -276,7 +284,7 @@ def _clean_doi(value):
     return doi.strip().rstrip('.').lower()
 
 
-def _title_key(value):
+def _title_key(value: object) -> str:
     """Create a comparable paper-title key.
 
     Parameters
@@ -294,7 +302,7 @@ def _title_key(value):
     return re.sub(r'\W+', ' ', str(value).lower()).strip()
 
 
-def _year(value):
+def _year(value: object) -> str:
     """Extract a year from a date-like value.
 
     Parameters
@@ -313,7 +321,7 @@ def _year(value):
     return match.group(0) if match else ''
 
 
-def _merge_sources(current, incoming):
+def _merge_sources(current: object, incoming: object) -> str:
     """Combine semicolon-separated source names.
 
     Parameters
@@ -336,12 +344,12 @@ def _merge_sources(current, incoming):
     return ';'.join(dict.fromkeys(values))
 
 
-def _fallback_paper_id(paper):
+def _fallback_paper_id(paper: _PaperInput) -> str:
     """Build a stable fallback paper identifier.
 
     Parameters
     ----------
-    paper : dict
+    paper : _PaperInput
         Normalized paper metadata.
 
     Returns
@@ -359,17 +367,17 @@ def _fallback_paper_id(paper):
     return f'paper:{hashlib.sha1(seed.encode("utf-8")).hexdigest()}'
 
 
-def normalize_paper(paper: dict[str, Any]):
+def normalize_paper(paper: _PaperInput) -> _Paper:
     """Normalize a paper mapping to the corpus schema.
 
     Parameters
     ----------
-    paper : dict
+    paper : _PaperInput
         Provider or user-supplied paper metadata.
 
     Returns
     -------
-    dict
+    _Paper
         Complete normalized paper row with pipeline defaults.
     """
     normalized = {column: '' for column in PAPER_COLUMNS}
@@ -383,19 +391,19 @@ def normalize_paper(paper: dict[str, Any]):
     return normalized
 
 
-def _merge_paper(existing, incoming):
+def _merge_paper(existing: _PaperInput, incoming: _PaperInput) -> _Paper:
     """Merge incoming metadata into an existing paper row.
 
     Parameters
     ----------
-    existing : dict
+    existing : _PaperInput
         Existing corpus paper row.
-    incoming : dict
+    incoming : _PaperInput
         Incoming paper metadata.
 
     Returns
     -------
-    dict
+    _Paper
         Merged paper row that preserves established values.
     """
     merged = normalize_paper(existing)
@@ -425,14 +433,14 @@ def _merge_paper(existing, incoming):
     return merged
 
 
-def _papers_match(existing, incoming):
+def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     """Check whether two rows describe the same publication.
 
     Parameters
     ----------
-    existing : dict
+    existing : _PaperInput
         Existing corpus paper row.
-    incoming : dict
+    incoming : _PaperInput
         Incoming paper metadata.
 
     Returns
@@ -455,19 +463,19 @@ def _papers_match(existing, incoming):
                 and existing_year and incoming_year and existing_year == incoming_year)
 
 
-def _find_existing_paper(conn, paper):
+def _find_existing_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
     """Find the first corpus row matching a paper.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : _PaperInput
         Paper metadata to match.
 
     Returns
     -------
-    dict or None
+    _Paper or None
         Matching corpus row, or ``None``.
     """
     incoming = normalize_paper(paper)
@@ -477,25 +485,25 @@ def _find_existing_paper(conn, paper):
     return None
 
 
-def find_paper(conn, paper):
+def find_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
     """Find a corpus paper matching supplied metadata.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : _PaperInput
         Paper metadata to match.
 
     Returns
     -------
-    dict or None
+    _Paper or None
         Matching corpus row, or ``None``.
     """
     return _find_existing_paper(conn, paper)
 
 
-def _json_dumps(value):
+def _json_dumps(value: Any) -> str:
     """Serialize metadata as deterministic JSON text.
 
     Parameters
@@ -515,14 +523,14 @@ def _json_dumps(value):
     return json.dumps(value, sort_keys=True)
 
 
-def upsert_paper(conn, paper: dict[str, Any]):
+def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput) -> str:
     """Insert or update one paper row.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : _PaperInput
         Paper metadata and optional pipeline state.
 
     Returns
@@ -556,19 +564,19 @@ def upsert_paper(conn, paper: dict[str, Any]):
     return paper_id
 
 
-def upsert_papers(conn, papers):
+def upsert_papers(conn: sqlite3.Connection, papers: Iterable[_PaperInput]) -> tuple[int, int]:
     """Merge multiple papers into the corpus.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    papers : iterable of dict
+    papers : Iterable[_PaperInput]
         Paper mappings to insert or merge.
 
     Returns
     -------
-    tuple of int
+    tuple[int, int]
         Counts of added and updated papers.
     """
     added = 0
@@ -585,7 +593,7 @@ def upsert_papers(conn, papers):
     return added, updated
 
 
-def paper_rows(conn):
+def paper_rows(conn: sqlite3.Connection) -> list[_Paper]:
     """Load corpus paper rows in insertion order.
 
     Parameters
@@ -595,7 +603,7 @@ def paper_rows(conn):
 
     Returns
     -------
-    list of dict
+    list[_Paper]
         Paper rows in their stored representation.
     """
     return [
@@ -604,12 +612,12 @@ def paper_rows(conn):
     ]
 
 
-def _prepare_content(content):
+def _prepare_content(content: _BlobContent) -> bytes:
     """Convert supported content inputs to bytes.
 
     Parameters
     ----------
-    content : str, bytes, pathlib.Path, or iterable of int
+    content : str, bytes, pathlib.Path, or Iterable[int]
         Text, raw bytes, file path, or byte-like iterable.
 
     Returns
@@ -626,7 +634,7 @@ def _prepare_content(content):
     return bytes(content)
 
 
-def _compress(content, compression):
+def _compress(content: bytes, compression: str) -> bytes:
     """Compress content with a corpus storage codec.
 
     Parameters
@@ -653,7 +661,7 @@ def _compress(content, compression):
     return content
 
 
-def _decompress(content, compression):
+def _decompress(content: bytes, compression: str) -> bytes:
     """Decompress stored corpus content.
 
     Parameters
@@ -680,18 +688,18 @@ def _decompress(content, compression):
     raise ValueError(f'Unsupported blob compression: {compression}')
 
 
-def store_blob(conn,
-               content,
+def store_blob(conn: sqlite3.Connection,
+               content: _BlobContent,
                kind: str,
                mime_type: str,
-               compression: str = 'gzip'):
+               compression: str = 'gzip') -> str:
     """Store a deduplicated content blob.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    content : object
+    content : _BlobContent
         Content accepted by :func:`_prepare_content`.
     kind : str
         Logical content kind, such as ``"text"`` or ``"pdf"``.
@@ -741,12 +749,12 @@ def store_blob(conn,
     return blob_id
 
 
-def link_asset(conn,
+def link_asset(conn: sqlite3.Connection,
                paper_id: str,
                blob_id: str,
                role: str,
                source: str = '',
-               original_filename: str = ''):
+               original_filename: str = '') -> None:
     """Link a stored blob to a paper asset role.
 
     Parameters
@@ -776,24 +784,24 @@ def link_asset(conn,
     conn.commit()
 
 
-def add_asset(conn,
-              paper: dict[str, Any],
-              content,
+def add_asset(conn: sqlite3.Connection,
+              paper: _PaperInput,
+              content: _BlobContent,
               role: str,
               kind: str,
               mime_type: str,
               source: str = '',
               original_filename: str = '',
-              compression: str = 'gzip'):
+              compression: str = 'gzip') -> str:
     """Store and link an asset for a paper.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    paper : dict
+    paper : _PaperInput
         Owning paper metadata.
-    content : object
+    content : _BlobContent
         Asset content accepted by :func:`_prepare_content`.
     role : str
         Asset role within the paper.
@@ -819,7 +827,7 @@ def add_asset(conn,
     return blob_id
 
 
-def get_asset(conn, paper_id: str, role: str):
+def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | None:
     """Load the newest asset for a paper role.
 
     Parameters
@@ -833,7 +841,7 @@ def get_asset(conn, paper_id: str, role: str):
 
     Returns
     -------
-    dict or None
+    _Asset or None
         Asset metadata with decompressed ``content``, or ``None``.
     """
     row = conn.execute(
@@ -858,19 +866,22 @@ def get_asset(conn, paper_id: str, role: str):
     return data
 
 
-def latest_assets(conn, roles):
+def latest_assets(
+    conn: sqlite3.Connection,
+    roles: Iterable[str],
+) -> dict[tuple[str, str], _Asset]:
     """Load the newest requested assets in bulk.
 
     Parameters
     ----------
     conn : sqlite3.Connection
         Open corpus connection.
-    roles : iterable of str
+    roles : Iterable[str]
         Asset roles to retrieve.
 
     Returns
     -------
-    dict
+    dict[tuple[str, str], _Asset]
         ``(paper_id, role)`` keys mapped to decompressed asset rows.
     """
     roles = tuple(dict.fromkeys(roles))
@@ -905,7 +916,7 @@ def latest_assets(conn, roles):
     return assets
 
 
-def corpus_stats(conn):
+def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
     """Calculate corpus storage statistics.
 
     Parameters
@@ -915,7 +926,7 @@ def corpus_stats(conn):
 
     Returns
     -------
-    dict
+    dict[str, int or float]
         Paper, asset, blob-size, and compression-savings statistics.
     """
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]

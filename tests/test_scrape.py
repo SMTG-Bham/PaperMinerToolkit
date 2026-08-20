@@ -1,15 +1,21 @@
 """Test scrape helpers and corpus extraction workflows."""
 
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
 import os
+from pathlib import Path
+from typing import Any, Self
 
 import pandas as pd
 import pytest
 
 import paperscraper.corpus as corpus
 import paperscraper.scrape as scrape
+from paperscraper.compression import CompressionConfig
 
 
-def sample_recipe():
+def sample_recipe() -> dict[str, Any]:
     """Return a minimal recipe for scrape unit tests."""
     return {
         'material type': 'solid electrolyte',
@@ -20,7 +26,7 @@ def sample_recipe():
     }
 
 
-def write_corpus(path, rows):
+def write_corpus(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     """Write paper rows and matching local files to a corpus database for scrape unit tests."""
     papers_dir = path.parent / 'papers'
     with corpus.connect(path) as conn:
@@ -37,7 +43,7 @@ def write_corpus(path, rows):
                 corpus.add_asset(conn, row, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
 
 
-def read_corpus(path):
+def read_corpus(path: Path) -> pd.DataFrame:
     """Read paper rows from a corpus database as a DataFrame for scrape unit tests."""
     with corpus.connect(path) as conn:
         return pd.DataFrame(corpus.paper_rows(conn))
@@ -46,19 +52,19 @@ def read_corpus(path):
 class FakeTqdm:
     """Minimal progress-bar replacement for scrape unit tests."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         """Initialize progress update tracking."""
         self.updates = 0
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         """Return the fake progress bar from its context manager."""
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: object) -> bool:
         """Leave the progress context without suppressing errors."""
         return False
 
-    def update(self, amount):
+    def update(self, amount: int) -> None:
         """Add an amount to the recorded progress."""
         self.updates += amount
 
@@ -69,7 +75,13 @@ class FakeModelConfig:
     calls = []
     required = []
 
-    def __init__(self, profile, name=None, provider=None, base_url=None):
+    def __init__(
+        self,
+        profile: str,
+        name: str | None = None,
+        provider: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
         """Store fake model profile and connection values."""
         self.profile = profile
         self.name = name or f'{profile}-model'
@@ -77,7 +89,13 @@ class FakeModelConfig:
         self.base_url = base_url
 
     @classmethod
-    def from_profile(cls, profile, name=None, provider=None, base_url=None):
+    def from_profile(
+        cls,
+        profile: str,
+        name: str | None = None,
+        provider: str | None = None,
+        base_url: str | None = None,
+    ) -> Self:
         """Record profile arguments and return a fake configuration."""
         cls.calls.append({
             'profile': profile,
@@ -87,17 +105,21 @@ class FakeModelConfig:
         })
         return cls(profile, name=name, provider=provider, base_url=base_url)
 
-    def require(self, capability):
+    def require(self, capability: str) -> None:
         """Record a required model capability."""
         self.required.append(capability)
 
 
-def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
+def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test model-aware text chunking for short and long inputs."""
     text_config = FakeModelConfig('text', name='model')
     reserve_calls = []
 
-    def fake_reserve(prompt, model_config=None, buffer_tokens=500):
+    def fake_reserve(
+        prompt: str,
+        model_config: FakeModelConfig | None = None,
+        buffer_tokens: int = 500,
+    ) -> int:
         """Record token reservation arguments and return a fixed reserve."""
         reserve_calls.append({
             'prompt': prompt,
@@ -106,12 +128,12 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
         })
         return 750
 
-    def fake_limit(model_config=None, reserve_tokens=2000):
+    def fake_limit(model_config: FakeModelConfig | None = None, reserve_tokens: int = 2000) -> int:
         """Validate the token reserve and return a fixed context limit."""
         assert reserve_tokens == 750
         return 120000
 
-    def short_count(text, model_config=None):
+    def short_count(text: str, model_config: FakeModelConfig | None = None) -> int:
         """Return a token count that fits the configured context limit."""
         return 120000
 
@@ -128,7 +150,7 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch):
     assert chunks == ['ab', 'cd', 'ef']
 
 
-def test_material_file_and_image_helpers_handle_common_inputs(tmp_path):
+def test_material_file_and_image_helpers_handle_common_inputs(tmp_path: Path) -> None:
     """Test material, file, path, and image batching helpers."""
     row = pd.Series({
         'paper_id': 'doi:10.123/example',
@@ -173,7 +195,7 @@ def test_material_file_and_image_helpers_handle_common_inputs(tmp_path):
         scrape._image_batches(['a'], 'many')
 
 
-def test_select_papers_orders_and_limits_corpus_rows(monkeypatch):
+def test_select_papers_orders_and_limits_corpus_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test paper ordering, limiting, and option validation."""
     papers = [
         {'paper_id': 'paper-2', 'title': 'Beta', 'publication_date': '2024-01-01'},
@@ -203,7 +225,7 @@ def test_select_papers_orders_and_limits_corpus_rows(monkeypatch):
         scrape._select_papers(papers, scrape_count=0)
 
 
-def test_scrape_papers_rejects_invalid_modes(tmp_path):
+def test_scrape_papers_rejects_invalid_modes(tmp_path: Path) -> None:
     """Test validation of scrape, image, compression, and selection options."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -229,7 +251,10 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path):
 
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_import_source(
-        tmp_path, monkeypatch, capsys):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test text scraping output, status updates, and source preservation."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -250,7 +275,11 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: f'read {os.path.basename(path)}')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
-    def fake_analyze_text(text, recipe, model_config=None):
+    def fake_analyze_text(
+        text: str,
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record analyzed chunks and return a material record."""
         calls.setdefault('chunks', []).append(text)
         calls.setdefault('configs', []).append(model_config)
@@ -294,7 +323,11 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     assert 'Chunking warning: 1 paper input was split into 2 independent model requests' in captured.err
 
 
-def test_force_rescrape_replaces_previous_chunk_count(tmp_path, monkeypatch, capsys):
+def test_force_rescrape_replaces_previous_chunk_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Record the latest chunk plan rather than retaining an earlier split count."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -323,7 +356,10 @@ def test_force_rescrape_replaces_previous_chunk_count(tmp_path, monkeypatch, cap
     assert 'was split into' not in captured.err
 
 
-def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_path, monkeypatch):
+def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test abstract scraping output and independent status updates."""
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
@@ -342,7 +378,11 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_pat
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'abstract text from corpus')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
-    def fake_scrape_text(text, recipe, model_config=None):
+    def fake_scrape_text(
+        text: str,
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record abstract analysis inputs and return a material record."""
         calls['text'] = text
         calls['model_config'] = model_config
@@ -365,7 +405,10 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(tmp_pat
     assert papers.loc[0, 'num_abstract_chunks'] == 1
 
 
-def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeypatch):
+def test_scrape_papers_applies_count_and_order_before_scraping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test ordering and count limits in the main scrape loop."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -403,7 +446,11 @@ def test_scrape_papers_applies_count_and_order_before_scraping(tmp_path, monkeyp
     assert papers.loc[2, 'text_scrape_status'] == 'pending'
 
 
-def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, monkeypatch, capsys):
+def test_scrape_papers_records_text_failures_when_source_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test text scrape failure handling when no source asset exists."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -424,7 +471,10 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(tmp_path, mo
     assert 'No new scraped material rows were written' in output
 
 
-def test_scrape_papers_records_abstract_failures_when_source_is_missing(tmp_path, monkeypatch):
+def test_scrape_papers_records_abstract_failures_when_source_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test abstract scrape failure handling when no source asset exists."""
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
@@ -441,7 +491,10 @@ def test_scrape_papers_records_abstract_failures_when_source_is_missing(tmp_path
     assert not output_path.exists()
 
 
-def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
+def test_scrape_papers_compresses_text_before_chunking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test that scrape-time text compression precedes chunking."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -456,7 +509,12 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'full paper text')
 
-    def fake_compress(text, prompt, model_config, config):
+    def fake_compress(
+        text: str,
+        prompt: str,
+        model_config: FakeModelConfig,
+        config: CompressionConfig,
+    ) -> str:
         """Record compression inputs and return compressed text."""
         calls['compress'] = {
             'text': text,
@@ -468,12 +526,16 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
         }
         return 'compressed paper text'
 
-    def fake_chunks(text, model_config, prompt=''):
+    def fake_chunks(text: str, model_config: FakeModelConfig, prompt: str = '') -> list[str]:
         """Record chunking input and return one compressed chunk."""
         calls['chunk_text'] = text
         return ['compressed chunk']
 
-    def fake_scrape_text(text, recipe, model_config=None):
+    def fake_scrape_text(
+        text: str,
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record analyzed text and return a material record."""
         calls['analyzed_text'] = text
         return [{'Name': 'compressed material'}]
@@ -503,7 +565,10 @@ def test_scrape_papers_compresses_text_before_chunking(tmp_path, monkeypatch):
     assert calls['analyzed_text'] == 'compressed chunk'
 
 
-def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, monkeypatch):
+def test_scrape_papers_text_images_combines_results_and_cleans_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test combined scraping, reconciliation, and image cleanup."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -525,7 +590,13 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['single chunk'])
     monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text context')
 
-    def fake_extract_pdf_images(pdf_path_arg, output_dir, prefix, strategy, dpi):
+    def fake_extract_pdf_images(
+        pdf_path_arg: str,
+        output_dir: str,
+        prefix: str,
+        strategy: str,
+        dpi: int,
+    ) -> list[str]:
         """Create fake extracted images and record extraction options."""
         image_paths = [os.path.join(output_dir, f'{prefix}-1.png'), os.path.join(output_dir, f'{prefix}-2.png')]
         os.makedirs(output_dir, exist_ok=True)
@@ -540,19 +611,34 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
         }
         return image_paths
 
-    def fake_analyze_text(text, recipe, model_config=None):
+    def fake_analyze_text(
+        text: str,
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record analyzed text and return a text-derived record."""
         calls['text'] = text
         return [{'Name': 'text LLZO'}]
 
-    def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
+    def fake_analyze_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record an image batch and return an image-derived record."""
         calls.setdefault('image_batches', []).append(image_paths)
         calls.setdefault('contexts', []).append(context)
         calls.setdefault('image_compression', []).append(compression_config)
         return [{'Name': f'image {len(image_paths)}'}]
 
-    def fake_combine(text_materials, image_materials, recipe, model_config=None):
+    def fake_combine(
+        text_materials: Sequence[Mapping[str, Any]],
+        image_materials: Sequence[Mapping[str, Any]],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record source records and return a reconciled record."""
         calls['combine'] = (text_materials, image_materials, model_config.name)
         return [{'Name': 'combined LLZO'}]
@@ -606,7 +692,10 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(tmp_path, 
     assert all(not os.path.exists(path) for path in image_paths)
 
 
-def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_records(tmp_path, monkeypatch):
+def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test fallback rows when text-image reconciliation returns nothing."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -644,7 +733,10 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
         0, 'last_error']
 
 
-def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_import_source(tmp_path, monkeypatch):
+def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_import_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test image scraping with text context and source preservation."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -663,7 +755,13 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_
     monkeypatch.setattr(scrape, 'read_pdf_text', lambda path: f'context from {os.path.basename(path)}')
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
 
-    def fake_analyze_images(image_paths, recipe, model_config=None, context=None, compression_config=None):
+    def fake_analyze_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+    ) -> list[dict[str, str]]:
         """Record image analysis inputs and return a material record."""
         calls['image_paths'] = image_paths
         calls['context'] = context
@@ -693,7 +791,11 @@ def test_scrape_papers_image_mode_writes_image_rows_reads_context_and_preserves_
     assert pdf_path.exists()
 
 
-def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatch, capsys):
+def test_scrape_papers_skips_already_successful_image_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test skipping an already successful image stage."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -717,7 +819,10 @@ def test_scrape_papers_skips_already_successful_image_stage(tmp_path, monkeypatc
     assert 'Skipped already successful stages: abstracts=0, text=0, images=1' in output
 
 
-def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monkeypatch):
+def test_scrape_papers_records_image_failure_when_pdf_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test image scrape failure handling when no PDF exists."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -737,7 +842,7 @@ def test_scrape_papers_records_image_failure_when_pdf_is_missing(tmp_path, monke
     assert not output_path.exists()
 
 
-def test_scrape_papers_records_image_failures(tmp_path, monkeypatch):
+def test_scrape_papers_records_image_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test image scrape failure handling when extraction yields no images."""
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
