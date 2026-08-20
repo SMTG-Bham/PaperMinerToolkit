@@ -20,6 +20,7 @@ from paperscraper.documents import (extract_pdf_images,
                                     read_pdf_text)
 from paperscraper.corpus import PIPELINE_COLUMNS, connect, get_asset, paper_rows, upsert_paper
 from paperscraper.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
+from paperscraper.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
 from paperscraper.models import ModelConfig
 from paperscraper.recipes import load_recipe
 from paperscraper.tokenizer import prompt_token_reserve, usable_input_token_limit
@@ -215,6 +216,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   delete_images_after: bool = False,
                   output_path: str = 'temp_scraped_materials.csv',
                   force: bool = False,
+                  ignore_filters: bool = False,
                   scrape_count: int | None = None,
                   scrape_order: str = 'corpus',
                   compression_scope: str = 'none',
@@ -273,7 +275,28 @@ def scrape_papers(db_path: str = 'papers.db',
         'text_chunked': 0,
     }
     with connect(db_path) as conn:
-        papers = _select_papers(paper_rows(conn), scrape_order=scrape_order, scrape_count=scrape_count)
+        filters = active_filter_stack(conn)
+        papers = paper_rows(conn)
+        if filters:
+            overview = filter_overview(conn)
+            counts = overview['counts']
+            if ignore_filters:
+                print(
+                    f'Ignoring active corpus filters for this scrape: {filter_expression(filters)}. '
+                    f'Recorded result: included={counts["included"]}, excluded={counts["excluded"]}, '
+                    f'unavailable={counts["unavailable"]}.'
+                )
+            else:
+                statuses = current_filter_statuses(conn)
+                papers = [paper for paper in papers if statuses.get(paper['paper_id']) == 'included']
+                print(
+                    f'Applying corpus filters: {filter_expression(filters)}. '
+                    f'Final result: included={counts["included"]}, excluded={counts["excluded"]}, '
+                    f'unavailable={counts["unavailable"]}.'
+                )
+        else:
+            print('No active corpus filters; all otherwise eligible papers are available for scraping.')
+        papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
         with tempfile.TemporaryDirectory(prefix='paperscraper-scrape-') as temp_dir:
             with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
                 for row in papers:

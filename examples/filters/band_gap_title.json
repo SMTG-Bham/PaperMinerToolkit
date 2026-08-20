@@ -1,0 +1,14 @@
+{
+  "name": "band-gap-title",
+  "description": "Titles concerning band gaps or semiconductors",
+  "fields": ["title"],
+  "case_sensitive": false,
+  "include_mode": "any",
+  "include": [
+    {"name": "band-gap", "pattern": "\\bband[ -]?gaps?\\b"},
+    {"name": "semiconductor", "pattern": "\\bsemiconduct(?:or|ors|ing)\\b"}
+  ],
+  "exclude": [
+    {"name": "review", "pattern": "\\breview\\b"}
+  ]
+}

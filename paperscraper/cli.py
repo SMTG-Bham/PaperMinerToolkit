@@ -10,6 +10,9 @@ from paperscraper.crossref import import_author_works
 from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
+from paperscraper.filtering import (apply_regex_filter,
+                                    filter_overview,
+                                    reset_filters)
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import SCRAPE_ORDERS, scrape_papers
 from paperscraper.store import store_results
@@ -157,6 +160,91 @@ def corpus_status(db_path: str):
     click.echo(f'Original size: {_format_bytes(stats["original_size"])}')
     click.echo(f'Stored size: {_format_bytes(stats["stored_size"])}')
     click.echo(f'Storage saved: {stats["savings_fraction"]:.1%}')
+
+
+def _echo_filter_overview(db_path, overview):
+    """Print a compact, explicit summary of the active filter stack."""
+    click.echo(f'Corpus filters: {db_path}')
+    if not overview['filters']:
+        click.echo('Active expression: none')
+    else:
+        click.echo(f'Active expression: {overview["expression"]}')
+        for index, item in enumerate(overview['filters']):
+            prefix = 'ROOT' if index == 0 else item['join_operator'].upper()
+            definition = item['definition']
+            counts = item['counts']
+            click.echo(
+                f'  {prefix} {item["name"]} [regex; {definition["include_mode"]}; '
+                f'fields={",".join(definition["fields"])}; timeout={definition["timeout_ms"]}ms] '
+                f'included={counts["included"]}, excluded={counts["excluded"]}, '
+                f'unavailable={counts["unavailable"]}'
+            )
+    counts = overview['counts']
+    click.echo(
+        f'Final result: included={counts["included"]}, excluded={counts["excluded"]}, '
+        f'unavailable={counts["unavailable"]}'
+    )
+    if overview['unavailable_reasons']:
+        click.echo('Unavailable reasons:')
+        ordered = sorted(
+            overview['unavailable_reasons'].items(), key=lambda item: (-item[1], item[0])
+        )
+        for reason, count in ordered[:10]:
+            click.echo(f'  {count}: {reason}')
+        if len(ordered) > 10:
+            click.echo(f'  ... {len(ordered) - 10} more reason combinations stored in the corpus')
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--field', 'fields', multiple=True,
+              type=click.Choice(['title', 'abstract', 'full_text']),
+              help='Override JSON fields. Repeat to combine fields.')
+@click.option('--join', 'join_operator', type=click.Choice(['and', 'or']), default=None,
+              help='Join this filter to the preceding active expression.')
+@click.option('--replace', is_flag=True, default=False,
+              help='Replace and reevaluate an active filter with the same name.')
+@click.option('--timeout-ms', type=click.IntRange(min=1), default=None,
+              help='Override the per-pattern match timeout from the JSON definition.')
+def filter_regex(db_path: str, rules_path: str, fields: tuple[str],
+                 join_operator: str | None, replace: bool, timeout_ms: int | None):
+    """Apply a named post-download regex filter to a paper corpus."""
+    try:
+        overview = apply_regex_filter(
+            db_path,
+            rules_path,
+            fields=fields or None,
+            join_operator=join_operator,
+            replace=replace,
+            timeout_ms=timeout_ms,
+        )
+    except (OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    _echo_filter_overview(db_path, overview)
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+def filter_status(db_path: str):
+    """Show active corpus filters and their final paper decisions."""
+    with connect(db_path) as conn:
+        overview = filter_overview(conn)
+    _echo_filter_overview(db_path, overview)
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--name', default=None, help='Remove one active filter by name.')
+@click.option('--all', 'all_filters', is_flag=True, default=False,
+              help='Remove every active filter.')
+def filter_reset(db_path: str, name: str | None, all_filters: bool):
+    """Remove one or all active corpus filters."""
+    try:
+        overview = reset_filters(db_path, name=name, all_filters=all_filters)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    _echo_filter_overview(db_path, overview)
 
 
 @click.command()
@@ -387,6 +475,10 @@ def topics_predict(model_dir: str, db_path: str, output_path: str):
               is_flag=True,
               default=False,
               help='Rescrape stages even if their status is already succeeded.')
+@click.option('--ignore-filters',
+              is_flag=True,
+              default=False,
+              help='Explicitly bypass active corpus filters for this scrape run.')
 @click.option('--count',
               'scrape_count',
               default=None,
@@ -434,6 +526,7 @@ def scrape(
         delete_images_after: bool,
         output_path: str,
         force: bool,
+        ignore_filters: bool,
         scrape_count: int | None,
         scrape_order: str,
         compression_scope: str,
@@ -460,6 +553,7 @@ def scrape(
         delete_images_after=delete_images_after,
         output_path=output_path,
         force=force,
+        ignore_filters=ignore_filters,
         scrape_count=scrape_count,
         scrape_order=scrape_order,
         compression_scope=compression_scope,

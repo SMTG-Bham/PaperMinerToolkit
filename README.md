@@ -34,7 +34,8 @@ flowchart TD
     A["Search Scopus/CORE/OpenAlex<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] --> B
     B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
-    E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
+    E --> R["Apply regex filters (optional)<br/><b><code>ps_filter_regex</code></b>"]
+    R --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
     B --> F
     F --> G[/"temp_scraped_materials.csv"/]
     G --> H["Store converted rows<br/><b><code>ps_store</code></b>"]
@@ -42,7 +43,7 @@ flowchart TD
 
     classDef action fill:#e8f1ff,stroke:#2f5f9f,color:#10233f
     classDef file fill:#fff3bf,stroke:#b7791f,color:#3b2f0b
-    class A,C,E,F,H action
+    class A,C,E,R,F,H action
     class B,G,I file
 ```
 
@@ -101,6 +102,55 @@ Use this step for papers discovered by search. External PDF imports already poin
 `ps_download papers.db --format both`
 
 PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always, drawing on `OPENALEX_API_KEY` when set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+
+### Filter Downloaded Papers
+
+Regex filters run after downloading and tag papers in the corpus without deleting papers or changing their scrape statuses. A definition names the filter, selects fields, and provides positive and optional veto patterns:
+
+```json
+{
+  "name": "band-gap-materials",
+  "description": "Papers concerning semiconductor band gaps",
+  "fields": ["title", "abstract", "full_text"],
+  "case_sensitive": false,
+  "include_mode": "any",
+  "timeout_ms": 500,
+  "include": [
+    {"name": "band-gap", "pattern": "\\bband[ -]?gaps?\\b"},
+    {"name": "electronic-gap", "pattern": "\\belectronic\\s+gaps?\\b"}
+  ],
+  "exclude": [
+    {"name": "irrelevant-review", "pattern": "\\breview of unrelated systems\\b"}
+  ]
+}
+```
+
+Apply the first filter, then add further named filters with explicit operators:
+
+```bash
+ps_filter_regex papers.db band_gap.json
+ps_filter_regex papers.db experimental.json --join or
+ps_filter_regex papers.db oxide.json --join and
+```
+
+The `examples/filters` directory contains three title-only definitions that demonstrate the same sequence.
+
+Operators are evaluated from left to right. The example is stored and displayed as `((band-gap-materials OR experimental) AND oxide)`. Within one definition, `include_mode` can be `any` or `all`; any matching exclude rule vetoes that filter. Use repeatable `--field` options or `--timeout-ms` to override and persist the corresponding JSON settings for that application.
+
+The command searches stored text first and falls back to extracting downloaded PDF text. Reference sections are ignored. Papers are marked `unavailable` when selected content is missing, unreadable, or times out and no available field proves a positive match. Inspect the active expression and counts at any time:
+
+```bash
+ps_filter_status papers.db
+```
+
+Replacing a filter requires `--replace`. Remove one filter or clear the stack with:
+
+```bash
+ps_filter_reset papers.db --name experimental
+ps_filter_reset papers.db --all
+```
+
+When filters are active, `ps_scrape` prints the complete expression and processes only the final `included` papers. Use `--ignore-filters` for an explicit one-run bypass. With no active filters, scraping retains its original all-paper behavior.
 
 ### Train And Inspect LDA Topics
 

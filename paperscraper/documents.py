@@ -5,18 +5,36 @@ from PDFs, text/PDF path lookup for paper rows, and image extraction/rendering
 for figure or page-level model analysis.
 """
 
+import io
 import os
+import re
 from pypdf import PdfReader
 from pathlib import Path
 
 
-def read_pdf_text(pdf_path: str):
-    """Extract concatenated text from every page in a PDF file."""
+def read_pdf_text(pdf_path):
+    """Extract concatenated text from every page in a PDF file or binary stream."""
     reader = PdfReader(pdf_path)
     text = ''
     for page in reader.pages:
         page_text = page.extract_text() or ''
         text += page_text
+    return text
+
+
+def read_pdf_bytes(content: bytes):
+    """Extract text directly from PDF bytes without materializing a temporary file."""
+    return read_pdf_text(io.BytesIO(content))
+
+
+def trim_reference_section(text: str):
+    """Remove a trailing reference section identified by a standalone heading."""
+    headings = list(re.finditer(
+        r'(?im)^\s*(?:\d+(?:\.\d+)*[.)]?\s+)?(?:references|bibliography|literature cited)\s*$',
+        text,
+    ))
+    if headings:
+        return text[:headings[-1].start()]
     return text
 
 
@@ -28,9 +46,7 @@ def read_document_text(path: str, trim_references: bool = True):
     if path.lower().endswith('.pdf'):
         text = read_pdf_text(path)
         if trim_references:
-            index = text.lower().rfind('references')
-            if index != -1:
-                text = text[:index]
+            text = trim_reference_section(text)
         return text
     raise ValueError(f'Unsupported document type: {path}')
 

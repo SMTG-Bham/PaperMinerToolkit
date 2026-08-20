@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -117,6 +117,48 @@ def init_corpus(conn):
         CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
         CREATE INDEX IF NOT EXISTS idx_blobs_sha256 ON blobs(sha256);
         CREATE INDEX IF NOT EXISTS idx_assets_paper_role ON paper_assets(paper_id, role);
+
+        CREATE TABLE IF NOT EXISTS corpus_filters (
+            filter_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            method TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            definition_json TEXT NOT NULL,
+            stack_position INTEGER NOT NULL,
+            join_operator TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (join_operator IS NULL OR join_operator IN ('and', 'or'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_filter_results (
+            filter_id INTEGER NOT NULL,
+            paper_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            unavailable_reason TEXT NOT NULL DEFAULT '',
+            evaluated_at TEXT NOT NULL,
+            PRIMARY KEY (filter_id, paper_id),
+            FOREIGN KEY (filter_id) REFERENCES corpus_filters(filter_id) ON DELETE CASCADE,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('included', 'excluded', 'unavailable'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_filter_state (
+            paper_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            expression TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('included', 'excluded', 'unavailable'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_corpus_filters_position
+            ON corpus_filters(stack_position);
+        CREATE INDEX IF NOT EXISTS idx_filter_results_status
+            ON paper_filter_results(filter_id, status);
+        CREATE INDEX IF NOT EXISTS idx_filter_state_status
+            ON paper_filter_state(status);
         """
     )
     existing_columns = {
