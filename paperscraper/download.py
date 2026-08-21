@@ -369,7 +369,19 @@ def _download_core_pdf(
 
 
 def _openalex_identifier(paper: Mapping[str, Any]) -> str | None:
-    """Return the DOI or OpenAlex work identifier usable for a work lookup."""
+    """Resolve an identifier accepted by the OpenAlex works endpoint.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a DOI or an ``openalex:`` paper ID.
+
+    Returns
+    -------
+    str or None
+        A DOI-qualified identifier or OpenAlex work ID, or ``None`` when the
+        paper cannot be looked up through OpenAlex.
+    """
     doi = paper.get('doi')
     paper_id = str(paper.get('paper_id') or '')
     if _has_value(doi):
@@ -405,7 +417,19 @@ def _download_openalex_pdf(
 def _download_openalex_abstract(
     paper: Mapping[str, Any],
 ) -> tuple[bool, str, str]:
-    """Fetch and reconstruct an abstract from OpenAlex work metadata."""
+    """Fetch and reconstruct an abstract from OpenAlex work metadata.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a DOI or OpenAlex work identifier.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and normalized abstract
+        text. The text is empty when retrieval fails or no abstract is stored.
+    """
     identifier = _openalex_identifier(paper)
     if identifier is None:
         return False, 'missing DOI or OpenAlex ID', ''
@@ -637,7 +661,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     ----------
     db_path : str or os.PathLike[str], default='papers.db'
         Path to the SQLite paper corpus.
-    download_format : {'both', 'pdf', 'text'}, default='text'
+    download_format : {'abstract', 'both', 'pdf', 'text'}, default='text'
         Primary asset types to download.
     sources : Iterable[str] or None, optional
         Ordered PDF providers to try. ``all`` expands to configured providers.

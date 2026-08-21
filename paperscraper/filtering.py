@@ -215,11 +215,33 @@ def load_regex_definition(
 
 
 def _normalize_topic_rule(
-    rule: Mapping[str, Any],
+    rule: object,
     label: str,
     valid_topic_ids: set[int],
 ) -> dict[str, Any]:
-    """Validate one probability/dominance topic condition."""
+    """Normalize one probability or dominance topic condition.
+
+    Parameters
+    ----------
+    rule : object
+        Candidate mapping containing a rule name, topic ID, and threshold or
+        dominance requirement.
+    label : str
+        Rule location used in validation errors.
+    valid_topic_ids : set[int]
+        Topic IDs defined by the referenced stored model.
+
+    Returns
+    -------
+    dict[str, Any]
+        Validated topic rule with explicit optional values.
+
+    Raises
+    ------
+    ValueError
+        If the rule is malformed, refers to an unknown topic, or contains no
+        effective condition.
+    """
     _require_type(rule, dict, label)
     name = str(rule.get('name') or '').strip()
     if not name:
@@ -251,9 +273,28 @@ def _normalize_topic_rule(
 
 def normalize_topic_definition(
     conn: sqlite3.Connection,
-    definition: Mapping[str, Any],
+    definition: object,
 ) -> dict[str, Any]:
-    """Resolve and validate one persistent topic-filter definition."""
+    """Resolve and normalize a persistent topic-filter definition.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection containing stored topic models.
+    definition : object
+        Candidate topic-filter definition loaded from JSON.
+
+    Returns
+    -------
+    dict[str, Any]
+        Validated definition with the model name and immutable model ID.
+
+    Raises
+    ------
+    ValueError
+        If the definition is malformed, its model is unavailable, or any rule
+        refers to an unknown topic.
+    """
     _require_type(definition, dict, 'Filter definition')
     name = str(definition.get('name') or '').strip()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
@@ -312,7 +353,27 @@ def load_topic_definition(
     conn: sqlite3.Connection,
     path: str | PathLike[str],
 ) -> dict[str, Any]:
-    """Load and normalize a topic-filter JSON document."""
+    """Load and normalize a topic-filter JSON document.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection used to resolve the stored model.
+    path : str or os.PathLike[str]
+        Topic-filter JSON file.
+
+    Returns
+    -------
+    dict[str, Any]
+        Validated persistent topic-filter definition.
+
+    Raises
+    ------
+    OSError
+        If the definition file cannot be read.
+    ValueError
+        If the JSON or topic-filter definition is invalid.
+    """
     try:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
     except json.JSONDecodeError as error:
@@ -321,7 +382,23 @@ def load_topic_definition(
 
 
 def compile_regex_definition(definition: _RegexDefinition) -> _CompiledDefinition:
-    """Compile all patterns before any corpus state is changed."""
+    """Compile every pattern in a filter definition.
+
+    Parameters
+    ----------
+    definition : _RegexDefinition
+        Normalized regular-expression filter definition.
+
+    Returns
+    -------
+    _CompiledDefinition
+        Include and exclude rules paired with compiled expressions.
+
+    Raises
+    ------
+    ValueError
+        If any regular expression is invalid.
+    """
     flags = regex.VERSION1
     if not definition['case_sensitive']:
         flags |= regex.IGNORECASE
@@ -584,7 +661,22 @@ def _topic_rule_matches(
     probability: float,
     dominant_topic: int | None,
 ) -> bool:
-    """Return whether one normalized topic condition is satisfied."""
+    """Evaluate one normalized condition against a paper's topic result.
+
+    Parameters
+    ----------
+    rule : Mapping[str, Any]
+        Normalized probability or dominance condition.
+    probability : float
+        Paper probability for the rule's topic.
+    dominant_topic : int or None
+        Paper's dominant topic ID when prediction succeeded.
+
+    Returns
+    -------
+    bool
+        ``True`` when every configured condition is satisfied.
+    """
     if rule['min_probability'] is not None and probability < rule['min_probability']:
         return False
     if rule['require_dominant'] and dominant_topic != rule['topic_id']:
@@ -597,7 +689,22 @@ def evaluate_topic_paper(
     paper: Mapping[str, Any],
     definition: Mapping[str, Any],
 ) -> tuple[_FilterStatus, dict[str, Any], str]:
-    """Evaluate stored topic probabilities for one corpus paper."""
+    """Evaluate a stored topic-filter definition for one corpus paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection containing predictions and scores.
+    paper : Mapping[str, Any]
+        Corpus paper row to classify.
+    definition : Mapping[str, Any]
+        Normalized topic-filter definition.
+
+    Returns
+    -------
+    tuple[_FilterStatus, dict[str, Any], str]
+        Filter status, structured rule evidence, and an unavailable reason.
+    """
     prediction = conn.execute(
         'SELECT status, dominant_topic_id FROM paper_topic_predictions '
         'WHERE model_id = ? AND paper_id = ?',
@@ -665,13 +772,35 @@ def evaluate_topic_paper(
 
 
 def _database_path(conn: sqlite3.Connection) -> str:
-    """Return the on-disk path for a corpus connection."""
+    """Return the on-disk path for a corpus connection.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open SQLite connection.
+
+    Returns
+    -------
+    str
+        Main database path, or an empty string for an in-memory connection.
+    """
     rows = conn.execute('PRAGMA database_list').fetchall()
     return next((row['file'] for row in rows if row['name'] == 'main'), '')
 
 
 def topic_filter_staleness(conn: sqlite3.Connection) -> dict[str, bool]:
-    """Return stale state keyed by model ID for active topic filters."""
+    """Check whether active topic filters use current corpus predictions.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    dict[str, bool]
+        Stale state keyed by each model ID used by an active topic filter.
+    """
     filters = [item for item in active_filter_stack(conn) if item['method'] == 'topic']
     if not filters:
         return {}
@@ -698,7 +827,23 @@ def topic_filter_staleness(conn: sqlite3.Connection) -> dict[str, bool]:
 
 
 def active_filter_stack(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return active filter rows in expression order with decoded definitions."""
+    """Return active filters in expression order.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Filter rows with decoded definitions.
+
+    Raises
+    ------
+    json.JSONDecodeError
+        If a stored filter definition is invalid JSON.
+    """
     rows = conn.execute(
         'SELECT * FROM corpus_filters ORDER BY stack_position, filter_id'
     ).fetchall()
@@ -981,7 +1126,32 @@ def apply_topic_filter(
     join_operator: str | None = None,
     replace: bool = False,
 ) -> _FilterOverview:
-    """Apply or explicitly replace one named stored-model topic filter."""
+    """Apply or replace one named stored-model topic filter.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    rules_path : str or os.PathLike[str]
+        Topic-filter JSON definition.
+    join_operator : {'and', 'or'} or None, optional
+        Operator joining a new filter to the preceding active expression.
+    replace : bool, default=False
+        Whether to replace and reevaluate an active filter with the same name.
+
+    Returns
+    -------
+    _FilterOverview
+        Updated filter stack and paper-status summary.
+
+    Raises
+    ------
+    OSError
+        If the rules file or corpus cannot be accessed.
+    ValueError
+        If the definition, join operation, stored model, or stored scores are
+        invalid or stale.
+    """
     if join_operator is not None:
         join_operator = join_operator.lower()
         if join_operator not in JOIN_OPERATORS:
@@ -1083,7 +1253,21 @@ def refresh_topic_filters(
     db_path: str | PathLike[str],
     model_id: str,
 ) -> None:
-    """Reevaluate active topic filters after a model's scores are refreshed."""
+    """Reevaluate filters after a stored model's scores are refreshed.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    model_id : str
+        Immutable identifier of the refreshed topic model.
+
+    Returns
+    -------
+    None
+        Matching active filters and the combined filter state are updated in
+        the corpus transactionally.
+    """
     with connect(db_path) as conn:
         filters = [
             item for item in active_filter_stack(conn)
@@ -1127,7 +1311,27 @@ def reset_filters(
     name: str | None = None,
     all_filters: bool = False,
 ) -> _FilterOverview:
-    """Remove one named filter or the complete active stack and recompute state."""
+    """Remove filters and recompute final paper decisions.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    name : str or None, optional
+        Name of the single filter to remove.
+    all_filters : bool, default=False
+        Whether to remove the complete active stack.
+
+    Returns
+    -------
+    _FilterOverview
+        Updated filter overview.
+
+    Raises
+    ------
+    ValueError
+        If exactly one removal mode is not selected or ``name`` is not active.
+    """
     if bool(name) == bool(all_filters):
         raise ValueError('Choose exactly one of a filter name or all filters.')
     with connect(db_path) as conn:

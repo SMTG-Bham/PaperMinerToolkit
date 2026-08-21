@@ -20,7 +20,7 @@ import time
 import unicodedata
 import warnings
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from itertools import combinations, groupby
 from os import PathLike
@@ -246,7 +246,22 @@ def _topic_document(
     assets: Mapping[str, Mapping[str, Any] | None],
     fields: Iterable[str],
 ) -> _TopicDocument:
-    """Build one normalized topic document from a paper row and loaded assets."""
+    """Build one normalized topic document from metadata and loaded assets.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    assets : Mapping[str, Mapping[str, Any] or None]
+        Newest stored asset for each requested content role.
+    fields : Iterable[str]
+        Metadata and asset fields to combine.
+
+    Returns
+    -------
+    _TopicDocument
+        Paper metadata, normalized modeling text, and token count.
+    """
     pieces = []
     for field in fields:
         if field == 'title':
@@ -273,8 +288,29 @@ def iter_topic_document_batches(
     db_path: str | PathLike[str],
     text_fields: Iterable[str] = ('title', 'abstract'),
     batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterable[list[_TopicDocument]]:
-    """Yield stable, bounded batches of normalized documents from a corpus."""
+) -> Iterator[list[_TopicDocument]]:
+    """Yield stable, bounded batches of normalized corpus documents.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    text_fields : Iterable[str], default=('title', 'abstract')
+        Metadata and asset fields to combine into each document.
+    batch_size : int, default=128
+        Maximum number of papers loaded per batch.
+
+    Yields
+    ------
+    list[_TopicDocument]
+        Normalized documents ordered by paper ID.
+
+    Raises
+    ------
+    ValueError
+        If a requested text field is unsupported or ``batch_size`` is not
+        positive.
+    """
     fields = _validate_text_fields(text_fields)
     if batch_size < 1:
         raise ValueError('batch_size must be positive.')
@@ -741,7 +777,25 @@ def _streaming_corpus_report(
     prepared: Mapping[str, Any],
     num_topics: int,
 ) -> dict[str, Any]:
-    """Build topic-count-specific diagnostics from a prepared corpus cache."""
+    """Build topic-count-specific diagnostics from a prepared corpus cache.
+
+    Parameters
+    ----------
+    prepared : Mapping[str, Any]
+        Metadata produced while constructing the streaming corpus cache.
+    num_topics : int
+        Requested number of latent topics.
+
+    Returns
+    -------
+    dict[str, Any]
+        Corpus counts, timing data, vocabulary size, and quality warnings.
+
+    Raises
+    ------
+    ValueError
+        If too few usable or vectorized documents remain for ``num_topics``.
+    """
     usable = prepared['documents_usable_before_vectorization']
     used = prepared['documents_used']
     if usable < num_topics:
@@ -812,8 +866,45 @@ def _prepare_streaming_corpus(
     evaluation_sample_size: int,
     work_dir: str | PathLike[str],
 ) -> dict[str, Any]:
-    """Build a deterministic vocabulary and disk-backed sparse batch cache."""
+    """Build a deterministic vocabulary and disk-backed sparse batch cache.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the source SQLite paper corpus.
+    text_fields : Iterable[str]
+        Corpus fields combined into each modeling document.
+    domain_stopwords : Iterable[str]
+        Normalized corpus-specific words excluded from features.
+    ngram_max : {1, 2}
+        Maximum feature n-gram size.
+    min_df : int
+        Minimum document frequency for retained features.
+    max_df : float
+        Maximum document-frequency fraction for retained features.
+    max_features : int
+        Maximum retained vocabulary size.
+    batch_size : int
+        Maximum papers processed in each disk-backed batch.
+    evaluation_sample_size : int
+        Maximum deterministic sample size used for fit metrics.
+    work_dir : str or os.PathLike[str]
+        Temporary directory in which to store counts and sparse matrices.
+
+    Returns
+    -------
+    dict[str, Any]
+        Cache paths, fitted vectorizer, corpus diagnostics, and fingerprint.
+
+    Raises
+    ------
+    OSError
+        If cache files cannot be created or written.
+    ValueError
+        If no usable documents or vocabulary terms remain.
+    """
     started = time.perf_counter()
+    text_fields = _validate_text_fields(text_fields)
     work_path = Path(work_dir)
     work_path.mkdir(parents=True, exist_ok=True)
     counts_path = work_path / 'vocabulary_counts.db'
@@ -945,8 +1036,19 @@ def _prepare_streaming_corpus(
 
 def _cached_batches(
     prepared: Mapping[str, Any],
-) -> Iterable[tuple[Any, list[dict[str, Any]]]]:
-    """Yield cached sparse matrices with their bounded metadata batches."""
+) -> Iterator[tuple[spmatrix, list[dict[str, Any]]]]:
+    """Load sparse document matrices and metadata from a prepared cache.
+
+    Parameters
+    ----------
+    prepared : Mapping[str, Any]
+        Streaming cache metadata containing matrix and metadata paths.
+
+    Yields
+    ------
+    tuple[scipy.sparse.spmatrix, list[dict[str, Any]]]
+        Sparse document-term matrix and aligned paper metadata.
+    """
     for matrix_path, metadata_path in prepared['batches']:
         yield sparse.load_npz(matrix_path), json.loads(metadata_path.read_text(encoding='utf-8'))
 
@@ -957,7 +1059,25 @@ def _model_identifier(
     config: Mapping[str, Any],
     fingerprint: Mapping[str, Any],
 ) -> str:
-    """Return an immutable deterministic identifier for one fitted model."""
+    """Build an immutable deterministic identifier for a fitted model.
+
+    Parameters
+    ----------
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted LDA estimator.
+    vectorizer : sklearn.feature_extraction.text.CountVectorizer
+        Vectorizer containing the ordered model vocabulary.
+    config : Mapping[str, Any]
+        Model configuration; volatile identity fields are ignored.
+    fingerprint : Mapping[str, Any]
+        Fingerprint of the normalized training corpus.
+
+    Returns
+    -------
+    str
+        Stable ``lda:`` identifier derived from configuration, corpus,
+        vocabulary, and fitted components.
+    """
     digest = hashlib.sha256()
     stable_config = {key: value for key, value in config.items() if key not in {'created_at', 'model_id'}}
     digest.update(json.dumps(stable_config, sort_keys=True).encode('utf-8'))
@@ -975,7 +1095,28 @@ def _write_streamed_outputs(
     representatives_path: str | PathLike[str],
     representative_count: int,
 ) -> dict[str, Any]:
-    """Infer cached batches while writing predictions and bounded representatives."""
+    """Write predictions and bounded representatives from cached batches.
+
+    Parameters
+    ----------
+    prepared : Mapping[str, Any]
+        Streaming cache metadata.
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted topic model.
+    names : Mapping[str, str]
+        Manual topic names keyed by string topic ID.
+    predictions_path : str or os.PathLike[str]
+        Destination long-form prediction CSV.
+    representatives_path : str or os.PathLike[str]
+        Destination representative-paper CSV.
+    representative_count : int
+        Maximum papers retained for each topic.
+
+    Returns
+    -------
+    dict[str, Any]
+        Prediction coverage and dominant-topic balance metrics.
+    """
     prediction_fields = [
         'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
         'topic_name', 'probability', 'is_dominant', 'status',
@@ -1107,7 +1248,50 @@ def _train_streaming_topic_model(
     batch_size: int,
     evaluation_sample_size: int,
 ) -> dict[str, Any]:
-    """Train one online LDA model from a reusable disk-backed corpus cache."""
+    """Train and persist online LDA from a reusable streaming cache.
+
+    Parameters
+    ----------
+    output_dir : str or os.PathLike[str]
+        Destination model artifact directory.
+    prepared : Mapping[str, Any]
+        Prepared streaming corpus cache and diagnostics.
+    num_topics : int
+        Number of latent topics.
+    text_fields : Iterable[str]
+        Corpus fields represented by the model.
+    min_df : int
+        Minimum feature document frequency.
+    max_df : float
+        Maximum feature document-frequency fraction.
+    max_features : int
+        Maximum vocabulary size.
+    max_iter : int
+        Number of complete passes over cached batches.
+    random_state : int
+        Model initialization seed.
+    top_terms : int
+        Terms exported for each topic.
+    representative_papers : int
+        Representative papers exported for each topic.
+    domain_stopwords : list[str]
+        Normalized corpus-specific stopwords.
+    ngram_max : {1, 2}
+        Maximum feature n-gram size.
+    overwrite : bool
+        Whether known artifacts may be replaced.
+    emit_warnings : bool
+        Whether to emit heuristic corpus warnings.
+    batch_size : int
+        Documents processed per online batch.
+    evaluation_sample_size : int
+        Maximum documents used for fit metrics.
+
+    Returns
+    -------
+    dict[str, Any]
+        Artifact paths, configuration, diagnostics, fingerprint, and topics.
+    """
     report = _streaming_corpus_report(prepared, num_topics)
     if emit_warnings:
         _emit_warnings(report['warnings'])
@@ -1221,7 +1405,68 @@ def train_topic_model(db_path: str | PathLike[str],
                       cache_dir: str | PathLike[str] | None = None,
                       evaluation_sample_size: int = DEFAULT_EVALUATION_SAMPLE_SIZE,
                       _prepared_streaming: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Train and persist an LDA model and its inspection artifacts."""
+    """Train and persist an LDA model and its inspection artifacts.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the source SQLite paper corpus.
+    output_dir : str or os.PathLike[str]
+        Directory in which to store model artifacts.
+    num_topics : int, default=10
+        Number of latent topics to fit.
+    text_fields : Iterable[str], default=('title', 'abstract')
+        Corpus fields combined into each modeling document.
+    min_df : int, default=2
+        Minimum number of documents in which a feature must occur.
+    max_df : float, default=0.95
+        Maximum fraction of documents in which a feature may occur.
+    max_features : int, default=20000
+        Maximum retained vocabulary size.
+    learning_method : {'batch', 'online'}, default='online'
+        Scikit-learn LDA learning strategy. Streaming mode requires ``online``.
+    max_iter : int, default=20
+        Training iterations or complete passes over streaming batches.
+    random_state : int, default=0
+        Seed controlling model initialization.
+    top_terms : int, default=15
+        Number of terms exported for each topic.
+    representative_papers : int, default=5
+        Number of high-probability papers exported per topic.
+    stopwords_file : str, os.PathLike[str], or None, optional
+        File containing domain-specific stopwords.
+    ngram_max : {1, 2}, default=2
+        Maximum feature n-gram size.
+    overwrite : bool, default=False
+        Whether to reuse a nonempty artifact directory.
+    emit_warnings : bool, default=True
+        Whether to emit heuristic corpus-quality warnings.
+    documents : Sequence[_TopicDocument] or None, optional
+        Preloaded documents used instead of reading ``db_path`` in in-memory
+        mode.
+    streaming : bool, default=True
+        Whether to train from bounded disk-backed document batches.
+    batch_size : int, default=128
+        Maximum documents processed in each streaming batch.
+    cache_dir : str, os.PathLike[str], or None, optional
+        Parent directory for the temporary streaming cache.
+    evaluation_sample_size : int, default=10000
+        Maximum deterministic document sample used for streaming fit metrics.
+    _prepared_streaming : Mapping[str, Any] or None, optional
+        Internal reusable cache supplied by model comparison.
+
+    Returns
+    -------
+    dict[str, Any]
+        Artifact paths, configuration, quality report, fingerprint, and topics.
+
+    Raises
+    ------
+    OSError
+        If an input, cache, or artifact file cannot be accessed.
+    ValueError
+        If configuration, corpus size, or retained vocabulary is unsuitable.
+    """
     fields = _validate_text_fields(text_fields)
     if learning_method not in {'online', 'batch'}:
         raise ValueError('learning_method must be one of: online, batch')
@@ -1532,10 +1777,26 @@ def topic_corpus_fingerprint(
     text_fields: Iterable[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, Any]:
-    """Fingerprint the current normalized inputs for stale-score detection."""
+    """Fingerprint normalized topic inputs for stale-score detection.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    text_fields : Iterable[str]
+        Fields normalized into each fingerprinted document.
+    batch_size : int, default=128
+        Maximum papers loaded per batch.
+
+    Returns
+    -------
+    dict[str, Any]
+        Fingerprint algorithm, SHA-256 digest, document count, and text fields.
+    """
+    fields = _validate_text_fields(text_fields)
     digest = hashlib.sha256()
     documents = 0
-    for batch in iter_topic_document_batches(db_path, text_fields, batch_size):
+    for batch in iter_topic_document_batches(db_path, fields, batch_size):
         for document in batch:
             documents += 1
             digest.update(document['paper_id'].encode('utf-8'))
@@ -1546,7 +1807,7 @@ def topic_corpus_fingerprint(
         'algorithm': 'sha256-paper-id-and-normalized-text-v2',
         'sha256': digest.hexdigest(),
         'documents': documents,
-        'text_fields': list(text_fields),
+        'text_fields': list(fields),
     }
 
 
@@ -1556,8 +1817,28 @@ def _iter_topic_predictions(
     config: Mapping[str, Any],
     db_path: str | PathLike[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterable[dict[str, Any]]:
-    """Yield fresh prediction records in bounded corpus batches."""
+) -> Iterator[dict[str, Any]]:
+    """Yield fresh prediction records in bounded corpus batches.
+
+    Parameters
+    ----------
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted model used for inference.
+    vectorizer : sklearn.feature_extraction.text.CountVectorizer
+        Saved training vectorizer.
+    config : Mapping[str, Any]
+        Saved model configuration.
+    db_path : str or os.PathLike[str]
+        Corpus whose papers are predicted.
+    batch_size : int, default=128
+        Maximum papers inferred at once.
+
+    Yields
+    ------
+    dict[str, Any]
+        Document metadata, prediction status, topic distribution, dominant
+        topic, and normalized-document fingerprint.
+    """
     for documents in iter_topic_document_batches(db_path, config['text_fields'], batch_size):
         matrix = vectorizer.transform(document['text'] for document in documents).tocsr()
         included = np.flatnonzero(matrix.getnnz(axis=1) > 0)
@@ -1582,7 +1863,31 @@ def predict_topic_model(
     output_path: str | PathLike[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, int | str]:
-    """Apply a saved topic model in bounded batches and export long-form scores."""
+    """Apply a saved topic model and export long-form scores.
+
+    Parameters
+    ----------
+    model_dir : str or os.PathLike[str]
+        Topic-model artifact directory.
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus to score.
+    output_path : str or os.PathLike[str]
+        Destination prediction CSV.
+    batch_size : int, default=128
+        Maximum papers inferred at once.
+
+    Returns
+    -------
+    dict[str, int or str]
+        Counts of total, predicted, and skipped papers plus the output path.
+
+    Raises
+    ------
+    OSError
+        If model artifacts, the corpus, or output path cannot be accessed.
+    ValueError
+        If the artifact is unsupported or the corpus contains no papers.
+    """
     model, vectorizer, config, names = load_topic_model(model_dir)
     fields = [
         'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
@@ -1627,7 +1932,31 @@ def store_topic_model_scores(
     name: str | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, Any]:
-    """Predict a corpus afresh and transactionally store one immutable model run."""
+    """Predict and transactionally store one immutable model run.
+
+    Parameters
+    ----------
+    model_dir : str or os.PathLike[str]
+        Topic-model artifact directory.
+    db_path : str or os.PathLike[str]
+        Corpus in which to store model metadata and paper scores.
+    name : str or None, optional
+        Stable display name; defaults to the model directory name.
+    batch_size : int, default=128
+        Maximum papers inferred at once.
+
+    Returns
+    -------
+    dict[str, Any]
+        Model identity, prediction counts, and prediction fingerprint.
+
+    Raises
+    ------
+    OSError
+        If model artifacts or the corpus cannot be accessed.
+    ValueError
+        If the model name conflicts with an existing immutable identity.
+    """
     model, vectorizer, config, names = load_topic_model(model_dir)
     model_id = config['model_id']
     resolved_name = str(name or Path(model_dir).name).strip()
@@ -1775,7 +2104,21 @@ def stored_topic_models(
     db_path: str | PathLike[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> list[dict[str, Any]]:
-    """List stored topic models with coverage and current fingerprint state."""
+    """List stored topic models with coverage and freshness information.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Path to the SQLite paper corpus.
+    batch_size : int, default=128
+        Maximum papers loaded while calculating current fingerprints.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Stored model rows augmented with topic count, prediction coverage,
+        text fields, and current/stale state.
+    """
     with connect(db_path) as conn:
         models = [dict(row) for row in conn.execute(
             'SELECT * FROM topic_models ORDER BY name'
@@ -1803,8 +2146,20 @@ def stored_topic_models(
 
 def _prediction_papers(
     predictions_path: str | PathLike[str],
-) -> Iterable[dict[str, Any]]:
-    """Yield one paper and its complete topic distribution from a long CSV."""
+) -> Iterator[dict[str, Any]]:
+    """Group a long-form prediction CSV into complete paper records.
+
+    Parameters
+    ----------
+    predictions_path : str or os.PathLike[str]
+        Long-form topic prediction CSV ordered by paper.
+
+    Yields
+    ------
+    dict[str, Any]
+        Paper ID, publication date, status, complete probability mapping, and
+        dominant topic ID.
+    """
     with Path(predictions_path).open(encoding='utf-8', newline='') as handle:
         rows = csv.DictReader(handle)
         for paper_id, grouped_rows in groupby(rows, key=lambda row: row['paper_id']):
@@ -1831,7 +2186,18 @@ def _prediction_papers(
 
 
 def _publication_year(value: object) -> int | None:
-    """Return a plausible four-digit publication year or ``None``."""
+    """Extract a plausible four-digit publication year.
+
+    Parameters
+    ----------
+    value : object
+        Publication-date value from corpus metadata.
+
+    Returns
+    -------
+    int or None
+        Year from 1000 through 2999, or ``None`` when no valid year exists.
+    """
     match = re.search(r'(?<!\d)(\d{4})(?!\d)', str(value or ''))
     if not match:
         return None
@@ -1844,7 +2210,32 @@ def plot_topic_trends(
     report_path: str | PathLike[str],
     output_path: str | PathLike[str] | None = None,
 ) -> str:
-    """Plot topic prevalence and paper coverage from a trend CSV."""
+    """Plot topic prevalence and paper coverage from trend artifacts.
+
+    Parameters
+    ----------
+    trends_path : str or os.PathLike[str]
+        Topic trend CSV produced by :func:`aggregate_topic_trends`.
+    report_path : str or os.PathLike[str]
+        JSON report describing the aggregation windows and corpus coverage.
+    output_path : str, os.PathLike[str], or None, optional
+        Destination image. A relative path is resolved inside the trend output
+        directory, and a missing suffix defaults to PNG.
+
+    Returns
+    -------
+    str
+        Path to the generated plot.
+
+    Raises
+    ------
+    OSError
+        If trend artifacts cannot be read or the plot cannot be written.
+    RuntimeError
+        If Matplotlib is unavailable.
+    ValueError
+        If the trend CSV has no usable topic rows.
+    """
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -2014,7 +2405,45 @@ def aggregate_topic_trends(
     overwrite: bool = False,
     plot: bool | str | PathLike[str] = False,
 ) -> dict[str, Any]:
-    """Aggregate fixed-model topic probabilities into configurable time windows."""
+    """Aggregate fixed-model topic probabilities into time windows.
+
+    Parameters
+    ----------
+    model_dir : str or os.PathLike[str]
+        Topic-model artifact directory supplying configuration and names.
+    output_dir : str or os.PathLike[str]
+        Destination directory for trend artifacts.
+    predictions_path : str, os.PathLike[str], or None, optional
+        Long-form predictions; defaults to the model's training predictions.
+    bin_size : int, default=1
+        Width of each publication-year window.
+    step_size : int, default=1
+        Years between consecutive window starts.
+    start_year : int or None, optional
+        First window start; defaults to the earliest observed year.
+    end_year : int or None, optional
+        Final observed year included in the configured range.
+    include_partial : bool, default=True
+        Whether to include trailing windows extending past ``end_year``.
+    overwrite : bool, default=False
+        Whether known artifacts may be replaced in a nonempty directory.
+    plot : bool, str, or os.PathLike[str], default=False
+        Generate the default PNG when true, or write to the supplied filename.
+
+    Returns
+    -------
+    dict[str, Any]
+        Artifact paths, window count, missing-date count, and optional plot path.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the prediction CSV is unavailable.
+    OSError
+        If model or trend artifacts cannot be accessed.
+    ValueError
+        If window settings or publication dates are unsuitable.
+    """
     if bin_size < 1 or step_size < 1:
         raise ValueError('bin_size and step_size must be positive.')
     if step_size > bin_size:
@@ -2273,6 +2702,14 @@ def compare_topic_models(db_path: str | PathLike[str],
         Maximum feature n-gram size.
     overwrite : bool, default=False
         Whether nonempty comparison directories may be reused.
+    streaming : bool, default=True
+        Whether every model trains from one reusable disk-backed corpus cache.
+    batch_size : int, default=128
+        Maximum documents processed in each streaming batch.
+    cache_dir : str, os.PathLike[str], or None, optional
+        Parent directory for the temporary comparison cache.
+    evaluation_sample_size : int, default=10000
+        Maximum deterministic document sample used for streaming fit metrics.
 
     Returns
     -------

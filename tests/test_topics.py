@@ -116,6 +116,28 @@ def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path: Pa
     assert 'full text' not in documents[0]['text']
 
 
+def test_topic_iterables_accept_single_pass_field_inputs(tmp_path: Path) -> None:
+    """Preserve validated text fields when callers supply a generator."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:1', 'title': 'Solid electrolyte'})
+
+    batches = list(topics.iter_topic_document_batches(
+        db_path,
+        (field for field in ('title', 'abstract')),
+        batch_size=1,
+    ))
+    fingerprint = topics.topic_corpus_fingerprint(
+        db_path,
+        (field for field in ('title', 'abstract')),
+        batch_size=1,
+    )
+
+    assert batches[0][0]['text'] == 'solid electrolyte'
+    assert fingerprint['documents'] == 1
+    assert fingerprint['text_fields'] == ['title', 'abstract']
+
+
 def test_train_topic_model_writes_reusable_manual_inspection_artifacts(tmp_path: Path) -> None:
     """Train LDA, persist its complete artifact, and export normalized probabilities."""
     db_path = tmp_path / 'papers.db'
