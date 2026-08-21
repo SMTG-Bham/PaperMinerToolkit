@@ -15,14 +15,18 @@ from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
 from paperscraper.filtering import (apply_regex_filter,
+                                    apply_topic_filter,
                                     filter_overview,
                                     reset_filters)
 from paperscraper.imports import import_pdfs
 from paperscraper.scrape import SCRAPE_ORDERS, scrape_papers
 from paperscraper.store import store_results
-from paperscraper.topics import (compare_topic_models,
+from paperscraper.topics import (aggregate_topic_trends,
+                                 compare_topic_models,
                                  predict_topic_model,
                                  set_topic_name,
+                                 store_topic_model_scores,
+                                 stored_topic_models,
                                  topic_descriptions,
                                  train_topic_model)
 from paperscraper.settings import (get_model_profile,
@@ -186,9 +190,20 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
             prefix = 'ROOT' if index == 0 else item['join_operator'].upper()
             definition = item['definition']
             counts = item['counts']
+            if item['method'] == 'regex':
+                details = (
+                    f'regex; {definition["include_mode"]}; '
+                    f'fields={",".join(definition["fields"])}; '
+                    f'timeout={definition["timeout_ms"]}ms'
+                )
+            else:
+                details = (
+                    f'topic; model={definition["model"]}; '
+                    f'{definition["include_mode"]}'
+                )
+            stale = '; STALE' if item.get('stale') else ''
             click.echo(
-                f'  {prefix} {item["name"]} [regex; {definition["include_mode"]}; '
-                f'fields={",".join(definition["fields"])}; timeout={definition["timeout_ms"]}ms] '
+                f'  {prefix} {item["name"]} [{details}{stale}] '
                 f'included={counts["included"]}, excluded={counts["excluded"]}, '
                 f'unavailable={counts["unavailable"]}'
             )
@@ -206,6 +221,11 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
             click.echo(f'  {count}: {reason}')
         if len(ordered) > 10:
             click.echo(f'  ... {len(ordered) - 10} more reason combinations stored in the corpus')
+    if overview.get('stale_topic_filters'):
+        click.echo(
+            'Stale topic filters: ' + ', '.join(overview['stale_topic_filters'])
+            + '. Run ps_topics_store again before scraping.'
+        )
 
 
 @click.command()
@@ -231,6 +251,25 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
             join_operator=join_operator,
             replace=replace,
             timeout_ms=timeout_ms,
+        )
+    except (OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    _echo_filter_overview(db_path, overview)
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--join', 'join_operator', type=click.Choice(['and', 'or']), default=None,
+              help='Join this filter to the preceding active expression.')
+@click.option('--replace', is_flag=True, default=False,
+              help='Replace and reevaluate an active filter with the same name.')
+def filter_topic(db_path: str, rules_path: str,
+                 join_operator: str | None, replace: bool) -> None:
+    """Apply a named stored-model topic filter to a paper corpus."""
+    try:
+        overview = apply_topic_filter(
+            db_path, rules_path, join_operator=join_operator, replace=replace
         )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
@@ -284,6 +323,13 @@ def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
               help='Largest generated n-gram; use 2 to include bigrams.')
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known model artifact files in a non-empty model directory.')
+@click.option('--streaming/--in-memory', default=True, show_default=True,
+              help='Use disk-backed bounded batches or materialize the corpus in memory.')
+@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
+@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
+              help='Parent directory for temporary streaming caches.')
+@click.option('--evaluation-sample-size', default=10000,
+              type=click.IntRange(min=1), show_default=True)
 def topics_train(db_path: str,
                  model_dir: str,
                  num_topics: int,
@@ -298,7 +344,11 @@ def topics_train(db_path: str,
                  representative_papers: int,
                  stopwords_file: str | None,
                  ngram_max: int,
-                 overwrite: bool) -> None:
+                 overwrite: bool,
+                 streaming: bool,
+                 batch_size: int,
+                 cache_dir: str | None,
+                 evaluation_sample_size: int) -> None:
     """Train an LDA model and write inspectable, manually nameable artifacts."""
     try:
         summary = train_topic_model(
@@ -318,6 +368,10 @@ def topics_train(db_path: str,
             ngram_max=ngram_max,
             overwrite=overwrite,
             emit_warnings=False,
+            streaming=streaming,
+            batch_size=batch_size,
+            cache_dir=cache_dir,
+            evaluation_sample_size=evaluation_sample_size,
         )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
@@ -356,6 +410,13 @@ def topics_train(db_path: str,
 @click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True)
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known comparison and model artifact files.')
+@click.option('--streaming/--in-memory', default=True, show_default=True,
+              help='Use one reusable disk-backed corpus cache or in-memory matrices.')
+@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
+@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
+              help='Parent directory for temporary streaming caches.')
+@click.option('--evaluation-sample-size', default=10000,
+              type=click.IntRange(min=1), show_default=True)
 def topics_compare(db_path: str,
                    output_dir: str,
                    topic_counts: tuple[int, ...],
@@ -370,7 +431,11 @@ def topics_compare(db_path: str,
                    representative_papers: int,
                    stopwords_file: str | None,
                    ngram_max: int,
-                   overwrite: bool) -> None:
+                   overwrite: bool,
+                   streaming: bool,
+                   batch_size: int,
+                   cache_dir: str | None,
+                   evaluation_sample_size: int) -> None:
     """Train several LDA configurations and export comparable diagnostics."""
     try:
         summary = compare_topic_models(
@@ -389,6 +454,10 @@ def topics_compare(db_path: str,
             stopwords_file=stopwords_file,
             ngram_max=ngram_max,
             overwrite=overwrite,
+            streaming=streaming,
+            batch_size=batch_size,
+            cache_dir=cache_dir,
+            evaluation_sample_size=evaluation_sample_size,
         )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
@@ -439,10 +508,13 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_path', default='paper_topics.csv', type=click.Path())
-def topics_predict(model_dir: str, db_path: str, output_path: str) -> None:
+@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
+def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: int) -> None:
     """Apply a saved LDA model to a corpus and export topic probabilities."""
     try:
-        summary = predict_topic_model(model_dir, db_path, output_path)
+        summary = predict_topic_model(
+            model_dir, db_path, output_path, batch_size=batch_size
+        )
     except (FileNotFoundError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     click.echo(
@@ -450,6 +522,95 @@ def topics_predict(model_dir: str, db_path: str, output_path: str) -> None:
         f'{summary["papers_without_vocabulary_terms"]} had no model vocabulary terms.'
     )
     click.echo(f'Topic scores: {summary["output_path"]}')
+
+
+@click.command()
+@click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
+@click.argument('output_dir', default='topic_trends', type=click.Path())
+@click.option('--predictions', 'predictions_path', default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help='Long-form prediction CSV; defaults to the model training predictions.')
+@click.option('--bin-size', default=1, type=click.IntRange(min=1), show_default=True)
+@click.option('--step-size', default=1, type=click.IntRange(min=1), show_default=True)
+@click.option('--start-year', default=None, type=int)
+@click.option('--end-year', default=None, type=int)
+@click.option('--include-partial/--complete-only', default=True, show_default=True)
+@click.option('--plot', is_flag=True, default=False,
+              help='Write topic_trends_plot.png in the trend output directory.')
+@click.option('--plot-file', default=None, type=click.Path(dir_okay=False),
+              help='Write a plot to this filename instead; its extension selects the format.')
+@click.option('--overwrite', is_flag=True, default=False,
+              help='Replace known trend artifacts in a non-empty output directory.')
+def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
+                  bin_size: int, step_size: int, start_year: int | None,
+                  end_year: int | None, include_partial: bool, plot: bool,
+                  plot_file: str | None,
+                  overwrite: bool) -> None:
+    """Aggregate fixed-model topic probabilities over publication-year windows."""
+    try:
+        summary = aggregate_topic_trends(
+            model_dir,
+            output_dir,
+            predictions_path=predictions_path,
+            bin_size=bin_size,
+            step_size=step_size,
+            start_year=start_year,
+            end_year=end_year,
+            include_partial=include_partial,
+            overwrite=overwrite,
+            plot=plot_file or plot,
+        )
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Wrote {summary["windows"]} topic trend windows to {summary["trends_csv"]}.')
+    if summary['plot_path']:
+        click.echo(f'Topic trend plot: {summary["plot_path"]}')
+    if summary['papers_missing_or_invalid_date']:
+        click.echo(
+            f'{summary["papers_missing_or_invalid_date"]} papers had missing or invalid dates.',
+            err=True,
+        )
+
+
+@click.command()
+@click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--name', default=None,
+              help='Immutable corpus display name; defaults to the model directory name.')
+@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
+def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int) -> None:
+    """Predict afresh and transactionally store a topic model in the corpus."""
+    try:
+        summary = store_topic_model_scores(
+            model_dir, db_path, name=name, batch_size=batch_size
+        )
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f'Stored {summary["name"]} ({summary["model_id"]}): '
+        f'{summary["papers_predicted"]} predicted, '
+        f'{summary["papers_without_vocabulary_terms"]} without vocabulary terms.'
+    )
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
+def topics_models(db_path: str, batch_size: int) -> None:
+    """List topic models and prediction freshness recorded in a corpus."""
+    models = stored_topic_models(db_path, batch_size=batch_size)
+    if not models:
+        click.echo('No topic models are stored in this corpus.')
+        return
+    for item in models:
+        state = 'current' if item['is_current'] else 'STALE'
+        click.echo(
+            f'{item["name"]} ({item["model_id"]}) [{state}]: '
+            f'{item["num_topics"]} topics, '
+            f'{item["papers_predicted"]} predicted, '
+            f'{item["papers_without_vocabulary_terms"]} without vocabulary terms; '
+            f'fields={",".join(item["text_fields"])}'
+        )
 
 
 @click.command()

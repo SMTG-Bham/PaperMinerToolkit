@@ -160,9 +160,13 @@ When filters are active, `ps_scrape` prints the complete expression and processe
 
 ### Train And Inspect LDA Topics
 
-Train a reproducible LDA model from titles and abstracts. The model uses count vectors and online learning by default, making it suitable for larger corpora:
+Train a reproducible LDA model from titles and abstracts. Disk-backed streaming is the default: PaperScraper builds a deterministic vocabulary, caches bounded sparse batches, and trains online with `partial_fit` without materializing the complete document-term matrix:
 
 `ps_topics_train papers.db topic_model --topics 12`
+
+Use `--batch-size` to control peak working memory and `--cache-dir` to place temporary sparse batches on high-capacity scratch storage. `--iterations` is the number of complete training passes over those batches. For a small corpus, `--in-memory` retains the original whole-matrix implementation; batch LDA specifically requires `--in-memory`:
+
+`ps_topics_train papers.db topic_model --topics 12 --in-memory --learning-method batch`
 
 Bigram features such as `lithium_metal`, `ionic_conductivity`, and `solid_electrolyte` are enabled by default. Use `--ngram-max 1` for a unigram-only model.
 
@@ -182,7 +186,7 @@ Choose the input fields explicitly when required. Repeating `--field` combines f
 
 `ps_topics_train papers.db topic_model --topics 12 --field title --field text`
 
-Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities.
+Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, immutable model ID, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities. Streaming perplexity and log likelihood use a deterministic bounded evaluation sample, whose size and scope are recorded in the report.
 
 Inspect the top terms and representative papers before assigning names:
 
@@ -209,6 +213,68 @@ ps_topics_compare papers.db topic_comparison \
 ```
 
 `model_comparison.csv` reports perplexity, log likelihood, topic diversity, dominant-topic balance, training time, and cross-seed topic stability. These metrics help narrow the candidates, but the final choice should still be based on `ps_topics_show` and the representative papers.
+
+The comparison command prepares the streaming vocabulary and sparse batches once, then reuses them for every topic-count and seed combination.
+
+Aggregate one fixed model over publication years without retraining topics separately in each period:
+
+```bash
+# Annual prevalence
+ps_topics_trends topic_model annual_trends --bin-size 1 --step-size 1 --plot
+
+# Non-overlapping five-year blocks
+ps_topics_trends topic_model five_year_trends --bin-size 5 --step-size 5
+
+# Overlapping five-year windows advanced one year at a time
+ps_topics_trends topic_model rolling_trends --bin-size 5 --step-size 1
+```
+
+The trend CSV reports mean and summed topic probability, dominant-paper counts and shares, paper coverage, and partial-window state. Use `--predictions` to analyse an external CSV produced by `ps_topics_predict`.
+
+Pass `--plot` to write `topic_trends_plot.png` alongside the CSV and JSON report. Use `--plot-file annual_topics.pdf` to choose a filename and any format supported by Matplotlib. Relative filenames are written inside the trend output directory. Plots show mean topic probability with a paper-count panel; partial windows are shaded and drawn with dashed lines.
+
+Topic predictions remain external until a model is explicitly selected and stored in a corpus. Storage always performs fresh batched prediction rather than importing a potentially stale CSV:
+
+```bash
+ps_topics_store topic_model papers.db --name sse-lda-v1
+ps_topics_models papers.db
+```
+
+Stored topic scores can be used alone or combined with regex filters. Topic definitions are JSON:
+
+```json
+{
+  "name": "solid-electrolyte-topics",
+  "description": "Topic-model relevance filter",
+  "model": "sse-lda-v1",
+  "include_mode": "any",
+  "include": [
+    {
+      "name": "electrolyte-topic",
+      "topic_id": 2,
+      "min_probability": 0.35,
+      "require_dominant": false
+    }
+  ],
+  "exclude": [
+    {
+      "name": "photovoltaics-veto",
+      "topic_id": 7,
+      "require_dominant": true
+    }
+  ]
+}
+```
+
+```bash
+# Topic-only filtering
+ps_filter_topic papers.db solid_electrolyte_topics.json
+
+# Hybrid filtering after a regex filter
+ps_filter_topic papers.db solid_electrolyte_topics.json --join and
+```
+
+Include rules support `any` or `all`; exclude rules take precedence. Each rule can require a minimum probability, dominance, or both. Topic and regex filters share the persistent left-to-right `AND`/`OR` stack. If the selected corpus text changes after scores were stored, topic filtering is marked stale and scraping fails closed until `ps_topics_store` is rerun.
 
 ### Choose A Recipe
 

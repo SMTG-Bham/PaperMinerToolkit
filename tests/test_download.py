@@ -370,7 +370,9 @@ def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch: pytes
                      'openalex-miss', 'core-miss', 'elsevier']
 
 
-def test_download_openalex_abstract_reconstructs_inverted_index(monkeypatch):
+def test_download_openalex_abstract_reconstructs_inverted_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Fetch and reconstruct OpenAlex abstracts using DOI or work identifiers."""
     assert download._download_openalex_abstract({'paper_id': 'missing'}) == (
         False, 'missing DOI or OpenAlex ID', ''
@@ -387,7 +389,8 @@ def test_download_openalex_abstract_reconstructs_inverted_index(monkeypatch):
 
     calls = []
 
-    def fake_get_work(identifier, api_key=None):
+    def fake_get_work(identifier: str, api_key: str | None = None) -> dict[str, Any]:
+        """Return deterministic OpenAlex metadata for the requested work."""
         calls.append((identifier, api_key))
         return {
             'abstract_inverted_index': {
@@ -814,20 +817,30 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
     assert 'Skipped existing corpus assets: 0 text files, 0 PDFs, 1 abstracts.' in output
 
 
-def test_download_papers_skips_every_requested_existing_content_type(tmp_path, monkeypatch, capsys):
+def test_download_papers_skips_every_requested_existing_content_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Do not call providers for abstract, text, or PDF assets already in the corpus."""
 
     class FakeTqdm:
-        def __init__(self, *args, **kwargs):
+        """Provide a progress-bar test double."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """Accept and ignore progress-bar options."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
+            """Enter the progress-bar context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: Any) -> bool:
+            """Exit the progress-bar context without suppressing errors."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -872,7 +885,10 @@ def test_download_papers_skips_every_requested_existing_content_type(tmp_path, m
     assert 'Skipped existing corpus assets: 1 text files, 1 PDFs, 1 abstracts.' in output
 
 
-def test_download_papers_existing_text_needs_no_elsevier_key(tmp_path, monkeypatch):
+def test_download_papers_existing_text_needs_no_elsevier_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Allow a text-only rerun to skip stored text without provider configuration."""
     db_path = tmp_path / 'papers.db'
     paper = {'paper_id': 'paper:text', 'doi': '10.1234/text'}
@@ -890,20 +906,30 @@ def test_download_papers_existing_text_needs_no_elsevier_key(tmp_path, monkeypat
     assert read_corpus(db_path)[0]['text_download_status'] == 'succeeded'
 
 
-def test_download_papers_force_redownloads_existing_content(tmp_path, monkeypatch, capsys):
+def test_download_papers_force_redownloads_existing_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """The force option refreshes every requested content role despite stored assets."""
 
     class FakeTqdm:
-        def __init__(self, *args, **kwargs):
+        """Provide a progress-bar test double."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """Accept and ignore progress-bar options."""
             return None
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
+            """Enter the progress-bar context."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: Any) -> bool:
+            """Exit the progress-bar context without suppressing errors."""
             return False
 
-        def update(self, _):
+        def update(self, _: int) -> None:
+            """Ignore a progress update."""
             return None
 
     db_path = tmp_path / 'papers.db'
@@ -918,13 +944,19 @@ def test_download_papers_force_redownloads_existing_content(tmp_path, monkeypatc
 
     calls = []
 
-    def fake_text(_paper, filepath):
+    def fake_text(_paper: Mapping[str, Any], filepath: str | os.PathLike[str]) -> bool:
+        """Write replacement full text for a forced download."""
         calls.append('text')
         with open(filepath, 'w', encoding='utf-8') as out_file:
             out_file.write('new text')
         return True
 
-    def fake_pdf(_paper, filepath, sources):
+    def fake_pdf(
+        _paper: Mapping[str, Any],
+        filepath: str | os.PathLike[str],
+        sources: Iterable[str],
+    ) -> tuple[bool, str, str]:
+        """Write a replacement PDF for a forced download."""
         calls.append(('pdf', sources))
         with open(filepath, 'wb') as out_file:
             out_file.write(b'%PDF new')

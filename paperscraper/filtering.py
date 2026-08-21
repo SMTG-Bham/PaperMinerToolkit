@@ -1,8 +1,8 @@
 """Persistent post-download filtering for paper corpora.
 
-Regex filters are evaluated independently for every paper and then combined in
-application order.  The generic SQLite tables deliberately keep filter
-definitions and paper-level decisions separate from scrape pipeline statuses.
+Regex and stored-topic filters are evaluated independently for every paper and
+then combined in application order. The generic SQLite tables deliberately
+keep definitions and paper-level decisions separate from scrape statuses.
 """
 
 from __future__ import annotations
@@ -214,24 +214,114 @@ def load_regex_definition(
     return normalize_regex_definition(definition, fields=fields, timeout_ms=timeout_ms)
 
 
+def _normalize_topic_rule(
+    rule: Mapping[str, Any],
+    label: str,
+    valid_topic_ids: set[int],
+) -> dict[str, Any]:
+    """Validate one probability/dominance topic condition."""
+    _require_type(rule, dict, label)
+    name = str(rule.get('name') or '').strip()
+    if not name:
+        raise ValueError(f'{label} requires a non-empty name.')
+    topic_id = rule.get('topic_id')
+    if isinstance(topic_id, bool) or not isinstance(topic_id, int):
+        raise ValueError(f'{label}.topic_id must be an integer.')
+    if topic_id not in valid_topic_ids:
+        raise ValueError(f'{label} refers to unknown topic {topic_id}.')
+    minimum = rule.get('min_probability')
+    if minimum is not None:
+        if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not 0 <= minimum <= 1:
+            raise ValueError(f'{label}.min_probability must be between 0 and 1.')
+        minimum = float(minimum)
+    require_dominant = rule.get('require_dominant', False)
+    if not isinstance(require_dominant, bool):
+        raise ValueError(f'{label}.require_dominant must be true or false.')
+    if minimum is None and not require_dominant:
+        raise ValueError(
+            f'{label} requires min_probability and/or require_dominant=true.'
+        )
+    return {
+        'name': name,
+        'topic_id': topic_id,
+        'min_probability': minimum,
+        'require_dominant': require_dominant,
+    }
+
+
+def normalize_topic_definition(
+    conn: sqlite3.Connection,
+    definition: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve and validate one persistent topic-filter definition."""
+    _require_type(definition, dict, 'Filter definition')
+    name = str(definition.get('name') or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
+        raise ValueError('Filter name must use only letters, numbers, dots, underscores, and hyphens.')
+    model_reference = str(definition.get('model') or '').strip()
+    if not model_reference:
+        raise ValueError('A topic filter requires a stored model name or model ID.')
+    model = conn.execute(
+        'SELECT * FROM topic_models WHERE name = ? OR model_id = ?',
+        (model_reference, model_reference),
+    ).fetchone()
+    if model is None:
+        raise ValueError(f'No stored topic model matches {model_reference!r}.')
+    valid_topic_ids = {
+        row['topic_id']
+        for row in conn.execute(
+            'SELECT topic_id FROM topic_definitions WHERE model_id = ?',
+            (model['model_id'],),
+        ).fetchall()
+    }
+    include_mode = str(definition.get('include_mode', 'any')).lower()
+    if include_mode not in {'any', 'all'}:
+        raise ValueError('include_mode must be "any" or "all".')
+    include_values = definition.get('include', [])
+    exclude_values = definition.get('exclude', [])
+    if not isinstance(include_values, list) or not isinstance(exclude_values, list):
+        raise ValueError('include and exclude must be JSON lists.')
+    include = [
+        _normalize_topic_rule(rule, f'include[{index}]', valid_topic_ids)
+        for index, rule in enumerate(include_values)
+    ]
+    if not include:
+        raise ValueError('A topic filter requires at least one include rule.')
+    exclude = [
+        _normalize_topic_rule(rule, f'exclude[{index}]', valid_topic_ids)
+        for index, rule in enumerate(exclude_values)
+    ]
+    rule_names = [rule['name'] for rule in include + exclude]
+    if len(rule_names) != len(set(rule_names)):
+        raise ValueError('Topic rule names must be unique within a filter.')
+    description = definition.get('description', '')
+    if not isinstance(description, str):
+        raise ValueError('description must be a string.')
+    return {
+        'name': name,
+        'description': description.strip(),
+        'model': model['name'],
+        'model_id': model['model_id'],
+        'include_mode': include_mode,
+        'include': include,
+        'exclude': exclude,
+    }
+
+
+def load_topic_definition(
+    conn: sqlite3.Connection,
+    path: str | PathLike[str],
+) -> dict[str, Any]:
+    """Load and normalize a topic-filter JSON document."""
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+    except json.JSONDecodeError as error:
+        raise ValueError(f'Invalid filter JSON: {error}') from error
+    return normalize_topic_definition(conn, value)
+
+
 def compile_regex_definition(definition: _RegexDefinition) -> _CompiledDefinition:
-    """Compile every pattern in a filter definition.
-
-    Parameters
-    ----------
-    definition : _RegexDefinition
-        Normalized filter definition.
-
-    Returns
-    -------
-    _CompiledDefinition
-        Include and exclude rules paired with compiled expressions.
-
-    Raises
-    ------
-    ValueError
-        If any regular expression is invalid.
-    """
+    """Compile all patterns before any corpus state is changed."""
     flags = regex.VERSION1
     if not definition['case_sensitive']:
         flags |= regex.IGNORECASE
@@ -489,24 +579,126 @@ def evaluate_regex_paper(
     return status, evidence, '; '.join(unavailable_reasons)
 
 
+def _topic_rule_matches(
+    rule: Mapping[str, Any],
+    probability: float,
+    dominant_topic: int | None,
+) -> bool:
+    """Return whether one normalized topic condition is satisfied."""
+    if rule['min_probability'] is not None and probability < rule['min_probability']:
+        return False
+    if rule['require_dominant'] and dominant_topic != rule['topic_id']:
+        return False
+    return True
+
+
+def evaluate_topic_paper(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    definition: Mapping[str, Any],
+) -> tuple[_FilterStatus, dict[str, Any], str]:
+    """Evaluate stored topic probabilities for one corpus paper."""
+    prediction = conn.execute(
+        'SELECT status, dominant_topic_id FROM paper_topic_predictions '
+        'WHERE model_id = ? AND paper_id = ?',
+        (definition['model_id'], paper['paper_id']),
+    ).fetchone()
+    if prediction is None:
+        reason = 'topic prediction missing'
+        return 'unavailable', {'model_id': definition['model_id'], 'unavailable': [reason]}, reason
+    if prediction['status'] != 'predicted':
+        reason = prediction['status']
+        return 'unavailable', {'model_id': definition['model_id'], 'unavailable': [reason]}, reason
+    scores = {
+        row['topic_id']: row['probability']
+        for row in conn.execute(
+            'SELECT topic_id, probability FROM paper_topic_scores '
+            'WHERE model_id = ? AND paper_id = ?',
+            (definition['model_id'], paper['paper_id']),
+        ).fetchall()
+    }
+    required_ids = {rule['topic_id'] for rule in definition['include'] + definition['exclude']}
+    if not required_ids <= scores.keys():
+        reason = 'topic scores incomplete'
+        return 'unavailable', {'model_id': definition['model_id'], 'unavailable': [reason]}, reason
+    topic_names = {
+        row['topic_id']: row['topic_name']
+        for row in conn.execute(
+            'SELECT topic_id, topic_name FROM topic_definitions WHERE model_id = ?',
+            (definition['model_id'],),
+        ).fetchall()
+    }
+    matched = {'include': [], 'exclude': []}
+    evidence_rules = []
+    for rule_type in ['include', 'exclude']:
+        for rule in definition[rule_type]:
+            probability = scores[rule['topic_id']]
+            did_match = _topic_rule_matches(
+                rule, probability, prediction['dominant_topic_id']
+            )
+            if did_match:
+                matched[rule_type].append(rule['name'])
+            evidence_rules.append({
+                **rule,
+                'type': rule_type,
+                'topic_name': topic_names.get(rule['topic_id'], ''),
+                'probability': probability,
+                'is_dominant': prediction['dominant_topic_id'] == rule['topic_id'],
+                'matched': did_match,
+            })
+    if matched['exclude']:
+        status = 'excluded'
+    elif definition['include_mode'] == 'any':
+        status = 'included' if matched['include'] else 'excluded'
+    else:
+        status = 'included' if len(matched['include']) == len(definition['include']) else 'excluded'
+    evidence = {
+        'model': definition['model'],
+        'model_id': definition['model_id'],
+        'dominant_topic_id': prediction['dominant_topic_id'],
+        'matched_include_rules': matched['include'],
+        'matched_exclude_rules': matched['exclude'],
+        'rules': evidence_rules,
+        'unavailable': [],
+    }
+    return status, evidence, ''
+
+
+def _database_path(conn: sqlite3.Connection) -> str:
+    """Return the on-disk path for a corpus connection."""
+    rows = conn.execute('PRAGMA database_list').fetchall()
+    return next((row['file'] for row in rows if row['name'] == 'main'), '')
+
+
+def topic_filter_staleness(conn: sqlite3.Connection) -> dict[str, bool]:
+    """Return stale state keyed by model ID for active topic filters."""
+    filters = [item for item in active_filter_stack(conn) if item['method'] == 'topic']
+    if not filters:
+        return {}
+    from paperscraper.topics import topic_corpus_fingerprint
+
+    db_path = _database_path(conn)
+    results = {}
+    for item in filters:
+        model_id = item['definition']['model_id']
+        if model_id in results:
+            continue
+        model = conn.execute(
+            'SELECT prediction_corpus_fingerprint, text_fields_json '
+            'FROM topic_models WHERE model_id = ?', (model_id,)
+        ).fetchone()
+        if model is None or not db_path:
+            results[model_id] = True
+            continue
+        current = topic_corpus_fingerprint(
+            db_path, json.loads(model['text_fields_json'])
+        )['sha256']
+        results[model_id] = current != model['prediction_corpus_fingerprint']
+    return results
+
+
 def active_filter_stack(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return active filters in expression order.
-
-    Parameters
-    ----------
-    conn : sqlite3.Connection
-        Open corpus connection.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Filter rows with decoded definitions.
-
-    Raises
-    ------
-    json.JSONDecodeError
-        If a stored filter definition is invalid JSON.
-    """
+    """Return active filter rows in expression order with decoded definitions."""
     rows = conn.execute(
         'SELECT * FROM corpus_filters ORDER BY stack_position, filter_id'
     ).fetchall()
@@ -625,8 +817,13 @@ def filter_overview(conn: sqlite3.Connection) -> _FilterOverview:
         reason counts.
     """
     filters = active_filter_stack(conn)
+    stale_models = topic_filter_staleness(conn)
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
     for item in filters:
+        item['stale'] = (
+            stale_models.get(item['definition'].get('model_id'), False)
+            if item['method'] == 'topic' else False
+        )
         counts = dict(conn.execute(
             'SELECT status, COUNT(*) AS count FROM paper_filter_results '
             'WHERE filter_id = ? GROUP BY status',
@@ -653,6 +850,7 @@ def filter_overview(conn: sqlite3.Connection) -> _FilterOverview:
         'expression': filter_expression(filters),
         'counts': final_counts,
         'unavailable_reasons': reasons,
+        'stale_topic_filters': [item['name'] for item in filters if item['stale']],
     }
 
 
@@ -730,6 +928,11 @@ def apply_regex_filter(db_path: str | PathLike[str],
                 )
                 filter_id = cursor.lastrowid
             else:
+                if existing['method'] != 'regex':
+                    raise ValueError(
+                        f'Filter {definition["name"]!r} already exists with method '
+                        f'{existing["method"]!r}.'
+                    )
                 position = existing['stack_position']
                 if position == 0 and join_operator is not None:
                     raise ValueError('The first filter cannot have a join operator.')
@@ -772,32 +975,159 @@ def apply_regex_filter(db_path: str | PathLike[str],
         return filter_overview(conn)
 
 
+def apply_topic_filter(
+    db_path: str | PathLike[str],
+    rules_path: str | PathLike[str],
+    join_operator: str | None = None,
+    replace: bool = False,
+) -> _FilterOverview:
+    """Apply or explicitly replace one named stored-model topic filter."""
+    if join_operator is not None:
+        join_operator = join_operator.lower()
+        if join_operator not in JOIN_OPERATORS:
+            raise ValueError('join_operator must be "and" or "or".')
+    with connect(db_path) as conn:
+        definition = load_topic_definition(conn, rules_path)
+        model = conn.execute(
+            'SELECT prediction_corpus_fingerprint, text_fields_json FROM topic_models '
+            'WHERE model_id = ?', (definition['model_id'],)
+        ).fetchone()
+        from paperscraper.topics import topic_corpus_fingerprint
+
+        current_fingerprint = topic_corpus_fingerprint(
+            db_path, json.loads(model['text_fields_json'])
+        )['sha256']
+        if current_fingerprint != model['prediction_corpus_fingerprint']:
+            raise ValueError(
+                f'Topic scores for {definition["model"]!r} are stale; '
+                'run ps_topics_store again before applying this filter.'
+            )
+        existing = conn.execute(
+            'SELECT * FROM corpus_filters WHERE name = ?', (definition['name'],)
+        ).fetchone()
+        if existing is not None and not replace:
+            raise ValueError(
+                f'Filter {definition["name"]!r} is already active; use --replace to reevaluate it.'
+            )
+        stack_size = conn.execute('SELECT COUNT(*) FROM corpus_filters').fetchone()[0]
+        now = utc_now()
+        try:
+            conn.execute('BEGIN')
+            if existing is None:
+                position = stack_size
+                if position == 0 and join_operator is not None:
+                    raise ValueError('The first filter cannot have a join operator.')
+                resolved_join = None if position == 0 else (join_operator or 'and')
+                cursor = conn.execute(
+                    """
+                    INSERT INTO corpus_filters (
+                        name, method, description, definition_json, stack_position,
+                        join_operator, created_at, updated_at
+                    ) VALUES (?, 'topic', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        definition['name'], definition['description'],
+                        json.dumps(definition, sort_keys=True), position,
+                        resolved_join, now, now,
+                    ),
+                )
+                filter_id = cursor.lastrowid
+            else:
+                if existing['method'] != 'topic':
+                    raise ValueError(
+                        f'Filter {definition["name"]!r} already exists with method '
+                        f'{existing["method"]!r}.'
+                    )
+                position = existing['stack_position']
+                if position == 0 and join_operator is not None:
+                    raise ValueError('The first filter cannot have a join operator.')
+                resolved_join = existing['join_operator'] if join_operator is None else join_operator
+                conn.execute(
+                    """
+                    UPDATE corpus_filters
+                    SET description = ?, definition_json = ?, join_operator = ?, updated_at = ?
+                    WHERE filter_id = ?
+                    """,
+                    (
+                        definition['description'], json.dumps(definition, sort_keys=True),
+                        resolved_join, now, existing['filter_id'],
+                    ),
+                )
+                filter_id = existing['filter_id']
+                conn.execute('DELETE FROM paper_filter_results WHERE filter_id = ?', (filter_id,))
+            for paper in paper_rows(conn):
+                status, evidence, unavailable_reason = evaluate_topic_paper(
+                    conn, paper, definition
+                )
+                conn.execute(
+                    """
+                    INSERT INTO paper_filter_results (
+                        filter_id, paper_id, status, evidence_json,
+                        unavailable_reason, evaluated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        filter_id, paper['paper_id'], status,
+                        json.dumps(evidence, sort_keys=True), unavailable_reason, now,
+                    ),
+                )
+            _recompute_filter_state(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return filter_overview(conn)
+
+
+def refresh_topic_filters(
+    db_path: str | PathLike[str],
+    model_id: str,
+) -> None:
+    """Reevaluate active topic filters after a model's scores are refreshed."""
+    with connect(db_path) as conn:
+        filters = [
+            item for item in active_filter_stack(conn)
+            if item['method'] == 'topic' and item['definition'].get('model_id') == model_id
+        ]
+        if not filters:
+            return
+        now = utc_now()
+        try:
+            conn.execute('BEGIN')
+            for item in filters:
+                conn.execute(
+                    'DELETE FROM paper_filter_results WHERE filter_id = ?',
+                    (item['filter_id'],),
+                )
+                for paper in paper_rows(conn):
+                    status, evidence, reason = evaluate_topic_paper(
+                        conn, paper, item['definition']
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO paper_filter_results (
+                            filter_id, paper_id, status, evidence_json,
+                            unavailable_reason, evaluated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item['filter_id'], paper['paper_id'], status,
+                            json.dumps(evidence, sort_keys=True), reason, now,
+                        ),
+                    )
+            _recompute_filter_state(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def reset_filters(
     db_path: str | PathLike[str],
     name: str | None = None,
     all_filters: bool = False,
 ) -> _FilterOverview:
-    """Remove filters and recompute final paper decisions.
-
-    Parameters
-    ----------
-    db_path : str or pathlib.Path
-        Path to the SQLite paper corpus.
-    name : str or None, optional
-        Name of the single filter to remove.
-    all_filters : bool, default=False
-        Whether to remove the complete active stack.
-
-    Returns
-    -------
-    _FilterOverview
-        Updated filter overview.
-
-    Raises
-    ------
-    ValueError
-        If exactly one removal mode is not selected or ``name`` is not active.
-    """
+    """Remove one named filter or the complete active stack and recompute state."""
     if bool(name) == bool(all_filters):
         raise ValueError('Choose exactly one of a filter name or all filters.')
     with connect(db_path) as conn:
@@ -843,6 +1173,13 @@ def current_filter_statuses(conn: sqlite3.Connection) -> dict[str, _FilterStatus
     dict[str, _FilterStatus]
         Final filter status for each evaluated paper ID.
     """
+    stale_models = topic_filter_staleness(conn)
+    stale = [model_id for model_id, is_stale in stale_models.items() if is_stale]
+    if stale:
+        raise ValueError(
+            'Active topic filters use stale scores; run ps_topics_store again for: '
+            + ', '.join(stale)
+        )
     return {
         row['paper_id']: row['status']
         for row in conn.execute('SELECT paper_id, status FROM paper_filter_state')

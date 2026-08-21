@@ -257,6 +257,7 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pyt
         '--stopwords-file', str(stopwords_path),
         '--ngram-max', '1',
         '--overwrite',
+        '--in-memory',
     ])
 
     assert result.exit_code == 0
@@ -276,6 +277,10 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pyt
         'ngram_max': 1,
         'overwrite': True,
         'emit_warnings': False,
+        'streaming': False,
+        'batch_size': 128,
+        'cache_dir': None,
+        'evaluation_sample_size': 10000,
     }
     assert 'Warning: Small topic-model corpus' in result.output
     assert 'Trained 6 topics from 120 papers using 800 terms.' in result.output
@@ -342,7 +347,7 @@ def test_topic_inspection_naming_and_prediction_commands(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         cli,
         'predict_topic_model',
-        lambda directory, database, output: {
+        lambda directory, database, output, batch_size: {
             'papers_total': 10,
             'papers_predicted': 9,
             'papers_without_vocabulary_terms': 1,
@@ -366,7 +371,80 @@ def test_topic_inspection_naming_and_prediction_commands(monkeypatch: pytest.Mon
     assert 'Predicted topics for 9 of 10 papers' in predicted.output
 
 
-def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_topic_trend_store_and_model_status_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Expose trend aggregation and explicit corpus score storage through the CLI."""
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        'aggregate_topic_trends',
+        lambda *args, **kwargs: calls.append(('trends', args, kwargs)) or {
+            'windows': 4,
+            'trends_csv': str(tmp_path / 'trends' / 'topic_trends.csv'),
+            'papers_missing_or_invalid_date': 2,
+            'plot_path': str(tmp_path / 'trends' / 'topic_trends_plot.png'),
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        'store_topic_model_scores',
+        lambda *args, **kwargs: calls.append(('store', args, kwargs)) or {
+            'name': 'demo',
+            'model_id': 'lda:test',
+            'papers_predicted': 9,
+            'papers_without_vocabulary_terms': 1,
+        },
+    )
+    monkeypatch.setattr(cli, 'stored_topic_models', lambda *args, **kwargs: [{
+        'name': 'demo',
+        'model_id': 'lda:test',
+        'is_current': True,
+        'num_topics': 3,
+        'papers_predicted': 9,
+        'papers_without_vocabulary_terms': 1,
+        'text_fields': ['title', 'abstract'],
+    }])
+    runner = CliRunner()
+
+    trended = runner.invoke(cli.topics_trends, [
+        str(model_dir), str(tmp_path / 'trends'),
+        '--bin-size', '5', '--step-size', '1', '--start-year', '2000', '--plot',
+    ])
+    stored = runner.invoke(cli.topics_store, [
+        str(model_dir), str(db_path), '--name', 'demo', '--batch-size', '64',
+    ])
+    shown = runner.invoke(cli.topics_models, [str(db_path)])
+
+    assert trended.exit_code == 0
+    assert calls[0][2]['bin_size'] == 5
+    assert calls[0][2]['step_size'] == 1
+    assert calls[0][2]['plot'] is True
+    assert '4 topic trend windows' in trended.output
+    assert 'Topic trend plot:' in trended.output
+    assert stored.exit_code == 0
+    assert calls[1][2] == {'name': 'demo', 'batch_size': 64}
+    assert 'Stored demo (lda:test)' in stored.output
+    assert shown.exit_code == 0
+    assert 'demo (lda:test) [current]' in shown.output
+
+    custom_plot = runner.invoke(cli.topics_trends, [
+        str(model_dir), str(tmp_path / 'custom-trends'),
+        '--plot-file', 'custom-topic-trends.svg',
+    ])
+    assert custom_plot.exit_code == 0
+    assert calls[2][2]['plot'] == 'custom-topic-trends.svg'
+
+
+def test_scrape_passes_model_image_cleanup_and_output_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Delegate scraping with model, image, cleanup, and output options."""
     calls = {}
     db_path = tmp_path / 'papers.db'

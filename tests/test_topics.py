@@ -291,7 +291,7 @@ def test_compare_topic_models_requires_multiple_configurations(tmp_path: Path) -
         )
 
 
-def test_streaming_training_writes_version_two_artifacts_and_cleans_cache(tmp_path):
+def test_streaming_training_writes_version_two_artifacts_and_cleans_cache(tmp_path: Path) -> None:
     """Train online from bounded disk batches and remove the temporary cache."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'streaming-model'
@@ -333,7 +333,10 @@ def test_streaming_training_writes_version_two_artifacts_and_cleans_cache(tmp_pa
     assert all(value == pytest.approx(1.0) for value in totals.values())
 
 
-def test_streaming_comparison_prepares_the_corpus_once(tmp_path, monkeypatch):
+def test_streaming_comparison_prepares_the_corpus_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Reuse one disk-backed vocabulary and matrix cache across comparison models."""
     db_path = tmp_path / 'papers.db'
     output_dir = tmp_path / 'comparison'
@@ -341,7 +344,8 @@ def test_streaming_comparison_prepares_the_corpus_once(tmp_path, monkeypatch):
     original_prepare = topics._prepare_streaming_corpus
     calls = []
 
-    def counted_prepare(*args, **kwargs):
+    def counted_prepare(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Count and delegate streaming corpus preparation."""
         calls.append(1)
         return original_prepare(*args, **kwargs)
 
@@ -367,7 +371,7 @@ def test_streaming_comparison_prepares_the_corpus_once(tmp_path, monkeypatch):
     assert all(row['mean_seed_stability'] != '' for row in summary['models'])
 
 
-def test_topic_trends_support_fixed_and_overlapping_windows(tmp_path):
+def test_topic_trends_support_fixed_and_overlapping_windows(tmp_path: Path) -> None:
     """Aggregate probabilities into fixed-width and overlapping year windows."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'
@@ -410,7 +414,7 @@ def test_topic_trends_support_fixed_and_overlapping_windows(tmp_path):
         )
 
 
-def test_topic_store_predicts_fresh_scores_and_reports_staleness(tmp_path):
+def test_topic_store_predicts_fresh_scores_and_reports_staleness(tmp_path: Path) -> None:
     """Store normalized scores transactionally and detect subsequent corpus changes."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'

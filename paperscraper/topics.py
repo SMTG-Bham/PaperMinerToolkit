@@ -737,7 +737,10 @@ def _prepare_output_directory(
     return path
 
 
-def _streaming_corpus_report(prepared, num_topics):
+def _streaming_corpus_report(
+    prepared: Mapping[str, Any],
+    num_topics: int,
+) -> dict[str, Any]:
     """Build topic-count-specific diagnostics from a prepared corpus cache."""
     usable = prepared['documents_usable_before_vectorization']
     used = prepared['documents_used']
@@ -797,9 +800,18 @@ def _streaming_corpus_report(prepared, num_topics):
     }
 
 
-def _prepare_streaming_corpus(db_path, text_fields, domain_stopwords, ngram_max,
-                              min_df, max_df, max_features, batch_size,
-                              evaluation_sample_size, work_dir):
+def _prepare_streaming_corpus(
+    db_path: str | PathLike[str],
+    text_fields: Iterable[str],
+    domain_stopwords: Iterable[str],
+    ngram_max: int,
+    min_df: int,
+    max_df: float,
+    max_features: int,
+    batch_size: int,
+    evaluation_sample_size: int,
+    work_dir: str | PathLike[str],
+) -> dict[str, Any]:
     """Build a deterministic vocabulary and disk-backed sparse batch cache."""
     started = time.perf_counter()
     work_path = Path(work_dir)
@@ -931,13 +943,20 @@ def _prepare_streaming_corpus(db_path, text_fields, domain_stopwords, ngram_max,
     }
 
 
-def _cached_batches(prepared):
+def _cached_batches(
+    prepared: Mapping[str, Any],
+) -> Iterable[tuple[Any, list[dict[str, Any]]]]:
     """Yield cached sparse matrices with their bounded metadata batches."""
     for matrix_path, metadata_path in prepared['batches']:
         yield sparse.load_npz(matrix_path), json.loads(metadata_path.read_text(encoding='utf-8'))
 
 
-def _model_identifier(model, vectorizer, config, fingerprint):
+def _model_identifier(
+    model: LatentDirichletAllocation,
+    vectorizer: CountVectorizer,
+    config: Mapping[str, Any],
+    fingerprint: Mapping[str, Any],
+) -> str:
     """Return an immutable deterministic identifier for one fitted model."""
     digest = hashlib.sha256()
     stable_config = {key: value for key, value in config.items() if key not in {'created_at', 'model_id'}}
@@ -948,8 +967,14 @@ def _model_identifier(model, vectorizer, config, fingerprint):
     return f'lda:{digest.hexdigest()[:24]}'
 
 
-def _write_streamed_outputs(prepared, model, names, predictions_path,
-                            representatives_path, representative_count):
+def _write_streamed_outputs(
+    prepared: Mapping[str, Any],
+    model: LatentDirichletAllocation,
+    names: Mapping[str, str],
+    predictions_path: str | PathLike[str],
+    representatives_path: str | PathLike[str],
+    representative_count: int,
+) -> dict[str, Any]:
     """Infer cached batches while writing predictions and bounded representatives."""
     prediction_fields = [
         'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
@@ -1063,12 +1088,25 @@ def _model_quality_metrics(
     }
 
 
-def _train_streaming_topic_model(output_dir, prepared, num_topics, text_fields,
-                                 min_df, max_df, max_features, max_iter,
-                                 random_state, top_terms, representative_papers,
-                                 domain_stopwords, ngram_max, overwrite,
-                                 emit_warnings, batch_size,
-                                 evaluation_sample_size):
+def _train_streaming_topic_model(
+    output_dir: str | PathLike[str],
+    prepared: Mapping[str, Any],
+    num_topics: int,
+    text_fields: Iterable[str],
+    min_df: int,
+    max_df: float,
+    max_features: int,
+    max_iter: int,
+    random_state: int,
+    top_terms: int,
+    representative_papers: int,
+    domain_stopwords: list[str],
+    ngram_max: int,
+    overwrite: bool,
+    emit_warnings: bool,
+    batch_size: int,
+    evaluation_sample_size: int,
+) -> dict[str, Any]:
     """Train one online LDA model from a reusable disk-backed corpus cache."""
     report = _streaming_corpus_report(prepared, num_topics)
     if emit_warnings:
@@ -1489,7 +1527,11 @@ def set_topic_name(
     return names
 
 
-def topic_corpus_fingerprint(db_path, text_fields, batch_size=DEFAULT_BATCH_SIZE):
+def topic_corpus_fingerprint(
+    db_path: str | PathLike[str],
+    text_fields: Iterable[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict[str, Any]:
     """Fingerprint the current normalized inputs for stale-score detection."""
     digest = hashlib.sha256()
     documents = 0
@@ -1508,8 +1550,13 @@ def topic_corpus_fingerprint(db_path, text_fields, batch_size=DEFAULT_BATCH_SIZE
     }
 
 
-def _iter_topic_predictions(model, vectorizer, config, db_path,
-                            batch_size=DEFAULT_BATCH_SIZE):
+def _iter_topic_predictions(
+    model: LatentDirichletAllocation,
+    vectorizer: CountVectorizer,
+    config: Mapping[str, Any],
+    db_path: str | PathLike[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> Iterable[dict[str, Any]]:
     """Yield fresh prediction records in bounded corpus batches."""
     for documents in iter_topic_document_batches(db_path, config['text_fields'], batch_size):
         matrix = vectorizer.transform(document['text'] for document in documents).tocsr()
@@ -1574,8 +1621,12 @@ def predict_topic_model(
     }
 
 
-def store_topic_model_scores(model_dir, db_path, name=None,
-                             batch_size=DEFAULT_BATCH_SIZE):
+def store_topic_model_scores(
+    model_dir: str | PathLike[str],
+    db_path: str | PathLike[str],
+    name: str | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict[str, Any]:
     """Predict a corpus afresh and transactionally store one immutable model run."""
     model, vectorizer, config, names = load_topic_model(model_dir)
     model_id = config['model_id']
@@ -1720,7 +1771,10 @@ def store_topic_model_scores(model_dir, db_path, name=None,
     }
 
 
-def stored_topic_models(db_path, batch_size=DEFAULT_BATCH_SIZE):
+def stored_topic_models(
+    db_path: str | PathLike[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> list[dict[str, Any]]:
     """List stored topic models with coverage and current fingerprint state."""
     with connect(db_path) as conn:
         models = [dict(row) for row in conn.execute(
@@ -1747,7 +1801,9 @@ def stored_topic_models(db_path, batch_size=DEFAULT_BATCH_SIZE):
     return models
 
 
-def _prediction_papers(predictions_path):
+def _prediction_papers(
+    predictions_path: str | PathLike[str],
+) -> Iterable[dict[str, Any]]:
     """Yield one paper and its complete topic distribution from a long CSV."""
     with Path(predictions_path).open(encoding='utf-8', newline='') as handle:
         rows = csv.DictReader(handle)
@@ -1774,7 +1830,7 @@ def _prediction_papers(predictions_path):
             }
 
 
-def _publication_year(value):
+def _publication_year(value: object) -> int | None:
     """Return a plausible four-digit publication year or ``None``."""
     match = re.search(r'(?<!\d)(\d{4})(?!\d)', str(value or ''))
     if not match:
@@ -1783,7 +1839,11 @@ def _publication_year(value):
     return year if 1000 <= year <= 2999 else None
 
 
-def plot_topic_trends(trends_path, report_path, output_path=None):
+def plot_topic_trends(
+    trends_path: str | PathLike[str],
+    report_path: str | PathLike[str],
+    output_path: str | PathLike[str] | None = None,
+) -> str:
     """Plot topic prevalence and paper coverage from a trend CSV."""
     try:
         import matplotlib
@@ -1942,10 +2002,18 @@ def plot_topic_trends(trends_path, report_path, output_path=None):
     return str(destination)
 
 
-def aggregate_topic_trends(model_dir, output_dir, predictions_path=None,
-                           bin_size=1, step_size=1, start_year=None,
-                           end_year=None, include_partial=True, overwrite=False,
-                           plot=False):
+def aggregate_topic_trends(
+    model_dir: str | PathLike[str],
+    output_dir: str | PathLike[str],
+    predictions_path: str | PathLike[str] | None = None,
+    bin_size: int = 1,
+    step_size: int = 1,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    include_partial: bool = True,
+    overwrite: bool = False,
+    plot: bool | str | PathLike[str] = False,
+) -> dict[str, Any]:
     """Aggregate fixed-model topic probabilities into configurable time windows."""
     if bin_size < 1 or step_size < 1:
         raise ValueError('bin_size and step_size must be positive.')

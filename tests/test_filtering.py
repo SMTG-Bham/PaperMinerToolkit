@@ -14,6 +14,7 @@ import paperscraper.cli as cli
 import paperscraper.corpus as corpus
 import paperscraper.filtering as filtering
 import paperscraper.scrape as scrape
+from paperscraper import topics
 
 
 def _write_rules(
@@ -47,6 +48,45 @@ def _add_text(
     corpus.add_asset(
         conn, paper, content, role=role, kind='text', mime_type='text/plain'
     )
+
+
+def _store_fake_topic_scores(db_path: Path) -> None:
+    """Insert one current two-topic model for filter tests."""
+    fingerprint = topics.topic_corpus_fingerprint(db_path, ('title',))['sha256']
+    now = corpus.utc_now()
+    with corpus.connect(db_path) as conn:
+        conn.execute(
+            'INSERT INTO topic_models VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                'lda:test', 'test-model', '/tmp/model', 2,
+                json.dumps({'text_fields': ['title']}), fingerprint, fingerprint,
+                json.dumps(['title']), now, now,
+            ),
+        )
+        conn.executemany(
+            'INSERT INTO topic_definitions VALUES (?, ?, ?, ?)',
+            [
+                ('lda:test', 0, 'included topic', json.dumps(['alpha'])),
+                ('lda:test', 1, 'veto topic', json.dumps(['beta'])),
+            ],
+        )
+        for paper_id, probabilities in {
+            'paper:alpha': (0.8, 0.2),
+            'paper:beta': (0.2, 0.8),
+        }.items():
+            dominant = int(probabilities[1] > probabilities[0])
+            conn.execute(
+                'INSERT INTO paper_topic_predictions VALUES (?, ?, ?, ?, ?, ?)',
+                ('lda:test', paper_id, 'predicted', dominant, 'document-hash', now),
+            )
+            conn.executemany(
+                'INSERT INTO paper_topic_scores VALUES (?, ?, ?, ?)',
+                (
+                    ('lda:test', paper_id, topic_id, probability)
+                    for topic_id, probability in enumerate(probabilities)
+                ),
+            )
+        conn.commit()
 
 
 def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp_path: Path) -> None:
@@ -333,6 +373,52 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path: Path
     )
     assert len(calls) == 2
     assert 'Ignoring active corpus filters for this scrape: alpha' in capsys.readouterr().out
+
+
+def test_topic_filters_support_probability_dominance_hybrid_and_stale_scores(
+    tmp_path: Path,
+) -> None:
+    """Use stored topic scores alone or with regex and fail closed after corpus changes."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha material'})
+        corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta material'})
+    _store_fake_topic_scores(db_path)
+    rules_path = tmp_path / 'topics.json'
+    rules_path.write_text(json.dumps({
+        'name': 'topic-relevance',
+        'model': 'test-model',
+        'include_mode': 'any',
+        'include': [{
+            'name': 'alpha-probability',
+            'topic_id': 0,
+            'min_probability': 0.6,
+        }],
+        'exclude': [{
+            'name': 'beta-dominant',
+            'topic_id': 1,
+            'require_dominant': True,
+        }],
+    }))
+
+    overview = filtering.apply_topic_filter(db_path, rules_path)
+
+    assert overview['counts'] == {'excluded': 1, 'included': 1, 'unavailable': 0}
+    assert overview['filters'][0]['method'] == 'topic'
+    regex_path = _write_rules(tmp_path / 'alpha.json', 'alpha-title', 'alpha')
+    overview = filtering.apply_regex_filter(db_path, regex_path, join_operator='and')
+    assert overview['expression'] == '(topic-relevance AND alpha-title)'
+    assert overview['counts']['included'] == 1
+
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:new', 'title': 'new material'})
+    with corpus.connect(db_path) as conn:
+        with pytest.raises(ValueError, match='stale scores'):
+            filtering.current_filter_statuses(conn)
+        overview = filtering.filter_overview(conn)
+    assert overview['stale_topic_filters'] == ['topic-relevance']
+    with pytest.raises(ValueError, match='stale'):
+        filtering.apply_topic_filter(db_path, rules_path, replace=True)
 
 
 @pytest.mark.parametrize(
