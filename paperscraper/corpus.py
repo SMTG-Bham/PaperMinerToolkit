@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -200,6 +200,59 @@ def init_corpus(conn: sqlite3.Connection) -> None:
             ON paper_filter_results(filter_id, status);
         CREATE INDEX IF NOT EXISTS idx_filter_state_status
             ON paper_filter_state(status);
+
+        CREATE TABLE IF NOT EXISTS topic_models (
+            model_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            artifact_path TEXT NOT NULL,
+            artifact_version INTEGER NOT NULL,
+            config_json TEXT NOT NULL,
+            training_corpus_fingerprint TEXT NOT NULL,
+            prediction_corpus_fingerprint TEXT NOT NULL,
+            text_fields_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_definitions (
+            model_id TEXT NOT NULL,
+            topic_id INTEGER NOT NULL,
+            topic_name TEXT NOT NULL DEFAULT '',
+            top_terms_json TEXT NOT NULL,
+            PRIMARY KEY (model_id, topic_id),
+            FOREIGN KEY (model_id) REFERENCES topic_models(model_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_topic_predictions (
+            model_id TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            dominant_topic_id INTEGER,
+            document_fingerprint TEXT NOT NULL,
+            predicted_at TEXT NOT NULL,
+            PRIMARY KEY (model_id, paper_id),
+            FOREIGN KEY (model_id) REFERENCES topic_models(model_id) ON DELETE CASCADE,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('predicted', 'no_vocabulary_terms'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_topic_scores (
+            model_id TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            topic_id INTEGER NOT NULL,
+            probability REAL NOT NULL,
+            PRIMARY KEY (model_id, paper_id, topic_id),
+            FOREIGN KEY (model_id, paper_id)
+                REFERENCES paper_topic_predictions(model_id, paper_id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id, topic_id)
+                REFERENCES topic_definitions(model_id, topic_id) ON DELETE CASCADE,
+            CHECK (probability >= 0.0 AND probability <= 1.0)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_topic_predictions_status
+            ON paper_topic_predictions(model_id, status);
+        CREATE INDEX IF NOT EXISTS idx_topic_scores_topic_probability
+            ON paper_topic_scores(model_id, topic_id, probability);
         """
     )
     existing_columns = {

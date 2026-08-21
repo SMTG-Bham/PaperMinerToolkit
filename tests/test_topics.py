@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from paperscraper import corpus, topics
+from paperscraper import corpus, filtering, topics
 
 
 THEME_TEXTS = [
@@ -56,6 +56,7 @@ def train_small_model(db_path: Path, model_dir: Path) -> dict[str, Any]:
         random_state=7,
         top_terms=6,
         representative_papers=2,
+        streaming=False,
     )
 
 
@@ -264,6 +265,7 @@ def test_compare_topic_models_exports_counts_seeds_metrics_and_stability(tmp_pat
         representative_papers=1,
         stopwords_file=stopwords_path,
         ngram_max=2,
+        streaming=False,
     )
 
     assert summary['models_trained'] == 4
@@ -287,3 +289,161 @@ def test_compare_topic_models_requires_multiple_configurations(tmp_path: Path) -
             topic_counts=(3,),
             random_states=(0,),
         )
+
+
+def test_streaming_training_writes_version_two_artifacts_and_cleans_cache(tmp_path):
+    """Train online from bounded disk batches and remove the temporary cache."""
+    db_path = tmp_path / 'papers.db'
+    model_dir = tmp_path / 'streaming-model'
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    build_topic_corpus(db_path, papers_per_theme=4)
+
+    with pytest.warns(UserWarning):
+        summary = topics.train_topic_model(
+            db_path,
+            model_dir,
+            num_topics=3,
+            min_df=1,
+            max_df=1.0,
+            max_features=500,
+            max_iter=2,
+            random_state=4,
+            top_terms=5,
+            representative_papers=2,
+            streaming=True,
+            batch_size=3,
+            cache_dir=cache_dir,
+            evaluation_sample_size=5,
+        )
+
+    assert summary['config']['artifact_version'] == 2
+    assert summary['config']['streaming'] is True
+    assert summary['config']['model_id'].startswith('lda:')
+    assert summary['report']['documents_used'] == 12
+    assert summary['report']['evaluation_documents'] == 5
+    assert summary['report']['metrics_scope'] == 'sample'
+    assert not list(cache_dir.iterdir())
+    with (model_dir / topics.PREDICTIONS_FILENAME).open(encoding='utf-8', newline='') as handle:
+        rows = list(csv.DictReader(handle))
+    totals = defaultdict(float)
+    for row in rows:
+        totals[row['paper_id']] += float(row['probability'])
+    assert len(totals) == 12
+    assert all(value == pytest.approx(1.0) for value in totals.values())
+
+
+def test_streaming_comparison_prepares_the_corpus_once(tmp_path, monkeypatch):
+    """Reuse one disk-backed vocabulary and matrix cache across comparison models."""
+    db_path = tmp_path / 'papers.db'
+    output_dir = tmp_path / 'comparison'
+    build_topic_corpus(db_path, papers_per_theme=3)
+    original_prepare = topics._prepare_streaming_corpus
+    calls = []
+
+    def counted_prepare(*args, **kwargs):
+        calls.append(1)
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(topics, '_prepare_streaming_corpus', counted_prepare)
+    summary = topics.compare_topic_models(
+        db_path,
+        output_dir,
+        topic_counts=(2,),
+        random_states=(0, 1),
+        min_df=1,
+        max_df=1.0,
+        max_features=300,
+        max_iter=1,
+        top_terms=4,
+        representative_papers=1,
+        streaming=True,
+        batch_size=3,
+        evaluation_sample_size=4,
+    )
+
+    assert calls == [1]
+    assert summary['models_trained'] == 2
+    assert all(row['mean_seed_stability'] != '' for row in summary['models'])
+
+
+def test_topic_trends_support_fixed_and_overlapping_windows(tmp_path):
+    """Aggregate probabilities into fixed-width and overlapping year windows."""
+    db_path = tmp_path / 'papers.db'
+    model_dir = tmp_path / 'model'
+    build_topic_corpus(db_path, papers_per_theme=5)
+    with pytest.warns(UserWarning):
+        train_small_model(db_path, model_dir)
+
+    fixed = topics.aggregate_topic_trends(
+        model_dir,
+        tmp_path / 'fixed',
+        bin_size=5,
+        step_size=5,
+        start_year=2000,
+        end_year=2024,
+        plot=True,
+    )
+    rolling = topics.aggregate_topic_trends(
+        model_dir,
+        tmp_path / 'rolling',
+        bin_size=5,
+        step_size=1,
+        start_year=2000,
+        end_year=2006,
+    )
+
+    assert fixed['windows'] == 5
+    with open(fixed['trends_csv'], encoding='utf-8', newline='') as handle:
+        fixed_rows = list(csv.DictReader(handle))
+    assert len(fixed_rows) == 5 * 3
+    assert {row['window_start'] for row in fixed_rows} == {'2000', '2005', '2010', '2015', '2020'}
+    assert Path(fixed['plot_path']).name == 'topic_trends_plot.png'
+    assert Path(fixed['plot_path']).stat().st_size > 0
+    assert rolling['windows'] == 7
+    with open(rolling['trends_csv'], encoding='utf-8', newline='') as handle:
+        rolling_rows = list(csv.DictReader(handle))
+    assert any(row['is_partial'] == 'True' for row in rolling_rows)
+    with pytest.raises(ValueError, match='must not exceed'):
+        topics.aggregate_topic_trends(
+            model_dir, tmp_path / 'invalid', bin_size=2, step_size=3
+        )
+
+
+def test_topic_store_predicts_fresh_scores_and_reports_staleness(tmp_path):
+    """Store normalized scores transactionally and detect subsequent corpus changes."""
+    db_path = tmp_path / 'papers.db'
+    model_dir = tmp_path / 'model'
+    build_topic_corpus(db_path, papers_per_theme=3)
+    with pytest.warns(UserWarning):
+        train_small_model(db_path, model_dir)
+
+    summary = topics.store_topic_model_scores(
+        model_dir, db_path, name='demo-model', batch_size=2
+    )
+
+    assert summary['papers_predicted'] == 9
+    with corpus.connect(db_path) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM topic_models').fetchone()[0] == 1
+        assert conn.execute('SELECT COUNT(*) FROM topic_definitions').fetchone()[0] == 3
+        assert conn.execute('SELECT COUNT(*) FROM paper_topic_predictions').fetchone()[0] == 9
+        assert conn.execute('SELECT COUNT(*) FROM paper_topic_scores').fetchone()[0] == 27
+    assert topics.stored_topic_models(db_path)[0]['is_current'] is True
+    rules_path = tmp_path / 'topic-filter.json'
+    rules_path.write_text(json.dumps({
+        'name': 'stored-topic-filter',
+        'model': 'demo-model',
+        'include': [{
+            'name': 'topic-zero', 'topic_id': 0, 'min_probability': 0.0,
+        }],
+    }))
+    filtering.apply_topic_filter(db_path, rules_path)
+
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'new', 'title': 'unseen quasar terminology'})
+    assert topics.stored_topic_models(db_path)[0]['is_current'] is False
+    topics.store_topic_model_scores(model_dir, db_path, name='demo-model', batch_size=2)
+    with corpus.connect(db_path) as conn:
+        overview = filtering.filter_overview(conn)
+    assert overview['stale_topic_filters'] == []
+    assert sum(overview['counts'].values()) == 10

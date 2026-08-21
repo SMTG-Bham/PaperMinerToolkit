@@ -118,13 +118,17 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: 
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
 
-    assert version == 3
+    assert version == 4
     assert {'num_text_chunks', 'num_abstract_chunks'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
     assert rows[0]['num_text_chunks'] is None
     assert rows[0]['num_abstract_chunks'] is None
-    assert {'corpus_filters', 'paper_filter_results', 'paper_filter_state'} <= tables
+    assert {
+        'corpus_filters', 'paper_filter_results', 'paper_filter_state',
+        'topic_models', 'topic_definitions', 'paper_topic_predictions',
+        'paper_topic_scores',
+    } <= tables
 
 
 def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path: Path) -> None:
