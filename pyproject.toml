@@ -1,29 +1,130 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scraper"
-version = "0.0.1"
-description = "A code which uses GPT in order to exctract unstructured information from papers."
+name = "paperscraper"
+dynamic = ["version"]
+description = "A package for extracting structured information from scientific papers with configurable language and vision models."
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Louie", email = "louies@hotmail.co.uk" }]
+keywords = ["research", "scientific-papers", "materials", "text-mining", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Text Processing",
+]
+requires-python = ">=3.11"
 dependencies = [
   "click",
+  "headroom-ai[image,ml]>=0.35,<0.36",
+  "openai",
+  "numpy",
+  "pandas",
+  "pillow",
+  "pymupdf",
+  "pypdf",
+  "requests",
+  "regex",
+  "scipy",
+  "joblib",
+  "matplotlib",
+  "scikit-learn",
+  "tiktoken>=0.13.0",
+  "tqdm",
+  "transformers",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "pytest-cov",
+  "ruff",
+]
+docs = [
+  "myst-nb>=1.2,<2",
+  "pydata-sphinx-theme>=0.16,<0.21",
+  "sphinx>=8,<10",
+  "sphinx-click>=6,<7",
+  "sphinxcontrib-mermaid>=1,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/SMTG-Bham/PaperScraper"
+Repository = "https://github.com/SMTG-Bham/PaperScraper"
+Issues = "https://github.com/SMTG-Bham/PaperScraper/issues"
+
 [project.scripts]
-ps_search = "cli.cli:paper_search"
-ps_elsevier = "cli.cli:elsevier_download"
-ps_scrape = "cli.cli:scrape"
-ps_store = "cli.cli:store"
-ps_elsevier_key = "cli.cli:update_elsevier_api_key"
-ps_openai_key = "cli.cli:update_openai_api_key"
-ps_reset = "cli.cli:reset_scraper"
-ps_status = "cli.cli:scraper_status"
-ps_sort = "cli.cli:sort_df"
-ps_shuffle = "cli.cli:shuffle_papers"
+ps_search = "paperscraper.cli:paper_search"
+ps_download = "paperscraper.cli:download"
+ps_corpus_stats = "paperscraper.cli:corpus_status"
+ps_topics_train = "paperscraper.cli:topics_train"
+ps_topics_compare = "paperscraper.cli:topics_compare"
+ps_topics_show = "paperscraper.cli:topics_show"
+ps_topics_name = "paperscraper.cli:topics_name"
+ps_topics_predict = "paperscraper.cli:topics_predict"
+ps_topics_trends = "paperscraper.cli:topics_trends"
+ps_topics_store = "paperscraper.cli:topics_store"
+ps_topics_models = "paperscraper.cli:topics_models"
+ps_import_pdfs = "paperscraper.cli:import_pdf_folder"
+ps_import_author = "paperscraper.cli:import_author"
+ps_scrape = "paperscraper.cli:scrape"
+ps_filter_regex = "paperscraper.cli:filter_regex"
+ps_filter_topic = "paperscraper.cli:filter_topic"
+ps_filter_status = "paperscraper.cli:filter_status"
+ps_filter_reset = "paperscraper.cli:filter_reset"
+ps_store = "paperscraper.cli:store"
+ps_elsevier_key = "paperscraper.cli:update_elsevier_api_key"
+ps_core_key = "paperscraper.cli:update_core_api_key"
+ps_unpaywall_email = "paperscraper.cli:update_unpaywall_api_email"
+ps_openalex_key = "paperscraper.cli:update_openalex_api_key"
+ps_openai_key = "paperscraper.cli:update_openai_api_key"
+ps_anthropic_key = "paperscraper.cli:update_anthropic_api_key"
+ps_model_config = "paperscraper.cli:model_config"
+ps_model_status = "paperscraper.cli:model_status"
+ps_reset = "paperscraper.cli:reset_scraper"
+ps_status = "paperscraper.cli:scraper_status"
+
+[tool.setuptools.dynamic]
+version = { attr = "paperscraper.__version__" }
 
 [tool.setuptools.packages.find]
-# Uses the same behavior as find_packages()
 where = ["."]
+include = ["paperscraper*"]
+
+[tool.setuptools.package-data]
+"paperscraper" = ["resources/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "network: tests that call live external services and require credentials",
+  "slow: tests that run slower local integrations such as real compression backends",
+]
+addopts = [
+  "-m",
+  "not network and not slow",
+]
+
+[tool.ruff.lint]
+select = ["D"]
+extend-select = ["ANN", "D212"]
+# Dynamic provider payloads and test doubles legitimately require Any.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.coverage.run]
+source = ["paperscraper"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

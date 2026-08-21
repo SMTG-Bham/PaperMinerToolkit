@@ -1,0 +1,13 @@
+.bd-main .bd-content .bd-article-container {
+  max-width: 60rem;
+}
+
+.hero-tagline {
+  color: var(--pst-color-text-muted);
+  font-size: 1.2rem;
+  margin-bottom: 2rem;
+}
+
+.workflow-command {
+  white-space: nowrap;
+}

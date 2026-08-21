@@ -1,0 +1,12 @@
+{
+  "name": "oxide-title",
+  "description": "Titles explicitly concerning oxides or oxygen",
+  "fields": ["title"],
+  "case_sensitive": false,
+  "include_mode": "any",
+  "include": [
+    {"name": "oxide", "pattern": "\\boxides?\\b"},
+    {"name": "oxygen", "pattern": "\\boxygen\\b"}
+  ],
+  "exclude": []
+}

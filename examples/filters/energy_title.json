@@ -1,0 +1,14 @@
+{
+  "name": "energy-title",
+  "description": "Titles concerning solar, photovoltaic, photoelectrochemical, or thermoelectric materials",
+  "fields": ["title"],
+  "case_sensitive": false,
+  "include_mode": "any",
+  "include": [
+    {"name": "solar", "pattern": "\\bsolar\\b"},
+    {"name": "photovoltaic", "pattern": "\\bphotovoltaics?\\b"},
+    {"name": "photoelectrochemical", "pattern": "\\bphotoelectrochemical\\b"},
+    {"name": "thermoelectric", "pattern": "\\bthermoelectrics?\\b"}
+  ],
+  "exclude": []
+}

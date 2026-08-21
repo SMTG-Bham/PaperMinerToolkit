@@ -1,34 +1,72 @@
-import pandas as pd
+"""Small maintenance utilities for the PaperScraper corpus.
 
-def reset(papers_path: str='papers.csv'):
-    papers_df = pd.read_csv(papers_path, index_col=0)
-    papers_df['status'] = 'retrieved'
-    papers_df.to_csv(papers_path)
+These helpers back CLI commands for resetting pipeline status and printing a
+progress summary for the SQLite paper corpus.
+"""
 
-def status(papers_path: str='papers.csv'):
-    papers_df = pd.read_csv(papers_path, index_col=0)
+from __future__ import annotations
+
+from os import PathLike
+
+from paperscraper.corpus import PIPELINE_COLUMNS, connect, paper_rows, upsert_paper
+
+
+def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
+    """Reset all corpus pipeline columns.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database to reset.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
+    with connect(db_path) as conn:
+        for paper in paper_rows(conn):
+            for column, default in PIPELINE_COLUMNS.items():
+                paper[column] = default
+            paper['metadata_status'] = 'retrieved'
+            upsert_paper(conn, paper)
+
+
+def status(db_path: str | PathLike[str] = 'papers.db') -> None:
+    """Print a compact corpus progress summary.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database to summarize.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
+    with connect(db_path) as conn:
+        papers = paper_rows(conn)
     print('\nPaperScraper Progress Summary')
     print('---------------------------')
-    total = str(len(papers_df))
-    print(f'Total: {total}')
-    status_counts = {'Retrieved':0, 'Scraped':0, 'Stored':0}
-    for status in status_counts.keys():
-        try:
-            count = str(papers_df['status'].value_counts()[status.lower()])
-        except KeyError:
-            count = 0
-        finally:
-            status_counts[status] = count
-            print(f'{status}: {status_counts[status]}')
+    print(f'Total papers: {len(papers)}')
+    rows = [
+        ('Metadata retrieved', 'metadata_status', 'retrieved'),
+        ('Text downloaded', 'text_download_status', 'succeeded'),
+        ('PDFs downloaded', 'pdf_download_status', 'succeeded'),
+        ('Text scraped', 'text_scrape_status', 'succeeded'),
+        ('Images scraped', 'image_scrape_status', 'succeeded'),
+        ('Stored', 'store_status', 'stored'),
+        ('Failed text downloads', 'text_download_status', 'failed'),
+        ('Failed PDF downloads', 'pdf_download_status', 'failed'),
+        ('Failed text scrapes', 'text_scrape_status', 'failed'),
+        ('Failed image scrapes', 'image_scrape_status', 'failed'),
+    ]
+    for label, column, value in rows:
+        count = sum(1 for paper in papers if paper.get(column) == value)
+        print(f'{label}: {count}')
+    text_materials = sum(int(paper.get('num_text_materials') or 0) for paper in papers)
+    image_materials = sum(int(paper.get('num_image_materials') or 0) for paper in papers)
+    print(f'Text material rows extracted: {text_materials}')
+    print(f'Image material rows extracted: {image_materials}')
     print('---------------------------\n')
-
-def sort(path: str='papers.csv', field: str='status', ascending: bool=True):
-    papers_df = pd.read_csv(path, index_col=0)
-    papers_df.sort_values(by=field, ascending=ascending, inplace=True)
-    papers_df.reset_index(drop=True, inplace=True)
-    papers_df.to_csv(path)
-
-def shuffle(path: str='papers.csv'):
-    papers_df = pd.read_csv(path, index_col=0)
-    papers_df = papers_df.sample(frac=1).reset_index(drop=True)
-    papers_df.to_csv(path)

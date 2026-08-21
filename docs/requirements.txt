@@ -1,0 +1,8 @@
+# Keep this list aligned with the ``docs`` optional dependency in pyproject.toml.
+# Read the Docs installs the package itself with --no-deps so API generation
+# does not pull accelerator libraries that are never used by a Sphinx build.
+myst-nb>=1.2,<2
+pydata-sphinx-theme>=0.16,<0.21
+sphinx>=8,<10
+sphinx-click>=6,<7
+sphinxcontrib-mermaid>=1,<2
