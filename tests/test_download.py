@@ -340,17 +340,83 @@ def test_abstract_helpers_clean_provider_text_and_try_sources(monkeypatch: pytes
     assert download._abstract_from_mapping({'outer': {'dc:description': '<p>Nested abstract</p>'}}) == 'Nested abstract'
 
     calls = []
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda paper: calls.append('openalex') or (True, 'openalex', 'OpenAlex abstract'))
     monkeypatch.setattr(download, '_download_core_abstract', lambda paper: calls.append('core') or (True, 'core', 'CORE abstract'))
     monkeypatch.setattr(download, '_download_elsevier_abstract',
                         lambda paper: calls.append('elsevier') or (True, 'elsevier', 'Elsevier abstract'))
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
 
     assert download._download_abstract({'core_id': '123'}) == (True, 'core', 'CORE abstract')
-    assert download._download_abstract({'doi': '10.1234/example'}) == (True, 'elsevier', 'Elsevier abstract')
+    assert download._download_abstract({'doi': '10.1234/example'}) == (
+        True, 'openalex', 'OpenAlex abstract'
+    )
+
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda paper: calls.append('openalex-miss') or (False, 'missing', ''))
+    assert download._download_abstract({'doi': '10.1234/example', 'core_id': '456'}) == (
+        True, 'core', 'CORE abstract'
+    )
+
+    monkeypatch.setattr(download, '_download_core_abstract',
+                        lambda paper: calls.append('core-miss') or (False, 'missing', ''))
+    assert download._download_abstract({'doi': '10.1234/example', 'core_id': '456'}) == (
+        True, 'elsevier', 'Elsevier abstract'
+    )
 
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     assert download._download_abstract({'paper_id': 'missing'}) == (False, 'no abstract source available', '')
-    assert calls == ['core', 'elsevier']
+    assert calls == ['core', 'openalex', 'openalex-miss', 'core',
+                     'openalex-miss', 'core-miss', 'elsevier']
+
+
+def test_download_openalex_abstract_reconstructs_inverted_index(monkeypatch):
+    """Fetch and reconstruct OpenAlex abstracts using DOI or work identifiers."""
+    assert download._download_openalex_abstract({'paper_id': 'missing'}) == (
+        False, 'missing DOI or OpenAlex ID', ''
+    )
+
+    monkeypatch.setattr(
+        download.openalex,
+        'get_work',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('rate limited')),
+    )
+    assert download._download_openalex_abstract({'doi': '10.1234/example'}) == (
+        False, 'rate limited', ''
+    )
+
+    calls = []
+
+    def fake_get_work(identifier, api_key=None):
+        calls.append((identifier, api_key))
+        return {
+            'abstract_inverted_index': {
+                'conductivity': [2],
+                'Ionic': [0],
+                'improves': [1],
+            },
+        }
+
+    monkeypatch.setattr(download.openalex, 'configured_api_key', lambda: 'openalex-key')
+    monkeypatch.setattr(download.openalex, 'get_work', fake_get_work)
+    assert download._download_openalex_abstract({'paper_id': 'openalex:W123'}) == (
+        True, 'openalex', 'Ionic improves conductivity'
+    )
+    assert calls == [('W123', 'openalex-key')]
+
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: None)
+    assert download._download_openalex_abstract({'doi': '10.9999/missing'}) == (
+        False, 'no OpenAlex work found for doi:10.9999/missing', ''
+    )
+
+    monkeypatch.setattr(
+        download.openalex,
+        'get_work',
+        lambda *_, **__: {'id': 'https://openalex.org/W456'},
+    )
+    assert download._download_openalex_abstract({'doi': '10.1234/no-abstract'}) == (
+        False, 'no OpenAlex abstract found', ''
+    )
 
 
 def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -710,6 +776,149 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
     assert papers[0]['abstract_source'] == 'search'
     assert abstract_asset['content'] == b'search abstract text'
     assert 'Download complete: 0 text files, 0 PDFs, 0 abstracts downloaded.' in output
+    assert 'Skipped existing corpus assets: 0 text files, 0 PDFs, 1 abstracts.' in output
+
+
+def test_download_papers_skips_every_requested_existing_content_type(tmp_path, monkeypatch, capsys):
+    """Do not call providers for abstract, text, or PDF assets already in the corpus."""
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    db_path = tmp_path / 'papers.db'
+    paper = {'paper_id': 'paper:complete', 'doi': '10.1234/complete'}
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(conn, paper, 'stored abstract', role='abstract', kind='text',
+                         mime_type='text/plain', source='search')
+        corpus.add_asset(conn, paper, 'stored text', role='text', kind='text',
+                         mime_type='text/plain', source='elsevier')
+        corpus.add_asset(conn, paper, b'%PDF stored', role='pdf', kind='pdf',
+                         mime_type='application/pdf', source='openalex')
+
+    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(
+        download,
+        '_download_abstract',
+        lambda *_: (_ for _ in ()).throw(AssertionError('abstract provider called')),
+    )
+    monkeypatch.setattr(
+        download,
+        '_download_text',
+        lambda *_: (_ for _ in ()).throw(AssertionError('text provider called')),
+    )
+    monkeypatch.setattr(
+        download,
+        '_download_pdf_from_sources',
+        lambda *_: (_ for _ in ()).throw(AssertionError('PDF provider called')),
+    )
+
+    download.download_papers(str(db_path), download_format='both')
+
+    paper = read_corpus(db_path)[0]
+    output = capsys.readouterr().out
+    assert paper['abstract_download_status'] == 'succeeded'
+    assert paper['text_download_status'] == 'succeeded'
+    assert paper['pdf_download_status'] == 'succeeded'
+    assert paper['abstract_source'] == 'search'
+    assert paper['text_source'] == 'elsevier'
+    assert paper['pdf_source'] == 'openalex'
+    assert 'Skipped existing corpus assets: 1 text files, 1 PDFs, 1 abstracts.' in output
+
+
+def test_download_papers_existing_text_needs_no_elsevier_key(tmp_path, monkeypatch):
+    """Allow a text-only rerun to skip stored text without provider configuration."""
+    db_path = tmp_path / 'papers.db'
+    paper = {'paper_id': 'paper:text', 'doi': '10.1234/text'}
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(conn, paper, 'stored text', role='text', kind='text',
+                         mime_type='text/plain', source='elsevier')
+
+    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    download.download_papers(
+        str(db_path), download_format='text', download_abstract=False
+    )
+
+    assert read_corpus(db_path)[0]['text_download_status'] == 'succeeded'
+
+
+def test_download_papers_force_redownloads_existing_content(tmp_path, monkeypatch, capsys):
+    """The force option refreshes every requested content role despite stored assets."""
+
+    class FakeTqdm:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def update(self, _):
+            return None
+
+    db_path = tmp_path / 'papers.db'
+    paper = {'paper_id': 'paper:refresh', 'doi': '10.1234/refresh'}
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(conn, paper, 'old abstract', role='abstract', kind='text',
+                         mime_type='text/plain', source='old')
+        corpus.add_asset(conn, paper, 'old text', role='text', kind='text',
+                         mime_type='text/plain', source='old')
+        corpus.add_asset(conn, paper, b'%PDF old', role='pdf', kind='pdf',
+                         mime_type='application/pdf', source='old')
+
+    calls = []
+
+    def fake_text(_paper, filepath):
+        calls.append('text')
+        with open(filepath, 'w', encoding='utf-8') as out_file:
+            out_file.write('new text')
+        return True
+
+    def fake_pdf(_paper, filepath, sources):
+        calls.append(('pdf', sources))
+        with open(filepath, 'wb') as out_file:
+            out_file.write(b'%PDF new')
+        return True, 'openalex', 'https://example.org/new.pdf'
+
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(
+        download,
+        '_download_abstract',
+        lambda *_: calls.append('abstract') or (True, 'openalex', 'new abstract'),
+    )
+    monkeypatch.setattr(download, '_download_text', fake_text)
+    monkeypatch.setattr(download, '_download_pdf_from_sources', fake_pdf)
+
+    download.download_papers(str(db_path), download_format='both', force=True)
+
+    with corpus.connect(db_path) as conn:
+        abstract_asset = corpus.get_asset(conn, 'paper:refresh', 'abstract')
+        text_asset = corpus.get_asset(conn, 'paper:refresh', 'text')
+        pdf_asset = corpus.get_asset(conn, 'paper:refresh', 'pdf')
+    output = capsys.readouterr().out
+    assert calls == ['abstract', 'text', ('pdf', ['openalex'])]
+    assert abstract_asset['content'] == b'new abstract'
+    assert text_asset['content'] == b'new text'
+    assert pdf_asset['content'] == b'%PDF new'
+    assert 'Download complete: 1 text files, 1 PDFs, 1 abstracts downloaded.' in output
+    assert 'Skipped existing corpus assets' not in output
 
 
 def test_retrieve_document_reports_failed_read(

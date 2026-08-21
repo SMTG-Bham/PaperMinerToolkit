@@ -137,14 +137,23 @@ def import_author(db_path: str,
               default=True,
               show_default=True,
               help='Download and store abstracts alongside requested paper assets.')
+@click.option('--force', is_flag=True, default=False,
+              help='Redownload requested assets even when that content type is already stored.')
 def download(
         db_path: str,
         download_format: str,
         sources: tuple[str, ...],
         download_abstract: bool,
+        force: bool,
 ) -> None:
     """Download text and/or PDFs for rows in the paper corpus."""
-    download_papers(db_path, download_format=download_format, sources=list(sources), download_abstract=download_abstract)
+    download_papers(
+        db_path,
+        download_format=download_format,
+        sources=list(sources),
+        download_abstract=download_abstract,
+        force=force,
+    )
 
 
 @click.command()

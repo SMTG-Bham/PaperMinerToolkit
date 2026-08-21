@@ -105,16 +105,17 @@ def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract: calls.update({
+        lambda path, download_format, sources, download_abstract, force: calls.update({
             'db_path': path,
             'download_format': download_format,
             'sources': sources,
             'download_abstract': download_abstract,
+            'force': force,
         }),
     )
 
     result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'pdf', '--source', 'core',
-                                               '--source', 'unpaywall', '--no-abstract'])
+                                               '--source', 'unpaywall', '--no-abstract', '--force'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -122,6 +123,7 @@ def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp
         'download_format': 'pdf',
         'sources': ['core', 'unpaywall'],
         'download_abstract': False,
+        'force': True,
     }
 
 
@@ -145,13 +147,17 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract: download_calls.update({'sources': sources}),
+        lambda path, download_format, sources, download_abstract, force: download_calls.update({
+            'sources': sources,
+            'force': force,
+        }),
     )
 
     result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'openalex'])
 
     assert result.exit_code == 0
     assert download_calls['sources'] == ['openalex']
+    assert download_calls['force'] is False
 
 
 def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:

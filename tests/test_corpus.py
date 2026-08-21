@@ -58,11 +58,17 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
             original_filename='demo_2.txt',
         )
         asset = corpus.get_asset(conn, 'demo:1', 'text')
+        asset_metadata = corpus.get_asset_metadata(conn, 'demo:1', 'text')
+        missing_metadata = corpus.get_asset_metadata(conn, 'demo:1', 'pdf')
         stats = corpus.corpus_stats(conn)
 
     assert first_blob == second_blob
     assert asset['content'] == text.encode('utf-8')
     assert asset['mime_type'] == 'text/plain'
+    assert asset_metadata['blob_id'] == first_blob
+    assert asset_metadata['role'] == 'text'
+    assert 'content' not in asset_metadata
+    assert missing_metadata is None
     assert stats['papers'] == 2
     assert stats['papers_with_text'] == 2
     assert stats['papers_with_pdf'] == 0

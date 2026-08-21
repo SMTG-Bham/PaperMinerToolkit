@@ -854,7 +854,7 @@ def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | No
         JOIN papers AS p ON p.paper_id = a.paper_id
         JOIN blobs AS b ON b.blob_id = a.blob_id
         WHERE a.paper_id = ? AND a.role = ?
-        ORDER BY a.created_at DESC
+        ORDER BY a.created_at DESC, a.rowid DESC
         LIMIT 1
         """,
         (paper_id, role),
@@ -864,6 +864,45 @@ def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | No
     data = dict(row)
     data['content'] = _decompress(data['content'], data['compression'])
     return data
+
+
+def get_asset_metadata(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    role: str,
+) -> _Asset | None:
+    """Load metadata for the newest linked asset without its content.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    role : str
+        Asset role to retrieve.
+
+    Returns
+    -------
+    _Asset or None
+        Asset metadata, or ``None`` when the role has not been stored.
+    """
+    row = conn.execute(
+        """
+        SELECT
+            p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            b.blob_id, b.kind, b.mime_type, b.original_size, b.stored_size,
+            a.created_at
+        FROM paper_assets AS a
+        JOIN papers AS p ON p.paper_id = a.paper_id
+        JOIN blobs AS b ON b.blob_id = a.blob_id
+        WHERE a.paper_id = ? AND a.role = ?
+        ORDER BY a.created_at DESC, a.rowid DESC
+        LIMIT 1
+        """,
+        (paper_id, role),
+    ).fetchone()
+    return dict(row) if row is not None else None
 
 
 def latest_assets(

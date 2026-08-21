@@ -23,7 +23,8 @@ from typing import Any, TypeAlias
 from urllib.parse import quote
 
 from paperscraper import elsevier, openalex
-from paperscraper.corpus import PIPELINE_COLUMNS, add_asset, connect, get_asset, paper_rows, upsert_paper
+from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
+                                get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
@@ -367,18 +368,24 @@ def _download_core_pdf(
     return False, last_error
 
 
+def _openalex_identifier(paper: Mapping[str, Any]) -> str | None:
+    """Return the DOI or OpenAlex work identifier usable for a work lookup."""
+    doi = paper.get('doi')
+    paper_id = str(paper.get('paper_id') or '')
+    if _has_value(doi):
+        return f'doi:{str(doi).strip()}'
+    if paper_id.startswith('openalex:'):
+        return paper_id.split(':', 1)[1]
+    return None
+
+
 def _download_openalex_pdf(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
 ) -> tuple[bool, str]:
     """Use OpenAlex metadata to locate and download an open-access PDF."""
-    doi = paper.get('doi')
-    paper_id = str(paper.get('paper_id') or '')
-    if _has_value(doi):
-        identifier = f'doi:{str(doi).strip()}'
-    elif paper_id.startswith('openalex:'):
-        identifier = paper_id.split(':', 1)[1]
-    else:
+    identifier = _openalex_identifier(paper)
+    if identifier is None:
         return False, 'missing DOI'
     try:
         work = openalex.get_work(identifier, api_key=openalex.configured_api_key())
@@ -393,6 +400,27 @@ def _download_openalex_pdf(
             return True, url
         last_error = error
     return False, last_error
+
+
+def _download_openalex_abstract(
+    paper: Mapping[str, Any],
+) -> tuple[bool, str, str]:
+    """Fetch and reconstruct an abstract from OpenAlex work metadata."""
+    identifier = _openalex_identifier(paper)
+    if identifier is None:
+        return False, 'missing DOI or OpenAlex ID', ''
+    try:
+        work = openalex.get_work(identifier, api_key=openalex.configured_api_key())
+    except RuntimeError as error:
+        return False, str(error), ''
+    if not work:
+        return False, f'no OpenAlex work found for {identifier}', ''
+    abstract = _clean_abstract(
+        openalex.reconstruct_abstract(work.get('abstract_inverted_index'))
+    )
+    if abstract:
+        return True, 'openalex', abstract
+    return False, 'no OpenAlex abstract found', ''
 
 
 def _clean_abstract(value: object) -> str:
@@ -498,6 +526,11 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
 def _download_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
     """Fetch abstract text from available metadata providers."""
     errors = []
+    if _openalex_identifier(paper) is not None:
+        ok, source, abstract = _download_openalex_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'openalex: {source}')
     if _has_value(paper.get('core_id')):
         ok, source, abstract = _download_core_abstract(paper)
         if ok:
@@ -596,7 +629,8 @@ def _store_downloaded_asset(
 def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     download_format: str = 'text',
                     sources: Iterable[str] | None = None,
-                    download_abstract: bool = True) -> None:
+                    download_abstract: bool = True,
+                    force: bool = False) -> None:
     """Download paper assets and update a corpus in place.
 
     Parameters
@@ -609,6 +643,8 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         Ordered PDF providers to try. ``all`` expands to configured providers.
     download_abstract : bool, default=True
         Whether to retrieve and store abstracts.
+    force : bool, default=False
+        Redownload requested asset types even when they are already stored.
 
     Returns
     -------
@@ -626,14 +662,35 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     sources = _configured_sources(sources or ['all'])
     elsevier_text_available = _elsevier_configured()
-    if download_format == 'text' and not elsevier_text_available:
-        raise ValueError('Elsevier text download requires an Elsevier API key. Run ps_elsevier_key first.')
-    if download_format in {'pdf', 'both'} and not sources:
-        raise ValueError(
-            'No PDF download sources are configured. Set an Unpaywall email, CORE API key, or Elsevier API key.')
     with connect(db_path) as conn:
         papers = paper_rows(conn)
-        summary = {'texts': 0, 'pdfs': 0, 'abstracts': 0}
+        if download_format == 'text' and not elsevier_text_available:
+            missing_text = force or any(
+                get_asset_metadata(conn, paper['paper_id'], 'text') is None
+                for paper in papers
+            )
+            if missing_text:
+                raise ValueError(
+                    'Elsevier text download requires an Elsevier API key. Run ps_elsevier_key first.'
+                )
+        if download_format in {'pdf', 'both'} and not sources:
+            missing_pdf = force or any(
+                get_asset_metadata(conn, paper['paper_id'], 'pdf') is None
+                for paper in papers
+            )
+            if missing_pdf:
+                raise ValueError(
+                    'No PDF download sources are configured. Set an Unpaywall email, '
+                    'CORE API key, or Elsevier API key.'
+                )
+        summary = {
+            'texts': 0,
+            'pdfs': 0,
+            'abstracts': 0,
+            'texts_skipped': 0,
+            'pdfs_skipped': 0,
+            'abstracts_skipped': 0,
+        }
         with tempfile.TemporaryDirectory(prefix='paperscraper-download-') as download_dir:
             with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
                 for paper in papers:
@@ -643,7 +700,8 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                                                     download_format,
                                                     sources,
                                                     elsevier_text_available,
-                                                    download_abstract=download_abstract)
+                                                    download_abstract=download_abstract,
+                                                    force=force)
                     for key, value in paper_summary.items():
                         summary[key] += value
                     pbar.update(1)
@@ -651,6 +709,13 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         f"Download complete: {summary['texts']} text files, "
         f"{summary['pdfs']} PDFs, {summary['abstracts']} abstracts downloaded."
     )
+    skipped = summary['texts_skipped'] + summary['pdfs_skipped'] + summary['abstracts_skipped']
+    if skipped:
+        print(
+            f"Skipped existing corpus assets: {summary['texts_skipped']} text files, "
+            f"{summary['pdfs_skipped']} PDFs, {summary['abstracts_skipped']} abstracts. "
+            "Use --force to redownload them."
+        )
 
 
 def _download_paper(
@@ -661,39 +726,60 @@ def _download_paper(
     sources: Iterable[str],
     elsevier_text_available: bool,
     download_abstract: bool = True,
+    force: bool = False,
 ) -> dict[str, int]:
     """Download requested assets for one corpus paper row."""
     filename = _safe_filename(paper)
-    summary = {'texts': 0, 'pdfs': 0, 'abstracts': 0}
+    summary = {
+        'texts': 0,
+        'pdfs': 0,
+        'abstracts': 0,
+        'texts_skipped': 0,
+        'pdfs_skipped': 0,
+        'abstracts_skipped': 0,
+    }
+    existing_assets = {
+        role: get_asset_metadata(conn, paper.get('paper_id'), role)
+        for role in ['abstract', 'text', 'pdf']
+    }
+    text_requested = download_format in {'text', 'both'}
+    pdf_requested = download_format in {'pdf', 'both'}
     text_attempt_needed = (
-        download_format in {'text', 'both'}
+        text_requested
         and elsevier_text_available
         and _should_try_elsevier_text(paper)
+        and (force or existing_assets['text'] is None)
     )
-    pdf_attempt_needed = download_format in {'pdf', 'both'}
+    pdf_attempt_needed = pdf_requested and (force or existing_assets['pdf'] is None)
     pdf_succeeded_from_oa = False
 
     if download_abstract:
-        abstract_filepath = os.path.join(download_dir, f'{filename}-abstract.txt')
-        try:
-            existing_abstract = get_asset(conn, paper.get('paper_id'), 'abstract')
-            if existing_abstract:
-                paper['abstract_source'] = existing_abstract.get('source') or paper.get('abstract_source')
-                _set_status(paper, 'abstract_download_status', 'succeeded')
-            else:
+        existing_abstract = existing_assets['abstract']
+        if existing_abstract is not None and not force:
+            paper['abstract_source'] = existing_abstract.get('source') or paper.get('abstract_source')
+            _set_status(paper, 'abstract_download_status', 'succeeded')
+            summary['abstracts_skipped'] += 1
+        else:
+            abstract_filepath = os.path.join(download_dir, f'{filename}-abstract.txt')
+            try:
                 ok, source_or_error, abstract = _download_abstract(paper)
                 if not ok:
                     _set_status(paper, 'abstract_download_status', 'failed', source_or_error)
                     abstract = ''
-            if not existing_abstract and abstract:
-                with open(abstract_filepath, 'w', encoding='utf-8') as out_file:
-                    out_file.write(abstract)
-                paper['abstract_source'] = source_or_error
-                _set_status(paper, 'abstract_download_status', 'succeeded')
-                _store_downloaded_asset(conn, paper, abstract_filepath, role='abstract', source=source_or_error)
-                summary['abstracts'] += 1
-        except Exception as e:
-            _set_status(paper, 'abstract_download_status', 'failed', str(e))
+                if abstract:
+                    with open(abstract_filepath, 'w', encoding='utf-8') as out_file:
+                        out_file.write(abstract)
+                    paper['abstract_source'] = source_or_error
+                    _set_status(paper, 'abstract_download_status', 'succeeded')
+                    _store_downloaded_asset(conn, paper, abstract_filepath, role='abstract', source=source_or_error)
+                    summary['abstracts'] += 1
+            except Exception as e:
+                _set_status(paper, 'abstract_download_status', 'failed', str(e))
+
+    if text_requested and existing_assets['text'] is not None and not force:
+        paper['text_source'] = existing_assets['text'].get('source') or paper.get('text_source')
+        _set_status(paper, 'text_download_status', 'succeeded')
+        summary['texts_skipped'] += 1
 
     if text_attempt_needed:
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
@@ -708,6 +794,11 @@ def _download_paper(
                 _set_status(paper, 'text_download_status', 'failed', 'Elsevier text download failed')
         except Exception as e:
             _set_status(paper, 'text_download_status', 'failed', str(e))
+
+    if pdf_requested and existing_assets['pdf'] is not None and not force:
+        paper['pdf_source'] = existing_assets['pdf'].get('source') or paper.get('pdf_source')
+        _set_status(paper, 'pdf_download_status', 'succeeded')
+        summary['pdfs_skipped'] += 1
 
     if pdf_attempt_needed:
         pdf_filepath = os.path.join(download_dir, f'{filename}.pdf')
@@ -729,7 +820,9 @@ def _download_paper(
 
     if (
         pdf_succeeded_from_oa
+        and download_format == 'pdf'
         and not text_attempt_needed
+        and existing_assets['text'] is None
         and elsevier_text_available
         and _should_try_elsevier_text(paper)
     ):
