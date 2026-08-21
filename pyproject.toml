@@ -48,6 +48,13 @@ test = [
   "pytest-cov",
   "ruff",
 ]
+docs = [
+  "myst-nb>=1.2,<2",
+  "pydata-sphinx-theme>=0.16,<0.21",
+  "sphinx>=8,<10",
+  "sphinx-click>=6,<7",
+  "sphinxcontrib-mermaid>=1,<2",
+]
 
 [project.urls]
 Homepage = "https://github.com/SMTG-Bham/PaperScraper"

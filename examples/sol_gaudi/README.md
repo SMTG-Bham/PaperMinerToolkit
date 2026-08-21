@@ -1,7 +1,8 @@
 # Running on ASU Sol's Intel Gaudi nodes
 
 This guide gets PaperScraper running against a local vLLM server on Sol's Gaudi 2
-accelerators. It replaces [`examples/qwen_vllm_workflow.ipynb`](../qwen_vllm_workflow.ipynb),
+accelerators. It replaces the general
+[`qwen_vllm_workflow.ipynb`](../../docs/examples/qwen_vllm_workflow.ipynb),
 which assumes a CUDA workstation.
 
 The worked example is biodegradable polymers: the scripts default to the
