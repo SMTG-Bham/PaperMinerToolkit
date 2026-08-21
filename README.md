@@ -1,7 +1,7 @@
 # PaperScraper
 
 [![Tests](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml/badge.svg?branch=dev)](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml)
-[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperScraper/branch/dev/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperScraper)
+[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperScraper/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperScraper)
 
 <p align="center">
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
