@@ -721,6 +721,41 @@ def test_download_papers_downloads_abstract_by_default(
     assert 'Download complete: 0 text files, 0 PDFs, 1 abstracts downloaded.' in output
 
 
+def test_download_papers_supports_abstract_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Abstract-only downloads must not attempt text or PDF retrieval."""
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'paper:abstract-only'}])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(
+        download,
+        '_download_abstract',
+        lambda paper: (True, 'openalex', 'Only the abstract should be downloaded.'),
+    )
+    monkeypatch.setattr(
+        download,
+        '_download_text',
+        lambda *args, **kwargs: pytest.fail('text download was attempted'),
+    )
+    monkeypatch.setattr(
+        download,
+        '_download_pdf_from_sources',
+        lambda *args, **kwargs: pytest.fail('PDF download was attempted'),
+    )
+
+    download.download_papers(str(db_path), download_format='abstract')
+
+    with corpus.connect(db_path) as conn:
+        abstract_asset = corpus.get_asset(conn, 'paper:abstract-only', 'abstract')
+    assert abstract_asset['content'] == b'Only the abstract should be downloaded.'
+    output = capsys.readouterr().out
+    assert 'Download complete: 0 text files, 0 PDFs, 1 abstracts downloaded.' in output
+
+
 def test_download_papers_skips_abstract_download_when_asset_already_exists(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

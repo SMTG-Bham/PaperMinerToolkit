@@ -27,7 +27,7 @@ from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
-DOWNLOAD_FORMATS = {'text', 'pdf', 'both'}
+DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex'}
 _Paper: TypeAlias = dict[str, Any]
 

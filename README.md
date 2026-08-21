@@ -95,13 +95,15 @@ Inspect the review CSV before downloading. Crossref supplies metadata and DOIs r
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.
 
+`ps_download papers.db --format abstract`
+
 `ps_download papers.db --format text`
 
 `ps_download papers.db --format pdf`
 
 `ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always, drawing on `OPENALEX_API_KEY` when set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text. Abstract downloads try OpenAlex first, reconstructing its inverted-index representation, then fall back to CORE and Elsevier.
+Use `--format abstract` to populate abstracts without attempting full-text or PDF downloads. PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always, drawing on `OPENALEX_API_KEY` when set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text. Abstract downloads try OpenAlex first, reconstructing its inverted-index representation, then fall back to CORE and Elsevier.
 
 PaperScraper checks the corpus asset records separately for abstracts, full text, and PDFs. It skips any requested content type that is already stored, while continuing to download content types that are missing. Use `--force` to refresh all requested types, including abstracts when abstract downloading is enabled:
 

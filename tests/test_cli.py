@@ -126,6 +126,12 @@ def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp
         'force': True,
     }
 
+    result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'abstract'])
+
+    assert result.exit_code == 0
+    assert calls['download_format'] == 'abstract'
+    assert calls['download_abstract'] is True
+
 
 def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Accept OpenAlex as a search and download source."""

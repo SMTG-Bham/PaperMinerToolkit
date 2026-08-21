@@ -123,7 +123,7 @@ def import_author(db_path: str,
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
-              type=click.Choice(['text', 'pdf', 'both']),
+              type=click.Choice(['abstract', 'text', 'pdf', 'both']),
               default='both',
               show_default=True)
 @click.option('--source', 'sources',
@@ -146,7 +146,7 @@ def download(
         download_abstract: bool,
         force: bool,
 ) -> None:
-    """Download text and/or PDFs for rows in the paper corpus."""
+    """Download abstracts, text, and/or PDFs for rows in the paper corpus."""
     download_papers(
         db_path,
         download_format=download_format,
