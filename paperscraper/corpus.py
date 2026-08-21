@@ -5,18 +5,22 @@ paper metadata, pipeline state, deduplicated text/PDF blobs, and paper-to-blob
 links in SQLite without including the extracted materials table.
 """
 
+from __future__ import annotations
+
 import gzip
 import hashlib
 import json
 import math
 import re
 import sqlite3
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -49,28 +53,71 @@ PIPELINE_COLUMNS = {
     'num_text_materials': 0,
     'num_abstract_materials': 0,
     'num_image_materials': 0,
+    'num_text_chunks': None,
+    'num_abstract_chunks': None,
     'last_error': '',
 }
 PAPER_FIELDS = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
+_Paper: TypeAlias = dict[str, Any]
+_PaperInput: TypeAlias = Mapping[str, Any]
+_BlobContent: TypeAlias = str | bytes | Path | Iterable[int]
+_Asset: TypeAlias = dict[str, Any]
 
 
-def utc_now():
-    """Return the current UTC timestamp in ISO-8601 format."""
+def utc_now() -> str:
+    """Return the current UTC timestamp.
+
+    Returns
+    -------
+    str
+        ISO-8601 timestamp with second precision.
+    """
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def connect(db_path: str | Path):
-    """Open a SQLite corpus database and initialize its schema."""
+def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
+    """Open and initialize a corpus database.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        SQLite database path.
+
+    Returns
+    -------
+    sqlite3.Connection
+        Configured connection with dictionary-like rows.
+
+    Raises
+    ------
+    RuntimeError
+        If the database schema is newer than this package supports.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     init_corpus(conn)
     return conn
 
 
-def init_corpus(conn):
-    """Create corpus tables and indexes when they do not already exist."""
+def init_corpus(conn: sqlite3.Connection) -> None:
+    """Create or migrate the corpus schema.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection to initialize.
+
+    Raises
+    ------
+    RuntimeError
+        If the stored schema version is newer than the supported version.
+    """
     conn.execute('PRAGMA foreign_keys = ON')
-    conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
+    current_version = conn.execute('PRAGMA user_version').fetchone()[0]
+    if current_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f'Corpus schema version {current_version} is newer than supported version {SCHEMA_VERSION}.'
+        )
     paper_columns = ',\n            '.join(
         f'{column} {_paper_column_type(column)}' for column in PAPER_FIELDS if column != 'paper_id'
     )
@@ -111,20 +158,152 @@ def init_corpus(conn):
         CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
         CREATE INDEX IF NOT EXISTS idx_blobs_sha256 ON blobs(sha256);
         CREATE INDEX IF NOT EXISTS idx_assets_paper_role ON paper_assets(paper_id, role);
+
+        CREATE TABLE IF NOT EXISTS corpus_filters (
+            filter_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            method TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            definition_json TEXT NOT NULL,
+            stack_position INTEGER NOT NULL,
+            join_operator TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (join_operator IS NULL OR join_operator IN ('and', 'or'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_filter_results (
+            filter_id INTEGER NOT NULL,
+            paper_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            unavailable_reason TEXT NOT NULL DEFAULT '',
+            evaluated_at TEXT NOT NULL,
+            PRIMARY KEY (filter_id, paper_id),
+            FOREIGN KEY (filter_id) REFERENCES corpus_filters(filter_id) ON DELETE CASCADE,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('included', 'excluded', 'unavailable'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_filter_state (
+            paper_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            expression TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('included', 'excluded', 'unavailable'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_corpus_filters_position
+            ON corpus_filters(stack_position);
+        CREATE INDEX IF NOT EXISTS idx_filter_results_status
+            ON paper_filter_results(filter_id, status);
+        CREATE INDEX IF NOT EXISTS idx_filter_state_status
+            ON paper_filter_state(status);
+
+        CREATE TABLE IF NOT EXISTS topic_models (
+            model_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            artifact_path TEXT NOT NULL,
+            artifact_version INTEGER NOT NULL,
+            config_json TEXT NOT NULL,
+            training_corpus_fingerprint TEXT NOT NULL,
+            prediction_corpus_fingerprint TEXT NOT NULL,
+            text_fields_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS topic_definitions (
+            model_id TEXT NOT NULL,
+            topic_id INTEGER NOT NULL,
+            topic_name TEXT NOT NULL DEFAULT '',
+            top_terms_json TEXT NOT NULL,
+            PRIMARY KEY (model_id, topic_id),
+            FOREIGN KEY (model_id) REFERENCES topic_models(model_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_topic_predictions (
+            model_id TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            dominant_topic_id INTEGER,
+            document_fingerprint TEXT NOT NULL,
+            predicted_at TEXT NOT NULL,
+            PRIMARY KEY (model_id, paper_id),
+            FOREIGN KEY (model_id) REFERENCES topic_models(model_id) ON DELETE CASCADE,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
+            CHECK (status IN ('predicted', 'no_vocabulary_terms'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_topic_scores (
+            model_id TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            topic_id INTEGER NOT NULL,
+            probability REAL NOT NULL,
+            PRIMARY KEY (model_id, paper_id, topic_id),
+            FOREIGN KEY (model_id, paper_id)
+                REFERENCES paper_topic_predictions(model_id, paper_id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id, topic_id)
+                REFERENCES topic_definitions(model_id, topic_id) ON DELETE CASCADE,
+            CHECK (probability >= 0.0 AND probability <= 1.0)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_topic_predictions_status
+            ON paper_topic_predictions(model_id, status);
+        CREATE INDEX IF NOT EXISTS idx_topic_scores_topic_probability
+            ON paper_topic_scores(model_id, topic_id, probability);
         """
     )
+    existing_columns = {
+        row['name'] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute('PRAGMA table_info(papers)').fetchall()
+    }
+    for column in ['num_text_chunks', 'num_abstract_chunks']:
+        if column not in existing_columns:
+            conn.execute(f'ALTER TABLE papers ADD COLUMN {column} INTEGER')
+    conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
     conn.commit()
 
 
-def _paper_column_type(column):
-    """Return the SQLite storage type for a paper metadata or state column."""
-    if column in {'num_images', 'num_text_materials', 'num_abstract_materials', 'num_image_materials'}:
+def _paper_column_type(column: str) -> str:
+    """Resolve the SQLite type for a paper column.
+
+    Parameters
+    ----------
+    column : str
+        Paper metadata or pipeline-state column name.
+
+    Returns
+    -------
+    str
+        SQLite type name.
+    """
+    if column in {
+        'num_images',
+        'num_text_materials',
+        'num_abstract_materials',
+        'num_image_materials',
+        'num_text_chunks',
+        'num_abstract_chunks',
+    }:
         return 'INTEGER'
     return 'TEXT'
 
 
-def _has_value(value) -> bool:
-    """Return whether a value contains meaningful non-empty content."""
+def _has_value(value: object) -> bool:
+    """Check whether a value contains meaningful content.
+
+    Parameters
+    ----------
+    value : object
+        Candidate scalar value.
+
+    Returns
+    -------
+    bool
+        ``True`` for non-empty, non-NaN values.
+    """
     if value is None:
         return False
     try:
@@ -135,8 +314,19 @@ def _has_value(value) -> bool:
     return str(value).strip() != ''
 
 
-def _clean_doi(value):
-    """Normalize DOI-like values for reliable duplicate matching."""
+def _clean_doi(value: object) -> str:
+    """Normalize a DOI-like value for matching.
+
+    Parameters
+    ----------
+    value : object
+        DOI, DOI URL, or prefixed DOI value.
+
+    Returns
+    -------
+    str
+        Lower-case bare DOI, or an empty string.
+    """
     if not _has_value(value):
         return ''
     doi = str(value).strip()
@@ -147,23 +337,58 @@ def _clean_doi(value):
     return doi.strip().rstrip('.').lower()
 
 
-def _title_key(value):
-    """Create a case-insensitive comparable key from a paper title."""
+def _title_key(value: object) -> str:
+    """Create a comparable paper-title key.
+
+    Parameters
+    ----------
+    value : object
+        Paper title value.
+
+    Returns
+    -------
+    str
+        Normalized lower-case title key.
+    """
     if not _has_value(value):
         return ''
     return re.sub(r'\W+', ' ', str(value).lower()).strip()
 
 
-def _year(value):
-    """Extract a four-digit year from a date-like value."""
+def _year(value: object) -> str:
+    """Extract a year from a date-like value.
+
+    Parameters
+    ----------
+    value : object
+        Date-like input value.
+
+    Returns
+    -------
+    str
+        First four-digit year, or an empty string.
+    """
     if not _has_value(value):
         return ''
     match = re.search(r'\d{4}', str(value))
     return match.group(0) if match else ''
 
 
-def _merge_sources(current, incoming):
-    """Combine semicolon-separated source names while preserving first-seen order."""
+def _merge_sources(current: object, incoming: object) -> str:
+    """Combine semicolon-separated source names.
+
+    Parameters
+    ----------
+    current : object
+        Existing source names.
+    incoming : object
+        New source names to merge.
+
+    Returns
+    -------
+    str
+        Deduplicated sources in first-seen order.
+    """
     values = []
     for value in [current, incoming]:
         if not _has_value(value):
@@ -172,8 +397,19 @@ def _merge_sources(current, incoming):
     return ';'.join(dict.fromkeys(values))
 
 
-def _fallback_paper_id(paper):
-    """Build a stable paper id when a provider does not supply one."""
+def _fallback_paper_id(paper: _PaperInput) -> str:
+    """Build a stable fallback paper identifier.
+
+    Parameters
+    ----------
+    paper : _PaperInput
+        Normalized paper metadata.
+
+    Returns
+    -------
+    str
+        DOI-, CORE-, or content-derived paper identifier.
+    """
     doi = _clean_doi(paper.get('doi'))
     if doi:
         return f'doi:{doi}'
@@ -184,8 +420,19 @@ def _fallback_paper_id(paper):
     return f'paper:{hashlib.sha1(seed.encode("utf-8")).hexdigest()}'
 
 
-def normalize_paper(paper: dict[str, Any]):
-    """Normalize one paper dictionary to the corpus paper schema."""
+def normalize_paper(paper: _PaperInput) -> _Paper:
+    """Normalize a paper mapping to the corpus schema.
+
+    Parameters
+    ----------
+    paper : _PaperInput
+        Provider or user-supplied paper metadata.
+
+    Returns
+    -------
+    _Paper
+        Complete normalized paper row with pipeline defaults.
+    """
     normalized = {column: '' for column in PAPER_COLUMNS}
     normalized.update(PIPELINE_COLUMNS)
     for column in PAPER_FIELDS:
@@ -197,8 +444,21 @@ def normalize_paper(paper: dict[str, Any]):
     return normalized
 
 
-def _merge_paper(existing, incoming):
-    """Merge one incoming normalized paper into an existing corpus paper row."""
+def _merge_paper(existing: _PaperInput, incoming: _PaperInput) -> _Paper:
+    """Merge incoming metadata into an existing paper row.
+
+    Parameters
+    ----------
+    existing : _PaperInput
+        Existing corpus paper row.
+    incoming : _PaperInput
+        Incoming paper metadata.
+
+    Returns
+    -------
+    _Paper
+        Merged paper row that preserves established values.
+    """
     merged = normalize_paper(existing)
     incoming = normalize_paper(incoming)
     merged['paper_id'] = existing['paper_id']
@@ -226,8 +486,21 @@ def _merge_paper(existing, incoming):
     return merged
 
 
-def _papers_match(existing, incoming):
-    """Return whether two paper rows describe the same publication."""
+def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
+    """Check whether two rows describe the same publication.
+
+    Parameters
+    ----------
+    existing : _PaperInput
+        Existing corpus paper row.
+    incoming : _PaperInput
+        Incoming paper metadata.
+
+    Returns
+    -------
+    bool
+        Whether stable identifiers or title and year match.
+    """
     existing_doi = _clean_doi(existing.get('doi'))
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
@@ -243,8 +516,21 @@ def _papers_match(existing, incoming):
                 and existing_year and incoming_year and existing_year == incoming_year)
 
 
-def _find_existing_paper(conn, paper):
-    """Return the first corpus paper row matching ``paper``, or ``None``."""
+def _find_existing_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
+    """Find the first corpus row matching a paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Paper metadata to match.
+
+    Returns
+    -------
+    _Paper or None
+        Matching corpus row, or ``None``.
+    """
     incoming = normalize_paper(paper)
     for existing in paper_rows(conn):
         if _papers_match(existing, incoming):
@@ -252,13 +538,37 @@ def _find_existing_paper(conn, paper):
     return None
 
 
-def find_paper(conn, paper):
-    """Return the first corpus paper matching ``paper``, or ``None``."""
+def find_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
+    """Find a corpus paper matching supplied metadata.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Paper metadata to match.
+
+    Returns
+    -------
+    _Paper or None
+        Matching corpus row, or ``None``.
+    """
     return _find_existing_paper(conn, paper)
 
 
-def _json_dumps(value):
-    """Serialize metadata dictionaries to deterministic JSON text."""
+def _json_dumps(value: Any) -> str:
+    """Serialize metadata as deterministic JSON text.
+
+    Parameters
+    ----------
+    value : object
+        Metadata mapping, existing JSON text, or empty value.
+
+    Returns
+    -------
+    str
+        Serialized JSON text.
+    """
     if value is None or value == '':
         return '{}'
     if isinstance(value, str):
@@ -266,8 +576,21 @@ def _json_dumps(value):
     return json.dumps(value, sort_keys=True)
 
 
-def upsert_paper(conn, paper: dict[str, Any]):
-    """Insert or update one paper metadata row."""
+def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput) -> str:
+    """Insert or update one paper row.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Paper metadata and optional pipeline state.
+
+    Returns
+    -------
+    str
+        Identifier of the inserted or updated paper.
+    """
     now = utc_now()
     metadata = paper.get('metadata') if 'metadata' in paper else paper.get('metadata_json')
     paper = normalize_paper(paper)
@@ -294,8 +617,21 @@ def upsert_paper(conn, paper: dict[str, Any]):
     return paper_id
 
 
-def upsert_papers(conn, papers):
-    """Merge paper dictionaries into the corpus and return added/updated counts."""
+def upsert_papers(conn: sqlite3.Connection, papers: Iterable[_PaperInput]) -> tuple[int, int]:
+    """Merge multiple papers into the corpus.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    papers : Iterable[_PaperInput]
+        Paper mappings to insert or merge.
+
+    Returns
+    -------
+    tuple[int, int]
+        Counts of added and updated papers.
+    """
     added = 0
     updated = 0
     for paper in papers:
@@ -310,16 +646,38 @@ def upsert_papers(conn, papers):
     return added, updated
 
 
-def paper_rows(conn):
-    """Return corpus paper rows as dictionaries ordered by insertion order."""
+def paper_rows(conn: sqlite3.Connection) -> list[_Paper]:
+    """Load corpus paper rows in insertion order.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    list[_Paper]
+        Paper rows in their stored representation.
+    """
     return [
         dict(row)
         for row in conn.execute('SELECT * FROM papers ORDER BY rowid').fetchall()
     ]
 
 
-def _prepare_content(content):
-    """Return byte content from text, bytes, or path-like inputs."""
+def _prepare_content(content: _BlobContent) -> bytes:
+    """Convert supported content inputs to bytes.
+
+    Parameters
+    ----------
+    content : str, bytes, pathlib.Path, or Iterable[int]
+        Text, raw bytes, file path, or byte-like iterable.
+
+    Returns
+    -------
+    bytes
+        Prepared binary content.
+    """
     if isinstance(content, bytes):
         return content
     if isinstance(content, str):
@@ -329,8 +687,26 @@ def _prepare_content(content):
     return bytes(content)
 
 
-def _compress(content, compression):
-    """Compress byte content with the requested corpus storage codec."""
+def _compress(content: bytes, compression: str) -> bytes:
+    """Compress content with a corpus storage codec.
+
+    Parameters
+    ----------
+    content : bytes
+        Raw content to compress.
+    compression : str
+        Compression codec name.
+
+    Returns
+    -------
+    bytes
+        Stored content bytes.
+
+    Raises
+    ------
+    ValueError
+        If the codec is unsupported.
+    """
     if compression not in SUPPORTED_COMPRESSIONS:
         raise ValueError(f'compression must be one of: {", ".join(sorted(SUPPORTED_COMPRESSIONS))}')
     if compression == 'gzip':
@@ -338,8 +714,26 @@ def _compress(content, compression):
     return content
 
 
-def _decompress(content, compression):
-    """Decompress corpus blob bytes according to their stored codec."""
+def _decompress(content: bytes, compression: str) -> bytes:
+    """Decompress stored corpus content.
+
+    Parameters
+    ----------
+    content : bytes
+        Stored content bytes.
+    compression : str
+        Compression codec name.
+
+    Returns
+    -------
+    bytes
+        Decompressed content.
+
+    Raises
+    ------
+    ValueError
+        If the codec is unsupported.
+    """
     if compression == 'gzip':
         return gzip.decompress(content)
     if compression == 'none':
@@ -347,12 +741,36 @@ def _decompress(content, compression):
     raise ValueError(f'Unsupported blob compression: {compression}')
 
 
-def store_blob(conn,
-               content,
+def store_blob(conn: sqlite3.Connection,
+               content: _BlobContent,
                kind: str,
                mime_type: str,
-               compression: str = 'gzip'):
-    """Store deduplicated blob content and return its blob id."""
+               compression: str = 'gzip') -> str:
+    """Store a deduplicated content blob.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    content : _BlobContent
+        Content accepted by :func:`_prepare_content`.
+    kind : str
+        Logical content kind, such as ``"text"`` or ``"pdf"``.
+    mime_type : str
+        MIME type of the uncompressed content.
+    compression : str, optional
+        Storage compression codec.
+
+    Returns
+    -------
+    str
+        Stable content-addressed blob identifier.
+
+    Raises
+    ------
+    ValueError
+        If the compression codec is unsupported.
+    """
     raw = _prepare_content(content)
     sha256 = hashlib.sha256(raw).hexdigest()
     existing = conn.execute('SELECT blob_id FROM blobs WHERE sha256 = ?', (sha256,)).fetchone()
@@ -384,13 +802,29 @@ def store_blob(conn,
     return blob_id
 
 
-def link_asset(conn,
+def link_asset(conn: sqlite3.Connection,
                paper_id: str,
                blob_id: str,
                role: str,
                source: str = '',
-               original_filename: str = ''):
-    """Link a stored blob to a paper as a text or PDF asset."""
+               original_filename: str = '') -> None:
+    """Link a stored blob to a paper asset role.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Identifier of the owning paper.
+    blob_id : str
+        Identifier of the stored content blob.
+    role : str
+        Asset role, such as ``"abstract"``, ``"text"``, or ``"pdf"``.
+    source : str, optional
+        Provider or acquisition source.
+    original_filename : str, optional
+        Original asset filename.
+    """
     conn.execute(
         """
         INSERT OR REPLACE INTO paper_assets (
@@ -403,24 +837,66 @@ def link_asset(conn,
     conn.commit()
 
 
-def add_asset(conn,
-              paper: dict[str, Any],
-              content,
+def add_asset(conn: sqlite3.Connection,
+              paper: _PaperInput,
+              content: _BlobContent,
               role: str,
               kind: str,
               mime_type: str,
               source: str = '',
               original_filename: str = '',
-              compression: str = 'gzip'):
-    """Upsert a paper, store one blob, link them, and return the blob id."""
+              compression: str = 'gzip') -> str:
+    """Store and link an asset for a paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Owning paper metadata.
+    content : _BlobContent
+        Asset content accepted by :func:`_prepare_content`.
+    role : str
+        Asset role within the paper.
+    kind : str
+        Logical content kind.
+    mime_type : str
+        MIME type of the uncompressed content.
+    source : str, optional
+        Provider or acquisition source.
+    original_filename : str, optional
+        Original asset filename.
+    compression : str, optional
+        Storage compression codec.
+
+    Returns
+    -------
+    str
+        Identifier of the linked content blob.
+    """
     paper_id = upsert_paper(conn, paper)
     blob_id = store_blob(conn, content, kind=kind, mime_type=mime_type, compression=compression)
     link_asset(conn, paper_id, blob_id, role=role, source=source, original_filename=original_filename)
     return blob_id
 
 
-def get_asset(conn, paper_id: str, role: str):
-    """Return the newest linked asset row and decompressed content for a paper role."""
+def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | None:
+    """Load the newest asset for a paper role.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    role : str
+        Asset role to retrieve.
+
+    Returns
+    -------
+    _Asset or None
+        Asset metadata with decompressed ``content``, or ``None``.
+    """
     row = conn.execute(
         """
         SELECT
@@ -431,7 +907,7 @@ def get_asset(conn, paper_id: str, role: str):
         JOIN papers AS p ON p.paper_id = a.paper_id
         JOIN blobs AS b ON b.blob_id = a.blob_id
         WHERE a.paper_id = ? AND a.role = ?
-        ORDER BY a.created_at DESC
+        ORDER BY a.created_at DESC, a.rowid DESC
         LIMIT 1
         """,
         (paper_id, role),
@@ -443,8 +919,63 @@ def get_asset(conn, paper_id: str, role: str):
     return data
 
 
-def latest_assets(conn, roles):
-    """Return the newest decompressed asset for each paper and requested role."""
+def get_asset_metadata(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    role: str,
+) -> _Asset | None:
+    """Load metadata for the newest linked asset without its content.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    role : str
+        Asset role to retrieve.
+
+    Returns
+    -------
+    _Asset or None
+        Asset metadata, or ``None`` when the role has not been stored.
+    """
+    row = conn.execute(
+        """
+        SELECT
+            p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            b.blob_id, b.kind, b.mime_type, b.original_size, b.stored_size,
+            a.created_at
+        FROM paper_assets AS a
+        JOIN papers AS p ON p.paper_id = a.paper_id
+        JOIN blobs AS b ON b.blob_id = a.blob_id
+        WHERE a.paper_id = ? AND a.role = ?
+        ORDER BY a.created_at DESC, a.rowid DESC
+        LIMIT 1
+        """,
+        (paper_id, role),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def latest_assets(
+    conn: sqlite3.Connection,
+    roles: Iterable[str],
+) -> dict[tuple[str, str], _Asset]:
+    """Load the newest requested assets in bulk.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    roles : Iterable[str]
+        Asset roles to retrieve.
+
+    Returns
+    -------
+    dict[tuple[str, str], _Asset]
+        ``(paper_id, role)`` keys mapped to decompressed asset rows.
+    """
     roles = tuple(dict.fromkeys(roles))
     if not roles:
         return {}
@@ -477,8 +1008,19 @@ def latest_assets(conn, roles):
     return assets
 
 
-def corpus_stats(conn):
-    """Return high-level paper, blob, and storage statistics for the corpus."""
+def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
+    """Calculate corpus storage statistics.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    dict[str, int or float]
+        Paper, asset, blob-size, and compression-savings statistics.
+    """
     paper_count = conn.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
     blob_count = conn.execute('SELECT COUNT(*) FROM blobs').fetchone()[0]
     asset_counts = {
@@ -489,6 +1031,8 @@ def corpus_stats(conn):
         for role in ['abstract', 'text', 'pdf']
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
+    chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
+    chunked_abstracts = conn.execute('SELECT COUNT(*) FROM papers WHERE num_abstract_chunks > 1').fetchone()[0]
     original_size, stored_size = sizes
     savings = 0 if original_size == 0 else 1 - (stored_size / original_size)
     return {
@@ -496,6 +1040,8 @@ def corpus_stats(conn):
         'papers_with_abstract': asset_counts['abstract'],
         'papers_with_text': asset_counts['text'],
         'papers_with_pdf': asset_counts['pdf'],
+        'papers_with_chunked_text': chunked_text,
+        'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,
         'original_size': original_size,
         'stored_size': stored_size,

@@ -4,11 +4,26 @@ These helpers back CLI commands for resetting pipeline status and printing a
 progress summary for the SQLite paper corpus.
 """
 
+from __future__ import annotations
+
+from os import PathLike
+
 from paperscraper.corpus import PIPELINE_COLUMNS, connect, paper_rows, upsert_paper
 
 
-def reset(db_path: str = 'papers.db'):
-    """Reset all pipeline columns in a corpus database to their initial statuses."""
+def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
+    """Reset all corpus pipeline columns.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database to reset.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
     with connect(db_path) as conn:
         for paper in paper_rows(conn):
             for column, default in PIPELINE_COLUMNS.items():
@@ -17,8 +32,19 @@ def reset(db_path: str = 'papers.db'):
             upsert_paper(conn, paper)
 
 
-def status(db_path: str = 'papers.db'):
-    """Print a compact progress summary for a corpus database."""
+def status(db_path: str | PathLike[str] = 'papers.db') -> None:
+    """Print a compact corpus progress summary.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database to summarize.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
     with connect(db_path) as conn:
         papers = paper_rows(conn)
     print('\nPaperScraper Progress Summary')

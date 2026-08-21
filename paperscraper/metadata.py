@@ -4,11 +4,16 @@ The helpers here read DOI values from raw text/PDFs, normalize them, and use
 Crossref to populate the public paper metadata fields stored in the corpus.
 """
 
+from __future__ import annotations
+
 import html
 import re
 import requests
 import unicodedata
 from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from os import PathLike
+from typing import Any, Literal
 from urllib.parse import quote, unquote
 
 from pypdf import PdfReader
@@ -52,8 +57,20 @@ UNICODE_PUNCTUATION = str.maketrans({
 })
 
 
-def clean_doi(value: str):
-    """Return a canonical DOI from a plain, labelled, or resolver URL value."""
+def clean_doi(value: object) -> str:
+    """Canonicalize a DOI presentation value.
+
+    Parameters
+    ----------
+    value : object
+        Plain DOI, labelled DOI, or DOI resolver URL.
+
+    Returns
+    -------
+    str
+        Case-folded DOI without presentation prefixes or trailing sentence
+        punctuation.
+    """
     doi = unicodedata.normalize('NFKC', html.unescape(str(value))).translate(UNICODE_PUNCTUATION)
     doi = doi.translate(INVISIBLE_CHARACTERS).strip()
 
@@ -78,8 +95,21 @@ def clean_doi(value: str):
     return doi.casefold()
 
 
-def normalize_metadata_text(value):
-    """Normalize metadata text by flattening HTML, Unicode punctuation, and super/subscripts."""
+def normalize_metadata_text(value: object) -> str:
+    """Normalize text from a metadata provider.
+
+    Parameters
+    ----------
+    value : object
+        Metadata value to convert to plain text. ``None`` represents missing
+        text.
+
+    Returns
+    -------
+    str
+        Whitespace-normalized text with HTML removed and Unicode punctuation
+        and super/subscripts flattened.
+    """
     if value is None:
         return ''
     text = html.unescape(str(value))
@@ -92,8 +122,20 @@ def normalize_metadata_text(value):
     return text.strip()
 
 
-def _normalize_punctuation_char(character):
-    """Return an ASCII approximation for remaining Unicode punctuation."""
+def _normalize_punctuation_char(character: str) -> str:
+    """Approximate a Unicode punctuation character in ASCII.
+
+    Parameters
+    ----------
+    character : str
+        Single character to normalize.
+
+    Returns
+    -------
+    str
+        ASCII approximation when available, an empty string for unsupported
+        punctuation, or the original non-punctuation character.
+    """
     if ord(character) < 128:
         return character
     category = unicodedata.category(character)
@@ -109,13 +151,36 @@ def _normalize_punctuation_char(character):
     return character
 
 
-def _is_article_doi(doi: str):
-    """Return whether a DOI candidate looks like an article DOI rather than journal metadata."""
+def _is_article_doi(doi: str) -> bool:
+    """Check whether a DOI candidate appears to identify an article.
+
+    Parameters
+    ----------
+    doi : str
+        DOI candidate.
+
+    Returns
+    -------
+    bool
+        ``True`` for a non-empty DOI that does not identify ISSN metadata.
+    """
     return bool(doi) and '(issn)' not in doi.lower()
 
 
-def _rank_doi_candidates(candidates):
-    """Return DOI candidates ranked by frequency while preserving first-seen order for ties."""
+def _rank_doi_candidates(candidates: Iterable[str]) -> list[str]:
+    """Rank canonical DOI candidates by frequency.
+
+    Parameters
+    ----------
+    candidates : Iterable[str]
+        DOI presentation values to clean and rank.
+
+    Returns
+    -------
+    list[str]
+        Unique article DOI candidates ordered by descending frequency, with
+        first appearance breaking ties.
+    """
     cleaned = []
     for candidate in candidates:
         doi = clean_doi(candidate)
@@ -128,8 +193,19 @@ def _rank_doi_candidates(candidates):
     return sorted(counts, key=lambda doi: (-counts[doi], first_seen[doi]))
 
 
-def extract_dois_from_text(text: str):
-    """Find DOI-like values in a block of text ranked by frequency."""
+def extract_dois_from_text(text: str) -> list[str]:
+    """Extract DOI candidates from text.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain DOI values and common PDF extraction artifacts.
+
+    Returns
+    -------
+    list[str]
+        Canonical DOI candidates ranked by frequency.
+    """
     normalized = unicodedata.normalize('NFKC', html.unescape(str(text or ''))).translate(UNICODE_PUNCTUATION)
     normalized = normalized.translate(INVISIBLE_CHARACTERS)
     # A soft hyphen marks a word-wrap rather than part of the identifier. PDF
@@ -142,16 +218,38 @@ def extract_dois_from_text(text: str):
     return _rank_doi_candidates(match.group(0) for match in DOI_PATTERN.finditer(normalized))
 
 
-def extract_doi_from_text(text: str):
-    """Find the most likely DOI-like value in a block of text."""
+def extract_doi_from_text(text: str) -> str | None:
+    """Extract the most likely DOI from text.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain a DOI.
+
+    Returns
+    -------
+    str or None
+        Highest-ranked canonical DOI, or ``None`` when no candidate exists.
+    """
     candidates = extract_dois_from_text(text)
     if not candidates:
         return None
     return candidates[0]
 
 
-def extract_dois_from_pdf_metadata(pdf_path: str):
-    """Extract DOI candidates from embedded PDF metadata fields when available."""
+def extract_dois_from_pdf_metadata(pdf_path: str | PathLike[str]) -> list[str]:
+    """Extract DOI candidates from embedded PDF metadata.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Path to the PDF file.
+
+    Returns
+    -------
+    list[str]
+        Unique DOI candidates in metadata field order.
+    """
     reader = PdfReader(pdf_path)
     metadata = reader.metadata or {}
     candidates = []
@@ -175,32 +273,78 @@ def extract_dois_from_pdf_metadata(pdf_path: str):
     return list(dict.fromkeys(candidates))
 
 
-def extract_doi_from_pdf_metadata(pdf_path: str):
-    """Extract the best DOI from embedded PDF metadata fields when available."""
+def extract_doi_from_pdf_metadata(pdf_path: str | PathLike[str]) -> str | None:
+    """Extract the best DOI from embedded PDF metadata.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Path to the PDF file.
+
+    Returns
+    -------
+    str or None
+        First metadata DOI candidate, or ``None`` when no candidate exists.
+    """
     candidates = extract_dois_from_pdf_metadata(pdf_path)
     if not candidates:
         return None
     return candidates[0]
 
 
-def doi_candidates_from_pdf(pdf_path: str):
-    """Return metadata-first DOI candidates, followed by ranked text candidates."""
+def doi_candidates_from_pdf(pdf_path: str | PathLike[str]) -> list[str]:
+    """Collect metadata-first DOI candidates from a PDF.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Path to the PDF file.
+
+    Returns
+    -------
+    list[str]
+        Unique metadata candidates followed by ranked page-text candidates.
+    """
     candidates = extract_dois_from_pdf_metadata(pdf_path)
     text_candidates = extract_dois_from_text(read_pdf_text(pdf_path))
     candidates.extend(candidate for candidate in text_candidates if candidate not in candidates)
     return candidates
 
 
-def extract_doi_from_pdf(pdf_path: str):
-    """Extract a DOI from PDF metadata first, then fall back to page text."""
+def extract_doi_from_pdf(pdf_path: str | PathLike[str]) -> str | None:
+    """Extract the most likely DOI from a PDF.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Path to the PDF file.
+
+    Returns
+    -------
+    str or None
+        First metadata or page-text candidate, or ``None`` when none exists.
+    """
     candidates = doi_candidates_from_pdf(pdf_path)
     if not candidates:
         return None
     return candidates[0]
 
 
-def _date_from_parts(parts):
-    """Format Crossref date-parts arrays as ISO-like date strings."""
+def _date_from_parts(parts: Sequence[Sequence[int]] | None) -> str:
+    """Format a Crossref ``date-parts`` value.
+
+    Parameters
+    ----------
+    parts : Sequence[Sequence[int]] or None
+        Crossref date components, with the first nested sequence representing
+        the date.
+
+    Returns
+    -------
+    str
+        Date formatted as ``YYYY``, ``YYYY-MM``, or ``YYYY-MM-DD``; an empty
+        string when no date is available.
+    """
     if not parts:
         return ''
     date = parts[0]
@@ -213,8 +357,20 @@ def _date_from_parts(parts):
     return f'{date[0]:04d}'
 
 
-def _published_date(message):
-    """Pick the best available publication date from a Crossref message."""
+def _published_date(message: Mapping[str, Any]) -> str:
+    """Select the best publication date from a Crossref message.
+
+    Parameters
+    ----------
+    message : Mapping[str, Any]
+        Crossref work message containing optional date fields.
+
+    Returns
+    -------
+    str
+        First available publication date in preference order, or an empty
+        string.
+    """
     for key in ['published-print', 'published-online', 'published', 'issued', 'created']:
         date = _date_from_parts(message.get(key, {}).get('date-parts'))
         if date:
@@ -222,8 +378,27 @@ def _published_date(message):
     return ''
 
 
-def get_crossref_metadata(doi: str, timeout: int = 30):
-    """Fetch normalized paper metadata for a DOI from Crossref."""
+def get_crossref_metadata(doi: str, timeout: int = 30) -> dict[str, str]:
+    """Fetch normalized paper metadata from Crossref.
+
+    Parameters
+    ----------
+    doi : str
+        DOI to look up.
+    timeout : int, default=30
+        HTTP request timeout in seconds.
+
+    Returns
+    -------
+    dict[str, str]
+        Normalized DOI, publication date, title, journal, type, and publisher
+        fields.
+
+    Raises
+    ------
+    requests.RequestException
+        If the Crossref request fails.
+    """
     url = f'https://api.crossref.org/works/{quote(doi, safe="")}'
     headers = {'User-Agent': 'PaperScraper/0.0.1 (https://github.com/SMTG-Bham/PaperScraper)'}
     response = requests.get(url, headers=headers, timeout=timeout)
@@ -239,8 +414,29 @@ def get_crossref_metadata(doi: str, timeout: int = 30):
     }
 
 
-def metadata_from_pdf(pdf_path: str, use_crossref: bool = True):
-    """Extract DOI metadata from a PDF and optionally enrich it with Crossref."""
+def metadata_from_pdf(
+    pdf_path: str | PathLike[str],
+    use_crossref: bool = True,
+) -> tuple[dict[str, str], Literal['imported', 'doi_found', 'enriched'], str]:
+    """Extract and optionally enrich DOI metadata from a PDF.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Path to the PDF file.
+    use_crossref : bool, default=True
+        Whether to validate candidates and fetch bibliographic metadata from
+        Crossref.
+
+    Returns
+    -------
+    metadata : dict[str, str]
+        Extracted metadata, empty when the PDF cannot be read or has no DOI.
+    status : {'imported', 'doi_found', 'enriched'}
+        Furthest successful metadata stage.
+    error : str
+        Human-readable failure details, or an empty string after success.
+    """
     try:
         doi_candidates = doi_candidates_from_pdf(pdf_path)
     except Exception as e:

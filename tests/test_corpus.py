@@ -5,15 +5,19 @@ compressed blobs, deduplicated content, paper asset links, and corpus storage
 statistics without touching the command-line workflow.
 """
 
+from __future__ import annotations
+
 import gzip
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import paperscraper.corpus as corpus
 
 
-def sample_paper(paper_id='demo:1'):
+def sample_paper(paper_id: str = 'demo:1') -> dict[str, Any]:
     """Return a minimal paper metadata dictionary for corpus tests."""
     return {
         'paper_id': paper_id,
@@ -27,21 +31,8 @@ def sample_paper(paper_id='demo:1'):
     }
 
 
-def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_path):
-    """
-    Test SQLite corpus storage for paper assets.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Stores two paper text assets with identical content.
-    3. Reads back one stored text asset and corpus statistics.
-
-    Asserts:
-        - Both paper rows are stored.
-        - Identical content is deduplicated into one blob.
-        - Stored gzip content is smaller than the original repeated text.
-        - Readback content is decompressed to the original bytes.
-    """
+def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_path: Path) -> None:
+    """Test SQLite corpus storage for paper assets."""
     db_path = tmp_path / 'corpus.db'
     text = 'Lithium solid electrolyte storage demo. ' * 50
 
@@ -67,33 +58,81 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
             original_filename='demo_2.txt',
         )
         asset = corpus.get_asset(conn, 'demo:1', 'text')
+        asset_metadata = corpus.get_asset_metadata(conn, 'demo:1', 'text')
+        missing_metadata = corpus.get_asset_metadata(conn, 'demo:1', 'pdf')
         stats = corpus.corpus_stats(conn)
 
     assert first_blob == second_blob
     assert asset['content'] == text.encode('utf-8')
     assert asset['mime_type'] == 'text/plain'
+    assert asset_metadata['blob_id'] == first_blob
+    assert asset_metadata['role'] == 'text'
+    assert 'content' not in asset_metadata
+    assert missing_metadata is None
     assert stats['papers'] == 2
     assert stats['papers_with_text'] == 2
     assert stats['papers_with_pdf'] == 0
     assert stats['papers_with_abstract'] == 0
+    assert stats['papers_with_chunked_text'] == 0
+    assert stats['papers_with_chunked_abstracts'] == 0
     assert stats['blobs'] == 1
     assert stats['stored_size'] < stats['original_size']
     assert stats['savings_fraction'] > 0
 
 
-def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
-    """
-    Test uncompressed blob storage and missing asset lookup.
+def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: Path) -> None:
+    """Add nullable chunk-count columns to an existing version-one corpus."""
+    db_path = tmp_path / 'legacy.db'
+    legacy_fields = [
+        field
+        for field in corpus.PAPER_FIELDS
+        if field not in {'num_text_chunks', 'num_abstract_chunks'}
+    ]
+    legacy_columns = ',\n'.join(
+        f'{field} {corpus._paper_column_type(field)}'
+        for field in legacy_fields
+        if field != 'paper_id'
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            f"""
+            PRAGMA user_version = 1;
+            CREATE TABLE papers (
+                paper_id TEXT PRIMARY KEY,
+                {legacy_columns},
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO papers (paper_id, title, metadata_json, created_at, updated_at)
+            VALUES ('legacy:1', 'Legacy paper', '{{}}', '2026-01-01', '2026-01-01');
+            """
+        )
 
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Stores a dummy PDF blob without compression.
-    3. Reads back the PDF asset and asks for a missing text asset.
+    with corpus.connect(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+        tables = {
+            row['name']
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
 
-    Asserts:
-        - Uncompressed blobs are read back unchanged.
-        - Missing paper-role assets return `None`.
-    """
+    assert version == 4
+    assert {'num_text_chunks', 'num_abstract_chunks'} <= columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['num_text_chunks'] is None
+    assert rows[0]['num_abstract_chunks'] is None
+    assert {
+        'corpus_filters', 'paper_filter_results', 'paper_filter_state',
+        'topic_models', 'topic_definitions', 'paper_topic_predictions',
+        'paper_topic_scores',
+    } <= tables
+
+
+def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path: Path) -> None:
+    """Test uncompressed blob storage and missing asset lookup."""
     pdf = b'%PDF-1.4\n% dummy pdf\n'
 
     with corpus.connect(tmp_path / 'corpus.db') as conn:
@@ -116,7 +155,7 @@ def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path):
     assert missing is None
 
 
-def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
+def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path) -> None:
     """Load the latest asset per paper and role without returning unrelated roles."""
     with corpus.connect(tmp_path / 'corpus.db') as conn:
         paper = sample_paper('demo:assets')
@@ -138,19 +177,8 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path):
     assert assets[('demo:assets', 'abstract')]['source'] == 'second'
 
 
-def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
-    """
-    Test corpus compression validation.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Attempts to store a blob with an unsupported compression codec.
-    3. Attempts to decompress bytes with an unsupported codec.
-
-    Asserts:
-        - Unknown storage compression codecs raise `ValueError`.
-        - Unknown decompression codecs raise `ValueError`.
-    """
+def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path: Path) -> None:
+    """Test corpus compression validation."""
     with corpus.connect(tmp_path / 'corpus.db') as conn:
         with pytest.raises(ValueError, match='compression must be one of'):
             corpus.store_blob(conn, b'data', kind='text', mime_type='text/plain', compression='brotli')
@@ -158,21 +186,8 @@ def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path):
         corpus._decompress(gzip.compress(b'data'), 'brotli')
 
 
-def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_path):
-    """
-    Test corpus helper conversion branches.
-
-    This function performs the following steps:
-    1. Serializes missing and pre-serialized metadata values.
-    2. Writes a temporary text file and prepares it as blob content.
-    3. Prepares byte values from an iterable of integer byte values.
-
-    Asserts:
-        - Missing metadata becomes an empty JSON object.
-        - Existing JSON text is passed through unchanged.
-        - Path inputs are read as bytes.
-        - Iterable byte values are converted to bytes.
-    """
+def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_path: Path) -> None:
+    """Test corpus helper conversion branches."""
     text_path = tmp_path / 'paper.txt'
     text_path.write_text('paper text')
 
@@ -182,23 +197,8 @@ def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_pa
     assert corpus._prepare_content([65, 66, 67]) == b'ABC'
 
 
-def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
-    """
-    Test corpus paper upserts and duplicate merging.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Inserts one paper with DOI, title, source, and metadata.
-    3. Inserts another paper with the same DOI and additional empty-field values.
-    4. Reloads the stored paper rows from the corpus.
-
-    Asserts:
-        - Duplicate DOI rows are merged into one corpus paper.
-        - Existing populated values are preserved during the merge.
-        - New empty-field values are copied from the incoming row.
-        - Source names are combined without duplication.
-        - Metadata JSON from a direct paper upsert is preserved.
-    """
+def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path: Path) -> None:
+    """Test corpus paper upserts and duplicate merging."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         paper_id = corpus.upsert_paper(conn, {
             'paper_id': 'elsevier:1',
@@ -227,21 +227,8 @@ def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path):
     assert rows[0]['metadata_json'] == '{"provider": "elsevier"}'
 
 
-def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path):
-    """
-    Test fallback paper IDs and title/year duplicate matching.
-
-    This function performs the following steps:
-    1. Creates a temporary SQLite corpus database.
-    2. Inserts a paper without provider IDs so the corpus creates a fallback ID.
-    3. Inserts a second paper with the same normalized title and publication year.
-    4. Reloads the corpus paper rows.
-
-    Asserts:
-        - Missing provider IDs are replaced with a stable fallback paper ID.
-        - Matching title/year rows update the existing paper rather than adding a duplicate.
-        - Integer pipeline count fields are coerced to integers.
-    """
+def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path: Path) -> None:
+    """Test fallback paper IDs and title/year duplicate matching."""
     with corpus.connect(tmp_path / 'papers.db') as conn:
         added, updated = corpus.upsert_papers(conn, [{
             'title': 'Lithium Solid Electrolyte',

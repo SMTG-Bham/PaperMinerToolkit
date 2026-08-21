@@ -5,26 +5,65 @@ converts units, appends accepted rows to the output file, and marks papers as
 stored once their scrape results have been persisted.
 """
 
+from __future__ import annotations
+
 import os
 import tempfile
+from collections.abc import Collection
+from os import PathLike
 from pathlib import Path
 
 import pandas as pd
 
 from paperscraper.corpus import connect, paper_rows, upsert_paper
 from paperscraper.extract import convert_units
+from paperscraper.models import ModelConfig
 from paperscraper.recipes import canonical_match, field_columns, load_recipe
 
 
-def _temporary_path(directory: Path, prefix: str, suffix: str):
-    """Create and close a unique temporary file in ``directory``."""
+def _temporary_path(directory: Path, prefix: str, suffix: str) -> str:
+    """Create and close a unique temporary file.
+
+    Parameters
+    ----------
+    directory : pathlib.Path
+        Directory in which to create the file.
+    prefix : str
+        Temporary filename prefix.
+    suffix : str
+        Temporary filename suffix.
+
+    Returns
+    -------
+    str
+        Path to the temporary file.
+
+    Raises
+    ------
+    OSError
+        If the temporary file cannot be created or its descriptor cannot be
+        closed.
+    """
     descriptor, path = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=suffix)
     os.close(descriptor)
     return path
 
 
-def _write_csv_atomically(data: pd.DataFrame, output_path: Path):
-    """Replace ``output_path`` only after a complete CSV has been written."""
+def _write_csv_atomically(data: pd.DataFrame, output_path: Path) -> None:
+    """Write a CSV before atomically replacing its destination.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Tabular data to serialize.
+    output_path : pathlib.Path
+        Destination CSV path.
+
+    Raises
+    ------
+    OSError
+        If the temporary CSV cannot be written or atomically moved into place.
+    """
     temp_path = _temporary_path(output_path.parent, f'.{output_path.name}.', '.tmp')
     try:
         data.to_csv(temp_path)
@@ -34,8 +73,24 @@ def _write_csv_atomically(data: pd.DataFrame, output_path: Path):
             os.remove(temp_path)
 
 
-def _stored_paper_ids(data: pd.DataFrame):
-    """Return the non-empty paper identifiers represented in stored rows."""
+def _stored_paper_ids(data: pd.DataFrame) -> set[str]:
+    """Extract non-empty paper identifiers from stored rows.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Material rows that must contain a ``Paper id`` column.
+
+    Returns
+    -------
+    set[str]
+        Unique non-empty paper identifiers.
+
+    Raises
+    ------
+    ValueError
+        If the required column is missing or contains no non-empty identifiers.
+    """
     if 'Paper id' not in data.columns:
         raise ValueError('Scraped materials must contain a "Paper id" column.')
     paper_ids = {
@@ -48,8 +103,24 @@ def _stored_paper_ids(data: pd.DataFrame):
     return paper_ids
 
 
-def _mark_stored_papers(db_path, paper_ids):
-    """Mark only successfully scraped papers represented by the stored batch."""
+def _mark_stored_papers(
+    db_path: str | PathLike[str],
+    paper_ids: Collection[str],
+) -> None:
+    """Mark successfully scraped papers as stored.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Corpus database to update.
+    paper_ids : Collection[str]
+        Paper identifiers represented by the stored batch.
+
+    Raises
+    ------
+    RuntimeError
+        If the corpus schema is newer than this package supports.
+    """
     with connect(db_path) as conn:
         for paper in paper_rows(conn):
             if paper['paper_id'] not in paper_ids:
@@ -63,15 +134,49 @@ def _mark_stored_papers(db_path, paper_ids):
             upsert_paper(conn, paper)
 
 
-def store_results(db_path='papers.db',
-                  in_filepath='temp_scraped_materials.csv',
-                  out_filepath='materials.csv',
-                  unit_conversion=True,
-                  recipe='sse',
-                  assume_yes=False,
-                  model_config=None,
-                  ):
-    """Convert and append temporary scrape results to the materials database."""
+def store_results(db_path: str | PathLike[str] = 'papers.db',
+                  in_filepath: str | PathLike[str] = 'temp_scraped_materials.csv',
+                  out_filepath: str | PathLike[str] = 'materials.csv',
+                  unit_conversion: bool = True,
+                  recipe: str = 'sse',
+                  assume_yes: bool = False,
+                  model_config: ModelConfig | None = None,
+                  ) -> None:
+    """Convert and append temporary scrape results.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database whose paper statuses should be updated.
+    in_filepath : str or os.PathLike[str], optional
+        Temporary scraped-materials CSV to consume.
+    out_filepath : str or os.PathLike[str], optional
+        Final materials CSV to create or append.
+    unit_conversion : bool, optional
+        Whether to convert recipe fields with configured units.
+    recipe : str, optional
+        Bundled recipe name or recipe JSON path.
+    assume_yes : bool, optional
+        Whether to accept conversions and skip unmatched columns without a prompt.
+    model_config : ModelConfig or None, optional
+        Model configuration forwarded to unit conversion.
+
+    Raises
+    ------
+    ValueError
+        If input and output paths match, the recipe is invalid, or stored paper
+        identifiers are invalid.
+    RuntimeError
+        If an unmatched column is encountered in interactive mode or the
+        corpus schema is newer than this package supports.
+    FileNotFoundError
+        If the bundled recipe resource or an output parent directory is
+        missing.
+    KeyError
+        If no bundled or standalone recipe matches ``recipe``.
+    OSError
+        If an input, preview, or output file cannot be accessed.
+    """
     input_path = Path(in_filepath)
     output_path = Path(out_filepath)
     if input_path.resolve() == output_path.resolve():

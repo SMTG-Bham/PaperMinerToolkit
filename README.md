@@ -34,7 +34,8 @@ flowchart TD
     A["Search Scopus/CORE/OpenAlex<br/><b><code>ps_search</code></b>"] --> B[/"papers.db"/]
     C["Import local PDFs<br/><b><code>ps_import_pdfs</code></b>"] --> B
     B --> E["Download text/PDF<br/><b><code>ps_download</code></b>"]
-    E --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
+    E --> R["Apply regex filters (optional)<br/><b><code>ps_filter_regex</code></b>"]
+    R --> F["Scrape text and/or images<br/><b><code>ps_scrape</code></b>"]
     B --> F
     F --> G[/"temp_scraped_materials.csv"/]
     G --> H["Store converted rows<br/><b><code>ps_store</code></b>"]
@@ -42,7 +43,7 @@ flowchart TD
 
     classDef action fill:#e8f1ff,stroke:#2f5f9f,color:#10233f
     classDef file fill:#fff3bf,stroke:#b7791f,color:#3b2f0b
-    class A,C,E,F,H action
+    class A,C,E,R,F,H action
     class B,G,I file
 ```
 
@@ -64,13 +65,13 @@ CORE can use `CORE_API_KEY` from the environment or a saved key:
 
 `ps_core_key`
 
-OpenAlex needs no API key at all:
+OpenAlex answers requests without a key, but meters them against a small daily credit budget that works out at roughly 100 search pages per day:
 
 `ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100`
 
-Optionally save a contact email to join OpenAlex's faster polite pool. When unset, the Unpaywall email is reused, and requests without either email still work:
+A free key from <https://openalex.org/settings/api> raises that budget tenfold, which any real corpus build needs. Set `OPENALEX_API_KEY` in the environment or save it:
 
-`ps_openalex_email`
+`ps_openalex_key`
 
 Or import externally downloaded PDFs. This scans each PDF for a DOI, uses Crossref to fill metadata when possible, and stores the PDF in the corpus. Matching records are updated and unmatched PDFs are appended:
 
@@ -94,19 +95,78 @@ Inspect the review CSV before downloading. Crossref supplies metadata and DOIs r
 
 Use this step for papers discovered by search. External PDF imports already point at local PDFs and do not need this.
 
+`ps_download papers.db --format abstract`
+
 `ps_download papers.db --format text`
 
 `ps_download papers.db --format pdf`
 
 `ps_download papers.db --format both`
 
-PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always (no credentials needed), CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text.
+Use `--format abstract` to populate abstracts without attempting full-text or PDF downloads. PDF downloads default to every configured source: Unpaywall when `UNPAYWALL_EMAIL` is set, OpenAlex always, drawing on `OPENALEX_API_KEY` when set, CORE when `CORE_API_KEY` is set, and Elsevier when `ELSEVIER_API_KEY` is set. Choose specific PDF sources by repeating `--source`, for example `ps_download papers.db --format pdf --source unpaywall --source openalex`. If a PDF is found through Unpaywall, OpenAlex, or CORE and Elsevier full text is also available for that row, PaperScraper still downloads the Elsevier text. Abstract downloads try OpenAlex first, reconstructing its inverted-index representation, then fall back to CORE and Elsevier.
+
+PaperScraper checks the corpus asset records separately for abstracts, full text, and PDFs. It skips any requested content type that is already stored, while continuing to download content types that are missing. Use `--force` to refresh all requested types, including abstracts when abstract downloading is enabled:
+
+`ps_download papers.db --format both --force`
+
+### Filter Downloaded Papers
+
+Regex filters run after downloading and tag papers in the corpus without deleting papers or changing their scrape statuses. A definition names the filter, selects fields, and provides positive and optional veto patterns:
+
+```json
+{
+  "name": "band-gap-materials",
+  "description": "Papers concerning semiconductor band gaps",
+  "fields": ["title", "abstract", "full_text"],
+  "case_sensitive": false,
+  "include_mode": "any",
+  "timeout_ms": 500,
+  "include": [
+    {"name": "band-gap", "pattern": "\\bband[ -]?gaps?\\b"},
+    {"name": "electronic-gap", "pattern": "\\belectronic\\s+gaps?\\b"}
+  ],
+  "exclude": [
+    {"name": "irrelevant-review", "pattern": "\\breview of unrelated systems\\b"}
+  ]
+}
+```
+
+Apply the first filter, then add further named filters with explicit operators:
+
+```bash
+ps_filter_regex papers.db band_gap.json
+ps_filter_regex papers.db experimental.json --join or
+ps_filter_regex papers.db oxide.json --join and
+```
+
+The `examples/filters` directory contains three title-only definitions that demonstrate the same sequence.
+
+Operators are evaluated from left to right. The example is stored and displayed as `((band-gap-materials OR experimental) AND oxide)`. Within one definition, `include_mode` can be `any` or `all`; any matching exclude rule vetoes that filter. Use repeatable `--field` options or `--timeout-ms` to override and persist the corresponding JSON settings for that application.
+
+The command searches stored text first and falls back to extracting downloaded PDF text. Reference sections are ignored. Papers are marked `unavailable` when selected content is missing, unreadable, or times out and no available field proves a positive match. Inspect the active expression and counts at any time:
+
+```bash
+ps_filter_status papers.db
+```
+
+Replacing a filter requires `--replace`. Remove one filter or clear the stack with:
+
+```bash
+ps_filter_reset papers.db --name experimental
+ps_filter_reset papers.db --all
+```
+
+When filters are active, `ps_scrape` prints the complete expression and processes only the final `included` papers. Use `--ignore-filters` for an explicit one-run bypass. With no active filters, scraping retains its original all-paper behavior.
 
 ### Train And Inspect LDA Topics
 
-Train a reproducible LDA model from titles and abstracts. The model uses count vectors and online learning by default, making it suitable for larger corpora:
+Train a reproducible LDA model from titles and abstracts. Disk-backed streaming is the default: PaperScraper builds a deterministic vocabulary, caches bounded sparse batches, and trains online with `partial_fit` without materializing the complete document-term matrix:
 
 `ps_topics_train papers.db topic_model --topics 12`
+
+Use `--batch-size` to control peak working memory and `--cache-dir` to place temporary sparse batches on high-capacity scratch storage. `--iterations` is the number of complete training passes over those batches. For a small corpus, `--in-memory` retains the original whole-matrix implementation; batch LDA specifically requires `--in-memory`:
+
+`ps_topics_train papers.db topic_model --topics 12 --in-memory --learning-method batch`
 
 Bigram features such as `lithium_metal`, `ionic_conductivity`, and `solid_electrolyte` are enabled by default. Use `--ngram-max 1` for a unigram-only model.
 
@@ -126,7 +186,7 @@ Choose the input fields explicitly when required. Repeating `--field` combines f
 
 `ps_topics_train papers.db topic_model --topics 12 --field title --field text`
 
-Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities.
+Training reports warnings for small corpora, short documents, missing text, and small retained vocabularies. The model directory contains the fitted model and vectorizer, immutable model ID, configuration and corpus fingerprints, topic terms, representative papers, and long-form per-paper probabilities. Streaming perplexity and log likelihood use a deterministic bounded evaluation sample, whose size and scope are recorded in the report.
 
 Inspect the top terms and representative papers before assigning names:
 
@@ -153,6 +213,68 @@ ps_topics_compare papers.db topic_comparison \
 ```
 
 `model_comparison.csv` reports perplexity, log likelihood, topic diversity, dominant-topic balance, training time, and cross-seed topic stability. These metrics help narrow the candidates, but the final choice should still be based on `ps_topics_show` and the representative papers.
+
+The comparison command prepares the streaming vocabulary and sparse batches once, then reuses them for every topic-count and seed combination.
+
+Aggregate one fixed model over publication years without retraining topics separately in each period:
+
+```bash
+# Annual prevalence
+ps_topics_trends topic_model annual_trends --bin-size 1 --step-size 1 --plot
+
+# Non-overlapping five-year blocks
+ps_topics_trends topic_model five_year_trends --bin-size 5 --step-size 5
+
+# Overlapping five-year windows advanced one year at a time
+ps_topics_trends topic_model rolling_trends --bin-size 5 --step-size 1
+```
+
+The trend CSV reports mean and summed topic probability, dominant-paper counts and shares, paper coverage, and partial-window state. Use `--predictions` to analyse an external CSV produced by `ps_topics_predict`.
+
+Pass `--plot` to write `topic_trends_plot.png` alongside the CSV and JSON report. Use `--plot-file annual_topics.pdf` to choose a filename and any format supported by Matplotlib. Relative filenames are written inside the trend output directory. Plots show mean topic probability with a paper-count panel; partial windows are shaded and drawn with dashed lines.
+
+Topic predictions remain external until a model is explicitly selected and stored in a corpus. Storage always performs fresh batched prediction rather than importing a potentially stale CSV:
+
+```bash
+ps_topics_store topic_model papers.db --name sse-lda-v1
+ps_topics_models papers.db
+```
+
+Stored topic scores can be used alone or combined with regex filters. Topic definitions are JSON:
+
+```json
+{
+  "name": "solid-electrolyte-topics",
+  "description": "Topic-model relevance filter",
+  "model": "sse-lda-v1",
+  "include_mode": "any",
+  "include": [
+    {
+      "name": "electrolyte-topic",
+      "topic_id": 2,
+      "min_probability": 0.35,
+      "require_dominant": false
+    }
+  ],
+  "exclude": [
+    {
+      "name": "photovoltaics-veto",
+      "topic_id": 7,
+      "require_dominant": true
+    }
+  ]
+}
+```
+
+```bash
+# Topic-only filtering
+ps_filter_topic papers.db solid_electrolyte_topics.json
+
+# Hybrid filtering after a regex filter
+ps_filter_topic papers.db solid_electrolyte_topics.json --join and
+```
+
+Include rules support `any` or `all`; exclude rules take precedence. Each rule can require a minimum probability, dominance, or both. Topic and regex filters share the persistent left-to-right `AND`/`OR` stack. If the selected corpus text changes after scores were stored, topic filtering is marked stale and scraping fails closed until `ps_topics_store` is rerun.
 
 ### Choose A Recipe
 
@@ -201,6 +323,8 @@ Scrape text and images together, using paper text as image context:
 
 When text and image scraping both produce records for a paper, PaperScraper asks the text model to reconcile them and merge matching materials into combined `text+image` rows.
 
+If a paper still exceeds the configured model input limit after optional compression, PaperScraper splits its text into independent model requests. It prints a warning because records extracted from separate chunks are not automatically reconciled and may be duplicated or incomplete across chunk boundaries. The corpus records the latest plan in `num_text_chunks` or `num_abstract_chunks`: `1` means the input fitted one request, a larger value means it was split, and a missing value means chunking was not recorded. `ps_corpus_status papers.db` reports how many paper inputs were split.
+
 Image extraction defaults to `--image-extraction auto`: embedded PDF images are used when available, otherwise pages are rendered to PNGs for vision analysis. Use `--image-extraction pages` to always render pages, or `--image-extraction embedded` to disable the fallback.
 
 By default, image scraping sends one image per vision request. Use `--image-batch-size 4` for small batches or `--image-batch-size all` to send every extracted image for a paper in one request.
@@ -235,6 +359,12 @@ Install the test dependencies and run the default test suite with:
 
 `pip install -e ".[test]"`
 
+Validate NumPy-style docstrings and complete function annotations:
+
+`ruff check paperscraper tests`
+
+Run the test suite:
+
 `pytest`
 
 Unit tests live in `tests/` and should be split by source file, for example `tests/test_corpus.py` covers `paperscraper/corpus.py`. If test data files are needed, put them in `tests/data/`. Tests that call live external services should be marked with `@pytest.mark.network`; the default test command skips those so CI can run without API keys.
@@ -247,13 +377,13 @@ The examples folder contains notebooks with explained bash cells for common mode
 - `examples/openai_gpt_workflow.ipynb` configures OpenAI GPT profiles and runs search, download, scrape, and store.
 - `examples/anthropic_claude_workflow.ipynb` configures Anthropic profiles and runs search, download, scrape, and store.
 
-Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and the optional `OPENALEX_EMAIL`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
+Before running them, configure the search/download credentials you want to use, such as `ELSEVIER_API_KEY`, `CORE_API_KEY`, `UNPAYWALL_EMAIL`, and `OPENALEX_API_KEY`. The API notebooks also assume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is available; you can save those with `ps_openai_key` or `ps_anthropic_key`.
 
 ## Running On HPC
 
 The vLLM notebook assumes a local CUDA workstation. For ASU's Sol supercomputer, `examples/sol_gaudi/` holds ready-to-submit scripts for the Intel Gaudi accelerators:
 
-They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else.
+They are set up for the biodegradable polymer workflow, defaulting to the `polymer` recipe and an OECD 301 search query; override `PS_RECIPE` and the query for anything else. Every script is submitted from that directory — `cd examples/sol_gaudi` first — and the job logs, `papers.db`, and the CSVs are written back there beside the scripts.
 
 - `examples/sol_gaudi/install.sbatch` builds the environment and verifies it, keeping the CUDA build of torch out of a Gaudi node. Run this first.
 - `examples/sol_gaudi/fetch_corpus.sh` runs search and download off the Gaudi queue, since neither stage calls the model.
@@ -261,4 +391,4 @@ They are set up for the biodegradable polymer workflow, defaulting to the `polym
 - `examples/sol_gaudi/scrape_gaudi.sbatch` starts a vLLM server on one Gaudi card and runs scrape and store against it in the same job.
 - `examples/sol_gaudi/serve_gaudi.sbatch` keeps a warm server up for reuse across several runs.
 
-`build_tools/sol_gaudi/README.md` is the install guide for them, covering environment setup and the context sizing rule that local runs never hit.
+`examples/sol_gaudi/README.md` is the install guide for them, covering environment setup and the context sizing rule that local runs never hit.

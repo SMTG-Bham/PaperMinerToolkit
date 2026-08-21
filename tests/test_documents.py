@@ -4,38 +4,38 @@ This module tests text extraction from PDF/TXT inputs, PDF image extraction,
 and page rendering helpers.
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
 import sys
 import types
+from typing import Any
 
 import pytest
 
 import paperscraper.documents as documents
 
 
-def test_read_pdf_text_concatenates_page_text(monkeypatch):
-    """
-    Test PDF text extraction across all pages.
-
-    This function performs the following steps:
-    1. Replaces `PdfReader` with a fake reader containing three fake pages.
-    2. Calls `read_pdf_text`.
-    3. Compares the concatenated text to the expected page text.
-
-    Asserts:
-        - Text from every page is concatenated.
-        - Pages with no extracted text contribute an empty string.
-    """
+def test_read_pdf_text_concatenates_page_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concatenate extracted text from every PDF page."""
 
     class FakePage:
-        def __init__(self, text):
+        """Provide optional extracted page text."""
+
+        def __init__(self, text: str | None) -> None:
+            """Store the extracted text."""
             self.text = text
 
-        def extract_text(self):
+        def extract_text(self) -> str | None:
+            """Return the stored page text."""
             return self.text
 
     class FakeReader:
-        def __init__(self, path):
+        """Provide a fake PDF reader with three pages."""
+
+        def __init__(self, path: str) -> None:
+            """Store the path and construct fake pages."""
             self.path = path
             self.pages = [FakePage('first '), FakePage(None), FakePage('third')]
 
@@ -44,20 +44,8 @@ def test_read_pdf_text_concatenates_page_text(monkeypatch):
     assert documents.read_pdf_text('paper.pdf') == 'first third'
 
 
-def test_read_document_text_reads_text_files_and_pdf_files(tmp_path, monkeypatch):
-    """
-    Test document text reading for TXT and PDF inputs.
-
-    This function performs the following steps:
-    1. Writes a temporary TXT file and reads it.
-    2. Replaces PDF text extraction with deterministic text containing references.
-    3. Reads a PDF path with reference trimming enabled and disabled.
-
-    Asserts:
-        - TXT files are read directly.
-        - PDF references are trimmed when requested.
-        - PDF references are preserved when trimming is disabled.
-    """
+def test_read_document_text_reads_text_files_and_pdf_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read TXT and PDF inputs with optional reference trimming."""
     text_path = tmp_path / 'paper.txt'
     text_path.write_text('plain text')
     monkeypatch.setattr(documents, 'read_pdf_text', lambda _: 'Main text\nReferences\nReference one')
@@ -67,41 +55,22 @@ def test_read_document_text_reads_text_files_and_pdf_files(tmp_path, monkeypatch
     assert documents.read_document_text('paper.pdf', trim_references=False) == 'Main text\nReferences\nReference one'
 
 
-def test_read_document_text_rejects_unsupported_file_types():
-    """
-    Test document text reading for unsupported file types.
-
-    This function performs the following steps:
-    1. Calls `read_document_text` with an unsupported extension.
-    2. Captures the expected exception.
-
-    Asserts:
-        - Unsupported document extensions raise `ValueError`.
-    """
+def test_read_document_text_rejects_unsupported_file_types() -> None:
+    """Reject unsupported document extensions."""
     with pytest.raises(ValueError, match='Unsupported document type'):
         documents.read_document_text('paper.docx')
 
 
-def test_load_fitz_returns_module_or_raises_helpful_error(monkeypatch):
-    """
-    Test lazy loading of PyMuPDF.
-
-    This function performs the following steps:
-    1. Inserts a fake `fitz` module into `sys.modules`.
-    2. Calls `_load_fitz` and checks the returned module.
-    3. Forces imports of `fitz` to raise `ImportError` and captures the expected error.
-
-    Asserts:
-        - Available `fitz` modules are returned.
-        - Missing `fitz` raises a helpful `RuntimeError`.
-    """
+def test_load_fitz_returns_module_or_raises_helpful_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Load PyMuPDF lazily or raise a helpful dependency error."""
     fake_fitz = types.SimpleNamespace()
     monkeypatch.setitem(sys.modules, 'fitz', fake_fitz)
     assert documents._load_fitz() is fake_fitz
 
     original_import = __import__
 
-    def fake_import(name, *args, **kwargs):
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        """Reject PyMuPDF imports and delegate all other imports."""
         if name == 'fitz':
             raise ImportError('missing')
         return original_import(name, *args, **kwargs)
@@ -112,39 +81,36 @@ def test_load_fitz_returns_module_or_raises_helpful_error(monkeypatch):
         documents._load_fitz()
 
 
-def test_extract_embedded_pdf_images_saves_unique_images(tmp_path):
-    """
-    Test embedded image extraction from a fake PDF document.
-
-    This function performs the following steps:
-    1. Creates a fake document with duplicate and unique image references.
-    2. Calls `_extract_embedded_pdf_images`.
-    3. Reads the saved image files.
-
-    Asserts:
-        - Each unique image reference is saved once.
-        - Duplicate image references are skipped.
-        - Saved files contain the extracted image bytes.
-    """
+def test_extract_embedded_pdf_images_saves_unique_images(tmp_path: Path) -> None:
+    """Save each unique embedded PDF image once."""
 
     class FakePage:
-        def __init__(self, images):
+        """Provide embedded image references for a fake page."""
+
+        def __init__(self, images: list[tuple[int, ...]]) -> None:
+            """Store the embedded image references."""
             self.images = images
 
-        def get_images(self, full=True):
+        def get_images(self, full: bool = True) -> list[tuple[int, ...]]:
+            """Return the stored full image references."""
             assert full is True
             return self.images
 
     class FakeDoc:
+        """Provide indexed pages and extractable images."""
+
         pages = [FakePage([(1,), (2,)]), FakePage([(1,), (3,)])]
 
-        def __len__(self):
+        def __len__(self) -> int:
+            """Return the number of fake pages."""
             return len(self.pages)
 
-        def __getitem__(self, index):
+        def __getitem__(self, index: int) -> FakePage:
+            """Return a fake page by index."""
             return self.pages[index]
 
-        def extract_image(self, xref):
+        def extract_image(self, xref: int) -> dict[str, str | bytes]:
+            """Return deterministic bytes for an image reference."""
             return {'ext': 'bin', 'image': f'image-{xref}'.encode()}
 
     saved = documents._extract_embedded_pdf_images(FakeDoc(), str(tmp_path), 'paper')
@@ -157,53 +123,61 @@ def test_extract_embedded_pdf_images_saves_unique_images(tmp_path):
     assert [open(path, 'rb').read() for path in saved] == [b'image-1', b'image-2', b'image-3']
 
 
-def test_render_pdf_pages_saves_rendered_pages(tmp_path):
-    """
-    Test rendering PDF pages to image files.
-
-    This function performs the following steps:
-    1. Creates fake fitz, document, page, and pixmap objects.
-    2. Calls `_render_pdf_pages`.
-    3. Checks the saved file paths and render matrix.
-
-    Asserts:
-        - One PNG path is returned for each page.
-        - Pages receive the expected zoom matrix.
-        - Pixmaps save their output files.
-    """
+def test_render_pdf_pages_saves_rendered_pages(tmp_path: Path) -> None:
+    """Render each PDF page with the expected zoom matrix."""
 
     class FakeFitz:
+        """Provide a fake PyMuPDF matrix factory."""
+
         @staticmethod
-        def Matrix(x_zoom, y_zoom):
+        def Matrix(x_zoom: float, y_zoom: float) -> tuple[str, float, float]:
+            """Return a tuple representing a render matrix."""
             return ('matrix', x_zoom, y_zoom)
 
     class FakePixmap:
-        def __init__(self):
+        """Track the path where a rendered pixmap is saved."""
+
+        def __init__(self) -> None:
+            """Initialize without a saved path."""
             self.saved_path = None
 
-        def save(self, path):
+        def save(self, path: str) -> None:
+            """Record the path and write placeholder PNG data."""
             self.saved_path = path
             with open(path, 'w', encoding='utf-8') as f:
                 f.write('png')
 
     class FakePage:
-        def __init__(self):
+        """Provide a page that records rendering arguments."""
+
+        def __init__(self) -> None:
+            """Initialize the page and its fake pixmap."""
             self.matrix = None
             self.pixmap = FakePixmap()
 
-        def get_pixmap(self, matrix, alpha=False):
+        def get_pixmap(
+            self,
+            matrix: tuple[str, float, float],
+            alpha: bool = False,
+        ) -> FakePixmap:
+            """Record rendering options and return the fake pixmap."""
             self.matrix = matrix
             assert alpha is False
             return self.pixmap
 
     class FakeDoc:
-        def __init__(self):
+        """Provide two indexable fake pages."""
+
+        def __init__(self) -> None:
+            """Construct the fake pages."""
             self.pages = [FakePage(), FakePage()]
 
-        def __len__(self):
+        def __len__(self) -> int:
+            """Return the number of fake pages."""
             return len(self.pages)
 
-        def __getitem__(self, index):
+        def __getitem__(self, index: int) -> FakePage:
+            """Return a fake page by index."""
             return self.pages[index]
 
     doc = FakeDoc()
@@ -215,32 +189,26 @@ def test_render_pdf_pages_saves_rendered_pages(tmp_path):
     assert all(os.path.isfile(path) for path in saved)
 
 
-def test_extract_pdf_images_validates_strategy_and_uses_embedded_or_rendered_paths(tmp_path, monkeypatch):
-    """
-    Test PDF image extraction strategy selection.
-
-    This function performs the following steps:
-    1. Calls `extract_pdf_images` with an invalid strategy.
-    2. Replaces PyMuPDF loading and image extraction helpers with local fakes.
-    3. Calls `extract_pdf_images` for embedded, auto fallback, and pages strategies.
-
-    Asserts:
-        - Invalid strategies raise `ValueError`.
-        - Embedded images are returned when available.
-        - Auto strategy falls back to rendered pages when no embedded images are found.
-        - Pages strategy renders pages directly.
-    """
+def test_extract_pdf_images_validates_strategy_and_uses_embedded_or_rendered_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validate and dispatch PDF image extraction strategies."""
 
     class FakeDoc:
-        def __enter__(self):
+        """Provide a context-managed fake PDF document."""
+
+        def __enter__(self) -> FakeDoc:
+            """Return the fake document."""
             return self
 
-        def __exit__(self, *_):
+        def __exit__(self, *_: Any) -> bool:
+            """Propagate exceptions raised in the context."""
             return False
 
     class FakeFitz:
+        """Provide a fake PyMuPDF document opener."""
+
         @staticmethod
-        def open(path):
+        def open(path: str) -> FakeDoc:
+            """Return a context-managed fake document."""
             return FakeDoc()
 
     with pytest.raises(ValueError, match='strategy'):

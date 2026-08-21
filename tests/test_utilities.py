@@ -4,25 +4,19 @@ This module tests the small SQLite corpus maintenance helpers used by the
 command-line interface to reset pipeline state and print progress.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
 import paperscraper.corpus as corpus
 import paperscraper.utilities as utilities
 from paperscraper.corpus import PIPELINE_COLUMNS
 
 
-def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path):
-    """
-    Test resetting pipeline columns in a corpus database.
-
-    This function performs the following steps:
-    1. Writes a temporary corpus row with non-default pipeline statuses and counts.
-    2. Calls `reset` on the temporary corpus path.
-    3. Reloads the corpus row and checks the reset pipeline values.
-
-    Asserts:
-        - Metadata status is set to `retrieved`.
-        - Other pipeline columns are reset to their configured defaults.
-        - Existing paper metadata is preserved.
-    """
+def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path: Path) -> None:
+    """Test resetting pipeline columns in a corpus database."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.upsert_paper(conn, {
@@ -49,20 +43,11 @@ def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path)
         assert row[column] == default
 
 
-def test_status_prints_pipeline_progress_summary(tmp_path, capsys):
-    """
-    Test printing a progress summary for a corpus database.
-
-    This function performs the following steps:
-    1. Writes temporary corpus rows with representative pipeline states.
-    2. Calls `status` on the temporary corpus path.
-    3. Captures the printed output.
-
-    Asserts:
-        - The total paper count is printed.
-        - Succeeded and failed status counts are printed.
-        - Extracted text and image material totals are printed.
-    """
+def test_status_prints_pipeline_progress_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Test printing a progress summary for a corpus database."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.upsert_paper(conn, {

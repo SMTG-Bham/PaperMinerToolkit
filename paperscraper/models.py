@@ -5,12 +5,14 @@ the extraction code. It supports OpenAI Responses, Anthropic Messages, and
 OpenAI-compatible local chat servers.
 """
 
+from __future__ import annotations
+
 import base64
 import mimetypes
 import openai
 import requests
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self, TypedDict, Unpack
 
 from paperscraper.compression import CompressionConfig, maybe_compress_image_messages
 from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
@@ -18,14 +20,49 @@ from paperscraper.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_
 OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
 
+class _ModelOverrides(TypedDict, total=False):
+    """Describe explicit overrides accepted by a model profile."""
+
+    provider: str
+    name: str
+    model: str
+    base_url: str | None
+    api_key: str | None
+    capabilities: str | list[str] | set[str] | tuple[str, ...]
+    temperature: float | int | str
+    top_p: float | int | str
+    input_token_limit: int | str
+
+
 class ModelCapabilityError(ValueError):
     """Raised when a configured model is asked to handle an unsupported input type."""
+
     pass
 
 
 @dataclass
 class ModelConfig:
-    """Configuration for one text or vision model profile."""
+    """Configure one text or vision model profile.
+
+    Attributes
+    ----------
+    provider : str
+        Model provider name.
+    name : str
+        Provider model identifier.
+    base_url : str | None
+        Optional provider API base URL.
+    api_key : str | None
+        Optional provider API key.
+    capabilities : set[str]
+        Supported input capabilities, such as ``"text"`` and ``"vision"``.
+    temperature : float
+        Sampling temperature.
+    top_p : float
+        Nucleus sampling probability.
+    input_token_limit : int
+        Maximum model input size in tokens.
+    """
 
     provider: str = 'openai'
     name: str = DEFAULT_MODEL
@@ -37,8 +74,27 @@ class ModelConfig:
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
 
     @classmethod
-    def from_profile(cls, profile: str = 'text', **overrides):
-        """Build a model config from a named settings profile plus overrides."""
+    def from_profile(cls, profile: str = 'text', **overrides: Unpack[_ModelOverrides]) -> Self:
+        """Build a configuration from a settings profile.
+
+        Parameters
+        ----------
+        profile : str, optional
+            Settings profile to load.
+        **overrides : Unpack[_ModelOverrides]
+            Explicit configuration values that replace profile settings.
+
+        Returns
+        -------
+        ModelConfig
+            Resolved model configuration.
+
+        Raises
+        ------
+        ValueError
+            If the provider changes without an explicit model name or a
+            numeric setting cannot be converted.
+        """
         configured = get_model_profile(profile)
         capabilities = overrides.get('capabilities', configured.get('capabilities', ['text']))
         if isinstance(capabilities, str):
@@ -66,8 +122,15 @@ class ModelConfig:
             ),
         )
 
-    def generation_args(self):
-        """Return provider generation parameters shared across request types."""
+    def generation_args(self) -> dict[str, float]:
+        """Build provider-specific generation parameters.
+
+        Returns
+        -------
+        dict[str, float]
+            Supported sampling arguments for the configured provider and
+            model.
+        """
         provider = self.provider.lower().replace('_', '-')
         model = self.name.lower()
         if provider == 'openai' and model.startswith(OPENAI_FIXED_SAMPLING_PREFIXES):
@@ -77,8 +140,19 @@ class ModelConfig:
             args.pop('top_p')
         return args
 
-    def require(self, capability: str):
-        """Raise when this config lacks the requested model capability."""
+    def require(self, capability: str) -> None:
+        """Require a model input capability.
+
+        Parameters
+        ----------
+        capability : str
+            Capability required by the pending request.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the configured model does not declare the capability.
+        """
         if capability not in self.capabilities:
             caps = ', '.join(sorted(self.capabilities)) or 'none'
             raise ModelCapabilityError(
@@ -86,8 +160,19 @@ class ModelConfig:
             )
 
 
-def image_to_data_url(path: str):
-    """Encode a local image as a data URL suitable for model API payloads."""
+def image_to_data_url(path: str) -> str:
+    """Encode a local image as a data URL.
+
+    Parameters
+    ----------
+    path : str
+        Path to the image file.
+
+    Returns
+    -------
+    str
+        MIME-typed base64 data URL.
+    """
     mime_type = mimetypes.guess_type(path)[0] or 'image/png'
     with open(path, 'rb') as image_file:
         encoded = base64.b64encode(image_file.read()).decode('ascii')
@@ -97,12 +182,36 @@ def image_to_data_url(path: str):
 class BaseModelClient:
     """Abstract interface implemented by concrete model provider clients."""
 
-    def __init__(self, config: ModelConfig):
-        """Store the model configuration used for provider requests."""
+    def __init__(self, config: ModelConfig) -> None:
+        """Initialize a model client.
+
+        Parameters
+        ----------
+        config : ModelConfig
+            Configuration used for provider requests.
+        """
         self.config = config
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
-        """Send a text-only request and return the model text response."""
+        """Send a text-only request.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Provider-neutral chat messages.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must implement text requests.
+        """
         raise NotImplementedError
 
     def query_with_images(self,
@@ -111,15 +220,45 @@ class BaseModelClient:
                           context: str | None = None,
                           max_output_tokens: int = 10000,
                           compression_config: CompressionConfig | None = None) -> str:
-        """Send a vision request with local images and return the text response."""
+        """Send a vision request with local images.
+
+        Parameters
+        ----------
+        prompt : str
+            Instructions for image analysis.
+        image_paths : list[str]
+            Local images to include in the request.
+        context : str, optional
+            Additional text context.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+        compression_config : CompressionConfig | None, optional
+            Compression policy for the provider payload.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must implement vision requests.
+        """
         raise NotImplementedError
 
 
 class OpenAIResponsesClient(BaseModelClient):
     """Client for OpenAI's Responses API."""
 
-    def __init__(self, config: ModelConfig):
-        """Create an OpenAI SDK client using the supplied model config."""
+    def __init__(self, config: ModelConfig) -> None:
+        """Initialize an OpenAI Responses client.
+
+        Parameters
+        ----------
+        config : ModelConfig
+            OpenAI model and connection configuration.
+        """
         super().__init__(config)
         kwargs = {}
         if config.api_key:
@@ -128,8 +267,24 @@ class OpenAIResponsesClient(BaseModelClient):
             kwargs['base_url'] = config.base_url
         self.client = openai.OpenAI(**kwargs)
 
-    def _response_text(self, response):
-        """Extract text from an OpenAI Responses API response object."""
+    def _response_text(self, response: object) -> str:
+        """Extract text from an OpenAI response.
+
+        Parameters
+        ----------
+        response : object
+            Responses API result object.
+
+        Returns
+        -------
+        str
+            First available response text.
+
+        Raises
+        ------
+        RuntimeError
+            If the response contains no text output.
+        """
         if getattr(response, 'output_text', None):
             return response.output_text
         for output in getattr(response, 'output', []):
@@ -140,7 +295,27 @@ class OpenAIResponsesClient(BaseModelClient):
         raise RuntimeError('Model response did not contain text output.')
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
-        """Send a text prompt through OpenAI Responses."""
+        """Send a text request through OpenAI Responses.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Responses API input messages.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks text capability.
+        RuntimeError
+            If the OpenAI request fails or returns no text.
+        """
         self.config.require('text')
         try:
             response = self.client.responses.create(
@@ -159,7 +334,33 @@ class OpenAIResponsesClient(BaseModelClient):
                           context: str | None = None,
                           max_output_tokens: int = 10000,
                           compression_config: CompressionConfig | None = None) -> str:
-        """Send image inputs through OpenAI Responses."""
+        """Send an image request through OpenAI Responses.
+
+        Parameters
+        ----------
+        prompt : str
+            Instructions for image analysis.
+        image_paths : list[str]
+            Local images to include in the request.
+        context : str, optional
+            Additional text context.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+        compression_config : CompressionConfig | None, optional
+            Compression policy for the provider payload.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks vision capability.
+        RuntimeError
+            If the OpenAI request fails or returns no text.
+        """
         self.config.require('vision')
         content = [{'type': 'input_text', 'text': prompt}]
         if context:
@@ -191,7 +392,29 @@ class AnthropicMessagesClient(BaseModelClient):
     """Client for Anthropic's Messages API."""
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
-        """Send a text prompt through Anthropic Messages."""
+        """Send a text request through Anthropic Messages.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Provider-neutral chat messages.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            Joined text from the Anthropic response.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks text capability.
+        ValueError
+            If no Anthropic API key is configured.
+        RuntimeError
+            If the provider request fails.
+        """
         self.config.require('text')
         if not self.config.api_key:
             raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
@@ -213,7 +436,35 @@ class AnthropicMessagesClient(BaseModelClient):
                           context: str | None = None,
                           max_output_tokens: int = 10000,
                           compression_config: CompressionConfig | None = None) -> str:
-        """Send image inputs through Anthropic Messages."""
+        """Send an image request through Anthropic Messages.
+
+        Parameters
+        ----------
+        prompt : str
+            Instructions for image analysis.
+        image_paths : list[str]
+            Local images to encode in the request.
+        context : str, optional
+            Additional text context.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+        compression_config : CompressionConfig | None, optional
+            Compression policy for the provider payload.
+
+        Returns
+        -------
+        str
+            Joined text from the Anthropic response.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks vision capability.
+        ValueError
+            If no Anthropic API key is configured.
+        RuntimeError
+            If the provider request fails.
+        """
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
         if context:
@@ -237,8 +488,35 @@ class AnthropicMessagesClient(BaseModelClient):
         )
         return self._request('', messages, max_output_tokens)
 
-    def _request(self, system, anthropic_messages, max_output_tokens):
-        """Post a prepared Anthropic Messages payload and return joined text."""
+    def _request(
+        self,
+        system: str,
+        anthropic_messages: list[dict[str, Any]],
+        max_output_tokens: int,
+    ) -> str:
+        """Post a prepared Anthropic Messages request.
+
+        Parameters
+        ----------
+        system : str
+            System instructions for the request.
+        anthropic_messages : list[dict[str, Any]]
+            Anthropic-formatted conversation messages.
+        max_output_tokens : int
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            Joined text blocks from the response.
+
+        Raises
+        ------
+        ValueError
+            If no Anthropic API key is configured.
+        RuntimeError
+            If the HTTP request fails.
+        """
         if not self.config.api_key:
             raise ValueError('Anthropic provider requires an API key in the model profile or settings.')
         payload = {
@@ -270,8 +548,19 @@ class AnthropicMessagesClient(BaseModelClient):
         return ''.join(chunks)
 
 
-def _anthropic_error_detail(response):
-    """Return a concise provider error message from an Anthropic HTTP response."""
+def _anthropic_error_detail(response: requests.Response | None) -> str:
+    """Extract a concise Anthropic error message.
+
+    Parameters
+    ----------
+    response : requests.Response | None
+        Failed HTTP response.
+
+    Returns
+    -------
+    str
+        Provider error detail truncated to 1,000 characters.
+    """
     if response is None:
         return ''
     try:
@@ -288,8 +577,14 @@ def _anthropic_error_detail(response):
 class OpenAICompatibleChatClient(BaseModelClient):
     """Client for local or third-party OpenAI-compatible chat servers."""
 
-    def __init__(self, config: ModelConfig):
-        """Create an OpenAI-compatible SDK client from config values."""
+    def __init__(self, config: ModelConfig) -> None:
+        """Initialize an OpenAI-compatible chat client.
+
+        Parameters
+        ----------
+        config : ModelConfig
+            Model and connection configuration.
+        """
         super().__init__(config)
         kwargs = {'api_key': config.api_key or 'not-needed'}
         if config.base_url:
@@ -297,7 +592,27 @@ class OpenAICompatibleChatClient(BaseModelClient):
         self.client = openai.OpenAI(**kwargs)
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
-        """Send a text chat completion request."""
+        """Send a text chat completion request.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Chat completion messages.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks text capability.
+        RuntimeError
+            If the provider request fails.
+        """
         self.config.require('text')
         return self._chat(messages, max_output_tokens)
 
@@ -307,7 +622,33 @@ class OpenAICompatibleChatClient(BaseModelClient):
                           context: str | None = None,
                           max_output_tokens: int = 10000,
                           compression_config: CompressionConfig | None = None) -> str:
-        """Send image inputs as OpenAI-compatible chat content."""
+        """Send images as OpenAI-compatible chat content.
+
+        Parameters
+        ----------
+        prompt : str
+            Instructions for image analysis.
+        image_paths : list[str]
+            Local images to encode in the request.
+        context : str, optional
+            Additional text context.
+        max_output_tokens : int, optional
+            Maximum number of tokens to generate.
+        compression_config : CompressionConfig | None, optional
+            Compression policy for the provider payload.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        ModelCapabilityError
+            If the model lacks vision capability.
+        RuntimeError
+            If the provider request fails.
+        """
         self.config.require('vision')
         content = [{'type': 'text', 'text': prompt}]
         if context:
@@ -325,8 +666,26 @@ class OpenAICompatibleChatClient(BaseModelClient):
         )
         return self._chat(messages, max_output_tokens)
 
-    def _chat(self, messages, max_output_tokens):
-        """Call the chat completions endpoint and return the first message text."""
+    def _chat(self, messages: list[dict[str, Any]], max_output_tokens: int) -> str:
+        """Call the chat completions endpoint.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Provider-formatted chat messages.
+        max_output_tokens : int
+            Maximum number of tokens to generate.
+
+        Returns
+        -------
+        str
+            First response message text, or an empty string.
+
+        Raises
+        ------
+        RuntimeError
+            If the provider request fails.
+        """
         try:
             response = self.client.chat.completions.create(
                 model=self.config.name,
@@ -339,8 +698,24 @@ class OpenAICompatibleChatClient(BaseModelClient):
         return response.choices[0].message.content or ''
 
 
-def get_model_client(config: ModelConfig | None = None):
-    """Return the concrete provider client for a model config."""
+def get_model_client(config: ModelConfig | None = None) -> BaseModelClient:
+    """Create the provider client for a model configuration.
+
+    Parameters
+    ----------
+    config : ModelConfig | None, optional
+        Model configuration. The text profile is used by default.
+
+    Returns
+    -------
+    BaseModelClient
+        Client implementation for the configured provider.
+
+    Raises
+    ------
+    ValueError
+        If the provider is unknown or a local provider lacks a base URL.
+    """
     config = config or ModelConfig.from_profile('text')
     provider = config.provider.lower().replace('_', '-')
     if provider == 'openai':
@@ -357,7 +732,22 @@ def get_model_client(config: ModelConfig | None = None):
 def query_text(messages: list[dict[str, Any]],
                config: ModelConfig | None = None,
                max_output_tokens: int = 10000) -> str:
-    """Send a text request through the configured model provider."""
+    """Send a text request through a configured provider.
+
+    Parameters
+    ----------
+    messages : list[dict[str, Any]]
+        Provider-neutral chat messages.
+    config : ModelConfig | None, optional
+        Model configuration. The text profile is used by default.
+    max_output_tokens : int, optional
+        Maximum number of tokens to generate.
+
+    Returns
+    -------
+    str
+        Model response text.
+    """
     return get_model_client(config).query(messages, max_output_tokens=max_output_tokens)
 
 
@@ -367,7 +757,28 @@ def query_images(prompt: str,
                  context: str | None = None,
                  max_output_tokens: int = 10000,
                  compression_config: CompressionConfig | None = None) -> str:
-    """Send an image request through the configured vision model provider."""
+    """Send an image request through a configured provider.
+
+    Parameters
+    ----------
+    prompt : str
+        Instructions for image analysis.
+    image_paths : list[str]
+        Local images to include in the request.
+    config : ModelConfig | None, optional
+        Vision model configuration.
+    context : str, optional
+        Additional text context.
+    max_output_tokens : int, optional
+        Maximum number of tokens to generate.
+    compression_config : CompressionConfig | None, optional
+        Compression policy for the provider payload.
+
+    Returns
+    -------
+    str
+        Model response text.
+    """
     return get_model_client(config).query_with_images(prompt, image_paths, context=context,
                                                       max_output_tokens=max_output_tokens,
                                                       compression_config=compression_config)

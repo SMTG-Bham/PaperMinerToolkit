@@ -26,12 +26,16 @@ dependencies = [
   "click",
   "headroom-ai[image,ml]>=0.35,<0.36",
   "openai",
+  "numpy",
   "pandas",
   "pillow",
   "pymupdf",
   "pypdf",
   "requests",
+  "regex",
+  "scipy",
   "joblib",
+  "matplotlib",
   "scikit-learn",
   "tiktoken>=0.13.0",
   "tqdm",
@@ -42,6 +46,7 @@ dependencies = [
 test = [
   "pytest",
   "pytest-cov",
+  "ruff",
 ]
 
 [project.urls]
@@ -58,14 +63,21 @@ ps_topics_compare = "paperscraper.cli:topics_compare"
 ps_topics_show = "paperscraper.cli:topics_show"
 ps_topics_name = "paperscraper.cli:topics_name"
 ps_topics_predict = "paperscraper.cli:topics_predict"
+ps_topics_trends = "paperscraper.cli:topics_trends"
+ps_topics_store = "paperscraper.cli:topics_store"
+ps_topics_models = "paperscraper.cli:topics_models"
 ps_import_pdfs = "paperscraper.cli:import_pdf_folder"
 ps_import_author = "paperscraper.cli:import_author"
 ps_scrape = "paperscraper.cli:scrape"
+ps_filter_regex = "paperscraper.cli:filter_regex"
+ps_filter_topic = "paperscraper.cli:filter_topic"
+ps_filter_status = "paperscraper.cli:filter_status"
+ps_filter_reset = "paperscraper.cli:filter_reset"
 ps_store = "paperscraper.cli:store"
 ps_elsevier_key = "paperscraper.cli:update_elsevier_api_key"
 ps_core_key = "paperscraper.cli:update_core_api_key"
 ps_unpaywall_email = "paperscraper.cli:update_unpaywall_api_email"
-ps_openalex_email = "paperscraper.cli:update_openalex_api_email"
+ps_openalex_key = "paperscraper.cli:update_openalex_api_key"
 ps_openai_key = "paperscraper.cli:update_openai_api_key"
 ps_anthropic_key = "paperscraper.cli:update_anthropic_api_key"
 ps_model_config = "paperscraper.cli:model_config"
@@ -93,6 +105,15 @@ addopts = [
   "-m",
   "not network and not slow",
 ]
+
+[tool.ruff.lint]
+select = ["D"]
+extend-select = ["ANN", "D212"]
+# Dynamic provider payloads and test doubles legitimately require Any.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.coverage.run]
 source = ["paperscraper"]

@@ -1,22 +1,19 @@
+"""Test the PaperScraper command-line entry points."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
 from click.testing import CliRunner
 
 import paperscraper.cli as cli
 import paperscraper.corpus as corpus
 
 
-def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
-    """
-    Test the paper search command delegates to the search workflow.
-
-    This function performs the following steps:
-    1. Replaces `search_for_papers` with a local fake that records its inputs.
-    2. Runs the CLI command with explicit query, database path, source, and count values.
-    3. Reads the command result and recorded call.
-
-    Asserts:
-        - The command exits successfully.
-        - The search workflow receives the requested query, database path, source, and count.
-    """
+def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delegate paper searches with the requested source and result count."""
     calls = {}
     monkeypatch.setattr(
         cli,
@@ -43,19 +40,8 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch):
     }
 
 
-def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
-    """
-    Test the PDF import command delegates with the expected Crossref option.
-
-    This function performs the following steps:
-    1. Creates a temporary import directory accepted by Click path validation.
-    2. Replaces `import_pdfs` with a local fake that records its inputs.
-    3. Runs the command with `--no-crossref`.
-
-    Asserts:
-        - The command exits successfully.
-        - The import workflow receives `use_crossref=False`.
-    """
+def test_import_pdf_folder_passes_crossref_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Delegate PDF imports with Crossref lookup disabled."""
     calls = {}
     papers_dir = tmp_path / 'papers'
     papers_dir.mkdir()
@@ -79,7 +65,7 @@ def test_import_pdf_folder_passes_crossref_option(monkeypatch, tmp_path):
     }
 
 
-def test_import_author_validates_identity_and_reports_summary(monkeypatch, tmp_path):
+def test_import_author_validates_identity_and_reports_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Delegate author discovery with exactly one identity selector."""
     calls = {}
     db_path = tmp_path / 'supervisor.db'
@@ -111,35 +97,25 @@ def test_import_author_validates_identity_and_reports_summary(monkeypatch, tmp_p
     assert 'exactly one' in invalid.output
 
 
-def test_download_passes_format_and_sources(monkeypatch, tmp_path):
-    """
-    Test the download command delegates to the download workflow.
-
-    This function performs the following steps:
-    1. Creates a temporary corpus database accepted by Click path validation.
-    2. Replaces `download_papers` with a local fake that records its inputs.
-    3. Runs the command with explicit format and repeated source options.
-
-    Asserts:
-        - The command exits successfully.
-        - Download format and source choices are passed through.
-    """
+def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Delegate downloads with the selected format and sources."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract: calls.update({
+        lambda path, download_format, sources, download_abstract, force: calls.update({
             'db_path': path,
             'download_format': download_format,
             'sources': sources,
             'download_abstract': download_abstract,
+            'force': force,
         }),
     )
 
     result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'pdf', '--source', 'core',
-                                               '--source', 'unpaywall', '--no-abstract'])
+                                               '--source', 'unpaywall', '--no-abstract', '--force'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -147,22 +123,18 @@ def test_download_passes_format_and_sources(monkeypatch, tmp_path):
         'download_format': 'pdf',
         'sources': ['core', 'unpaywall'],
         'download_abstract': False,
+        'force': True,
     }
 
+    result = CliRunner().invoke(cli.download, [str(db_path), '--format', 'abstract'])
 
-def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_path):
-    """
-    Test the search and download commands accept the OpenAlex source choice.
+    assert result.exit_code == 0
+    assert calls['download_format'] == 'abstract'
+    assert calls['download_abstract'] is True
 
-    This function performs the following steps:
-    1. Replaces the search and download workflows with local fakes that record sources.
-    2. Runs the search command with `--source openalex`.
-    3. Runs the download command with `--source openalex`.
 
-    Asserts:
-        - Both commands exit successfully.
-        - The OpenAlex source choice is passed through to each workflow.
-    """
+def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Accept OpenAlex as a search and download source."""
     search_calls = {}
     monkeypatch.setattr(
         cli,
@@ -181,28 +153,21 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch, tmp_pat
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract: download_calls.update({'sources': sources}),
+        lambda path, download_format, sources, download_abstract, force: download_calls.update({
+            'sources': sources,
+            'force': force,
+        }),
     )
 
     result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'openalex'])
 
     assert result.exit_code == 0
     assert download_calls['sources'] == ['openalex']
+    assert download_calls['force'] is False
 
 
-def test_corpus_status_prints_database_storage_statistics(tmp_path):
-    """
-    Test the corpus statistics command.
-
-    This function performs the following steps:
-    1. Creates a temporary corpus database.
-    2. Stores one repeated text asset so compression statistics are available.
-    3. Runs the corpus statistics CLI command.
-
-    Asserts:
-        - The command exits successfully.
-        - The output includes paper, blob, size, and storage saving summaries.
-    """
+def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
+    """Print paper, blob, and storage statistics for a corpus."""
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.add_asset(
@@ -229,6 +194,11 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
             kind='pdf',
             mime_type='application/pdf',
         )
+        papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
+        papers['paper:1']['num_text_chunks'] = 3
+        papers['paper:2']['num_abstract_chunks'] = 2
+        corpus.upsert_paper(conn, papers['paper:1'])
+        corpus.upsert_paper(conn, papers['paper:2'])
 
     result = CliRunner().invoke(cli.corpus_status, [str(db_path)])
 
@@ -238,13 +208,15 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path):
     assert 'Papers with abstracts: 1' in result.output
     assert 'Papers with text: 1' in result.output
     assert 'Papers with PDFs: 1' in result.output
+    assert 'Text scrapes split into chunks: 1' in result.output
+    assert 'Abstract scrapes split into chunks: 1' in result.output
     assert 'Blobs: 3' in result.output
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output
 
 
-def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp_path):
+def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Train the topic model with explicit fields and print corpus warnings."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
@@ -253,7 +225,8 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
     stopwords_path.write_text('battery\n')
     calls = {}
 
-    def fake_train(*args, **kwargs):
+    def fake_train(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record training arguments and return a diagnostic summary."""
         calls['args'] = args
         calls['kwargs'] = kwargs
         return {
@@ -284,6 +257,7 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
         '--stopwords-file', str(stopwords_path),
         '--ngram-max', '1',
         '--overwrite',
+        '--in-memory',
     ])
 
     assert result.exit_code == 0
@@ -303,19 +277,24 @@ def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch, tmp
         'ngram_max': 1,
         'overwrite': True,
         'emit_warnings': False,
+        'streaming': False,
+        'batch_size': 128,
+        'cache_dir': None,
+        'evaluation_sample_size': 10000,
     }
     assert 'Warning: Small topic-model corpus' in result.output
     assert 'Trained 6 topics from 120 papers using 800 terms.' in result.output
 
 
-def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path):
+def test_topics_compare_delegates_grid_and_reports_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Train a topic-count and seed grid through the comparison command."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     output_dir = tmp_path / 'comparison'
     calls = {}
 
-    def fake_compare(*args, **kwargs):
+    def fake_compare(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record comparison arguments and return an output summary."""
         calls['args'] = args
         calls['kwargs'] = kwargs
         return {
@@ -347,7 +326,7 @@ def test_topics_compare_delegates_grid_and_reports_output(monkeypatch, tmp_path)
     assert 'Trained 4 comparison models' in result.output
 
 
-def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
+def test_topic_inspection_naming_and_prediction_commands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Expose manual topic review, naming, and prediction through CLI commands."""
     model_dir = tmp_path / 'model'
     model_dir.mkdir()
@@ -368,7 +347,7 @@ def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         'predict_topic_model',
-        lambda directory, database, output: {
+        lambda directory, database, output, batch_size: {
             'papers_total': 10,
             'papers_predicted': 9,
             'papers_without_vocabulary_terms': 1,
@@ -392,24 +371,87 @@ def test_topic_inspection_naming_and_prediction_commands(monkeypatch, tmp_path):
     assert 'Predicted topics for 9 of 10 papers' in predicted.output
 
 
-def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_path):
-    """
-    Test the scrape command delegates with text, image, and cleanup options.
+def test_topic_trend_store_and_model_status_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Expose trend aggregation and explicit corpus score storage through the CLI."""
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        'aggregate_topic_trends',
+        lambda *args, **kwargs: calls.append(('trends', args, kwargs)) or {
+            'windows': 4,
+            'trends_csv': str(tmp_path / 'trends' / 'topic_trends.csv'),
+            'papers_missing_or_invalid_date': 2,
+            'plot_path': str(tmp_path / 'trends' / 'topic_trends_plot.png'),
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        'store_topic_model_scores',
+        lambda *args, **kwargs: calls.append(('store', args, kwargs)) or {
+            'name': 'demo',
+            'model_id': 'lda:test',
+            'papers_predicted': 9,
+            'papers_without_vocabulary_terms': 1,
+        },
+    )
+    monkeypatch.setattr(cli, 'stored_topic_models', lambda *args, **kwargs: [{
+        'name': 'demo',
+        'model_id': 'lda:test',
+        'is_current': True,
+        'num_topics': 3,
+        'papers_predicted': 9,
+        'papers_without_vocabulary_terms': 1,
+        'text_fields': ['title', 'abstract'],
+    }])
+    runner = CliRunner()
 
-    This function performs the following steps:
-    1. Creates a temporary corpus database accepted by Click validation.
-    2. Replaces `scrape_papers` with a local fake that records its inputs.
-    3. Runs the command with explicit text, vision, image, cleanup, output, and force options.
+    trended = runner.invoke(cli.topics_trends, [
+        str(model_dir), str(tmp_path / 'trends'),
+        '--bin-size', '5', '--step-size', '1', '--start-year', '2000', '--plot',
+    ])
+    stored = runner.invoke(cli.topics_store, [
+        str(model_dir), str(db_path), '--name', 'demo', '--batch-size', '64',
+    ])
+    shown = runner.invoke(cli.topics_models, [str(db_path)])
 
-    Asserts:
-        - The command exits successfully.
-        - All scrape options are forwarded to the scrape workflow.
-    """
+    assert trended.exit_code == 0
+    assert calls[0][2]['bin_size'] == 5
+    assert calls[0][2]['step_size'] == 1
+    assert calls[0][2]['plot'] is True
+    assert '4 topic trend windows' in trended.output
+    assert 'Topic trend plot:' in trended.output
+    assert stored.exit_code == 0
+    assert calls[1][2] == {'name': 'demo', 'batch_size': 64}
+    assert 'Stored demo (lda:test)' in stored.output
+    assert shown.exit_code == 0
+    assert 'demo (lda:test) [current]' in shown.output
+
+    custom_plot = runner.invoke(cli.topics_trends, [
+        str(model_dir), str(tmp_path / 'custom-trends'),
+        '--plot-file', 'custom-topic-trends.svg',
+    ])
+    assert custom_plot.exit_code == 0
+    assert calls[2][2]['plot'] == 'custom-topic-trends.svg'
+
+
+def test_scrape_passes_model_image_cleanup_and_output_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Delegate scraping with model, image, cleanup, and output options."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
 
-    def fake_scrape_papers(*args, **kwargs):
+    def fake_scrape_papers(*args: Any, **kwargs: Any) -> None:
+        """Record arguments delegated to the scrape workflow."""
         calls['args'] = args
         calls['kwargs'] = kwargs
 
@@ -433,6 +475,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         '--delete-images-after',
         '--output', 'scraped.csv',
         '--force',
+        '--ignore-filters',
         '--count', '3',
         '--order', 'publication-desc',
         '--compression-scope', 'both',
@@ -459,6 +502,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
         'delete_images_after': True,
         'output_path': 'scraped.csv',
         'force': True,
+        'ignore_filters': True,
         'scrape_count': 3,
         'scrape_order': 'publication-desc',
         'compression_scope': 'both',
@@ -468,19 +512,8 @@ def test_scrape_passes_model_image_cleanup_and_output_options(monkeypatch, tmp_p
     }
 
 
-def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
-    """
-    Test the store command delegates to the store workflow.
-
-    This function performs the following steps:
-    1. Creates a temporary corpus database accepted by Click path validation.
-    2. Replaces `store_results` with a local fake that records its inputs.
-    3. Runs the command with explicit input, output, recipe, and assume-yes options.
-
-    Asserts:
-        - The command exits successfully.
-        - Store arguments include unit conversion enabled and assume-yes forwarded.
-    """
+def test_store_passes_files_recipe_and_assume_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Delegate result storage with file, recipe, and confirmation options."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
@@ -510,50 +543,28 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch, tmp_path):
     }
 
 
-def test_key_update_entry_points_call_settings_helpers(monkeypatch):
-    """
-    Test API configuration entry points delegate to settings helpers.
-
-    This function performs the following steps:
-    1. Replaces each API-key update helper with a local fake that records its name.
-    2. Calls each non-Click entry point directly.
-    3. Collects the recorded calls.
-
-    Asserts:
-        - Each API-key or email entry point calls its matching settings helper exactly once.
-    """
+def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delegate API configuration entry points to their settings helpers."""
     calls = []
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
-    monkeypatch.setattr(cli, 'update_openalex_email', lambda: calls.append('openalex'))
+    monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
     cli.update_unpaywall_api_email()
-    cli.update_openalex_api_email()
+    cli.update_openalex_api_key()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
     assert calls == ['elsevier', 'core', 'unpaywall', 'openalex', 'openai', 'anthropic']
 
 
-def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch):
-    """
-    Test the model configuration command with inferred capabilities.
-
-    This function performs the following steps:
-    1. Replaces capability inference and settings persistence with local fakes.
-    2. Runs the model configuration command without explicit capabilities.
-    3. Reads the command output and recorded calls.
-
-    Asserts:
-        - Capabilities are inferred from the profile and model name.
-        - The model profile is saved with generation settings.
-        - The printed summary includes provider, model, capabilities, and sampling settings.
-    """
+def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Infer capabilities, save the model profile, and print its summary."""
     calls = {}
     monkeypatch.setattr(cli, 'infer_model_capabilities', lambda profile, model: ['text'])
     monkeypatch.setattr(
@@ -596,19 +607,8 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
     assert 'Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000' in result.output
 
 
-def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
-    """
-    Test the model configuration command with explicit capability options.
-
-    This function performs the following steps:
-    1. Replaces capability inference with a fake that fails if called.
-    2. Replaces settings persistence with a local fake that records capabilities.
-    3. Runs the command with repeated `--capability` options.
-
-    Asserts:
-        - Capability inference is skipped.
-        - Explicit capabilities are saved in command-line order.
-    """
+def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Save explicit model capabilities without running inference."""
     calls = {}
     monkeypatch.setattr(
         cli,
@@ -639,18 +639,8 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch):
     assert calls['input_token_limit'] == cli.DEFAULT_INPUT_TOKEN_LIMIT
 
 
-def test_model_status_prints_text_and_vision_profiles(monkeypatch):
-    """
-    Test the model status command prints configured profiles.
-
-    This function performs the following steps:
-    1. Replaces model-profile loading with a local fake for text and vision profiles.
-    2. Runs the model status command.
-    3. Reads the printed output.
-
-    Asserts:
-        - Text and vision profile summaries are printed with provider, model, capabilities, and base URL.
-    """
+def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Print configured text and vision model profiles."""
     profiles = {
         'text': {
             'provider': 'openai',
@@ -680,19 +670,8 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch):
     assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000' in result.output
 
 
-def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch, tmp_path):
-    """
-    Test reset and status CLI commands.
-
-    This function performs the following steps:
-    1. Creates a temporary corpus database accepted by Click path validation.
-    2. Replaces maintenance helpers with local fakes that record their inputs.
-    3. Runs each maintenance command.
-
-    Asserts:
-        - Each command exits successfully.
-        - Reset and status helpers receive the expected arguments.
-    """
+def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Delegate reset and status commands to maintenance helpers."""
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     calls = []

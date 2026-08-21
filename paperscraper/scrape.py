@@ -5,13 +5,20 @@ model calls, text/image reconciliation, status updates, and optional cleanup for
 the main ``ps_scrape`` command.
 """
 
+from __future__ import annotations
+
 import math
 import os
 import pandas as pd
 import random
 import re
+import sqlite3
+import sys
 import tempfile
+from collections.abc import Iterable, Mapping, Sequence
+from os import PathLike
 from tqdm import tqdm
+from typing import Any, TypeAlias
 
 from paperscraper.compression import compression_config, maybe_compress_text
 from paperscraper.documents import (extract_pdf_images,
@@ -19,18 +26,36 @@ from paperscraper.documents import (extract_pdf_images,
                                     read_pdf_text)
 from paperscraper.corpus import PIPELINE_COLUMNS, connect, get_asset, paper_rows, upsert_paper
 from paperscraper.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
+from paperscraper.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
 from paperscraper.models import ModelConfig
 from paperscraper.recipes import load_recipe
-from paperscraper.tokenizer import prompt_token_reserve, usable_input_token_limit
+from paperscraper.tokenizer import _ModelConfigSource, prompt_token_reserve, usable_input_token_limit
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
 IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
 SCRAPE_ORDERS = {'corpus', 'random', 'publication-asc', 'publication-desc', 'title', 'paper-id'}
+_Paper: TypeAlias = dict[str, Any]
+_Material: TypeAlias = dict[str, Any]
 
 
-def _text_chunks(text: str, model_config, prompt: str = ''):
-    """Split long text into chunks sized for the configured model context."""
+def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
+    """Split text into chunks that fit a model context window.
+
+    Parameters
+    ----------
+    text : str
+        Text to split.
+    model_config : _ModelConfigSource
+        Model configuration used to calculate the input budget.
+    prompt : str, optional
+        Prompt that shares the model context window with the text.
+
+    Returns
+    -------
+    list[str]
+        One or more character-contiguous text chunks.
+    """
     reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
     token_budget = usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
     coeff = token_length(text, model_config=model_config) / token_budget
@@ -47,8 +72,72 @@ def _text_chunks(text: str, model_config, prompt: str = ''):
     return chunks
 
 
-def _append_materials(materials, row, source, source_path):
-    """Attach paper metadata and source provenance to extracted material rows."""
+def _record_chunk_plan(
+    row: _Paper,
+    stage: str,
+    chunks: Sequence[object],
+    model_config: _ModelConfigSource,
+    summary: dict[str, int],
+) -> None:
+    """Record a chunk plan and warn about multi-request inputs.
+
+    Parameters
+    ----------
+    row : _Paper
+        Corpus row updated with the chunk count.
+    stage : str
+        Pipeline stage name used in row and summary keys.
+    chunks : Sequence[object]
+        Planned model input chunks.
+    model_config : _ModelConfigSource
+        Model configuration used to describe the input limit.
+    summary : dict[str, int]
+        Mutable scrape summary updated for multi-chunk inputs.
+    """
+    chunk_count = len(chunks)
+    row[f'num_{stage}_chunks'] = chunk_count
+    if chunk_count <= 1:
+        return
+
+    summary['chunked_inputs'] += 1
+    summary['chunk_requests'] += chunk_count
+    summary[f'{stage}_chunked'] += 1
+    paper_id = row.get('paper_id') or 'unknown paper'
+    model_name = getattr(model_config, 'name', None) or 'configured text model'
+    input_limit = getattr(model_config, 'input_token_limit', None)
+    limit_text = f' ({input_limit} tokens)' if input_limit is not None else ''
+    print(
+        f'Warning: {stage} for paper {paper_id} was split into {chunk_count} independent model requests '
+        f'to fit the configured input limit{limit_text} for {model_name}. Results from separate chunks are not '
+        'automatically reconciled and may contain duplicated or incomplete records.',
+        file=sys.stderr,
+    )
+
+
+def _append_materials(
+    materials: Iterable[_Material],
+    row: Mapping[str, Any],
+    source: str,
+    source_path: str | None,
+) -> list[_Material]:
+    """Attach paper metadata and provenance to material records.
+
+    Parameters
+    ----------
+    materials : Iterable[_Material]
+        Extracted material records to enrich.
+    row : Mapping[str, Any]
+        Corpus paper row supplying metadata.
+    source : str
+        Extraction source label.
+    source_path : str or None
+        Source path or corpus asset identifier.
+
+    Returns
+    -------
+    list[_Material]
+        Enriched material records.
+    """
     output = []
     for material in materials:
         material['Paper id'] = row['paper_id']
@@ -60,8 +149,27 @@ def _append_materials(materials, row, source, source_path):
     return output
 
 
-def _write_materials(materials, first_material, output_path):
-    """Append extracted material rows to the scrape output CSV."""
+def _write_materials(
+    materials: list[_Material],
+    first_material: bool,
+    output_path: str | PathLike[str],
+) -> tuple[bool, int]:
+    """Append extracted material records to a CSV file.
+
+    Parameters
+    ----------
+    materials : list[_Material]
+        Material records to write.
+    first_material : bool
+        Whether this is the first write in the current scrape run.
+    output_path : str or os.PathLike[str]
+        Destination CSV path.
+
+    Returns
+    -------
+    tuple[bool, int]
+        Updated first-write flag and number of records written.
+    """
     if not materials:
         return first_material, 0
     if first_material or not os.path.isfile(output_path):
@@ -74,14 +182,37 @@ def _write_materials(materials, first_material, output_path):
     return first_material, len(materials)
 
 
-def _delete_file(path):
-    """Delete a file path if it exists."""
+def _delete_file(path: str | PathLike[str] | None) -> None:
+    """Delete a file when it exists.
+
+    Parameters
+    ----------
+    path : str, os.PathLike[str], or None
+        File path to delete.
+    """
     if path and os.path.isfile(path):
         os.remove(path)
 
 
-def _set_status(paper, column: str, status: str, error: str | None = None):
-    """Update a corpus paper status field and optional error text."""
+def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
+    """Update a paper's pipeline status and error message.
+
+    Parameters
+    ----------
+    paper : _Paper
+        Corpus paper row to update.
+    column : str
+        Pipeline status column.
+    status : str
+        New stage status.
+    error : str, optional
+        Error text to store for a failed stage.
+
+    Raises
+    ------
+    KeyError
+        If ``column`` is not a recognized pipeline status column.
+    """
     if column not in PIPELINE_COLUMNS:
         raise KeyError(f'Unknown pipeline status column: {column}')
     paper[column] = status
@@ -91,22 +222,67 @@ def _set_status(paper, column: str, status: str, error: str | None = None):
         paper['last_error'] = ''
 
 
-def _safe_path_part(value):
-    """Convert an arbitrary value into a safe path fragment."""
+def _safe_path_part(value: object) -> str:
+    """Convert a value into a safe path fragment.
+
+    Parameters
+    ----------
+    value : object
+        Value to normalize.
+
+    Returns
+    -------
+    str
+        Non-empty path-safe fragment.
+    """
     safe = re.sub(r'[^A-Za-z0-9._-]+', '_', str(value or '').strip())
     return safe.strip('._') or 'paper'
 
 
-def _image_key_for_row(row, pdf_path):
-    """Choose a stable image-output key for a paper row."""
+def _image_key_for_row(
+    row: Mapping[str, Any],
+    pdf_path: str | PathLike[str] | None,
+) -> str:
+    """Choose a stable image-output key for a paper.
+
+    Parameters
+    ----------
+    row : Mapping[str, Any]
+        Corpus paper row.
+    pdf_path : str, os.PathLike[str], or None
+        Materialized PDF path.
+
+    Returns
+    -------
+    str
+        Path-safe image output key.
+    """
     identifier = str(row.get('paper_id') or '')
     if identifier.startswith('doi:') and pdf_path:
         return _safe_path_part(os.path.splitext(os.path.basename(pdf_path))[0])
     return _safe_path_part(identifier.split(':')[-1])
 
 
-def _image_batches(image_paths, batch_size):
-    """Group image paths into batches for vision model requests."""
+def _image_batches(image_paths: list[str], batch_size: int | str) -> list[list[str]]:
+    """Group image paths into vision request batches.
+
+    Parameters
+    ----------
+    image_paths : list of str
+        Image paths to batch.
+    batch_size : int or str
+        Positive batch size, or ``"all"`` for a single batch.
+
+    Returns
+    -------
+    list[list[str]]
+        Ordered image batches.
+
+    Raises
+    ------
+    ValueError
+        If ``batch_size`` is not positive or ``"all"``.
+    """
     batch_size = str(batch_size).strip().lower()
     if batch_size == 'all':
         return [image_paths]
@@ -119,8 +295,27 @@ def _image_batches(image_paths, batch_size):
     return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
 
 
-def _asset_path(asset, temp_dir, fallback_name):
-    """Write a corpus asset to a temporary file and return its path."""
+def _asset_path(
+    asset: Mapping[str, Any] | None,
+    temp_dir: str | PathLike[str],
+    fallback_name: str,
+) -> str | None:
+    """Materialize a corpus asset in a temporary directory.
+
+    Parameters
+    ----------
+    asset : Mapping[str, Any] or None
+        Asset metadata and binary content.
+    temp_dir : str or os.PathLike[str]
+        Directory in which to write the asset.
+    fallback_name : str
+        Filename used when the asset has no original filename.
+
+    Returns
+    -------
+    str or None
+        Materialized file path, or ``None`` when no asset is supplied.
+    """
     if asset is None:
         return None
     filename = asset.get('original_filename') or fallback_name
@@ -132,8 +327,27 @@ def _asset_path(asset, temp_dir, fallback_name):
     return path
 
 
-def _paper_asset_paths(conn, paper, temp_dir):
-    """Materialize corpus abstract, text, and PDF assets for one paper as temporary files."""
+def _paper_asset_paths(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    temp_dir: str | PathLike[str],
+) -> dict[str, str | None]:
+    """Materialize one paper's corpus assets as temporary files.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus database connection.
+    paper : Mapping[str, Any]
+        Corpus paper row identifying the assets.
+    temp_dir : str or os.PathLike[str]
+        Root temporary directory for materialized assets.
+
+    Returns
+    -------
+    dict[str, str or None]
+        Paths for the paper's abstract, text, and PDF assets.
+    """
     paper_id = paper.get('paper_id')
     abstract_asset = get_asset(conn, paper_id, 'abstract')
     text_asset = get_asset(conn, paper_id, 'text')
@@ -148,13 +362,49 @@ def _paper_asset_paths(conn, paper, temp_dir):
     }
 
 
-def _publication_key(paper):
-    """Return a stable sort key for publication-date ordering."""
+def _publication_key(paper: Mapping[str, Any]) -> str:
+    """Build a stable publication-date sort key.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    str
+        Publication date, or a value that sorts missing dates last.
+    """
     return str(paper.get('publication_date') or '9999-99-99')
 
 
-def _select_papers(papers, scrape_order='corpus', scrape_count=None):
-    """Order and optionally limit corpus papers for a scrape run."""
+def _select_papers(
+    papers: Iterable[_Paper],
+    scrape_order: str = 'corpus',
+    scrape_count: int | None = None,
+) -> list[_Paper]:
+    """Order and optionally limit papers for a scrape run.
+
+    Parameters
+    ----------
+    papers : Iterable[_Paper]
+        Corpus paper rows.
+    scrape_order : str, optional
+        Selection order, such as corpus order, random order, or publication
+        date.
+    scrape_count : int, optional
+        Maximum number of papers to return.
+
+    Returns
+    -------
+    list[_Paper]
+        Selected paper rows.
+
+    Raises
+    ------
+    ValueError
+        If the order is unsupported or the count is not positive.
+    """
     if scrape_order not in SCRAPE_ORDERS:
         raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
     if scrape_count is not None and scrape_count < 1:
@@ -192,14 +442,72 @@ def scrape_papers(db_path: str = 'papers.db',
                   delete_images_after: bool = False,
                   output_path: str = 'temp_scraped_materials.csv',
                   force: bool = False,
+                  ignore_filters: bool = False,
                   scrape_count: int | None = None,
                   scrape_order: str = 'corpus',
                   compression_scope: str = 'none',
                   compression_mode: str = 'auto',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
-                  ):
-    """Scrape downloaded papers with text, images, or both and write material rows."""
+                  ) -> None:
+    """Scrape corpus papers and write extracted material records.
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Path to the corpus SQLite database.
+    recipe : str, optional
+        Recipe name or path used to define the extraction schema.
+    mode : str, optional
+        Extraction source: abstract, text, images, or combined text and images.
+    image_dir : str, optional
+        Directory for images extracted or rendered from PDFs.
+    image_context : str, optional
+        Text context policy for image requests.
+    image_extraction : str, optional
+        PDF image extraction strategy.
+    image_dpi : int, optional
+        Resolution used when rendering PDF pages.
+    image_batch_size : str or int, optional
+        Images per vision request, or ``"all"``.
+    model : str, optional
+        Text model name override.
+    provider : str, optional
+        Text model provider override.
+    base_url : str, optional
+        Text model API base URL override.
+    vision_model : str, optional
+        Vision model name override.
+    vision_provider : str, optional
+        Vision model provider override.
+    vision_base_url : str, optional
+        Vision model API base URL override.
+    delete_images_after : bool, optional
+        Whether to delete extracted images after successful analysis.
+    output_path : str, optional
+        Destination CSV path for material records.
+    force : bool, optional
+        Whether to rerun stages already marked successful.
+    ignore_filters : bool, optional
+        Whether to scrape papers excluded by active corpus filters.
+    scrape_count : int, optional
+        Maximum number of selected papers to scrape.
+    scrape_order : str, optional
+        Ordering applied before the optional paper limit.
+    compression_scope : str, optional
+        Content types eligible for Headroom compression.
+    compression_mode : str, optional
+        Compression policy.
+    compression_ratio : float or str, optional
+        Target compression ratio, or ``"auto"``.
+    compression_content_detection : bool, optional
+        Whether Headroom should detect content types.
+
+    Raises
+    ------
+    ValueError
+        If a scrape, image, ordering, count, or compression option is invalid.
+    """
     mode = mode.lower()
     image_context = image_context.lower()
     image_extraction = image_extraction.lower()
@@ -244,9 +552,34 @@ def scrape_papers(db_path: str = 'papers.db',
         'image_attempted': 0,
         'image_skipped': 0,
         'materials': 0,
+        'chunked_inputs': 0,
+        'chunk_requests': 0,
+        'abstract_chunked': 0,
+        'text_chunked': 0,
     }
     with connect(db_path) as conn:
-        papers = _select_papers(paper_rows(conn), scrape_order=scrape_order, scrape_count=scrape_count)
+        filters = active_filter_stack(conn)
+        papers = paper_rows(conn)
+        if filters:
+            overview = filter_overview(conn)
+            counts = overview['counts']
+            if ignore_filters:
+                print(
+                    f'Ignoring active corpus filters for this scrape: {filter_expression(filters)}. '
+                    f'Recorded result: included={counts["included"]}, excluded={counts["excluded"]}, '
+                    f'unavailable={counts["unavailable"]}.'
+                )
+            else:
+                statuses = current_filter_statuses(conn)
+                papers = [paper for paper in papers if statuses.get(paper['paper_id']) == 'included']
+                print(
+                    f'Applying corpus filters: {filter_expression(filters)}. '
+                    f'Final result: included={counts["included"]}, excluded={counts["excluded"]}, '
+                    f'unavailable={counts["unavailable"]}.'
+                )
+        else:
+            print('No active corpus filters; all otherwise eligible papers are available for scraping.')
+        papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
         with tempfile.TemporaryDirectory(prefix='paperscraper-scrape-') as temp_dir:
             with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
                 for row in papers:
@@ -273,7 +606,9 @@ def scrape_papers(db_path: str = 'papers.db',
                                 text = read_document_text(abstract_path)
                                 prompt = build_scrape_prompt(recipe_data, source='text')
                                 text = maybe_compress_text(text, prompt, text_config, compression)
-                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
+                                _record_chunk_plan(row, 'abstract', text_chunks, text_config, summary)
+                                for text_chunk in text_chunks:
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
                                 row['num_abstract_materials'] = len(text_materials)
@@ -294,7 +629,9 @@ def scrape_papers(db_path: str = 'papers.db',
                                 text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
                                 prompt = build_scrape_prompt(recipe_data, source='text')
                                 text = maybe_compress_text(text, prompt, text_config, compression)
-                                for text_chunk in _text_chunks(text, text_config, prompt=prompt):
+                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
+                                _record_chunk_plan(row, 'text', text_chunks, text_config, summary)
+                                for text_chunk in text_chunks:
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
                                 row['num_text_materials'] = len(text_materials)
@@ -386,3 +723,15 @@ def scrape_papers(db_path: str = 'papers.db',
         )
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
+    if summary['chunked_inputs']:
+        input_summary = (
+            '1 paper input was'
+            if summary['chunked_inputs'] == 1
+            else f"{summary['chunked_inputs']} paper inputs were"
+        )
+        print(
+            f"Chunking warning: {input_summary} split into "
+            f"{summary['chunk_requests']} independent model requests "
+            f"(abstracts={summary['abstract_chunked']}, text={summary['text_chunked']}).",
+            file=sys.stderr,
+        )

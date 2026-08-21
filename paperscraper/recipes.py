@@ -5,16 +5,40 @@ expectations used by scraping and storage. This module validates recipe shape
 and maps extracted columns back to canonical output columns.
 """
 
+from __future__ import annotations
+
 import json
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any, TypeAlias
 
 MODULE_DIR = Path(__file__).resolve().parent
 RECIPES_PATH = MODULE_DIR / 'resources' / 'recipes.json'
 METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
+_Recipe: TypeAlias = dict[str, Any]
 
 
-def _validate_recipe(recipe, source: str):
-    """Validate the minimum required structure for a recipe dictionary."""
+def _validate_recipe(recipe: object, source: str) -> _Recipe:
+    """Validate the minimum recipe structure.
+
+    Parameters
+    ----------
+    recipe : object
+        Recipe mapping to validate.
+    source : str
+        Human-readable source used in validation errors.
+
+    Returns
+    -------
+    _Recipe
+        The validated recipe with optional defaults populated.
+
+    Raises
+    ------
+    ValueError
+        If the recipe is not a mapping, lacks required fields, or has no valid
+        search-field mapping.
+    """
     if not isinstance(recipe, dict):
         raise ValueError(f'Recipe in {source} must be a JSON object.')
     missing = [key for key in ['material type', 'search fields'] if key not in recipe]
@@ -26,8 +50,27 @@ def _validate_recipe(recipe, source: str):
     return recipe
 
 
-def _load_recipe_file(path: Path):
-    """Load a recipe from a standalone JSON file."""
+def _load_recipe_file(path: Path) -> _Recipe:
+    """Load a recipe from a standalone JSON file.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Recipe JSON file to read.
+
+    Returns
+    -------
+    _Recipe
+        Validated recipe data.
+
+    Raises
+    ------
+    ValueError
+        If the file contains invalid JSON, an ambiguous structure, or an
+        invalid recipe.
+    OSError
+        If the recipe file cannot be read.
+    """
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -44,8 +87,30 @@ def _load_recipe_file(path: Path):
     )
 
 
-def load_recipe(recipe_name: str):
-    """Load a bundled recipe by name or a recipe JSON file by path."""
+def load_recipe(recipe_name: str) -> _Recipe:
+    """Load a bundled recipe or a standalone recipe file.
+
+    Parameters
+    ----------
+    recipe_name : str
+        Bundled recipe name or path to a recipe JSON file.
+
+    Returns
+    -------
+    _Recipe
+        Validated recipe data.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the bundled recipe resource is missing.
+    ValueError
+        If recipe JSON or its recipe structure is invalid.
+    KeyError
+        If no bundled or standalone recipe matches ``recipe_name``.
+    OSError
+        If a recipe file cannot be read.
+    """
     recipe_path = Path(recipe_name).expanduser()
     if recipe_path.is_file():
         return _load_recipe_file(recipe_path)
@@ -65,8 +130,22 @@ def load_recipe(recipe_name: str):
             f'Recipe called "{recipe_name}" does not exist, and no recipe file was found at that path.') from e
 
 
-def field_columns(recipe, existing_columns=None):
-    """Return output columns for a recipe, including metadata fields."""
+def field_columns(recipe: _Recipe, existing_columns: Iterable[str] | None = None) -> list[str]:
+    """Build output columns for a recipe.
+
+    Parameters
+    ----------
+    recipe : _Recipe
+        Validated extraction recipe.
+    existing_columns : Iterable[str] or None, optional
+        Existing output columns to preserve instead of deriving new ones.
+
+    Returns
+    -------
+    list[str]
+        Existing columns when provided; otherwise recipe fields with unit
+        labels followed by metadata columns.
+    """
     columns = list(existing_columns or [])
     if columns:
         return columns
@@ -79,8 +158,19 @@ def field_columns(recipe, existing_columns=None):
     return columns
 
 
-def aliases_for(recipe):
-    """Build lower-case aliases for recipe fields and metadata fields."""
+def aliases_for(recipe: _Recipe) -> dict[str, set[str]]:
+    """Build aliases for recipe and metadata fields.
+
+    Parameters
+    ----------
+    recipe : _Recipe
+        Validated extraction recipe.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Canonical fields mapped to their lower-case aliases.
+    """
     aliases = {}
     for field, config in recipe['search fields'].items():
         names = {field.lower()}
@@ -95,8 +185,23 @@ def aliases_for(recipe):
     return aliases
 
 
-def canonical_match(series_name, columns, recipe):
-    """Match an incoming column name to the canonical recipe/output column."""
+def canonical_match(series_name: str, columns: Iterable[str], recipe: _Recipe) -> str | None:
+    """Match an incoming name to a canonical output column.
+
+    Parameters
+    ----------
+    series_name : str
+        Incoming scrape-result column name.
+    columns : Iterable[str]
+        Canonical output columns available for matching.
+    recipe : _Recipe
+        Validated extraction recipe containing aliases.
+
+    Returns
+    -------
+    str or None
+        Matching canonical column, or ``None`` when no match exists.
+    """
     raw_name = series_name.strip()
     normalized = raw_name.lower()
     aliases = aliases_for(recipe)

@@ -1,0 +1,9 @@
+# Everything this example writes lands beside the scripts: the corpus, the CSVs
+# ps_scrape and ps_store produce, and the endpoint file serve_gaudi.sbatch
+# publishes. Job logs (ps-*.log, vllm-gaudi-*.log) are already covered by the
+# root .gitignore.
+*.db
+*.db-journal
+*.db-wal
+*.csv
+vllm_endpoint.txt
