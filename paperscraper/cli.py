@@ -60,7 +60,7 @@ def _format_bytes(size: int) -> str:
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
               type=click.Choice(['all', 'elsevier', 'core', 'openalex', 'pubmed', 'arxiv',
-                                 'medrxiv']),
+                                 'medrxiv', 'biorxiv']),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -153,7 +153,7 @@ def import_author(db_path: str,
 @click.option('--source', 'sources',
               multiple=True,
               type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed',
-                                 'arxiv', 'medrxiv']),
+                                 'arxiv', 'medrxiv', 'biorxiv']),
               default=('all',),
               show_default=True,
               help='Content source to use for PDFs and PubMed Central full text. '
@@ -186,7 +186,8 @@ def download(
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv']),
+              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv',
+                                 'biorxiv']),
               default=('all',),
               show_default=True,
               help='Metadata source to use. Repeat to choose more than one.')
@@ -254,7 +255,7 @@ def enrich(db_path: str,
     if summary['unresolved']:
         click.echo(
             f'{summary["unresolved"]} papers have no DOI, OpenAlex identifier, PMID, '
-            f'arXiv identifier, or medRxiv DOI and were skipped.',
+            f'arXiv identifier, medRxiv DOI, or bioRxiv DOI and were skipped.',
             err=True,
         )
 

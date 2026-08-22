@@ -35,11 +35,12 @@ for it. arXiv asks that clients leave three seconds between consecutive requests
 PaperScraper enforces itself; a search or enrichment run that spans many pages will spend a
 noticeable part of its time waiting, and that is expected rather than a fault.
 
-medRxiv needs no credentials either, and publishes no rate limit. PaperScraper paces itself at
-one request a second regardless, which matters more here than for the other providers: medRxiv
-has no search endpoint, so a search reads the posting archive a page at a time and a broad query
-spends most of its run waiting between pages. Narrowing the query is what makes a medRxiv search
-quick; see [Build a corpus](../user-guide/corpus.md).
+medRxiv and bioRxiv need no credentials either, and publish no rate limit. They are one service
+under two names, so PaperScraper paces each at one request a second, which matters more here than
+for the other providers: neither has a search endpoint, so a search reads the posting archive a
+page at a time and a broad query spends most of its run waiting between pages. Narrowing the query
+is what makes either search quick, and it matters most for bioRxiv, whose archive opened in 2013
+and is several times the size of medRxiv's; see [Build a corpus](../user-guide/corpus.md).
 
 ## Hosted model providers
 

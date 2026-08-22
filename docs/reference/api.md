@@ -23,6 +23,7 @@ modules/openalex
 modules/pubmed
 modules/arxiv
 modules/medrxiv
+modules/biorxiv
 modules/enrichment
 modules/elsevier
 modules/metadata

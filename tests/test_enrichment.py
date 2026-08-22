@@ -219,9 +219,9 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
     assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv',
-                                                   'medrxiv']
+                                                   'medrxiv', 'biorxiv']
     assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv',
-                                                      'medrxiv']
+                                                      'medrxiv', 'biorxiv']
     assert enrichment.configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
         enrichment.configured_sources(['scopus'])
@@ -1277,6 +1277,203 @@ def test_enrich_batch_keeps_other_provider_subjects_when_only_medrxiv_is_request
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
 
     assert sources == {'openalex', 'medrxiv'}
+
+
+def biorxiv_entry(published: str = '10.1234/biorxiv-one') -> dict[str, Any]:
+    """Return a bioRxiv record shaped like biorxiv.record_to_paper output."""
+    return {
+        'paper_id': f'doi:{published}' if published else 'doi:10.1101/2023.12.01.569634',
+        'doi': published or '10.1101/2023.12.01.569634',
+        'biorxiv_doi': '10.1101/2023.12.01.569634',
+        'title': 'bioRxiv title',
+        'journal': '' if published else 'bioRxiv',
+        'publication_date': '2023-12-03',
+        'authors': 'Clayton Curtis',
+        'version': '2',
+        'license': 'cc_by_nc_nd',
+        'category': 'Neuroscience',
+        'published_doi': published,
+        'jatsxml': 'https://www.biorxiv.org/content/early/2023/12/03/x.source.xml',
+        'categories': [{'id': 'neuroscience', 'name': 'Neuroscience', 'is_primary': True}],
+    }
+
+
+def test_biorxiv_candidates_key_rows_by_the_doi_biorxiv_issued() -> None:
+    """Read a bioRxiv DOI from the stored column, the paper ID, or the DOI."""
+    candidates = [
+        {'paper_id': 'doi:10.1234/a', 'biorxiv_doi': '10.1101/2023.12.01.569634v2'},
+        {'paper_id': 'doi:10.64898/2026.08.07.742070'},
+        {'paper_id': 'doi:10.1234/b', 'doi': '10.1234/b'},
+        {'paper_id': '', 'biorxiv_doi': '10.1101/2023.12.01.569635'},
+        # A medRxiv row is not a bioRxiv row, whichever column carries its DOI.
+        {'paper_id': 'doi:10.1234/c', 'medrxiv_doi': '10.1101/2024.03.01.24303596'},
+    ]
+
+    assert enrichment.biorxiv_candidates(candidates) == {
+        '10.1101/2023.12.01.569634': 'doi:10.1234/a',
+        '10.64898/2026.08.07.742070': 'doi:10.64898/2026.08.07.742070',
+    }
+
+
+def test_biorxiv_fields_map_the_shared_enrichment_columns() -> None:
+    """Assert open access and keep the preprint DOI beside the published one."""
+    fields = enrichment.biorxiv_fields(biorxiv_entry())
+
+    assert fields['doi'] == '10.1234/biorxiv-one'
+    assert fields['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert fields['license'] == 'cc_by_nc_nd'
+    assert fields['is_oa'] == 1
+    assert fields['oa_status'] == 'green'
+    # A published paper is no longer a preprint, whatever bioRxiv still hosts.
+    assert fields['work_type'] == ''
+    assert enrichment.biorxiv_fields(biorxiv_entry(published=''))['work_type'] == 'preprint'
+    assert enrichment.biorxiv_fields(biorxiv_entry(published=''))['journal'] == 'bioRxiv'
+
+
+def test_biorxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -> None:
+    """Flag the single category bioRxiv files a preprint under."""
+    rows = enrichment.biorxiv_subject_rows('doi:10.1234/biorxiv-one', biorxiv_entry())
+
+    assert len(rows) == 1
+    assert rows[0]['scheme'] == 'biorxiv_category'
+    assert rows[0]['subject_id'] == 'neuroscience'
+    assert rows[0]['display_name'] == 'Neuroscience'
+    assert rows[0]['is_primary'] == 1
+    assert rows[0]['source'] == 'biorxiv'
+    assert enrichment.biorxiv_subject_rows('doi:x', None) == []
+
+    # The two archives classify under different lists, so their schemes must
+    # differ or one would overwrite the other on the subjects primary key.
+    schemes = {row['scheme'] for row in
+               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())
+               + enrichment.biorxiv_subject_rows('doi:x', biorxiv_entry())}
+    assert schemes == {'arxiv_category', 'medrxiv_category', 'biorxiv_category'}
+
+
+def test_merge_fields_ranks_biorxiv_below_the_other_providers() -> None:
+    """Fill only what no better-placed provider supplied for the same column."""
+    update = enrichment.merge_fields('doi:10.1234/biorxiv-one', None, None,
+                                     ['crossref', 'biorxiv'], None, None, None,
+                                     biorxiv_entry())
+
+    assert update['enrichment_status'] == 'partial'
+    assert update['enrichment_sources'] == 'biorxiv'
+    assert update['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert update['title'] == 'bioRxiv title'
+    assert update['is_oa'] == 1
+    assert update['oa_status'] == 'green'
+    # OPENALEX_ONLY blanks the licence, so bioRxiv's own statement fills it.
+    assert update['license'] == 'cc_by_nc_nd'
+    assert update['enrichment_json']['biorxiv']['category'] == 'Neuroscience'
+    assert update['enrichment_json']['biorxiv']['published_doi'] == '10.1234/biorxiv-one'
+
+
+def test_merge_fields_lets_a_better_placed_provider_win_over_biorxiv() -> None:
+    """Keep Crossref's title and licence when both providers answered."""
+    crossref = {'DOI': '10.1234/biorxiv-one', 'title': ['Crossref title'],
+                'container-title': ['eLife'], 'type': 'journal-article'}
+    openalex = {'id': 'https://openalex.org/W1',
+                'open_access': {'is_oa': True, 'oa_status': 'gold'},
+                'best_oa_location': {'license': 'cc-by-4.0'}}
+    update = enrichment.merge_fields('doi:10.1234/biorxiv-one', crossref, openalex,
+                                     ['crossref', 'openalex', 'biorxiv'], None, None, None,
+                                     biorxiv_entry())
+
+    assert update['title'] == 'Crossref title'
+    assert update['journal'] == 'eLife'
+    assert update['license'] == 'cc-by-4.0'
+    assert update['oa_status'] == 'gold'
+    # bioRxiv still contributes the identifier none of the others carry.
+    assert update['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert update['enrichment_sources'] == 'crossref;openalex;biorxiv'
+
+
+def test_merge_fields_keeps_both_preprint_servers_apart_on_one_row() -> None:
+    """Record each archive's DOI in its own column when a row reaches both."""
+    update = enrichment.merge_fields('doi:10.1234/both', None, None,
+                                     ['medrxiv', 'biorxiv'], None, None,
+                                     medrxiv_entry(published='10.1234/both'),
+                                     biorxiv_entry(published='10.1234/both'))
+
+    assert update['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
+    assert update['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert update['enrichment_sources'] == 'medrxiv;biorxiv'
+    assert set(update['enrichment_json']) >= {'medrxiv', 'biorxiv'}
+
+
+def test_enrich_batch_enriches_a_biorxiv_only_row_and_stores_its_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve a row that has only a bioRxiv DOI and store its subject row."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1101/2023.12.01.569634',
+                           'biorxiv_doi': '10.1101/2023.12.01.569634', 'title': 'Seeded'}])
+    monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi',
+                        lambda *_, **__: biorxiv_entry(published=''))
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['biorxiv'], '')
+        subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
+        rows = corpus.paper_rows(conn)
+
+    assert summary['unresolved'] == 0
+    assert summary['succeeded'] == 1
+    assert {row['scheme'] for row in subjects} == {'biorxiv_category'}
+    assert rows[0]['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert rows[0]['enrichment_sources'] == 'biorxiv'
+    assert rows[0]['is_oa'] == 1
+
+
+def test_enrich_batch_does_not_ask_either_preprint_server_for_the_others_doi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Route each preprint DOI to the one archive that can answer for it.
+
+    Both servers share a DOI prefix and one paced API, so a row misrouted to
+    the wrong one costs a request per paper and returns nothing.
+    """
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1101/2023.12.01.569634',
+                           'biorxiv_doi': '10.1101/2023.12.01.569634'}])
+
+    def unreachable(*_: object, **__: object) -> None:
+        """Fail the test if medRxiv is queried for a bioRxiv DOI."""
+        raise AssertionError('medRxiv should not be queried for a bioRxiv DOI')
+
+    monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi', unreachable)
+    monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi',
+                        lambda *_, **__: biorxiv_entry(published=''))
+
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+                                          ['medrxiv', 'biorxiv'], '')
+
+    assert summary['succeeded'] == 1
+
+
+def test_enrich_batch_skips_biorxiv_for_a_row_carrying_only_a_published_doi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spend no request on a DOI bioRxiv has no way to look up."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/journal-only', 'doi': '10.1234/journal-only'}])
+
+    def unreachable(*_: object, **__: object) -> None:
+        """Fail the test if bioRxiv is queried for a non-bioRxiv DOI."""
+        raise AssertionError('bioRxiv should not be queried for a published DOI')
+
+    monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi', unreachable)
+
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+                                          ['biorxiv'], '')
+
+    assert summary['not_found'] == 1
 
 
 def test_merge_fields_records_pubmed_as_a_found_source() -> None:

@@ -1,21 +1,24 @@
-"""Request helpers for the medRxiv API used by PaperScraper.
+"""Request helpers for the bioRxiv API used by PaperScraper.
 
-This module centralizes medRxiv HTTP details and the mapping from medRxiv API
+This module centralizes bioRxiv HTTP details and the mapping from bioRxiv API
 records onto PaperScraper's paper schema, so search, download, and enrichment
 code can share one implementation. The service needs neither an API key nor a
 contact address, so there is nothing to configure before using it. It publishes
 no rate limit either, so requests are paced through one module-level limiter at
 a rate chosen to be unobtrusive rather than to satisfy a documented rule.
 
-Two hosts answer the same routes with ``medrxiv`` as the server segment, and
-they differ in ways that decide which one a given scan should use.
-``api.medrxiv.org`` returns 100 records per page but ignores the ``category``
-parameter, silently answering with the unfiltered set;
-``api.biorxiv.org`` applies ``category`` but returns only 30 records per page.
-Both number their records identically, so a cursor means the same thing on
-either. :func:`endpoint` therefore picks the wider page for an unscoped walk
-and the filtering host only when a category was actually asked for, which is
-the cheaper of the two in each case.
+bioRxiv and medRxiv are one service answering under two host names, and the
+server segment of the path rather than the host is what selects an archive.
+Both hosts therefore answer for ``biorxiv``, and they differ only in ways that
+decide which one a given scan should use. ``api.medrxiv.org`` returns 100
+records per page but ignores the ``category`` parameter, silently answering
+with the unfiltered set; ``api.biorxiv.org`` applies ``category`` but returns
+only 30 records per page. Both number their records identically, so a cursor
+means the same thing on either. :func:`endpoint` therefore picks the wider page
+for an unscoped walk and the filtering host only when a category was actually
+asked for, which is the cheaper of the two in each case. That is why the
+default host here is the one named for the other archive: the name reflects
+which page width is being asked for, not which server's content comes back.
 
 Because a cursor is an absolute record offset while a page is only as long as
 the host chooses, stepping a walk by anything other than that host's page
@@ -28,26 +31,36 @@ under ``messages``, so every payload is inspected for that shape before its
 records are read. A missing record and an exhausted page walk are reported the
 same way as a malformed request, and are told apart here by status text.
 
-medRxiv publishes no search endpoint. A record is reachable by its DOI or by
+bioRxiv publishes no search endpoint. A record is reachable by its DOI or by
 walking a date interval, which is why :func:`parse_query` and :func:`matches`
 exist: :mod:`paperscraper.search` walks intervals and applies the query itself.
 Interval pages also return one entry per posted version rather than one per
 paper, so :func:`latest_versions` collapses them.
 
 Because that walk is the whole archive unless the query narrows it,
-:data:`MAX_SCAN_RECORDS` caps how far one search reads. Without it a term that
-matches nothing recent would read every posting medRxiv has ever accepted,
-which is the difference between a slow search and one that looks hung.
+:data:`MAX_SCAN_RECORDS` caps how far one search reads. That bound matters more
+here than it does for medRxiv: bioRxiv has been accepting preprints since
+November 2013 and holds several times as many, so an unscoped walk is
+correspondingly longer. Without the cap a term that matches nothing recent
+would read every posting bioRxiv has ever accepted, which is the difference
+between a slow search and one that looks hung.
 
-medRxiv DOIs carry the ``10.1101`` prefix up to late 2025 and ``10.64898``
-afterwards. Both prefixes are shared with bioRxiv, so a prefix says nothing
+bioRxiv DOIs carry the ``10.1101`` prefix up to late 2025 and ``10.64898``
+afterwards. Both prefixes are shared with medRxiv, so a prefix says nothing
 about which archive holds a preprint; what separates them is the accession
-number, which runs eight digits here -- a two-digit year in front of a
-six-digit counter -- against bioRxiv's six. Identifiers are therefore
-recognized by the shape of the DOI suffix rather than by a prefix list, so a
-further prefix change does not strand the older content or need a code change
-to accept the newer, and a bioRxiv DOI is not mistaken for one this API can
-answer.
+number, which runs six digits here and eight on medRxiv, whose counter is
+prefixed with the two-digit year. Identifiers are therefore recognized by the
+shape of the DOI suffix rather than by a prefix list, so a further prefix
+change does not strand the older content or need a code change to accept the
+newer, and a medRxiv DOI is not mistaken for one this API can answer.
+
+Two suffix shapes have to be recognized, not one. Preprints posted before 2018
+were issued a bare accession number, as in ``10.1101/060400``, rather than the
+dated ``10.1101/2023.12.01.569634`` in use since. Those identifiers were never
+reissued, and a preprint that old can still be revised, so the old shape turns
+up in a walk of last week's postings as readily as in one of 2014's. medRxiv
+opened in 2019 and so has only ever used the dated form, which is why the bare
+one is accepted here alone.
 """
 
 from __future__ import annotations
@@ -65,34 +78,38 @@ from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://api.medrxiv.org'
 CATEGORY_BASE_URL = 'https://api.biorxiv.org'
-WEB_URL = 'https://www.medrxiv.org'
-SERVER = 'medrxiv'
+WEB_URL = 'https://www.biorxiv.org'
+SERVER = 'biorxiv'
 USER_AGENT = 'PaperScraper/0.0.1'
 PAGE_SIZE = 100
 CATEGORY_PAGE_SIZE = 30
-CORPUS_START = '2019-06-01'
-MEDRXIV_MIN_INTERVAL = 1.0
+CORPUS_START = '2013-11-01'
+BIORXIV_MIN_INTERVAL = 1.0
 MAX_SCAN_RECORDS = 20000
-DOI_BATCH_SIZE = 1
 QUERY_PREFIXES = ('category', 'from', 'to')
 OK_STATUS = 'ok'
 EMPTY_STATUSES = ('no posts found', 'doi not recognizable')
-# A medRxiv accession number is eight digits, against bioRxiv's six, which is
-# the only part of the DOI that tells the two archives apart. The upper bound
-# leaves room for a ninth digit without reaching down to bioRxiv's width, and
-# the trailing lookahead stops a shorter run from matching inside a longer one.
-_MEDRXIV_DOI = re.compile(
-    r'(?P<doi>10\.\d{4,9}/\d{4}\.\d{2}\.\d{2}\.\d{8,9}(?!\d))(?:v(?P<version>\d+))?',
+# Two suffix shapes, because bioRxiv changed the scheme in 2018 and kept the
+# old identifiers: a dated accession, and the bare accession used before it.
+# Six digits either way, against medRxiv's eight, which is the only part of a
+# dated DOI that tells the two archives apart; the upper bound leaves room for
+# a seventh without reaching medRxiv's width, and the trailing lookahead stops
+# a shorter run from matching inside a longer one. The bare form is tied to
+# ``10.1101`` because that is the only prefix that ever issued it, and it is
+# too plain to recognize safely under any prefix.
+_BIORXIV_DOI = re.compile(
+    r'(?P<doi>10\.\d{4,9}/\d{4}\.\d{2}\.\d{2}\.\d{6,7}(?!\d)'
+    r'|10\.1101/\d{6,7}(?!\d))(?:v(?P<version>\d+))?',
     re.IGNORECASE,
 )
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _NOT_AVAILABLE = {'', 'na', 'n/a', 'none', 'null'}
-_MedrxivRecord: TypeAlias = dict[str, Any]
+_BiorxivRecord: TypeAlias = dict[str, Any]
 _last_request_at = 0.0
 
 
 class _ResponseLike(Protocol):
-    """HTTP response surface used by the medRxiv helpers."""
+    """HTTP response surface used by the bioRxiv helpers."""
 
     status_code: int
     headers: Mapping[str, str]
@@ -122,15 +139,15 @@ class _HTTPClient(Protocol):
         ...
 
 
-def _throttle(interval: float = MEDRXIV_MIN_INTERVAL) -> None:
-    """Sleep until the shared medRxiv request window allows another request.
+def _throttle(interval: float = BIORXIV_MIN_INTERVAL) -> None:
+    """Sleep until the shared bioRxiv request window allows another request.
 
     A page walk is a long run of requests against one host, so the window is
     module-level state rather than a per-call loop delay.
 
     Parameters
     ----------
-    interval : float, default=MEDRXIV_MIN_INTERVAL
+    interval : float, default=BIORXIV_MIN_INTERVAL
         Minimum seconds required between consecutive requests.
 
     Returns
@@ -148,7 +165,7 @@ def _throttle(interval: float = MEDRXIV_MIN_INTERVAL) -> None:
 
 
 def request_headers() -> dict[str, str]:
-    """Build medRxiv request headers.
+    """Build bioRxiv request headers.
 
     Returns
     -------
@@ -182,12 +199,12 @@ def _text(value: object) -> str:
 
 
 def details_url(doi: str, version: str = 'na') -> str:
-    """Build the URL for a medRxiv details request.
+    """Build the URL for a bioRxiv details request.
 
     Parameters
     ----------
     doi : str
-        Bare medRxiv DOI.
+        Bare bioRxiv DOI.
     version : str, default='na'
         Posted version to request, or ``'na'`` for every version.
 
@@ -205,12 +222,13 @@ def endpoint(category: str = '') -> tuple[str, int]:
     Only ``api.biorxiv.org`` applies the ``category`` filter, and it pages in
     thirds of what ``api.medrxiv.org`` returns, so each host is cheaper for a
     different scan: the wider page wins when every record has to be read
-    anyway, and the filter wins when it removes most of them first.
+    anyway, and the filter wins when it removes most of them first. Both serve
+    the ``biorxiv`` archive, so the choice costs nothing in coverage.
 
     Parameters
     ----------
     category : str, default=''
-        medRxiv subject category the scan is restricted to, if any.
+        bioRxiv subject category the scan is restricted to, if any.
 
     Returns
     -------
@@ -223,7 +241,7 @@ def endpoint(category: str = '') -> tuple[str, int]:
 
 
 def page_size(payload: Mapping[str, Any] | None, default: int = PAGE_SIZE) -> int:
-    """Read how many records a medRxiv payload actually returned.
+    """Read how many records a bioRxiv payload actually returned.
 
     A walk steps its cursor by this rather than by :data:`PAGE_SIZE`, because
     a cursor counts records while a page holds however many the host chose to
@@ -233,7 +251,7 @@ def page_size(payload: Mapping[str, Any] | None, default: int = PAGE_SIZE) -> in
     Parameters
     ----------
     payload : Mapping[str, Any] or None
-        Parsed medRxiv payload.
+        Parsed bioRxiv payload.
     default : int, default=PAGE_SIZE
         Page length assumed when the payload reports none.
 
@@ -247,7 +265,7 @@ def page_size(payload: Mapping[str, Any] | None, default: int = PAGE_SIZE) -> in
 
 
 def interval_url(start_date: str, end_date: str, cursor: int = 0, category: str = '') -> str:
-    """Build the URL for one page of a medRxiv date interval.
+    """Build the URL for one page of a bioRxiv date interval.
 
     Parameters
     ----------
@@ -258,7 +276,7 @@ def interval_url(start_date: str, end_date: str, cursor: int = 0, category: str 
     cursor : int, default=0
         Zero-based index of the first record requested.
     category : str, default=''
-        medRxiv subject category the scan is restricted to, if any. Only the
+        bioRxiv subject category the scan is restricted to, if any. Only the
         host that supports filtering is addressed when one is given.
 
     Returns
@@ -279,12 +297,12 @@ def interval_url(start_date: str, end_date: str, cursor: int = 0, category: str 
 
 
 def pdf_url(doi: str, version: str = '') -> str:
-    """Build the public PDF location for a medRxiv preprint.
+    """Build the public PDF location for a bioRxiv preprint.
 
     Parameters
     ----------
     doi : str
-        medRxiv DOI, with or without a version suffix.
+        bioRxiv DOI, with or without a version suffix.
     version : str, default=''
         Posted version number. Defaults to the version carried by ``doi``, and
         then to the first version.
@@ -294,10 +312,10 @@ def pdf_url(doi: str, version: str = '') -> str:
     str
         PDF URL, or an empty string when no DOI is present.
     """
-    identifier = normalize_medrxiv_doi(doi)
+    identifier = normalize_biorxiv_doi(doi)
     if not identifier:
         return ''
-    number = _text(version) or medrxiv_version(doi) or '1'
+    number = _text(version) or biorxiv_version(doi) or '1'
     return f'{WEB_URL}/content/{identifier}v{number}.full.pdf'
 
 
@@ -308,7 +326,7 @@ def request(
     timeout: float = 60,
     attempts: int = 4,
 ) -> _ResponseLike | None:
-    """Request a medRxiv endpoint with courtesy pacing and bounded retries.
+    """Request a bioRxiv endpoint with courtesy pacing and bounded retries.
 
     A 429 means the request rate was too high rather than that a budget is
     gone, so it is retried. Every other client error is terminal and fails at
@@ -317,7 +335,7 @@ def request(
     Parameters
     ----------
     url : str
-        medRxiv endpoint URL.
+        bioRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
     session : _HTTPClient or None, optional
@@ -348,7 +366,7 @@ def request(
             if response.status_code == 404:
                 return None
             if 400 <= response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(f'medRxiv rejected the request with '
+                raise RuntimeError(f'bioRxiv rejected the request with '
                                    f'{response.status_code} from {url}')
             response.raise_for_status()
             return response
@@ -362,7 +380,7 @@ def request(
             except (TypeError, ValueError):
                 delay = 2 ** attempt
             time.sleep(delay)
-    raise RuntimeError(f'medRxiv request failed after {attempts} attempts: {last_error}') from last_error
+    raise RuntimeError(f'bioRxiv request failed after {attempts} attempts: {last_error}') from last_error
 
 
 def request_json(
@@ -371,8 +389,8 @@ def request_json(
     session: _HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
-) -> _MedrxivRecord | None:
-    """Request a medRxiv endpoint and parse its JSON payload.
+) -> _BiorxivRecord | None:
+    """Request a bioRxiv endpoint and parse its JSON payload.
 
     An unknown DOI and a cursor past the end of an interval both arrive as an
     HTTP 200 carrying a status string, and both mean "nothing here" rather than
@@ -382,7 +400,7 @@ def request_json(
     Parameters
     ----------
     url : str
-        medRxiv endpoint URL.
+        bioRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
     session : _HTTPClient or None, optional
@@ -395,12 +413,12 @@ def request_json(
     Returns
     -------
     dict[str, Any] or None
-        Parsed payload, or ``None`` when medRxiv holds no matching records.
+        Parsed payload, or ``None`` when bioRxiv holds no matching records.
 
     Raises
     ------
     RuntimeError
-        If the request fails, the payload is not well-formed JSON, or medRxiv
+        If the request fails, the payload is not well-formed JSON, or bioRxiv
         reports the request as invalid.
     """
     response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
@@ -409,14 +427,14 @@ def request_json(
     try:
         payload = response.json()
     except ValueError as error:
-        raise RuntimeError(f'medRxiv returned malformed JSON: {error}') from error
+        raise RuntimeError(f'bioRxiv returned malformed JSON: {error}') from error
     if not isinstance(payload, Mapping):
-        raise RuntimeError(f'medRxiv returned an unexpected payload of type {type(payload).__name__}')
+        raise RuntimeError(f'bioRxiv returned an unexpected payload of type {type(payload).__name__}')
     status = _status(payload)
     if status.lower() in EMPTY_STATUSES:
         return None
     if status and status.lower() != OK_STATUS:
-        raise RuntimeError(f'medRxiv rejected the request: {status}')
+        raise RuntimeError(f'bioRxiv rejected the request: {status}')
     return dict(payload)
 
 
@@ -426,7 +444,7 @@ def _message(payload: Mapping[str, Any] | None) -> Mapping[str, Any]:
     Parameters
     ----------
     payload : Mapping[str, Any] or None
-        Parsed medRxiv payload.
+        Parsed bioRxiv payload.
 
     Returns
     -------
@@ -449,7 +467,7 @@ def _status(payload: Mapping[str, Any] | None) -> str:
     Parameters
     ----------
     payload : Mapping[str, Any] or None
-        Parsed medRxiv payload.
+        Parsed bioRxiv payload.
 
     Returns
     -------
@@ -460,7 +478,7 @@ def _status(payload: Mapping[str, Any] | None) -> str:
 
 
 def total_results(payload: Mapping[str, Any] | None) -> int:
-    """Read the total record count a medRxiv interval payload reports.
+    """Read the total record count a bioRxiv interval payload reports.
 
     The count includes one entry per posted version rather than one per paper,
     which is what makes it usable as a page-walk bound.
@@ -468,7 +486,7 @@ def total_results(payload: Mapping[str, Any] | None) -> int:
     Parameters
     ----------
     payload : Mapping[str, Any] or None
-        Parsed medRxiv payload.
+        Parsed bioRxiv payload.
 
     Returns
     -------
@@ -480,38 +498,39 @@ def total_results(payload: Mapping[str, Any] | None) -> int:
     return int(total) if total.isdigit() else 0
 
 
-def normalize_medrxiv_doi(value: object) -> str:
-    """Normalize a medRxiv identifier to its bare, unversioned DOI.
+def normalize_biorxiv_doi(value: object) -> str:
+    """Normalize a bioRxiv identifier to its bare, unversioned DOI.
 
-    A DOI, a ``doi:`` or ``medrxiv:`` paper identifier, a resolver URL, and a
-    medRxiv content or PDF URL are all accepted. Case is folded, because DOIs
-    are case-insensitive and the corpus compares them as strings. A bioRxiv DOI
+    A DOI, a ``doi:`` or ``biorxiv:`` paper identifier, a resolver URL, and a
+    bioRxiv content or PDF URL are all accepted, in the dated accession scheme
+    and in the bare one bioRxiv used before 2018. Case is folded, because DOIs
+    are case-insensitive and the corpus compares them as strings. A medRxiv DOI
     is rejected rather than returned, because it names a preprint this API
     cannot answer for.
 
     Parameters
     ----------
     value : object
-        medRxiv DOI, paper identifier, or content URL.
+        bioRxiv DOI, paper identifier, or content URL.
 
     Returns
     -------
     str
-        Bare medRxiv DOI, or an empty string when none is present.
+        Bare bioRxiv DOI, or an empty string when none is present.
     """
     if value is None:
         return ''
-    match = _MEDRXIV_DOI.search(str(value))
+    match = _BIORXIV_DOI.search(str(value))
     return match.group('doi').lower() if match else ''
 
 
-def medrxiv_version(value: object) -> str:
-    """Extract the posted version number from a versioned medRxiv identifier.
+def biorxiv_version(value: object) -> str:
+    """Extract the posted version number from a versioned bioRxiv identifier.
 
     Parameters
     ----------
     value : object
-        medRxiv DOI or content URL, such as ``10.1101/2024.03.01.24303596v2``.
+        bioRxiv DOI or content URL, such as ``10.1101/2023.12.01.569634v2``.
 
     Returns
     -------
@@ -520,7 +539,7 @@ def medrxiv_version(value: object) -> str:
     """
     if value is None:
         return ''
-    match = _MEDRXIV_DOI.search(str(value))
+    match = _BIORXIV_DOI.search(str(value))
     return match.group('version') or '' if match else ''
 
 
@@ -541,18 +560,18 @@ def _title_key(value: object) -> str:
 
 
 def _authors(value: object) -> str:
-    """Reformat a medRxiv author list into the corpus name order.
+    """Reformat a bioRxiv author list into the corpus name order.
 
-    medRxiv lists authors as ``Family, G. I.`` while Crossref, OpenAlex,
+    bioRxiv lists authors as ``Family, G. I.`` while Crossref, OpenAlex,
     PubMed, and arXiv all supply ``Given Family``. The corpus holds one
     ``authors`` string per paper whatever found it, so the order is flipped
     here to keep rows comparable across providers. A name with no comma is
-    passed through, which is what keeps collaboration names intact.
+    passed through, which is what keeps consortium names intact.
 
     Parameters
     ----------
     value : object
-        Semicolon-separated author list as medRxiv publishes it.
+        Semicolon-separated author list as bioRxiv publishes it.
 
     Returns
     -------
@@ -570,16 +589,16 @@ def _authors(value: object) -> str:
 
 
 def _categories(record: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Collect a record's medRxiv subject category.
+    """Collect a record's bioRxiv subject category.
 
-    medRxiv files each preprint under exactly one category, so the list holds
+    bioRxiv files each preprint under exactly one category, so the list holds
     at most one entry. It is returned as a list anyway to match the shape the
     other providers' subject helpers consume.
 
     Parameters
     ----------
     record : Mapping[str, Any]
-        medRxiv API record.
+        bioRxiv API record.
 
     Returns
     -------
@@ -592,24 +611,24 @@ def _categories(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [{'id': category.lower(), 'name': category, 'is_primary': True}]
 
 
-def record_to_paper(record: Mapping[str, Any]) -> _MedrxivRecord:
-    """Map one medRxiv API record onto PaperScraper's paper schema.
+def record_to_paper(record: Mapping[str, Any]) -> _BiorxivRecord:
+    """Map one bioRxiv API record onto PaperScraper's paper schema.
 
     A preprint that has since appeared in a journal reports the published DOI,
     in which case it is used as the paper's DOI and identifier so the row
     merges with the published record rather than duplicating it. The preprint's
-    own DOI is kept in ``medrxiv_doi`` either way, because it is what reaches
+    own DOI is kept in ``biorxiv_doi`` either way, because it is what reaches
     this API again later.
 
     ``journal`` is filled only for a preprint that has not been published.
-    Enrichment fills only columns that are still empty, so writing ``medRxiv``
+    Enrichment fills only columns that are still empty, so writing ``bioRxiv``
     onto a row that names a published version would permanently mask the
     journal that Crossref holds for it.
 
     Parameters
     ----------
     record : Mapping[str, Any]
-        medRxiv API record.
+        bioRxiv API record.
 
     Returns
     -------
@@ -618,21 +637,21 @@ def record_to_paper(record: Mapping[str, Any]) -> _MedrxivRecord:
         ``category``, ``license``, ``version``, ``published_doi``, and
         ``jatsxml`` extras that the corpus schema does not store directly.
     """
-    medrxiv_doi = normalize_medrxiv_doi(record.get('doi'))
+    biorxiv_doi = normalize_biorxiv_doi(record.get('doi'))
     published = clean_doi(_text(record.get('published')))
-    doi = published or medrxiv_doi
+    doi = published or biorxiv_doi
     version = _text(record.get('version'))
     categories = _categories(record)
     return {
         'paper_id': f'doi:{doi}' if doi else '',
         'doi': doi,
-        'medrxiv_doi': medrxiv_doi,
+        'biorxiv_doi': biorxiv_doi,
         'title': _text(record.get('title')),
-        'journal': '' if published else 'medRxiv',
+        'journal': '' if published else 'bioRxiv',
         'publication_date': _text(record.get('date')),
         'authors': _authors(record.get('authors')),
-        'sources': 'medrxiv',
-        'pdf_url': pdf_url(medrxiv_doi, version),
+        'sources': 'biorxiv',
+        'pdf_url': pdf_url(biorxiv_doi, version),
         'metadata_status': 'retrieved',
         'abstract': _text(record.get('abstract')),
         'categories': categories,
@@ -644,13 +663,13 @@ def record_to_paper(record: Mapping[str, Any]) -> _MedrxivRecord:
     }
 
 
-def parse_records(payload: Mapping[str, Any] | None) -> list[_MedrxivRecord]:
-    """Map every record in a medRxiv payload onto the paper schema.
+def parse_records(payload: Mapping[str, Any] | None) -> list[_BiorxivRecord]:
+    """Map every record in a bioRxiv payload onto the paper schema.
 
     Parameters
     ----------
     payload : Mapping[str, Any] or None
-        Parsed medRxiv payload, or ``None``.
+        Parsed bioRxiv payload, or ``None``.
 
     Returns
     -------
@@ -665,7 +684,7 @@ def parse_records(payload: Mapping[str, Any] | None) -> list[_MedrxivRecord]:
     return [record_to_paper(record) for record in collection if isinstance(record, Mapping)]
 
 
-def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_MedrxivRecord]:
+def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_BiorxivRecord]:
     """Reduce parsed records to one entry per preprint, keeping the newest.
 
     Both the details and the interval endpoints return one entry per posted
@@ -691,9 +710,9 @@ def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_MedrxivRecord
     list[dict[str, Any]]
         One record per preprint, in first-appearance order.
     """
-    best: dict[str, _MedrxivRecord] = {}
+    best: dict[str, _BiorxivRecord] = {}
     for entry in entries:
-        key = str(entry.get('medrxiv_doi') or entry.get('paper_id') or '')
+        key = str(entry.get('biorxiv_doi') or entry.get('paper_id') or '')
         if not key:
             continue
         current = best.get(key)
@@ -716,7 +735,7 @@ def _version_rank(entry: Mapping[str, Any]) -> int:
     Parameters
     ----------
     entry : Mapping[str, Any]
-        Parsed medRxiv record.
+        Parsed bioRxiv record.
 
     Returns
     -------
@@ -759,8 +778,8 @@ def interval_page(start_date: str,
                   end_date: str,
                   cursor: int = 0,
                   category: str = '',
-                  session: _HTTPClient | None = None) -> _MedrxivRecord | None:
-    """Fetch one page of medRxiv records posted within a date interval.
+                  session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+    """Fetch one page of bioRxiv records posted within a date interval.
 
     Parameters
     ----------
@@ -771,7 +790,7 @@ def interval_page(start_date: str,
     cursor : int, default=0
         Zero-based index of the first record requested.
     category : str, default=''
-        medRxiv subject category to restrict the interval to.
+        bioRxiv subject category to restrict the interval to.
     session : _HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
@@ -785,7 +804,7 @@ def interval_page(start_date: str,
     ValueError
         If either bound is not an ISO ``YYYY-MM-DD`` date.
     RuntimeError
-        If the request cannot be completed or medRxiv rejects the interval.
+        If the request cannot be completed or bioRxiv rejects the interval.
     """
     params = {'category': _text(category)} if _text(category) else {}
     return request_json(interval_url(start_date, end_date, cursor, category),
@@ -794,13 +813,13 @@ def interval_page(start_date: str,
 
 def details(doi: str,
             version: str = 'na',
-            session: _HTTPClient | None = None) -> _MedrxivRecord | None:
-    """Fetch the posted versions of one medRxiv preprint.
+            session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+    """Fetch the posted versions of one bioRxiv preprint.
 
     Parameters
     ----------
     doi : str
-        medRxiv DOI, with or without a version suffix.
+        bioRxiv DOI, with or without a version suffix.
     version : str, default='na'
         Posted version to request, or ``'na'`` for every version.
     session : _HTTPClient or None, optional
@@ -809,51 +828,51 @@ def details(doi: str,
     Returns
     -------
     dict[str, Any] or None
-        Parsed payload, or ``None`` when medRxiv holds no such preprint.
+        Parsed payload, or ``None`` when bioRxiv holds no such preprint.
 
     Raises
     ------
     RuntimeError
-        If the request cannot be completed or medRxiv rejects the DOI.
+        If the request cannot be completed or bioRxiv rejects the DOI.
     """
-    identifier = normalize_medrxiv_doi(doi)
+    identifier = normalize_biorxiv_doi(doi)
     if not identifier:
         return None
     return request_json(details_url(identifier, version), session=session)
 
 
-def fetch_doi(doi: str, session: _HTTPClient | None = None) -> _MedrxivRecord | None:
-    """Fetch the newest posted version of one medRxiv preprint.
+def fetch_doi(doi: str, session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+    """Fetch the newest posted version of one bioRxiv preprint.
 
     Parameters
     ----------
     doi : str
-        medRxiv DOI, with or without a version suffix.
+        bioRxiv DOI, with or without a version suffix.
     session : _HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
     -------
     dict[str, Any] or None
-        Normalized paper metadata, or ``None`` when medRxiv holds no such
+        Normalized paper metadata, or ``None`` when bioRxiv holds no such
         preprint.
 
     Raises
     ------
     RuntimeError
-        If the request cannot be completed or medRxiv rejects the DOI.
+        If the request cannot be completed or bioRxiv rejects the DOI.
     """
     entries = latest_versions(parse_records(details(doi, session=session)))
     return entries[0] if entries else None
 
 
-def resolve_medrxiv_doi(paper: Mapping[str, Any]) -> str:
-    """Resolve one paper row's medRxiv DOI from values it already holds.
+def resolve_biorxiv_doi(paper: Mapping[str, Any]) -> str:
+    """Resolve one paper row's bioRxiv DOI from values it already holds.
 
-    This never issues a request. medRxiv publishes no title search, so a row
-    that carries neither a medRxiv DOI nor a medRxiv URL cannot be reached at
+    This never issues a request. bioRxiv publishes no title search, so a row
+    that carries neither a bioRxiv DOI nor a bioRxiv URL cannot be reached at
     all; a published DOI on the row belongs to the journal version and is not
-    a medRxiv identifier.
+    a bioRxiv identifier.
 
     Parameters
     ----------
@@ -863,28 +882,28 @@ def resolve_medrxiv_doi(paper: Mapping[str, Any]) -> str:
     Returns
     -------
     str
-        Bare medRxiv DOI, or an empty string when the row stores none.
+        Bare bioRxiv DOI, or an empty string when the row stores none.
     """
-    identifier = normalize_medrxiv_doi(paper.get('medrxiv_doi'))
+    identifier = normalize_biorxiv_doi(paper.get('biorxiv_doi'))
     if identifier:
         return identifier
     for column in ['paper_id', 'doi', 'pdf_url']:
         value = str(paper.get(column) or '')
-        if column == 'pdf_url' and 'medrxiv.org' not in value.lower():
+        if column == 'pdf_url' and 'biorxiv.org' not in value.lower():
             continue
-        identifier = normalize_medrxiv_doi(value)
+        identifier = normalize_biorxiv_doi(value)
         if identifier:
             return identifier
     return ''
 
 
 def full_text(entry: Mapping[str, Any], session: _HTTPClient | None = None) -> str:
-    """Fetch and flatten a medRxiv preprint's JATS full text.
+    """Fetch and flatten a bioRxiv preprint's JATS full text.
 
-    Every medRxiv record names a JATS document, which is the same format
+    Every bioRxiv record names a JATS document, which is the same format
     PubMed Central serves, so :mod:`paperscraper.pubmed`'s flattener is reused
     rather than reimplemented. Taking the text from JATS rather than from the
-    PDF also skips a scrape: the structure this walks is the one medRxiv
+    PDF also skips a scrape: the structure this walks is the one bioRxiv
     published, not one recovered from a page layout.
 
     Parameters
@@ -916,7 +935,7 @@ def full_text(entry: Mapping[str, Any], session: _HTTPClient | None = None) -> s
     try:
         root = ET.fromstring(text)
     except ET.ParseError as error:
-        raise RuntimeError(f'medRxiv returned malformed JATS XML: {error}') from error
+        raise RuntimeError(f'bioRxiv returned malformed JATS XML: {error}') from error
     title = pubmed._element_text(root.find('.//article-title'))
     body = pubmed._jats_body_text(root)
     if not body:
@@ -927,7 +946,7 @@ def full_text(entry: Mapping[str, Any], session: _HTTPClient | None = None) -> s
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:
     """Split a search phrase into match terms and interval scope.
 
-    medRxiv publishes no search endpoint, so a query is answered by walking a
+    bioRxiv publishes no search endpoint, so a query is answered by walking a
     date interval and matching records locally. That walk is the whole corpus
     unless the caller narrows it, so the query string doubles as the place to
     say how far it should reach: ``category:``, ``from:``, and ``to:`` are
@@ -976,8 +995,8 @@ def matches(entry: Mapping[str, Any], terms: Sequence[str]) -> bool:
     Terms are combined with ``AND`` across the record's title, abstract,
     authors, and category, matching how OpenAlex, PubMed, and arXiv read the
     same phrase so result counts stay comparable across providers. A term
-    matches at the start of a word rather than the whole of it, so ``vaccine``
-    finds ``vaccines`` and ``covid`` finds ``covid-19``.
+    matches at the start of a word rather than the whole of it, so ``genome``
+    finds ``genomes`` and ``crispr`` finds ``crispr-cas9``.
 
     Parameters
     ----------

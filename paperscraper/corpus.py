@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -40,6 +40,7 @@ PAPER_COLUMNS = [
     'pmcid',
     'arxiv_id',
     'medrxiv_doi',
+    'biorxiv_doi',
 ]
 PIPELINE_COLUMNS = {
     'metadata_status': 'pending',
@@ -84,7 +85,7 @@ ENRICHMENT_COLUMNS = {
     'enriched_at': 'TEXT',
 }
 ENRICHMENT_FILL_COLUMNS = ['doi', 'title', 'journal', 'publication_date', 'authors',
-                           'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi']
+                           'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi', 'biorxiv_doi']
 AUTHOR_COLUMNS = [
     'paper_id', 'author_position', 'affiliation_rank', 'position_label', 'display_name',
     'given_name', 'family_name', 'orcid', 'is_corresponding', 'affiliation',
@@ -542,8 +543,8 @@ def _fallback_paper_id(paper: _PaperInput) -> str:
     Returns
     -------
     str
-        DOI-, PubMed-, arXiv-, medRxiv-, CORE-, or content-derived paper
-        identifier.
+        DOI-, PubMed-, arXiv-, medRxiv-, bioRxiv-, CORE-, or content-derived
+        paper identifier.
     """
     doi = _clean_doi(paper.get('doi'))
     if doi:
@@ -557,6 +558,9 @@ def _fallback_paper_id(paper: _PaperInput) -> str:
     medrxiv_doi = paper.get('medrxiv_doi')
     if _has_value(medrxiv_doi):
         return f'doi:{_clean_doi(medrxiv_doi) or medrxiv_doi}'
+    biorxiv_doi = paper.get('biorxiv_doi')
+    if _has_value(biorxiv_doi):
+        return f'doi:{_clean_doi(biorxiv_doi) or biorxiv_doi}'
     core_id = paper.get('core_id')
     if _has_value(core_id):
         return f'core:{core_id}'
@@ -649,7 +653,8 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
         return True
-    for column in ['paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi']:
+    for column in ['paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi',
+                   'biorxiv_doi']:
         if _has_value(existing.get(column)) and str(existing.get(column)) == str(incoming.get(column)):
             return True
     existing_title = _title_key(existing.get('title'))
@@ -875,7 +880,7 @@ def enrichment_candidates(conn: sqlite3.Connection,
     rows = conn.execute(
         f"""
         SELECT rowid AS rowid, paper_id, doi, title, journal, publication_date, authors,
-               openalex_id, pmid, pmcid, arxiv_id, medrxiv_doi,
+               openalex_id, pmid, pmcid, arxiv_id, medrxiv_doi, biorxiv_doi,
                enrichment_status, enriched_at
         FROM papers
         WHERE rowid > ?

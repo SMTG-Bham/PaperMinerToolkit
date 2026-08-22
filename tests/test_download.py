@@ -492,7 +492,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     )
 
     assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier',
-                                                     'pubmed', 'medrxiv', 'arxiv']
+                                                     'pubmed', 'medrxiv', 'biorxiv', 'arxiv']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
@@ -500,7 +500,8 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
     monkeypatch.delenv('CORE_API_KEY', raising=False)
-    assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'medrxiv', 'arxiv']
+    assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'medrxiv', 'biorxiv',
+                                                     'arxiv']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(
@@ -569,9 +570,9 @@ def test_download_papers_accepts_medrxiv_as_a_full_text_source(
     assert row['text_source'] == 'medrxiv'
 
     # Without a full-text provider the precondition still refuses the run, and
-    # now names medRxiv among the ways to satisfy it.
+    # now names the preprint servers among the ways to satisfy it.
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
-    with pytest.raises(ValueError, match='the medrxiv source'):
+    with pytest.raises(ValueError, match='--source medrxiv or --source biorxiv'):
         download.download_papers(str(db_path), download_format='text', force=True)
 
 
@@ -1836,6 +1837,269 @@ def test_download_pdf_from_sources_can_select_medrxiv(
 
     assert download._download_pdf_from_sources({}, tmp_path / 'out.pdf', ['medrxiv']) == (
         True, 'medrxiv', 'https://www.medrxiv.org/content/x.full.pdf')
+
+
+def biorxiv_entry(**overrides: Any) -> dict[str, Any]:
+    """Return a mapped bioRxiv record for the download helpers."""
+    entry = {
+        'biorxiv_doi': '10.1101/2023.12.01.569634',
+        'version': '2',
+        'abstract': '  A memory\n  abstract. ',
+        'jatsxml': 'https://www.biorxiv.org/content/early/2023/12/03/x.source.xml',
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_biorxiv_identifier_reads_stored_values_without_a_request() -> None:
+    """Recognise every stored form of a bioRxiv DOI, and nothing else."""
+    assert download._biorxiv_identifier(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634v2'}) == '10.1101/2023.12.01.569634'
+    assert download._biorxiv_identifier(
+        {'paper_id': 'doi:10.64898/2026.08.07.742070'}) == '10.64898/2026.08.07.742070'
+    assert download._biorxiv_identifier(
+        {'pdf_url': 'https://www.biorxiv.org/content/10.1101/060400v1.full.pdf'}
+    ) == '10.1101/060400'
+    assert download._biorxiv_identifier({}) is None
+    # A published DOI names the journal version, which bioRxiv does not index.
+    assert download._biorxiv_identifier({'doi': '10.7554/elife.94191.3'}) is None
+    # A medRxiv row belongs to the other archive and is not reachable here.
+    assert download._biorxiv_identifier(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}) is None
+
+
+def test_download_biorxiv_pdf_asks_for_the_version_the_record_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fetch the posted version's PDF and report a row that carries no DOI."""
+    attempted = []
+
+    def fake_download_url_to_pdf(url: str, filepath: object,
+                                 headers: object = None) -> tuple[bool, str]:
+        """Provide a fake PDF fetch that records the attempted URL."""
+        attempted.append(url)
+        return True, ''
+
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download_url_to_pdf)
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
+
+    ok, detail = download._download_biorxiv_pdf(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, tmp_path / 'out.pdf')
+
+    expected = 'https://www.biorxiv.org/content/10.1101/2023.12.01.569634v2.full.pdf'
+    assert (ok, detail) == (True, expected)
+    assert attempted == [expected]
+
+    assert download._download_biorxiv_pdf({}, tmp_path / 'out.pdf') == (
+        False, 'missing bioRxiv DOI')
+
+
+def test_download_biorxiv_pdf_reports_a_refused_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Surface the reason a PDF was refused rather than working around it."""
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
+    monkeypatch.setattr(download, '_download_url_to_pdf',
+                        lambda *_, **__: (False, 'HTTP 403 for biorxiv.org'))
+
+    assert download._download_biorxiv_pdf(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, tmp_path / 'out.pdf') == (
+        False, 'HTTP 403 for biorxiv.org')
+
+
+def test_download_biorxiv_text_writes_the_flattened_jats(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Store the JATS full text bioRxiv publishes beside every record."""
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
+    monkeypatch.setattr(download.biorxiv, 'full_text',
+                        lambda *_, **__: 'Title\n\nBody text.')
+    filepath = tmp_path / 'out.txt'
+
+    assert download._download_biorxiv_text(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, filepath) == (True, '')
+    assert filepath.read_text(encoding='utf-8') == 'Title\n\nBody text.'
+
+    monkeypatch.setattr(download.biorxiv, 'full_text', lambda *_, **__: '')
+    assert download._download_biorxiv_text(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, filepath) == (
+        False, 'no bioRxiv full text for 10.1101/2023.12.01.569634')
+
+    assert download._download_biorxiv_text({}, filepath) == (False, 'missing bioRxiv DOI')
+
+
+def test_download_biorxiv_helpers_report_a_failed_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pass a request failure through as the reason rather than raising."""
+    def fail(*_: object, **__: object) -> None:
+        """Raise the error a failed bioRxiv request produces."""
+        raise RuntimeError('bioRxiv request failed after 4 attempts')
+
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', fail)
+    row = {'biorxiv_doi': '10.1101/2023.12.01.569634'}
+
+    assert download._download_biorxiv_abstract(row) == (
+        False, 'bioRxiv request failed after 4 attempts', '')
+    assert download._download_biorxiv_text(row, tmp_path / 'out.txt') == (
+        False, 'bioRxiv request failed after 4 attempts')
+
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: None)
+    assert download._download_biorxiv_abstract(row) == (
+        False, 'no bioRxiv record found for 10.1101/2023.12.01.569634', '')
+
+
+def test_download_biorxiv_abstract_uses_the_stored_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the record's abstract, compacted, and report an empty one."""
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
+    assert download._download_biorxiv_abstract(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}) == (True, 'biorxiv', 'A memory abstract.')
+
+    monkeypatch.setattr(download.biorxiv, 'fetch_doi',
+                        lambda *_, **__: biorxiv_entry(abstract=''))
+    assert download._download_biorxiv_abstract(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}) == (
+        False, 'no bioRxiv abstract found for 10.1101/2023.12.01.569634', '')
+
+    assert download._download_biorxiv_abstract({}) == (False, 'missing bioRxiv DOI', '')
+
+
+def test_download_abstract_tries_biorxiv_between_medrxiv_and_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall through to bioRxiv once medRxiv has declined, before reaching arXiv."""
+    calls = []
+
+    def record(name: str, ok: bool) -> object:
+        """Build a fake abstract lookup that records that it ran."""
+        def lookup(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+            """Record the provider and return the prepared outcome."""
+            calls.append(name)
+            return (True, name, f'From {name}.') if ok else (False, f'no {name} abstract', '')
+        return lookup
+
+    monkeypatch.setattr(download, '_download_openalex_abstract', record('openalex', False))
+    monkeypatch.setattr(download, '_download_pubmed_abstract', record('pubmed', False))
+    monkeypatch.setattr(download, '_download_medrxiv_abstract', record('medrxiv', False))
+    monkeypatch.setattr(download, '_download_biorxiv_abstract', record('biorxiv', True))
+    monkeypatch.setattr(download, '_download_arxiv_abstract', record('arxiv', True))
+    monkeypatch.setattr(download, '_download_core_abstract', record('core', False))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    result = download._download_abstract(
+        {'doi': '10.1234/x', 'medrxiv_doi': '10.1101/2024.03.01.24303596',
+         'biorxiv_doi': '10.1101/2023.12.01.569634',
+         'arxiv_id': '2301.12345', 'core_id': '5'})
+
+    assert result == (True, 'biorxiv', 'From biorxiv.')
+    assert calls == ['openalex', 'pubmed', 'medrxiv', 'biorxiv']
+
+
+def test_download_abstract_skips_biorxiv_without_an_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never spend a bioRxiv lookup on a row with no bioRxiv DOI."""
+    def unreachable(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+        """Fail the test if the bioRxiv lookup is attempted."""
+        raise AssertionError('bioRxiv should not be queried without an identifier')
+
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda _: (False, 'no openalex abstract', ''))
+    monkeypatch.setattr(download, '_download_pubmed_abstract',
+                        lambda _: (False, 'no pubmed abstract', ''))
+    monkeypatch.setattr(download, '_download_medrxiv_abstract',
+                        lambda _: (False, 'no medrxiv abstract', ''))
+    monkeypatch.setattr(download, '_download_biorxiv_abstract', unreachable)
+    monkeypatch.setattr(download, '_download_arxiv_abstract',
+                        lambda _: (False, 'no arxiv abstract', ''))
+    monkeypatch.setattr(download, '_download_core_abstract',
+                        lambda _: (False, 'no core abstract', ''))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    # The row carries a medRxiv DOI, which must not be read as a bioRxiv one.
+    ok, reason, _ = download._download_abstract(
+        {'doi': '10.1234/x', 'medrxiv_doi': '10.1101/2024.03.01.24303596'})
+
+    assert ok is False
+    assert 'biorxiv' not in reason
+
+
+def test_download_text_from_sources_falls_through_medrxiv_to_biorxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Offer bioRxiv full text once the earlier providers have nothing to give."""
+    monkeypatch.setattr(download, '_should_try_pmc_text', lambda _: False)
+    monkeypatch.setattr(download, '_download_biorxiv_text', lambda *_: (True, ''))
+
+    row = {'biorxiv_doi': '10.1101/2023.12.01.569634'}
+    assert download._download_text_from_sources(
+        row, tmp_path / 'out.txt', ['medrxiv', 'biorxiv'], False) == (True, 'biorxiv', '')
+
+    # A row with no bioRxiv DOI never reaches the provider at all.
+    ok, reason, _ = download._download_text_from_sources(
+        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['medrxiv', 'biorxiv'], False)
+    assert ok is False
+    assert reason == 'no full-text source available'
+
+
+def test_download_text_from_sources_reports_a_failed_biorxiv_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Name bioRxiv in the joined reason when its text lookup fails."""
+    monkeypatch.setattr(download, '_should_try_pmc_text', lambda _: False)
+    monkeypatch.setattr(download, '_download_biorxiv_text',
+                        lambda *_: (False, 'no bioRxiv full text for 10.1101/x'))
+
+    ok, reason, _ = download._download_text_from_sources(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, tmp_path / 'out.txt', ['biorxiv'], False)
+
+    assert ok is False
+    assert reason == 'biorxiv: no bioRxiv full text for 10.1101/x'
+
+
+def test_download_pdf_from_sources_can_select_biorxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Route a bioRxiv PDF request through the registered downloader."""
+    monkeypatch.setattr(download, '_download_biorxiv_pdf',
+                        lambda *_: (True, 'https://www.biorxiv.org/content/x.full.pdf'))
+
+    assert download._download_pdf_from_sources({}, tmp_path / 'out.pdf', ['biorxiv']) == (
+        True, 'biorxiv', 'https://www.biorxiv.org/content/x.full.pdf')
+
+
+def test_download_papers_accepts_biorxiv_as_a_full_text_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat bioRxiv as satisfying the text-format precondition, like medRxiv."""
+    def fake_biorxiv_text(paper: Mapping[str, Any], filepath: object) -> tuple[bool, str]:
+        """Write the text a successful bioRxiv fetch would have written."""
+        with open(filepath, 'w', encoding='utf-8') as out_file:
+            out_file.write('Full text.')
+        return True, ''
+
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'doi:10.1101/2023.12.01.569634',
+                            'biorxiv_doi': '10.1101/2023.12.01.569634'}])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(download, '_download_biorxiv_text', fake_biorxiv_text)
+    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+
+    download.download_papers(str(db_path), download_format='text', sources=['biorxiv'])
+
+    row = read_corpus(db_path)[0]
+    assert row['text_download_status'] == 'succeeded'
+    assert row['text_source'] == 'biorxiv'
 
 
 def test_arxiv_identifier_reads_stored_values_without_a_request() -> None:
