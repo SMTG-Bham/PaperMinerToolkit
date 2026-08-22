@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pandas as pd
 import pytest
@@ -183,10 +183,189 @@ def test_import_author_works_writes_review_csv_and_corpus(tmp_path: Path) -> Non
     with corpus.connect(db_path) as connection:
         papers = corpus.paper_rows(connection)
     review = pd.read_csv(review_path)
-    assert summary == {'found': 1, 'added': 1, 'updated': 0}
+    assert summary == {'found': 1, 'added': 1, 'updated': 0, 'enriched': 0}
     assert papers[0]['paper_id'] == 'doi:10.1/one'
     assert papers[0]['title'] == 'Title for 10.1/one'
     assert papers[0]['publication_date'] == '2024-03-07'
     assert papers[0]['metadata_status'] == 'retrieved'
     assert json.loads(papers[0]['metadata_json'])['DOI'] == '10.1/one'
     assert review['doi'].tolist() == ['10.1/one']
+
+
+def test_configured_email_reads_the_stored_setting() -> None:
+    """Read the Crossref contact email from a supplied settings mapping."""
+    assert crossref.configured_email({'crossref_email': 'me@example.com'}) == 'me@example.com'
+    assert crossref.configured_email({}) == ''
+
+
+def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prefer an explicit address, fall back to settings, then fail clearly."""
+    monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: 'stored@example.com')
+    assert crossref.resolve_email('explicit@example.com') == 'explicit@example.com'
+    assert crossref.resolve_email(None) == 'stored@example.com'
+
+    monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
+    with pytest.raises(ValueError, match='ps_crossref_email'):
+        crossref.resolve_email(None)
+
+
+def test_request_page_accepts_an_alternate_url() -> None:
+    """Send a request to the single-work route through the shared retry loop."""
+    session = FakeSession([work('10.1234/one')])
+
+    message = crossref._request_page(session, {'mailto': 'me@example.com'},
+                                     'me@example.com', url='https://api.crossref.org/works/10.1234%2Fone')
+
+    assert message['DOI'] == '10.1234/one'
+    assert session.calls[0]['url'].endswith('10.1234%2Fone')
+
+
+def test_works_by_doi_builds_a_comma_filter_with_rows_and_mailto() -> None:
+    """Batch DOIs into one filter with a row count covering every value."""
+    session = FakeSession([{'items': [work('10.1234/two'), work('10.1234/one')]}])
+
+    works = crossref.works_by_doi(['10.1234/one', '10.1234/two'],
+                                  email='me@example.com', session=session, pace=0)
+
+    params = session.calls[0]['params']
+    assert params['filter'] == 'doi:10.1234/one,doi:10.1234/two'
+    assert params['rows'] == 2
+    assert params['mailto'] == 'me@example.com'
+    assert set(works) == {'10.1234/one', '10.1234/two'}
+
+
+def test_works_by_doi_sends_no_select_so_language_is_returned() -> None:
+    """Omit select entirely because language is returned but not selectable."""
+    session = FakeSession([{'items': []}])
+
+    crossref.works_by_doi(['10.1234/one'], email='me@example.com', session=session, pace=0)
+
+    assert 'select' not in session.calls[0]['params']
+
+
+def test_works_by_doi_routes_comma_bearing_dois_to_the_single_work_route() -> None:
+    """Keep DOIs containing the filter separator out of the batch request."""
+    session = FakeSession([{'items': [work('10.1234/plain')]}, work('10.1234/with,comma')])
+
+    works = crossref.works_by_doi(['10.1234/plain', '10.1234/with,comma'],
+                                  email='me@example.com', session=session, pace=0)
+
+    assert session.calls[0]['params']['filter'] == 'doi:10.1234/plain'
+    assert session.calls[1]['url'].endswith('10.1234%2Fwith%2Ccomma')
+    assert set(works) == {'10.1234/plain', '10.1234/with,comma'}
+
+
+def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pace consecutive Crossref requests without sleeping before the first."""
+    sleeps = []
+    monkeypatch.setattr(crossref.time, 'sleep', sleeps.append)
+    session = FakeSession([{'items': []}, {'items': []}])
+
+    crossref.works_by_doi(['10.1234/one', '10.1234/two'], email='me@example.com',
+                          session=session, batch_size=1)
+
+    assert sleeps == [crossref.CROSSREF_MIN_INTERVAL]
+
+
+def test_works_by_doi_rejects_an_invalid_batch_size() -> None:
+    """Reject a batch size outside the supported range before requesting."""
+    session = FakeSession([])
+
+    with pytest.raises(ValueError):
+        crossref.works_by_doi(['10.1234/one'], email='me@example.com',
+                              session=session, batch_size=0)
+
+    assert session.calls == []
+
+
+def test_work_by_doi_returns_none_for_an_unknown_doi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return None when the single-work route exhausts its retries."""
+    def failing(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail as an exhausted Crossref request would."""
+        raise RuntimeError('Crossref request failed after 4 attempts: 404')
+
+    monkeypatch.setattr(crossref, '_request_page', failing)
+
+    assert crossref.work_by_doi('10.1234/missing', email='me@example.com',
+                                session=FakeSession([])) is None
+
+
+def test_work_by_doi_ignores_an_empty_doi() -> None:
+    """Skip the request entirely when no usable DOI is supplied."""
+    session = FakeSession([])
+
+    assert crossref.work_by_doi('', email='me@example.com', session=session) is None
+    assert session.calls == []
+
+
+def test_request_page_does_not_retry_a_client_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give up immediately on a deterministic 4xx rather than retrying it."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(crossref.time, 'sleep', sleeps.append)
+
+    class BadRequestResponse:
+        """Reject every request with an HTTP 400."""
+
+        status_code = 400
+        headers: dict[str, str] = {}
+
+        def raise_for_status(self) -> NoReturn:
+            """Raise the client error Crossref returns for a bad filter."""
+            raise requests.HTTPError('400 Client Error', response=self)
+
+        def json(self) -> dict[str, Any]:
+            """Never reached for a failing response."""
+            return {}
+
+    class BadSession:
+        """Return an HTTP 400 for every request and count the attempts."""
+
+        def __init__(self) -> None:
+            """Start with no recorded attempts."""
+            self.attempts = 0
+
+        def get(self, url: str, *, params: Any, headers: Any, timeout: float) -> BadRequestResponse:
+            """Record the attempt and return the failing response."""
+            self.attempts += 1
+            return BadRequestResponse()
+
+    session = BadSession()
+    with pytest.raises(RuntimeError):
+        crossref._request_page(session, {'mailto': 'me@example.com'}, 'me@example.com')
+
+    assert session.attempts == 1
+    assert sleeps == []
+
+
+def test_works_by_doi_routes_unusable_dois_away_from_the_batch() -> None:
+    """Keep a malformed DOI out of the filter that Crossref would reject."""
+    session = FakeSession([{'items': [work('10.1234/valid')]}, work('10.1/bad')])
+
+    crossref.works_by_doi(['10.1234/valid', '10.1/bad'],
+                          email='me@example.com', session=session, pace=0)
+
+    assert session.calls[0]['params']['filter'] == 'doi:10.1234/valid'
+    assert session.calls[1]['url'].endswith('10.1%2Fbad')
+
+
+def test_works_by_doi_falls_back_to_single_lookups_when_a_batch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recover the whole chunk individually when Crossref rejects the filter."""
+    calls: list[dict[str, Any]] = []
+
+    def flaky_request_page(session: Any, params: Any, email: str, url: str = '',
+                           **kwargs: Any) -> dict[str, Any]:
+        """Fail the batched filter but answer the single-work route."""
+        calls.append({'params': dict(params), 'url': url})
+        if 'filter' in params:
+            raise RuntimeError('Crossref request failed after 4 attempts: 400')
+        return work('10.1234/one')
+
+    monkeypatch.setattr(crossref, '_request_page', flaky_request_page)
+
+    works = crossref.works_by_doi(['10.1234/one'], email='me@example.com',
+                                  session=FakeSession([]), pace=0)
+
+    assert set(works) == {'10.1234/one'}
+    assert len(calls) == 2

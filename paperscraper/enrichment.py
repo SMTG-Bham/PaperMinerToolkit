@@ -1,0 +1,977 @@
+"""Supplement corpus paper metadata with Crossref and OpenAlex records.
+
+Discovery and download populate only a handful of bibliographic fields. This
+module fills in the rest: publisher, work type, volume/issue/pages, ISSNs and
+language from Crossref; citation counts, open-access status, licence and
+subject classification from OpenAlex; and structured authors, subjects and
+reference lists in the corpus child tables.
+
+Crossref is treated as authoritative for the metadata a publisher deposits
+against the DOI, and OpenAlex for everything it derives that no publisher
+deposits. Where the two disagree, both values are recorded in
+``papers.enrichment_json`` so nothing is silently discarded.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timedelta, timezone
+from os import PathLike
+from typing import Any, TypeAlias
+
+from tqdm import tqdm
+
+from paperscraper import crossref as crossref_client
+from paperscraper import openalex
+from paperscraper.corpus import (connect,
+                                 enrichment_candidates,
+                                 enrichment_update_fields,
+                                 find_paper,
+                                 paper_rows,
+                                 set_enrichment_status,
+                                 utc_now,
+                                 write_enrichment)
+from paperscraper.metadata import clean_doi, crossref_fields as crossref_metadata_fields
+
+ENRICHMENT_SOURCES = ('crossref', 'openalex')
+MAX_BATCH_SIZE = 100
+_Record: TypeAlias = dict[str, Any]
+_Fields: TypeAlias = dict[str, Any]
+
+
+def configured_sources(sources: Sequence[str] | None) -> list[str]:
+    """Resolve requested enrichment providers, expanding ``all``.
+
+    Parameters
+    ----------
+    sources : Sequence[str] or None
+        Requested provider names, or ``None`` for every provider.
+
+    Returns
+    -------
+    list[str]
+        Provider names in a stable order.
+
+    Raises
+    ------
+    ValueError
+        If a requested provider is not supported.
+    """
+    if not sources or 'all' in sources:
+        return list(ENRICHMENT_SOURCES)
+    invalid = set(sources) - set(ENRICHMENT_SOURCES)
+    if invalid:
+        raise ValueError(f'enrichment source must be one of: all, {", ".join(ENRICHMENT_SOURCES)}')
+    return [source for source in ENRICHMENT_SOURCES if source in sources]
+
+
+def _short_openalex_id(value: object) -> str:
+    """Reduce an OpenAlex entity URL to its short identifier."""
+    identifier = str(value or '').strip().rstrip('/')
+    return identifier.rsplit('/', 1)[-1] if identifier else ''
+
+
+def _text(value: object) -> str:
+    """Normalize an optional provider value to stripped text."""
+    return '' if value is None else str(value).strip()
+
+
+def partition_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """Split candidates by the lookup key each one can be resolved with.
+
+    Parameters
+    ----------
+    candidates : Sequence[Mapping[str, Any]]
+        Candidate corpus rows carrying ``paper_id``, ``doi`` and ``openalex_id``.
+
+    Returns
+    -------
+    by_doi : dict[str, str]
+        Cleaned DOI to paper identifier.
+    by_openalex : dict[str, str]
+        Short OpenAlex identifier to paper identifier, for DOI-less rows.
+    unresolved : list[str]
+        Paper identifiers with no usable lookup key.
+    """
+    by_doi = {}
+    by_openalex = {}
+    unresolved = []
+    for candidate in candidates:
+        paper_id = str(candidate.get('paper_id') or '')
+        if not paper_id:
+            continue
+        doi = clean_doi(candidate.get('doi'))
+        identifier = _short_openalex_id(candidate.get('openalex_id'))
+        if not identifier and paper_id.startswith('openalex:'):
+            identifier = paper_id.split(':', 1)[1]
+        if doi:
+            by_doi[doi] = paper_id
+        elif identifier:
+            by_openalex[identifier] = paper_id
+        else:
+            unresolved.append(paper_id)
+    return by_doi, by_openalex, unresolved
+
+
+def openalex_fields(work: Mapping[str, Any]) -> _Fields:
+    """Map one OpenAlex work onto the shared enrichment field set.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record.
+
+    Returns
+    -------
+    dict[str, Any]
+        Enrichment fields contributed by OpenAlex.
+    """
+    primary = work.get('primary_location') or {}
+    best = work.get('best_oa_location') or {}
+    source = primary.get('source') or {}
+    biblio = work.get('biblio') or {}
+    access = work.get('open_access') or {}
+    pages = [_text(biblio.get('first_page')), _text(biblio.get('last_page'))]
+    authors = '; '.join(
+        name for name in (
+            ((authorship or {}).get('author') or {}).get('display_name')
+            for authorship in work.get('authorships') or []
+        ) if name
+    )
+    return {
+        'openalex_id': openalex.work_id(work),
+        'doi': clean_doi(work.get('doi')),
+        'title': _text(work.get('title') or work.get('display_name')),
+        'journal': _text(source.get('display_name')),
+        'publication_date': _text(work.get('publication_date') or work.get('publication_year')),
+        'authors': authors,
+        'publisher': _text(source.get('host_organization_name')),
+        'work_type': _text(work.get('type')),
+        'volume': _text(biblio.get('volume')),
+        'issue': _text(biblio.get('issue')),
+        'pages': '-'.join(part for part in pages if part),
+        'issn': ';'.join(_text(value) for value in source.get('issn') or [] if _text(value)),
+        'issn_l': _text(source.get('issn_l')),
+        'language': _text(work.get('language')),
+        'is_oa': int(bool(access.get('is_oa'))),
+        'oa_status': _text(access.get('oa_status')),
+        'license': _text(best.get('license') or primary.get('license')),
+        'is_retracted': int(bool(work.get('is_retracted'))),
+        'cited_by_count': work.get('cited_by_count'),
+        'referenced_works_count': work.get('referenced_works_count'),
+    }
+
+
+def crossref_retraction(work: Mapping[str, Any]) -> tuple[bool, str]:
+    """Detect a retraction notice on a Crossref work.
+
+    ``updated-by`` also carries corrections, errata and expressions of concern,
+    so the update type is checked rather than the presence of the array.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        Crossref work message.
+
+    Returns
+    -------
+    retracted : bool
+        Whether a retraction notice references this work.
+    notice_doi : str
+        DOI of the retraction notice, or an empty string.
+    """
+    for update in work.get('updated-by') or []:
+        if str((update or {}).get('type') or '').lower() == 'retraction':
+            return True, clean_doi(update.get('DOI'))
+    return False, ''
+
+
+def crossref_fields(work: Mapping[str, Any]) -> _Fields:
+    """Map one Crossref work onto the shared enrichment field set.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        Crossref work message.
+
+    Returns
+    -------
+    dict[str, Any]
+        Enrichment fields contributed by Crossref.
+    """
+    mapped = crossref_metadata_fields(work)
+    mapped.pop('crossref_message', None)
+    retracted, _ = crossref_retraction(work)
+    mapped.update({
+        'doi': clean_doi(mapped.get('doi')),
+        'authors': '; '.join(
+            ' '.join(part for part in [_text(author.get('given')), _text(author.get('family'))] if part)
+            for author in work.get('author') or []
+        ),
+        'is_retracted': int(retracted),
+        'referenced_works_count': work.get('references-count'),
+        'license': _crossref_license(work),
+    })
+    return mapped
+
+
+def _crossref_license(work: Mapping[str, Any]) -> str:
+    """Read a Crossref licence URL, ignoring text-mining-only grants."""
+    for entry in work.get('license') or []:
+        if str((entry or {}).get('content-version') or '').lower() in {'vor', 'am'}:
+            return _text(entry.get('URL'))
+    return ''
+
+
+def _provenance(crossref: Mapping[str, Any] | None,
+                openalex_work: Mapping[str, Any] | None) -> _Record:
+    """Build the trimmed provenance document stored in ``enrichment_json``."""
+    provenance: _Record = {'fetched_at': utc_now()}
+    if crossref is not None:
+        retracted, notice = crossref_retraction(crossref)
+        provenance['crossref'] = {
+            'publisher': _text(crossref.get('publisher')),
+            'is_referenced_by_count': crossref.get('is-referenced-by-count'),
+            'references_count': crossref.get('references-count'),
+            'issn_type': crossref.get('issn-type') or [],
+            'license': crossref.get('license') or [],
+            'published_print': _date_parts(crossref.get('published-print')),
+            'published_online': _date_parts(crossref.get('published-online')),
+            'is_retracted': retracted,
+            'retraction_doi': notice,
+        }
+    if openalex_work is not None:
+        primary = openalex_work.get('primary_location') or {}
+        source = primary.get('source') or {}
+        provenance['openalex'] = {
+            'id': openalex.work_id(openalex_work),
+            'ids': openalex_work.get('ids') or {},
+            'publisher': _text(source.get('host_organization_name')),
+            'publication_date': _text(openalex_work.get('publication_date')),
+            'cited_by_count': openalex_work.get('cited_by_count'),
+            'is_authors_truncated': bool(openalex_work.get('is_authors_truncated')),
+            'primary_location_license': _text(primary.get('license')),
+            'best_oa_location_license': _text((openalex_work.get('best_oa_location') or {}).get('license')),
+        }
+    return provenance
+
+
+def _date_parts(value: object) -> str:
+    """Format a Crossref ``date-parts`` container as an ISO-like date."""
+    parts = (value or {}).get('date-parts') if isinstance(value, Mapping) else None
+    if not parts or not parts[0]:
+        return ''
+    date = [int(part) for part in parts[0][:3]]
+    return '-'.join(f'{part:02d}' if index else f'{part:04d}' for index, part in enumerate(date))
+
+
+CROSSREF_PREFERRED = ('publisher', 'work_type', 'volume', 'issue', 'pages', 'issn', 'language')
+OPENALEX_ONLY = ('openalex_id', 'issn_l', 'is_oa', 'oa_status', 'license', 'cited_by_count')
+FILL_COLUMNS = ('doi', 'title', 'journal', 'publication_date', 'authors')
+
+
+def merge_fields(paper_id: str,
+                 crossref: Mapping[str, Any] | None,
+                 openalex_work: Mapping[str, Any] | None,
+                 requested: Sequence[str]) -> _Record:
+    """Apply the provider precedence rules and build one paper's update.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the update applies to.
+    crossref : Mapping[str, Any] or None
+        Crossref work message, or ``None`` when Crossref had no record.
+    openalex_work : Mapping[str, Any] or None
+        OpenAlex work record, or ``None`` when OpenAlex had no record.
+    requested : Sequence[str]
+        Providers that were queried for this paper.
+
+    Returns
+    -------
+    dict[str, Any]
+        Mapping covering every enrichment update parameter.
+    """
+    from_crossref = crossref_fields(crossref) if crossref is not None else {}
+    from_openalex = openalex_fields(openalex_work) if openalex_work is not None else {}
+    update = {field: '' for field in enrichment_update_fields()}
+
+    for column in FILL_COLUMNS + CROSSREF_PREFERRED:
+        update[column] = from_crossref.get(column) or from_openalex.get(column) or ''
+    for column in OPENALEX_ONLY:
+        update[column] = from_openalex.get(column) if from_openalex.get(column) is not None else ''
+    update['referenced_works_count'] = (from_openalex.get('referenced_works_count')
+                                        or from_crossref.get('referenced_works_count') or 0)
+    update['is_retracted'] = int(bool(from_crossref.get('is_retracted'))
+                                 or bool(from_openalex.get('is_retracted')))
+    update['is_oa'] = int(bool(from_openalex.get('is_oa')))
+    update['cited_by_count'] = from_openalex.get('cited_by_count') or 0
+
+    found = [source for source, record in (('crossref', crossref), ('openalex', openalex_work))
+             if record is not None]
+    if not found:
+        status = 'not_found'
+    elif len(found) == len(requested):
+        status = 'succeeded'
+    else:
+        status = 'partial'
+
+    now = utc_now()
+    update.update({
+        'paper_id': paper_id,
+        'enrichment_sources': ';'.join(found),
+        'enrichment_json': _provenance(crossref, openalex_work),
+        'enriched_at': now if found else '',
+        'enrichment_status': status,
+        'updated_at': now,
+    })
+    return update
+
+
+def _position_label(index: int, total: int, authorship: Mapping[str, Any] | None) -> str:
+    """Choose a shared author-position label across both providers."""
+    if authorship and _text(authorship.get('author_position')):
+        return _text(authorship.get('author_position'))
+    if index == 0:
+        return 'first'
+    return 'last' if index == total - 1 else 'middle'
+
+
+def _safe_orcid(value: object) -> str:
+    """Normalize an ORCID, returning an empty string for malformed values."""
+    try:
+        return crossref_client.normalize_orcid(value)
+    except ValueError:
+        return ''
+
+
+def author_rows(paper_id: str,
+                crossref: Mapping[str, Any] | None,
+                openalex_work: Mapping[str, Any] | None) -> list[_Record]:
+    """Build one ``paper_authors`` row per author and affiliation.
+
+    OpenAlex authorships are the spine because they alone carry ORCIDs,
+    disambiguated author identifiers and ROR-matched institutions. Crossref
+    supplies the deposited given/family split by ordinal, and extends the list
+    when OpenAlex reports a truncated author set.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the rows belong to.
+    crossref : Mapping[str, Any] or None
+        Crossref work message.
+    openalex_work : Mapping[str, Any] or None
+        OpenAlex work record.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Rows for the ``paper_authors`` table.
+    """
+    authorships = list((openalex_work or {}).get('authorships') or [])
+    crossref_authors = list((crossref or {}).get('author') or [])
+    rows: list[_Record] = []
+
+    for index, authorship in enumerate(authorships):
+        author = (authorship or {}).get('author') or {}
+        deposited = crossref_authors[index] if index < len(crossref_authors) else {}
+        institutions = list(authorship.get('institutions') or [])
+        raw_affiliations = list(authorship.get('raw_affiliation_strings') or [])
+        base = {
+            'paper_id': paper_id,
+            'author_position': index,
+            'position_label': _position_label(index, len(authorships), authorship),
+            'display_name': _text(author.get('display_name')),
+            'given_name': _text(deposited.get('given')),
+            'family_name': _text(deposited.get('family')),
+            'orcid': _safe_orcid(author.get('orcid')) or _safe_orcid(deposited.get('ORCID')),
+            'is_corresponding': int(bool(authorship.get('is_corresponding'))),
+            'openalex_author_id': _short_openalex_id(author.get('id')),
+            'institution_name': '',
+            'institution_ror': '',
+            'institution_country': '',
+            'source': 'openalex',
+        }
+        if not institutions:
+            rows.append({**base, 'affiliation_rank': 0,
+                         'affiliation': raw_affiliations[0] if raw_affiliations else ''})
+            continue
+        for rank, institution in enumerate(institutions):
+            institution = institution or {}
+            rows.append({
+                **base,
+                'affiliation_rank': rank,
+                'affiliation': raw_affiliations[rank] if rank < len(raw_affiliations) else '',
+                'institution_name': _text(institution.get('display_name')),
+                'institution_ror': _short_openalex_id(institution.get('ror')),
+                'institution_country': _text(institution.get('country_code')),
+            })
+
+    for index in range(len(authorships), len(crossref_authors)):
+        deposited = crossref_authors[index] or {}
+        affiliations = list(deposited.get('affiliation') or [])
+        base = {
+            'paper_id': paper_id,
+            'author_position': index,
+            'position_label': _position_label(index, len(crossref_authors), None),
+            'display_name': ' '.join(part for part in [_text(deposited.get('given')),
+                                                       _text(deposited.get('family'))] if part),
+            'given_name': _text(deposited.get('given')),
+            'family_name': _text(deposited.get('family')),
+            'orcid': _safe_orcid(deposited.get('ORCID')),
+            'is_corresponding': 0,
+            'openalex_author_id': '',
+            'institution_name': '',
+            'institution_ror': '',
+            'institution_country': '',
+            'source': 'crossref',
+        }
+        if not affiliations:
+            rows.append({**base, 'affiliation_rank': 0, 'affiliation': ''})
+            continue
+        for rank, affiliation in enumerate(affiliations):
+            rows.append({**base, 'affiliation_rank': rank,
+                         'affiliation': _text((affiliation or {}).get('name'))})
+    return rows
+
+
+def subject_rows(paper_id: str, openalex_work: Mapping[str, Any] | None) -> list[_Record]:
+    """Build ``paper_subjects`` rows from an OpenAlex work.
+
+    Crossref retired subject assignment and returns an empty list, so subjects
+    come from OpenAlex only. Topics, concepts, keywords, sustainable
+    development goals and the topic hierarchy are kept in separate schemes.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the rows belong to.
+    openalex_work : Mapping[str, Any] or None
+        OpenAlex work record.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Rows for the ``paper_subjects`` table.
+    """
+    if not openalex_work:
+        return []
+    rows: list[_Record] = []
+    primary_id = _short_openalex_id((openalex_work.get('primary_topic') or {}).get('id'))
+
+    for rank, topic in enumerate(openalex_work.get('topics') or []):
+        topic = topic or {}
+        identifier = _short_openalex_id(topic.get('id'))
+        if not identifier:
+            continue
+        rows.append({
+            'paper_id': paper_id, 'scheme': 'topic', 'subject_id': identifier,
+            'display_name': _text(topic.get('display_name')), 'score': topic.get('score'),
+            'subject_rank': rank, 'is_primary': int(identifier == primary_id),
+            'parent_field': _text((topic.get('field') or {}).get('display_name')),
+            'parent_domain': _text((topic.get('domain') or {}).get('display_name')),
+            'source': 'openalex',
+        })
+
+    for level_name in ('subfield', 'field', 'domain'):
+        entry = (openalex_work.get('primary_topic') or {}).get(level_name) or {}
+        identifier = _short_openalex_id(entry.get('id'))
+        if identifier:
+            rows.append({
+                'paper_id': paper_id, 'scheme': level_name, 'subject_id': identifier,
+                'display_name': _text(entry.get('display_name')), 'is_primary': 1,
+                'source': 'openalex',
+            })
+
+    for rank, concept in enumerate(openalex_work.get('concepts') or []):
+        concept = concept or {}
+        identifier = _short_openalex_id(concept.get('id'))
+        if identifier:
+            rows.append({
+                'paper_id': paper_id, 'scheme': 'concept', 'subject_id': identifier,
+                'display_name': _text(concept.get('display_name')), 'score': concept.get('score'),
+                'subject_rank': rank, 'level': concept.get('level'), 'source': 'openalex',
+            })
+
+    for rank, keyword in enumerate(openalex_work.get('keywords') or []):
+        keyword = keyword or {}
+        identifier = _short_openalex_id(keyword.get('id')) or _text(keyword.get('display_name'))
+        if identifier:
+            rows.append({
+                'paper_id': paper_id, 'scheme': 'keyword', 'subject_id': identifier,
+                'display_name': _text(keyword.get('display_name')), 'score': keyword.get('score'),
+                'subject_rank': rank, 'source': 'openalex',
+            })
+
+    for rank, goal in enumerate(openalex_work.get('sustainable_development_goals') or []):
+        goal = goal or {}
+        identifier = _short_openalex_id(goal.get('id'))
+        if identifier:
+            rows.append({
+                'paper_id': paper_id, 'scheme': 'sdg', 'subject_id': identifier,
+                'display_name': _text(goal.get('display_name')), 'score': goal.get('score'),
+                'subject_rank': rank, 'source': 'openalex',
+            })
+
+    seen = set()
+    unique = []
+    for row in rows:
+        key = (row['scheme'], row['subject_id'])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def reference_rows(paper_id: str,
+                   crossref: Mapping[str, Any] | None,
+                   openalex_work: Mapping[str, Any] | None) -> list[_Record]:
+    """Build ``paper_references`` rows from both providers.
+
+    The two reference lists are stored side by side rather than merged:
+    Crossref carries publisher-asserted DOIs, while OpenAlex covers works whose
+    publisher deposited no reference list but yields its own identifiers.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the rows belong to.
+    crossref : Mapping[str, Any] or None
+        Crossref work message.
+    openalex_work : Mapping[str, Any] or None
+        OpenAlex work record.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Rows for the ``paper_references`` table.
+    """
+    rows: list[_Record] = []
+    for rank, reference in enumerate((crossref or {}).get('reference') or []):
+        reference = reference or {}
+        rows.append({
+            'paper_id': paper_id, 'source': 'crossref', 'reference_rank': rank,
+            'referenced_doi': clean_doi(reference.get('DOI')),
+            'referenced_title': _text(reference.get('article-title')
+                                      or reference.get('volume-title')
+                                      or reference.get('journal-title')),
+            'unstructured': _text(reference.get('unstructured')),
+        })
+    for rank, referenced in enumerate((openalex_work or {}).get('referenced_works') or []):
+        identifier = _short_openalex_id(referenced)
+        if identifier:
+            rows.append({
+                'paper_id': paper_id, 'source': 'openalex', 'reference_rank': rank,
+                'referenced_openalex_id': identifier,
+            })
+    return rows
+
+
+def _fetch(sources: Sequence[str],
+           dois: Sequence[str],
+           identifiers: Sequence[str],
+           email: str,
+           api_key: str | None,
+           openalex_session: openalex._HTTPClient | None,
+           crossref_session: crossref_client._CrossrefSessionLike | None,
+           pace: float) -> tuple[dict[str, _Record], dict[str, _Record], dict[str, _Record]]:
+    """Fetch one batch from each requested provider."""
+    crossref_works: dict[str, _Record] = {}
+    openalex_by_doi: dict[str, _Record] = {}
+    openalex_by_id: dict[str, _Record] = {}
+    if 'crossref' in sources and dois:
+        crossref_works = crossref_client.works_by_doi(
+            dois, email=email, session=crossref_session, pace=pace)
+    if 'openalex' in sources:
+        if dois:
+            openalex_by_doi = openalex.works_batch(
+                dois, api_key=api_key, session=openalex_session, mailto=email)
+        if identifiers:
+            openalex_by_id = openalex.works_batch(
+                identifiers, filter_name='ids.openalex', api_key=api_key,
+                session=openalex_session, mailto=email)
+    return crossref_works, openalex_by_doi, openalex_by_id
+
+
+def enrich_batch(conn: sqlite3.Connection,
+                 candidates: Sequence[Mapping[str, Any]],
+                 sources: Sequence[str],
+                 email: str,
+                 api_key: str | None = None,
+                 references: bool = True,
+                 openalex_session: openalex._HTTPClient | None = None,
+                 crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                 pace: float = crossref_client.CROSSREF_MIN_INTERVAL) -> dict[str, int]:
+    """Fetch, map and store enrichment for one batch of papers.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    candidates : Sequence[Mapping[str, Any]]
+        Candidate corpus rows to enrich.
+    sources : Sequence[str]
+        Providers to query.
+    email : str
+        Contact email sent to both providers.
+    api_key : str or None, optional
+        OpenAlex API key to attach.
+    references : bool, default=True
+        Whether to store reference lists.
+    openalex_session : openalex._HTTPClient or None, optional
+        HTTP client used for OpenAlex requests.
+    crossref_session : crossref._CrossrefSessionLike or None, optional
+        HTTP session used for Crossref requests.
+    pace : float, optional
+        Seconds to wait between consecutive Crossref requests.
+
+    Returns
+    -------
+    dict[str, int]
+        Counts of each resulting status and of stored child rows.
+    """
+    summary = {status: 0 for status in
+               ('succeeded', 'partial', 'not_found', 'unresolved', 'failed')}
+    summary.update({'authors': 0, 'subjects': 0, 'references': 0})
+    if not candidates:
+        return summary
+
+    by_doi, by_openalex, unresolved = partition_candidates(candidates)
+    if unresolved:
+        set_enrichment_status(conn, unresolved, 'unresolved')
+        summary['unresolved'] += len(unresolved)
+    if not by_doi and not by_openalex:
+        return summary
+
+    crossref_works, openalex_by_doi, openalex_by_id = _fetch(
+        sources, list(by_doi), list(by_openalex), email, api_key,
+        openalex_session, crossref_session, pace)
+
+    updates, authors, subjects, reference_records = [], [], [], []
+    for key, paper_id in [*by_doi.items(), *by_openalex.items()]:
+        keyed_by_doi = key in by_doi
+        crossref_work = crossref_works.get(key) if keyed_by_doi else None
+        openalex_work = openalex_by_doi.get(key) if keyed_by_doi else openalex_by_id.get(key)
+        requested = sources if keyed_by_doi else [source for source in sources if source == 'openalex']
+        update = merge_fields(paper_id, crossref_work, openalex_work, requested)
+        updates.append(update)
+        summary[update['enrichment_status']] += 1
+        if update['enrichment_status'] == 'not_found':
+            continue
+        authors.extend(author_rows(paper_id, crossref_work, openalex_work))
+        subjects.extend(subject_rows(paper_id, openalex_work))
+        if references:
+            reference_records.extend(reference_rows(paper_id, crossref_work, openalex_work))
+
+    for update in updates:
+        update['enrichment_json'] = _json_text(update['enrichment_json'])
+    write_enrichment(conn, updates, authors, subjects, reference_records)
+    summary['authors'] += len(authors)
+    summary['subjects'] += len(subjects)
+    summary['references'] += len(reference_records)
+    return summary
+
+
+def _json_text(value: object) -> str:
+    """Serialize a provenance document the way the corpus stores JSON."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value or {}, sort_keys=True, default=str)
+
+
+def enrich_from_crossref_message(conn: sqlite3.Connection,
+                                 paper_id: str,
+                                 message: Mapping[str, Any]) -> None:
+    """Store enrichment for one paper from an already-fetched Crossref work.
+
+    This is the write path that keeps ``ps_import_pdfs`` from discarding the
+    publisher, work type, volume, issue, pages, ISSN and language it already
+    fetched while resolving a PDF's DOI.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Paper the Crossref record belongs to.
+    message : Mapping[str, Any]
+        Crossref work message.
+    """
+    if not paper_id or not message:
+        return
+    update = merge_fields(paper_id, message, None, ['crossref'])
+    update['enrichment_json'] = _json_text(update['enrichment_json'])
+    write_enrichment(conn,
+                     [update],
+                     author_rows(paper_id, message, None),
+                     [],
+                     reference_rows(paper_id, message, None))
+
+
+def enrich_papers(conn: sqlite3.Connection,
+                  papers: Iterable[Mapping[str, Any]],
+                  sources: Sequence[str] | None = None,
+                  batch_size: int = MAX_BATCH_SIZE,
+                  references: bool = True,
+                  email: str | None = None,
+                  api_key: str | None = None,
+                  openalex_session: openalex._HTTPClient | None = None,
+                  crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL) -> dict[str, int]:
+    """Enrich specific papers on an already-open corpus connection.
+
+    Incoming rows are resolved against the corpus first, because discovery
+    merges matching records and the stored row may carry a different paper
+    identifier than the provider row that produced it.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    papers : Iterable[Mapping[str, Any]]
+        Paper rows to enrich.
+    sources : Sequence[str] or None, optional
+        Providers to query. ``None`` selects every provider.
+    batch_size : int, default=100
+        Papers looked up per provider request.
+    references : bool, default=True
+        Whether to store reference lists.
+    email : str or None, optional
+        Contact email. Defaults to the stored Crossref setting.
+    api_key : str or None, optional
+        OpenAlex API key. Defaults to the configured key.
+    openalex_session : openalex._HTTPClient or None, optional
+        HTTP client used for OpenAlex requests.
+    crossref_session : crossref._CrossrefSessionLike or None, optional
+        HTTP session used for Crossref requests.
+    pace : float, optional
+        Seconds to wait between consecutive Crossref requests.
+
+    Returns
+    -------
+    dict[str, int]
+        Counts of each resulting status and of stored child rows.
+    """
+    sources = configured_sources(sources)
+    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
+    api_key = api_key if api_key is not None else openalex.configured_api_key()
+
+    resolved: dict[str, _Record] = {}
+    stored = {row['paper_id']: row for row in paper_rows(conn)}
+    for paper in papers:
+        paper_id = str(paper.get('paper_id') or '')
+        row = stored.get(paper_id) or find_paper(conn, paper)
+        if row:
+            resolved[str(row['paper_id'])] = row
+
+    summary = {status: 0 for status in
+               ('succeeded', 'partial', 'not_found', 'unresolved', 'failed')}
+    summary.update({'authors': 0, 'subjects': 0, 'references': 0})
+    candidates = list(resolved.values())
+    batch_size = max(1, min(batch_size, MAX_BATCH_SIZE))
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start:start + batch_size]
+        for key, value in enrich_batch(conn, batch, sources, email, api_key, references,
+                                       openalex_session, crossref_session, pace).items():
+            summary[key] += value
+    return summary
+
+
+def _selected_statuses(force: bool, retry_failed: bool) -> tuple[str, ...]:
+    """Choose which enrichment statuses a run re-processes."""
+    statuses = ['pending']
+    if force:
+        statuses.extend(['succeeded', 'partial', 'not_found'])
+    if retry_failed:
+        statuses.append('failed')
+    return tuple(statuses)
+
+
+def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
+                  sources: Sequence[str] | None = None,
+                  batch_size: int = MAX_BATCH_SIZE,
+                  limit: int | None = None,
+                  force: bool = False,
+                  retry_failed: bool = False,
+                  refresh_after: int = 0,
+                  references: bool = True,
+                  resolve_references: bool = False,
+                  email: str | None = None,
+                  api_key: str | None = None,
+                  openalex_session: openalex._HTTPClient | None = None,
+                  crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL) -> dict[str, int]:
+    """Supplement every candidate paper in a corpus with provider metadata.
+
+    Progress is committed after each batch, so an interrupted or budget-limited
+    run keeps the work it already did and a later run resumes from the first
+    paper that is still pending.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], default='papers.db'
+        Path to the SQLite paper corpus.
+    sources : Sequence[str] or None, optional
+        Providers to query. ``None`` selects every provider.
+    batch_size : int, default=100
+        Papers looked up per provider request.
+    limit : int or None, optional
+        Stop after enriching this many papers.
+    force : bool, default=False
+        Re-enrich papers whose enrichment already succeeded.
+    retry_failed : bool, default=False
+        Retry papers whose previous enrichment failed.
+    refresh_after : int, default=0
+        Re-enrich succeeded papers older than this many days. ``0`` disables it.
+    references : bool, default=True
+        Whether to store reference lists.
+    resolve_references : bool, default=False
+        Whether to resolve OpenAlex reference identifiers to DOIs afterwards.
+    email : str or None, optional
+        Contact email. Defaults to the stored Crossref setting.
+    api_key : str or None, optional
+        OpenAlex API key. Defaults to the configured key.
+    openalex_session : openalex._HTTPClient or None, optional
+        HTTP client used for OpenAlex requests.
+    crossref_session : crossref._CrossrefSessionLike or None, optional
+        HTTP session used for Crossref requests.
+    pace : float, optional
+        Seconds to wait between consecutive Crossref requests.
+
+    Returns
+    -------
+    dict[str, int]
+        Counts of each resulting status and of stored child rows.
+
+    Raises
+    ------
+    ValueError
+        If the provider selection, batch size, or contact email is invalid.
+    RuntimeError
+        If a provider request cannot be completed.
+    """
+    sources = configured_sources(sources)
+    if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
+        raise ValueError(f'batch_size must be between 1 and {MAX_BATCH_SIZE}.')
+    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
+    api_key = api_key if api_key is not None else openalex.configured_api_key()
+    statuses = _selected_statuses(force, retry_failed)
+    refreshed_before = ''
+    if refresh_after > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=refresh_after)
+        refreshed_before = cutoff.isoformat(timespec='seconds')
+
+    summary = {status: 0 for status in
+               ('succeeded', 'partial', 'not_found', 'unresolved', 'failed')}
+    summary.update({'authors': 0, 'subjects': 0, 'references': 0, 'batches': 0})
+
+    with connect(db_path) as conn:
+        remaining = limit
+        after_rowid = 0
+        with tqdm(total=limit, desc='Enriching Papers', colour='#FFA500') as progress:
+            while remaining is None or remaining > 0:
+                page = batch_size if remaining is None else min(batch_size, remaining)
+                candidates = enrichment_candidates(conn, statuses=statuses,
+                                                   after_rowid=after_rowid, limit=page,
+                                                   refreshed_before=refreshed_before)
+                if not candidates:
+                    break
+                after_rowid = int(candidates[-1]['rowid'])
+                counts = enrich_batch(conn, candidates, sources, email, api_key, references,
+                                      openalex_session, crossref_session, pace)
+                for key, value in counts.items():
+                    summary[key] += value
+                summary['batches'] += 1
+                progress.update(len(candidates))
+                if remaining is not None:
+                    remaining -= len(candidates)
+        if resolve_references:
+            resolve_reference_targets(conn)
+    return summary
+
+
+def resolve_reference_dois(db_path: str | PathLike[str] = 'papers.db',
+                           batch_size: int = MAX_BATCH_SIZE,
+                           api_key: str | None = None,
+                           session: openalex._HTTPClient | None = None,
+                           mailto: str = '') -> int:
+    """Resolve stored OpenAlex reference identifiers to DOIs.
+
+    Identifiers are deduplicated across the whole corpus first, so a work cited
+    by many papers costs one lookup rather than one lookup per citing paper.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], default='papers.db'
+        Path to the SQLite paper corpus.
+    batch_size : int, default=100
+        Identifiers looked up per OpenAlex request.
+    api_key : str or None, optional
+        OpenAlex API key. Defaults to the configured key.
+    session : openalex._HTTPClient or None, optional
+        HTTP client used for OpenAlex requests.
+    mailto : str, default=''
+        Contact email sent with the requests.
+
+    Returns
+    -------
+    int
+        Number of reference rows given a DOI.
+    """
+    api_key = api_key if api_key is not None else openalex.configured_api_key()
+    updated = 0
+    with connect(db_path) as conn:
+        pending = [row[0] for row in conn.execute(
+            "SELECT DISTINCT referenced_openalex_id FROM paper_references "
+            "WHERE referenced_openalex_id <> '' AND referenced_doi = ''"
+        ).fetchall()]
+        for start in range(0, len(pending), batch_size):
+            chunk = pending[start:start + batch_size]
+            works = openalex.works_batch(chunk, filter_name='ids.openalex',
+                                         select=('id', 'doi'), api_key=api_key,
+                                         session=session, mailto=mailto)
+            resolved = [(clean_doi(work.get('doi')), identifier)
+                        for identifier, work in works.items() if clean_doi(work.get('doi'))]
+            if not resolved:
+                continue
+            cursor = conn.executemany(
+                'UPDATE paper_references SET referenced_doi = ? WHERE referenced_openalex_id = ?',
+                resolved,
+            )
+            updated += cursor.rowcount if cursor.rowcount > 0 else 0
+            conn.commit()
+        resolve_reference_targets(conn)
+    return updated
+
+
+def resolve_reference_targets(conn: sqlite3.Connection) -> int:
+    """Link referenced DOIs to papers already present in the corpus.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    int
+        Number of reference rows linked to a corpus paper.
+    """
+    cursor = conn.execute(
+        """
+        UPDATE paper_references
+        SET referenced_paper_id = COALESCE(
+            (SELECT papers.paper_id FROM papers WHERE papers.doi = paper_references.referenced_doi),
+            ''
+        )
+        WHERE referenced_doi <> ''
+        """
+    )
+    conn.commit()
+    return cursor.rowcount if cursor.rowcount > 0 else 0

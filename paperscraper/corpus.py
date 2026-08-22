@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -46,6 +46,7 @@ PIPELINE_COLUMNS = {
     'abstract_scrape_status': 'pending',
     'image_scrape_status': 'pending',
     'store_status': 'pending',
+    'enrichment_status': 'pending',
     'text_path': '',
     'pdf_path': '',
     'image_dir': '',
@@ -58,6 +59,53 @@ PIPELINE_COLUMNS = {
     'last_error': '',
 }
 PAPER_FIELDS = PAPER_COLUMNS + [column for column in PIPELINE_COLUMNS if column not in PAPER_COLUMNS]
+ENRICHMENT_COLUMNS = {
+    'openalex_id': 'TEXT',
+    'publisher': 'TEXT',
+    'work_type': 'TEXT',
+    'volume': 'TEXT',
+    'issue': 'TEXT',
+    'pages': 'TEXT',
+    'issn': 'TEXT',
+    'issn_l': 'TEXT',
+    'language': 'TEXT',
+    'is_oa': 'INTEGER',
+    'oa_status': 'TEXT',
+    'license': 'TEXT',
+    'is_retracted': 'INTEGER',
+    'cited_by_count': 'INTEGER',
+    'referenced_works_count': 'INTEGER',
+    'enrichment_sources': 'TEXT',
+    'enrichment_json': 'TEXT',
+    'enriched_at': 'TEXT',
+}
+ENRICHMENT_FILL_COLUMNS = ['doi', 'title', 'journal', 'publication_date', 'authors']
+AUTHOR_COLUMNS = [
+    'paper_id', 'author_position', 'affiliation_rank', 'position_label', 'display_name',
+    'given_name', 'family_name', 'orcid', 'is_corresponding', 'affiliation',
+    'institution_name', 'institution_ror', 'institution_country', 'openalex_author_id', 'source',
+]
+SUBJECT_COLUMNS = [
+    'paper_id', 'scheme', 'subject_id', 'display_name', 'score', 'subject_rank',
+    'level', 'is_primary', 'parent_field', 'parent_domain', 'source',
+]
+REFERENCE_COLUMNS = [
+    'paper_id', 'source', 'reference_rank', 'referenced_doi', 'referenced_openalex_id',
+    'referenced_paper_id', 'referenced_title', 'unstructured',
+]
+ENRICHMENT_CHILD_TABLES = {
+    'paper_authors': AUTHOR_COLUMNS,
+    'paper_subjects': SUBJECT_COLUMNS,
+    'paper_references': REFERENCE_COLUMNS,
+}
+ENRICHMENT_STATUSES = frozenset({
+    'pending',
+    'succeeded',
+    'partial',
+    'not_found',
+    'unresolved',
+    'failed',
+})
 _Paper: TypeAlias = dict[str, Any]
 _PaperInput: TypeAlias = Mapping[str, Any]
 _BlobContent: TypeAlias = str | bytes | Path | Iterable[int]
@@ -119,7 +167,7 @@ def init_corpus(conn: sqlite3.Connection) -> None:
             f'Corpus schema version {current_version} is newer than supported version {SCHEMA_VERSION}.'
         )
     paper_columns = ',\n            '.join(
-        f'{column} {_paper_column_type(column)}' for column in PAPER_FIELDS if column != 'paper_id'
+        f'{column} {column_type}' for column, column_type in _expected_paper_columns().items()
     )
     conn.executescript(
         f"""
@@ -253,15 +301,79 @@ def init_corpus(conn: sqlite3.Connection) -> None:
             ON paper_topic_predictions(model_id, status);
         CREATE INDEX IF NOT EXISTS idx_topic_scores_topic_probability
             ON paper_topic_scores(model_id, topic_id, probability);
+
+        CREATE TABLE IF NOT EXISTS paper_authors (
+            paper_id TEXT NOT NULL,
+            author_position INTEGER NOT NULL,
+            affiliation_rank INTEGER NOT NULL DEFAULT 0,
+            position_label TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            given_name TEXT NOT NULL DEFAULT '',
+            family_name TEXT NOT NULL DEFAULT '',
+            orcid TEXT NOT NULL DEFAULT '',
+            is_corresponding INTEGER NOT NULL DEFAULT 0,
+            affiliation TEXT NOT NULL DEFAULT '',
+            institution_name TEXT NOT NULL DEFAULT '',
+            institution_ror TEXT NOT NULL DEFAULT '',
+            institution_country TEXT NOT NULL DEFAULT '',
+            openalex_author_id TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL,
+            PRIMARY KEY (paper_id, author_position, affiliation_rank),
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_subjects (
+            paper_id TEXT NOT NULL,
+            scheme TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            score REAL,
+            subject_rank INTEGER NOT NULL DEFAULT 0,
+            level INTEGER,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            parent_field TEXT NOT NULL DEFAULT '',
+            parent_domain TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'openalex',
+            PRIMARY KEY (paper_id, scheme, subject_id),
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_references (
+            paper_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            reference_rank INTEGER NOT NULL,
+            referenced_doi TEXT NOT NULL DEFAULT '',
+            referenced_openalex_id TEXT NOT NULL DEFAULT '',
+            referenced_paper_id TEXT NOT NULL DEFAULT '',
+            referenced_title TEXT NOT NULL DEFAULT '',
+            unstructured TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (paper_id, source, reference_rank),
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_paper_authors_orcid ON paper_authors(orcid);
+        CREATE INDEX IF NOT EXISTS idx_paper_authors_ror ON paper_authors(institution_ror);
+        CREATE INDEX IF NOT EXISTS idx_paper_subjects_subject ON paper_subjects(scheme, subject_id);
+        CREATE INDEX IF NOT EXISTS idx_paper_references_doi ON paper_references(referenced_doi);
+        CREATE INDEX IF NOT EXISTS idx_paper_references_openalex
+            ON paper_references(referenced_openalex_id);
         """
     )
     existing_columns = {
         row['name'] if isinstance(row, sqlite3.Row) else row[1]
         for row in conn.execute('PRAGMA table_info(papers)').fetchall()
     }
-    for column in ['num_text_chunks', 'num_abstract_chunks']:
-        if column not in existing_columns:
-            conn.execute(f'ALTER TABLE papers ADD COLUMN {column} INTEGER')
+    added_columns = []
+    for column, column_type in _expected_paper_columns().items():
+        if column in existing_columns:
+            continue
+        conn.execute(f'ALTER TABLE papers ADD COLUMN {column} {column_type}')
+        added_columns.append(column)
+    if 'enrichment_status' in added_columns:
+        conn.execute(
+            "UPDATE papers SET enrichment_status = 'pending' WHERE enrichment_status IS NULL"
+        )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_enrichment ON papers(enrichment_status)')
     conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
     conn.commit()
 
@@ -289,6 +401,23 @@ def _paper_column_type(column: str) -> str:
     }:
         return 'INTEGER'
     return 'TEXT'
+
+
+def _expected_paper_columns() -> dict[str, str]:
+    """Map every column the papers table must have to its SQLite type.
+
+    The mapping drives both the ``CREATE TABLE`` statement and the migration
+    that reconciles an existing database, so a new metadata or enrichment
+    column is added in one place only.
+
+    Returns
+    -------
+    dict[str, str]
+        Column name to declared SQLite type, excluding the primary key.
+    """
+    columns = {column: _paper_column_type(column) for column in PAPER_FIELDS if column != 'paper_id'}
+    columns.update(ENRICHMENT_COLUMNS)
+    return columns
 
 
 def _has_value(value: object) -> bool:
@@ -663,6 +792,330 @@ def paper_rows(conn: sqlite3.Connection) -> list[_Paper]:
         dict(row)
         for row in conn.execute('SELECT * FROM papers ORDER BY rowid').fetchall()
     ]
+
+
+def _enrichment_update_sql() -> str:
+    """Build the parameterized UPDATE statement used to write enrichment values.
+
+    Core bibliographic columns are filled only when currently empty, mirroring
+    the fill-if-empty rule in :func:`_merge_paper`. Enrichment columns are
+    overwritten because citation counts and retraction flags change over time.
+
+    Returns
+    -------
+    str
+        UPDATE statement using named parameters.
+    """
+    assignments = [f"{column} = COALESCE(NULLIF({column}, ''), :{column})"
+                   for column in ENRICHMENT_FILL_COLUMNS]
+    assignments.extend(f'{column} = :{column}' for column in ENRICHMENT_COLUMNS)
+    assignments.append('enrichment_status = :enrichment_status')
+    assignments.append('updated_at = :updated_at')
+    return f"UPDATE papers SET {', '.join(assignments)} WHERE paper_id = :paper_id"
+
+
+def enrichment_update_fields() -> list[str]:
+    """List every named parameter the enrichment UPDATE statement expects.
+
+    Returns
+    -------
+    list[str]
+        Parameter names, including ``paper_id`` and ``updated_at``.
+    """
+    return (ENRICHMENT_FILL_COLUMNS + list(ENRICHMENT_COLUMNS)
+            + ['enrichment_status', 'updated_at', 'paper_id'])
+
+
+def enrichment_candidates(conn: sqlite3.Connection,
+                          statuses: Iterable[str] = ('pending',),
+                          after_rowid: int = 0,
+                          limit: int = 100,
+                          refreshed_before: str = '') -> list[_Paper]:
+    """Return the next page of papers needing enrichment.
+
+    Results are keyset-paginated by ``rowid`` so an interrupted run resumes
+    without extra state and terminates even when a selected status is unchanged
+    by the run.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    statuses : Iterable[str], default=('pending',)
+        Enrichment statuses selected for processing.
+    after_rowid : int, default=0
+        Exclusive lower bound on the ``rowid`` of returned rows.
+    limit : int, default=100
+        Maximum number of rows to return.
+    refreshed_before : str, default=''
+        Also select succeeded rows enriched before this ISO-8601 timestamp.
+
+    Returns
+    -------
+    list[_Paper]
+        Candidate rows including their ``rowid``.
+    """
+    statuses = list(statuses)
+    placeholders = ', '.join('?' for _ in statuses) or "''"
+    rows = conn.execute(
+        f"""
+        SELECT rowid AS rowid, paper_id, doi, title, journal, publication_date, authors,
+               openalex_id, enrichment_status, enriched_at
+        FROM papers
+        WHERE rowid > ?
+          AND (enrichment_status IN ({placeholders})
+               OR (? <> ''
+                   AND enrichment_status = 'succeeded'
+                   AND enriched_at IS NOT NULL
+                   AND enriched_at <> ''
+                   AND enriched_at < ?))
+        ORDER BY rowid
+        LIMIT ?
+        """,
+        [after_rowid, *statuses, refreshed_before, refreshed_before, limit],
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _child_column_defaults(conn: sqlite3.Connection, table: str) -> dict[str, Any]:
+    """Read the declared default for every column of an enrichment child table.
+
+    Defaults are read from the live schema so a caller may omit any column
+    without tripping its ``NOT NULL`` constraint, and so this helper cannot
+    drift from the table definition.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    table : str
+        Enrichment child table name.
+
+    Returns
+    -------
+    dict[str, Any]
+        Column name to the value used when a row omits that column.
+    """
+    defaults = {}
+    for row in conn.execute(f'PRAGMA table_info({table})').fetchall():
+        name = row['name'] if isinstance(row, sqlite3.Row) else row[1]
+        not_null = row['notnull'] if isinstance(row, sqlite3.Row) else row[3]
+        declared = row['dflt_value'] if isinstance(row, sqlite3.Row) else row[4]
+        if declared is None:
+            defaults[name] = None if not not_null else ''
+            continue
+        declared = str(declared)
+        if declared.startswith("'") and declared.endswith("'"):
+            defaults[name] = declared[1:-1]
+        else:
+            try:
+                defaults[name] = int(declared)
+            except ValueError:
+                defaults[name] = declared
+    return defaults
+
+
+def write_enrichment(conn: sqlite3.Connection,
+                     updates: Iterable[_PaperInput],
+                     authors: Iterable[_PaperInput] = (),
+                     subjects: Iterable[_PaperInput] = (),
+                     references: Iterable[_PaperInput] = ()) -> int:
+    """Write one batch of enrichment updates and child rows in a transaction.
+
+    Child rows are replaced per paper rather than merged, so re-running
+    enrichment cannot leave stale authors, subjects, or references behind.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    updates : Iterable[_PaperInput]
+        One mapping per paper containing every enrichment update parameter.
+    authors : Iterable[_PaperInput], optional
+        Rows for the ``paper_authors`` table.
+    subjects : Iterable[_PaperInput], optional
+        Rows for the ``paper_subjects`` table.
+    references : Iterable[_PaperInput], optional
+        Rows for the ``paper_references`` table.
+
+    Returns
+    -------
+    int
+        Number of papers updated.
+    """
+    updates = [dict(update) for update in updates]
+    if not updates:
+        return 0
+    child_rows = {
+        'paper_authors': [dict(row) for row in authors],
+        'paper_subjects': [dict(row) for row in subjects],
+        'paper_references': [dict(row) for row in references],
+    }
+    paper_ids = [(str(update['paper_id']),) for update in updates]
+    try:
+        conn.execute('BEGIN')
+        conn.executemany(_enrichment_update_sql(), updates)
+        for table, rows in child_rows.items():
+            conn.executemany(f'DELETE FROM {table} WHERE paper_id = ?', paper_ids)
+            columns = ENRICHMENT_CHILD_TABLES[table]
+            defaults = _child_column_defaults(conn, table)
+            placeholders = ', '.join(f':{column}' for column in columns)
+            conn.executemany(
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+                [
+                    {
+                        column: defaults[column] if row.get(column) is None else row[column]
+                        for column in columns
+                    }
+                    for row in rows
+                ],
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return len(updates)
+
+
+def set_enrichment_status(conn: sqlite3.Connection,
+                          paper_ids: Iterable[str],
+                          status: str) -> int:
+    """Set the enrichment status for papers that produced no enrichment payload.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_ids : Iterable[str]
+        Papers to update.
+    status : str
+        Enrichment status to store.
+
+    Returns
+    -------
+    int
+        Number of papers updated.
+
+    Raises
+    ------
+    ValueError
+        If ``status`` is not a supported enrichment status.
+    """
+    if status not in ENRICHMENT_STATUSES:
+        raise ValueError(f'enrichment status must be one of: {", ".join(sorted(ENRICHMENT_STATUSES))}')
+    paper_ids = [(status, utc_now(), str(paper_id)) for paper_id in paper_ids]
+    if not paper_ids:
+        return 0
+    conn.executemany(
+        'UPDATE papers SET enrichment_status = ?, updated_at = ? WHERE paper_id = ?',
+        paper_ids,
+    )
+    conn.commit()
+    return len(paper_ids)
+
+
+def paper_authors(conn: sqlite3.Connection, paper_id: str) -> list[_Paper]:
+    """Return one paper's structured authors.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Paper identifier to read.
+
+    Returns
+    -------
+    list[_Paper]
+        Author rows ordered by position and affiliation rank.
+    """
+    rows = conn.execute(
+        'SELECT * FROM paper_authors WHERE paper_id = ? ORDER BY author_position, affiliation_rank',
+        (paper_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def paper_subjects(conn: sqlite3.Connection, paper_id: str, scheme: str = '') -> list[_Paper]:
+    """Return one paper's subjects.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Paper identifier to read.
+    scheme : str, default=''
+        Restrict results to a single subject scheme when non-empty.
+
+    Returns
+    -------
+    list[_Paper]
+        Subject rows ordered by scheme and rank.
+    """
+    query = 'SELECT * FROM paper_subjects WHERE paper_id = ?'
+    params: list[Any] = [paper_id]
+    if scheme:
+        query += ' AND scheme = ?'
+        params.append(scheme)
+    rows = conn.execute(f'{query} ORDER BY scheme, subject_rank', params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def paper_references(conn: sqlite3.Connection, paper_id: str, source: str = '') -> list[_Paper]:
+    """Return one paper's references.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Paper identifier to read.
+    source : str, default=''
+        Restrict results to one provider when non-empty.
+
+    Returns
+    -------
+    list[_Paper]
+        Reference rows ordered by source and rank.
+    """
+    query = 'SELECT * FROM paper_references WHERE paper_id = ?'
+    params: list[Any] = [paper_id]
+    if source:
+        query += ' AND source = ?'
+        params.append(source)
+    rows = conn.execute(f'{query} ORDER BY source, reference_rank', params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def enrichment_stats(conn: sqlite3.Connection) -> dict[str, int]:
+    """Summarize enrichment progress and stored enrichment rows.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+
+    Returns
+    -------
+    dict[str, int]
+        Per-status paper counts and child-table row totals.
+    """
+    stats = {
+        f'papers_{status}': conn.execute(
+            'SELECT COUNT(*) FROM papers WHERE enrichment_status = ?', (status,)
+        ).fetchone()[0]
+        for status in sorted(ENRICHMENT_STATUSES)
+    }
+    stats['papers_open_access'] = conn.execute('SELECT COUNT(*) FROM papers WHERE is_oa = 1').fetchone()[0]
+    stats['papers_retracted'] = conn.execute(
+        'SELECT COUNT(*) FROM papers WHERE is_retracted = 1').fetchone()[0]
+    stats['author_records'] = conn.execute('SELECT COUNT(*) FROM paper_authors').fetchone()[0]
+    stats['authors_with_orcid'] = conn.execute(
+        "SELECT COUNT(*) FROM paper_authors WHERE orcid <> ''").fetchone()[0]
+    stats['subject_records'] = conn.execute('SELECT COUNT(*) FROM paper_subjects').fetchone()[0]
+    stats['reference_records'] = conn.execute('SELECT COUNT(*) FROM paper_references').fetchone()[0]
+    return stats
 
 
 def _prepare_content(content: _BlobContent) -> bytes:

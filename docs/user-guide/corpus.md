@@ -56,6 +56,49 @@ ps_import_author supervisor.db \
 
 Inspect the review CSV before downloading. Crossref provides metadata and DOIs, not guaranteed access to paper content.
 
+## Supplement metadata
+
+Search and import records carry only a handful of bibliographic fields. `ps_enrich` fills in the rest
+from Crossref and OpenAlex:
+
+```bash
+ps_enrich papers.db
+```
+
+Crossref supplies the metadata the publisher deposited against the DOI — publisher, work type,
+volume, issue, pages, ISSNs and language. OpenAlex supplies what it derives — citation counts,
+open-access status and licence, retraction flags, and subject classification. Structured authors
+(with ORCID and institution ROR), subjects, and reference lists are written to the `paper_authors`,
+`paper_subjects`, and `paper_references` tables.
+
+Enrichment is re-runnable and resumable. A second run costs nothing because it only selects papers
+that are still pending, and an interrupted run keeps everything it already committed:
+
+```bash
+ps_enrich papers.db --limit 500        # stop after 500 papers, resume later
+ps_enrich papers.db --retry-failed     # retry only papers that previously failed
+ps_enrich papers.db --refresh-after 90 # refresh citation counts older than 90 days
+ps_enrich papers.db --force            # re-fetch everything
+```
+
+Restrict the providers, or skip reference lists when you only want the bibliographic fields:
+
+```bash
+ps_enrich papers.db --source crossref
+ps_enrich papers.db --source openalex --no-references
+```
+
+Papers with neither a DOI nor an OpenAlex identifier are reported as skipped and cost no requests.
+To supplement rows as they arrive instead of in a separate pass, add `--enrich` to discovery:
+
+```bash
+ps_search "Lithium solid electrolyte" papers.db --enrich
+ps_import_author supervisor.db --orcid 0000-0000-0000-0000 --enrich
+```
+
+`ps_reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
+re-enriched without refetching everything.
+
 ## Download abstracts, text, and PDFs
 
 ```bash

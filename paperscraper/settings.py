@@ -176,7 +176,7 @@ def load_settings() -> dict[str, Any]:
 
     merged = deepcopy(DEFAULT_SETTINGS)
     for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_api_key', 'openai_api_key',
-                'anthropic_api_key']:
+                'anthropic_api_key', 'crossref_email']:
         if key in settings:
             merged[key] = settings[key]
 
@@ -202,6 +202,9 @@ def load_settings() -> dict[str, Any]:
     openalex_api_key = os.environ.get('OPENALEX_API_KEY')
     if openalex_api_key:
         merged['openalex_api_key'] = openalex_api_key
+    crossref_email = os.environ.get('CROSSREF_EMAIL')
+    if crossref_email:
+        merged['crossref_email'] = crossref_email
 
     text_env = _env_profile('PAPERSCRAPER_MODEL_')
     if text_env:
@@ -530,6 +533,32 @@ def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True) -> N
     if '@' not in email:
         raise ValueError('Unpaywall email must be a valid email address.')
     settings['unpaywall_email'] = email
+    save_settings(settings)
+
+
+def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> None:
+    """Prompt for and save the contact email sent to Crossref.
+
+    Crossref asks that automated clients identify themselves with a contact
+    address. The same address is reused as the OpenAlex ``mailto`` parameter.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True], default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered value does not contain an ``@`` character.
+    """
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'crossref_email', 'Crossref email', secret=False)
+    email = input('Enter Crossref email: ').strip()
+    if '@' not in email:
+        raise ValueError('Crossref email must be a valid email address.')
+    settings['crossref_email'] = email
     save_settings(settings)
 
 

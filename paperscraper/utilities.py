@@ -52,6 +52,7 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     print(f'Total papers: {len(papers)}')
     rows = [
         ('Metadata retrieved', 'metadata_status', 'retrieved'),
+        ('Metadata enriched', 'enrichment_status', 'succeeded'),
         ('Text downloaded', 'text_download_status', 'succeeded'),
         ('PDFs downloaded', 'pdf_download_status', 'succeeded'),
         ('Text scraped', 'text_scrape_status', 'succeeded'),

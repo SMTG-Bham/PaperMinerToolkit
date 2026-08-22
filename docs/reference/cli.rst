@@ -19,6 +19,10 @@ Corpus discovery and content
    :prog: ps_import_author
    :nested: full
 
+.. click:: paperscraper.cli:enrich
+   :prog: ps_enrich
+   :nested: full
+
 .. click:: paperscraper.cli:download
    :prog: ps_download
    :nested: full
@@ -117,6 +121,8 @@ parsers:
      - CORE API key
    * - ``ps_unpaywall_email``
      - Unpaywall contact email
+   * - ``ps_crossref_email``
+     - Crossref contact email
    * - ``ps_openalex_key``
      - OpenAlex API key
    * - ``ps_openai_key``

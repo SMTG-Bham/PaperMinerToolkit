@@ -7,7 +7,7 @@
   <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
 </p>
 
-PaperScraper builds scientific-paper corpora and extracts structured materials data with configurable text and vision models. It searches Crossref, Elsevier/Scopus, CORE, and OpenAlex; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
+PaperScraper builds scientific-paper corpora and extracts structured materials data with configurable text and vision models. It searches Crossref, Elsevier/Scopus, CORE, and OpenAlex; supplements paper metadata from Crossref and OpenAlex; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
 The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](docs/index.md). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
 
@@ -30,6 +30,7 @@ ps_model_config text --provider openai --model YOUR_TEXT_MODEL
 
 ps_search "lithium solid electrolyte" papers.db \
   --source openalex --count 25
+ps_enrich papers.db
 ps_download papers.db --format abstract
 
 ps_scrape papers.db sse \

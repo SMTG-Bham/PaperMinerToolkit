@@ -9,7 +9,8 @@ Start with {doc}`getting-started/installation`, then follow the {doc}`workflow` 
 ```{mermaid}
 flowchart LR
     A[Search or import] --> B[(Corpus database)]
-    B --> C[Download content]
+    B --> S[Supplement metadata]
+    S --> C[Download content]
     C --> D[Filter papers]
     D --> E[Scrape with recipe]
     E --> F[Store results]

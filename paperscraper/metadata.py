@@ -71,7 +71,7 @@ def clean_doi(value: object) -> str:
         Case-folded DOI without presentation prefixes or trailing sentence
         punctuation.
     """
-    doi = unicodedata.normalize('NFKC', html.unescape(str(value))).translate(UNICODE_PUNCTUATION)
+    doi = unicodedata.normalize('NFKC', html.unescape(str(value or ''))).translate(UNICODE_PUNCTUATION)
     doi = doi.translate(INVISIBLE_CHARACTERS).strip()
 
     url_prefix = DOI_URL_PREFIX.match(doi)
@@ -378,8 +378,86 @@ def _published_date(message: Mapping[str, Any]) -> str:
     return ''
 
 
-def get_crossref_metadata(doi: str, timeout: int = 30) -> dict[str, str]:
+def crossref_issn(message: Mapping[str, Any]) -> str:
+    """Join a Crossref work's ISSNs, print issues first.
+
+    Parameters
+    ----------
+    message : Mapping[str, Any]
+        Crossref work message.
+
+    Returns
+    -------
+    str
+        Semicolon-separated ISSNs, or an empty string when none are deposited.
+    """
+    typed = message.get('issn-type') or []
+    ordered = [entry.get('value') for entry in typed if (entry or {}).get('type') == 'print']
+    ordered.extend(entry.get('value') for entry in typed if (entry or {}).get('type') != 'print')
+    if not typed:
+        ordered = list(message.get('ISSN') or [])
+    return ';'.join(dict.fromkeys(str(value).strip() for value in ordered if value))
+
+
+def crossref_pages(message: Mapping[str, Any]) -> str:
+    """Read a Crossref work's page range or article number.
+
+    Journals that number articles rather than pages, such as those published by
+    the American Physical Society, deposit ``article-number`` and no ``page``,
+    so the article number is used as the locator when no range is present.
+
+    Parameters
+    ----------
+    message : Mapping[str, Any]
+        Crossref work message.
+
+    Returns
+    -------
+    str
+        Page range or article number as deposited, or an empty string.
+    """
+    return str(message.get('page') or message.get('article-number') or '').strip()
+
+
+def crossref_fields(message: Mapping[str, Any], doi: str = '') -> dict[str, Any]:
+    """Map a Crossref work message onto corpus column names.
+
+    Every returned key is either a corpus column or the explicitly named raw
+    payload, so no fetched value is silently discarded downstream.
+
+    Parameters
+    ----------
+    message : Mapping[str, Any]
+        Crossref work message.
+    doi : str, default=''
+        DOI used when the message does not carry one.
+
+    Returns
+    -------
+    dict[str, Any]
+        Corpus metadata fields plus the raw ``crossref_message``.
+    """
+    return {
+        'doi': message.get('DOI', doi),
+        'publication_date': _published_date(message),
+        'title': normalize_metadata_text((message.get('title') or [''])[0]),
+        'journal': normalize_metadata_text((message.get('container-title') or [''])[0]),
+        'publisher': normalize_metadata_text(message.get('publisher', '')),
+        'work_type': str(message.get('type') or ''),
+        'volume': str(message.get('volume') or ''),
+        'issue': str(message.get('issue') or ''),
+        'pages': crossref_pages(message),
+        'issn': crossref_issn(message),
+        'language': str(message.get('language') or ''),
+        'crossref_message': dict(message),
+    }
+
+
+def get_crossref_metadata(doi: str, timeout: int = 30, email: str | None = None) -> dict[str, Any]:
     """Fetch normalized paper metadata from Crossref.
+
+    The contact address is sent both as the ``mailto`` query parameter and in
+    the user agent, which is what Crossref asks automated clients to do.
 
     Parameters
     ----------
@@ -387,37 +465,35 @@ def get_crossref_metadata(doi: str, timeout: int = 30) -> dict[str, str]:
         DOI to look up.
     timeout : int, default=30
         HTTP request timeout in seconds.
+    email : str or None, optional
+        Contact email. Defaults to the stored ``crossref_email`` setting.
 
     Returns
     -------
-    dict[str, str]
-        Normalized DOI, publication date, title, journal, type, and publisher
-        fields.
+    dict[str, Any]
+        Corpus metadata columns plus the raw ``crossref_message`` payload.
 
     Raises
     ------
     requests.RequestException
         If the Crossref request fails.
     """
+    from paperscraper.crossref import configured_email
+
+    contact = str(email or '').strip() or configured_email()
     url = f'https://api.crossref.org/works/{quote(doi, safe="")}'
-    headers = {'User-Agent': 'PaperScraper/0.0.1 (https://github.com/SMTG-Bham/PaperScraper)'}
-    response = requests.get(url, headers=headers, timeout=timeout)
+    agent = 'PaperScraper/0.0.1 (https://github.com/SMTG-Bham/PaperScraper'
+    headers = {'User-Agent': f'{agent}; mailto:{contact})' if contact else f'{agent})'}
+    params = {'mailto': contact} if contact else {}
+    response = requests.get(url, params=params, headers=headers, timeout=timeout)
     response.raise_for_status()
-    message = response.json().get('message', {})
-    return {
-        'doi': message.get('DOI', doi),
-        'publication_date': _published_date(message),
-        'title': normalize_metadata_text((message.get('title') or [''])[0]),
-        'journal': normalize_metadata_text((message.get('container-title') or [''])[0]),
-        'crossref_type': message.get('type', ''),
-        'crossref_publisher': normalize_metadata_text(message.get('publisher', '')),
-    }
+    return crossref_fields(response.json().get('message', {}), doi)
 
 
 def metadata_from_pdf(
     pdf_path: str | PathLike[str],
     use_crossref: bool = True,
-) -> tuple[dict[str, str], Literal['imported', 'doi_found', 'enriched'], str]:
+) -> tuple[dict[str, Any], Literal['imported', 'doi_found', 'enriched'], str]:
     """Extract and optionally enrich DOI metadata from a PDF.
 
     Parameters
@@ -430,7 +506,7 @@ def metadata_from_pdf(
 
     Returns
     -------
-    metadata : dict[str, str]
+    metadata : dict[str, Any]
         Extracted metadata, empty when the PDF cannot be read or has no DOI.
     status : {'imported', 'doi_found', 'enriched'}
         Furthest successful metadata stage.

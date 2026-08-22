@@ -24,6 +24,7 @@ API_ENV_KEYS = [
     'CORE_API_KEY',
     'UNPAYWALL_EMAIL',
     'OPENALEX_API_KEY',
+    'CROSSREF_EMAIL',
 ]
 
 MODEL_ENV_KEYS = [
@@ -164,6 +165,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'core_api_key': 'file-core',
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
+        'crossref_email': 'file-crossref@example.com',
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
@@ -171,6 +173,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
+    monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
 
     loaded = settings.load_settings()
 
@@ -180,6 +183,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['core_api_key'] == 'env-core'
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
+    assert loaded['crossref_email'] == 'env-crossref@example.com'
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -419,6 +423,27 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
     monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
     with pytest.raises(ValueError):
         settings.update_unpaywall_email()
+
+
+def test_update_crossref_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Save a valid Crossref email and reject an invalid one."""
+    settings.save_settings({'crossref_email': 'old@example.com'})
+    monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
+    settings.update_crossref_email()
+    output = capsys.readouterr().out
+    assert 'Current Crossref email: old@example.com' in output
+    assert settings.load_settings()['crossref_email'] == 'person@example.com'
+
+    monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
+    with pytest.raises(ValueError):
+        settings.update_crossref_email()
+
+
+def test_load_settings_reads_crossref_email_from_the_settings_file(isolated_settings_file: Path) -> None:
+    """Read a stored Crossref email through the settings-file whitelist."""
+    isolated_settings_file.write_text(json.dumps({'crossref_email': 'file@example.com'}))
+
+    assert settings.load_settings()['crossref_email'] == 'file@example.com'
 
 
 def test_update_openalex_key_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

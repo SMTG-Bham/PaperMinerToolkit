@@ -241,3 +241,78 @@ def test_get_work_uses_real_openalex_api() -> None:
     record = openalex.get_work('doi:10.1371/journal.pone.0000308', api_key=openalex.configured_api_key())
     assert record is not None
     assert record['doi'] == 'https://doi.org/10.1371/journal.pone.0000308'
+
+
+def test_request_params_adds_mailto_only_when_supplied() -> None:
+    """Attach the contact address to query parameters only when it is set."""
+    assert openalex.request_params({'filter': 'doi:10.1/a'}) == {'filter': 'doi:10.1/a'}
+    assert openalex.request_params({}, 'key', 'me@example.com') == {
+        'api_key': 'key',
+        'mailto': 'me@example.com',
+    }
+
+
+def test_works_page_builds_an_or_filter_and_pins_the_page_size() -> None:
+    """Request an OR-joined filter with a page size covering every value."""
+    session = FakeSession([FakeResponse({'results': [work()]})])
+
+    results = openalex.works_page('10.1/a|10.1/b', per_page=2, session=session,
+                                  mailto='me@example.com')
+
+    params = session.calls[0]['params']
+    assert params['filter'] == 'doi:10.1/a|10.1/b'
+    assert params['per-page'] == 2
+    assert params['mailto'] == 'me@example.com'
+    assert params['select'] == ','.join(openalex.WORK_SELECT_FIELDS)
+    assert len(results) == 1
+
+
+def test_work_select_fields_are_root_level_only() -> None:
+    """Request only root-level fields, which is all OpenAlex select accepts."""
+    assert all('.' not in field for field in openalex.WORK_SELECT_FIELDS)
+    assert {'open_access', 'biblio', 'primary_location', 'authorships'} <= set(openalex.WORK_SELECT_FIELDS)
+
+
+def test_works_batch_keys_results_by_clean_doi_and_reports_misses() -> None:
+    """Key batch results by cleaned DOI regardless of the response order."""
+    session = FakeSession([FakeResponse({'results': [
+        work(doi='https://doi.org/10.1234/Second'),
+        work(doi='https://doi.org/10.1234/First'),
+    ]})])
+
+    works = openalex.works_batch(['10.1234/first', '10.1234/second', '10.1234/missing'],
+                                 session=session)
+
+    assert set(works) == {'10.1234/first', '10.1234/second'}
+    assert session.calls[0]['params']['filter'] == 'doi:10.1234/first|10.1234/second|10.1234/missing'
+
+
+def test_works_batch_chunks_requests_at_the_openalex_maximum() -> None:
+    """Split more than one hundred identifiers across several requests."""
+    session = FakeSession([FakeResponse({'results': []}), FakeResponse({'results': []})])
+
+    openalex.works_batch([f'10.1234/paper{index}' for index in range(101)], session=session)
+
+    assert len(session.calls) == 2
+    assert session.calls[0]['params']['per-page'] == openalex.MAX_FILTER_VALUES
+    assert session.calls[1]['params']['per-page'] == 1
+
+
+def test_works_batch_uses_the_identifier_filter_for_openalex_ids() -> None:
+    """Key results by short identifier when filtering on OpenAlex ids."""
+    session = FakeSession([FakeResponse({'results': [work(doi=None)]})])
+
+    works = openalex.works_batch(['W123'], filter_name='ids.openalex', session=session)
+
+    assert set(works) == {'W123'}
+    assert session.calls[0]['params']['filter'] == 'ids.openalex:W123'
+
+
+def test_works_batch_rejects_an_invalid_batch_size() -> None:
+    """Reject a non-positive batch size before issuing any request."""
+    session = FakeSession([])
+
+    with pytest.raises(ValueError):
+        openalex.works_batch(['10.1/a'], batch_size=0, session=session)
+
+    assert session.calls == []

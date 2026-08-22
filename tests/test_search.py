@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, NoReturn, Self
 
 import pandas as pd
 import pytest
@@ -827,3 +827,61 @@ def test_openalex_search_uses_real_openalex_api() -> None:
 
     assert len(rows) <= 1
     assert rows.empty or rows.loc[0, 'sources'] == 'openalex'
+
+
+def test_search_for_papers_enriches_new_rows_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Enrich stored rows through the real search hook when --enrich is set."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{
+        'dc:identifier': 'SCOPUS_ID:1',
+        'prism:doi': '10.1234/new',
+        'dc:title': 'New paper',
+    }]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+
+    calls = {}
+
+    def fake_enrich_papers(conn: Any, records: Any, **kwargs: Any) -> dict[str, int]:
+        """Record the enrichment call and report one success."""
+        calls['records'] = list(records)
+        return {'succeeded': 1, 'partial': 0, 'not_found': 0}
+
+    monkeypatch.setattr(search, 'enrich_papers', fake_enrich_papers)
+
+    search.search_for_papers('query', db_path=str(db_path), source='elsevier',
+                             count=1, enrich=True)
+
+    output = capsys.readouterr().out
+    assert len(calls['records']) == 1
+    assert 'Enriched 1 papers from Crossref and OpenAlex' in output
+
+
+def test_search_for_papers_skips_enrichment_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Leave enrichment untouched unless it is explicitly requested."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{
+        'dc:identifier': 'SCOPUS_ID:1',
+        'prism:doi': '10.1234/new',
+        'dc:title': 'New paper',
+    }]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+
+    def fail_enrich_papers(conn: Any, records: Any, **kwargs: Any) -> NoReturn:
+        """Fail if enrichment runs without being requested."""
+        raise AssertionError('enrichment must not run by default')
+
+    monkeypatch.setattr(search, 'enrich_papers', fail_enrich_papers)
+
+    search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
+
+    assert 'Enriched' not in capsys.readouterr().out

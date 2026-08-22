@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Protocol, TypeAlias
 from urllib.parse import quote
 
@@ -23,6 +23,33 @@ BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
 USER_AGENT = 'PaperScraper/0.0.1'
+MAX_FILTER_VALUES = 100
+WORK_SELECT_FIELDS = (
+    'id',
+    'doi',
+    'ids',
+    'title',
+    'display_name',
+    'publication_date',
+    'publication_year',
+    'language',
+    'type',
+    'biblio',
+    'primary_location',
+    'best_oa_location',
+    'open_access',
+    'authorships',
+    'is_authors_truncated',
+    'cited_by_count',
+    'referenced_works_count',
+    'referenced_works',
+    'is_retracted',
+    'primary_topic',
+    'topics',
+    'keywords',
+    'concepts',
+    'sustainable_development_goals',
+)
 _OpenAlexRecord: TypeAlias = dict[str, Any]
 
 
@@ -87,11 +114,15 @@ def request_headers() -> dict[str, str]:
 def request_params(
     params: Mapping[str, object] | None = None,
     api_key: str | None = None,
+    mailto: str = '',
 ) -> dict[str, object]:
-    """Copy query parameters and add an API key when configured.
+    """Copy query parameters and add an API key and contact address.
 
     Requests without a key are served from a much smaller daily credit budget,
-    so the key is attached whenever it is available but never invented.
+    so the key is attached whenever it is available but never invented. The
+    ``mailto`` address identifies the client; OpenAlex now meters access with
+    the daily credit budget rather than a polite pool, so only an API key
+    raises that budget.
 
     Parameters
     ----------
@@ -99,15 +130,19 @@ def request_params(
         Query parameters to copy.
     api_key : str or None, optional
         OpenAlex API key to add.
+    mailto : str, default=''
+        Contact email address to add when non-empty.
 
     Returns
     -------
     dict[str, object]
-        Copied parameters, optionally including ``api_key``.
+        Copied parameters, optionally including ``api_key`` and ``mailto``.
     """
     merged = dict(params or {})
     if api_key:
         merged['api_key'] = api_key
+    if mailto:
+        merged['mailto'] = mailto
     return merged
 
 
@@ -130,6 +165,7 @@ def request_json(
     session: _HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
+    mailto: str = '',
 ) -> _OpenAlexRecord | None:
     """Request an OpenAlex endpoint with bounded retry/backoff behavior.
 
@@ -147,6 +183,8 @@ def request_json(
         Request timeout in seconds.
     attempts : int, default=4
         Maximum number of request attempts.
+    mailto : str, default=''
+        Contact email address sent with the request.
 
     Returns
     -------
@@ -161,7 +199,7 @@ def request_json(
     """
     session = session or requests
     headers = request_headers()
-    params = request_params(params, api_key)
+    params = request_params(params, api_key, mailto)
     last_error = None
     for attempt in range(attempts):
         try:
@@ -270,6 +308,138 @@ def reconstruct_abstract(inverted_index: Mapping[str, list[int]] | None) -> str:
                  for token, indexes in inverted_index.items()
                  for position in indexes or []]
     return ' '.join(token for _, token in sorted(positions))
+
+
+def _chunked(values: Sequence[str], size: int) -> Iterator[list[str]]:
+    """Split a sequence into consecutive chunks.
+
+    Parameters
+    ----------
+    values : Sequence[str]
+        Values to split.
+    size : int
+        Maximum chunk length.
+
+    Yields
+    ------
+    list[str]
+        Consecutive chunk of at most ``size`` values.
+    """
+    for start in range(0, len(values), size):
+        yield list(values[start:start + size])
+
+
+def works_page(filter_value: str,
+               filter_name: str = 'doi',
+               select: Sequence[str] | None = WORK_SELECT_FIELDS,
+               per_page: int = MAX_FILTER_VALUES,
+               api_key: str | None = None,
+               session: _HTTPClient | None = None,
+               mailto: str = '') -> list[_OpenAlexRecord]:
+    """Request one OR-filtered page of OpenAlex works.
+
+    ``per_page`` must cover the number of OR-joined filter values, because the
+    endpoint otherwise returns only its default page size and silently drops
+    the remaining matches.
+
+    Parameters
+    ----------
+    filter_value : str
+        OR-joined filter values, already normalized.
+    filter_name : str, default='doi'
+        Filter key applied to the values, normally ``doi`` or ``ids.openalex``.
+    select : Sequence[str] or None, optional
+        Root-level fields to request. OpenAlex rejects dotted field paths.
+    per_page : int, default=100
+        Page size requested from OpenAlex.
+    api_key : str or None, optional
+        OpenAlex API key to attach.
+    session : _HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    mailto : str, default=''
+        Contact email address sent with the request.
+
+    Returns
+    -------
+    list[_OpenAlexRecord]
+        Work records returned for the filter, in OpenAlex's own order.
+
+    Raises
+    ------
+    RuntimeError
+        If the OpenAlex request cannot be completed.
+    """
+    params: dict[str, object] = {
+        'filter': f'{filter_name}:{filter_value}',
+        'per-page': max(1, min(int(per_page), MAX_FILTER_VALUES)),
+    }
+    if select:
+        params['select'] = ','.join(select)
+    payload = request_json(WORKS_URL, params=params, api_key=api_key,
+                           session=session, mailto=mailto) or {}
+    return list(payload.get('results') or [])
+
+
+def works_batch(identifiers: Sequence[str],
+                filter_name: str = 'doi',
+                select: Sequence[str] | None = WORK_SELECT_FIELDS,
+                api_key: str | None = None,
+                session: _HTTPClient | None = None,
+                batch_size: int = MAX_FILTER_VALUES,
+                mailto: str = '') -> dict[str, _OpenAlexRecord]:
+    """Look up many OpenAlex works and key the results by their identifier.
+
+    OpenAlex accepts at most 100 OR-joined values per filter, returns matches
+    in an arbitrary order, and omits identifiers it does not know, so results
+    are keyed rather than zipped back onto the request order.
+
+    Parameters
+    ----------
+    identifiers : Sequence[str]
+        Bare lowercase DOIs, or short ``W`` identifiers for ``ids.openalex``.
+    filter_name : str, default='doi'
+        Filter key applied to the identifiers.
+    select : Sequence[str] or None, optional
+        Root-level fields to request.
+    api_key : str or None, optional
+        OpenAlex API key to attach.
+    session : _HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    batch_size : int, default=100
+        Identifiers requested per page, capped at the OpenAlex maximum.
+    mailto : str, default=''
+        Contact email address sent with the request.
+
+    Returns
+    -------
+    dict[str, _OpenAlexRecord]
+        Work records keyed by cleaned DOI or short identifier.
+
+    Raises
+    ------
+    ValueError
+        If ``batch_size`` is not a positive integer.
+    RuntimeError
+        If an OpenAlex request cannot be completed.
+    """
+    if batch_size < 1:
+        raise ValueError('batch_size must be a positive integer.')
+    wanted = list(dict.fromkeys(identifier for identifier in identifiers if identifier))
+    batch_size = min(batch_size, MAX_FILTER_VALUES)
+    works = {}
+    for chunk in _chunked(wanted, batch_size):
+        results = works_page('|'.join(chunk),
+                             filter_name=filter_name,
+                             select=select,
+                             per_page=len(chunk),
+                             api_key=api_key,
+                             session=session,
+                             mailto=mailto)
+        for work in results:
+            key = clean_doi(work.get('doi')) if filter_name == 'doi' else work_id(work)
+            if key:
+                works[key] = work
+    return works
 
 
 def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:

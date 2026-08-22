@@ -10,8 +10,15 @@ PaperScraper keeps search/download credentials separate from the text and vision
 | CORE | `CORE_API_KEY` | `ps_core_key` | Search, abstracts, and PDFs |
 | OpenAlex | `OPENALEX_API_KEY` | `ps_openalex_key` | Higher API budget for search, abstracts, and OA locations |
 | Unpaywall | `UNPAYWALL_EMAIL` | `ps_unpaywall_email` | Open-access PDF discovery |
+| Crossref | `CROSSREF_EMAIL` | `ps_crossref_email` | Author imports and metadata enrichment |
 
-OpenAlex works without a key, but authenticated use has a substantially larger credit budget. Crossref author imports require a contact email on each command.
+OpenAlex works without a key, but authenticated use has a substantially larger credit budget. The
+OpenAlex `mailto` parameter identifies your client but no longer affects throughput, so
+`ps_openalex_key` is the only setting that raises your budget.
+
+Crossref has no API key. It asks automated clients to identify themselves with a contact address,
+which `ps_crossref_email` stores once for `ps_import_author`, `ps_enrich`, and the Crossref lookup
+that `ps_import_pdfs` performs. `--email` still overrides the stored value for a single command.
 
 ## Hosted model providers
 

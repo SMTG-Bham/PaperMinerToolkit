@@ -18,6 +18,7 @@ import requests
 from tqdm import tqdm
 
 from paperscraper import elsevier, openalex
+from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
@@ -381,7 +382,8 @@ def search_for_papers(query: str,
                       db_path: str = 'papers.db',
                       source: str = 'all',
                       count: int = 200,
-                      store_abstract: bool = False) -> None:
+                      store_abstract: bool = False,
+                      enrich: bool = False) -> None:
     """Search providers and merge results into a corpus.
 
     Parameters
@@ -396,6 +398,8 @@ def search_for_papers(query: str,
         Maximum number of records requested from each provider.
     store_abstract : bool, default=False
         Whether to store search-result abstracts as corpus assets.
+    enrich : bool, default=False
+        Whether to supplement stored rows with Crossref and OpenAlex metadata.
 
     Returns
     -------
@@ -446,6 +450,11 @@ def search_for_papers(query: str,
         records = new_papers.to_dict('records')
         added, updated = upsert_papers(conn, records)
         abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
+        enrichment_summary = enrich_papers(conn, records) if enrich else {}
     print(f'Document search found {added} new results and updated {updated} existing rows.')
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')
+    if enrich:
+        print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers from Crossref and OpenAlex '
+              f'({enrichment_summary.get("partial", 0)} partial, '
+              f'{enrichment_summary.get("not_found", 0)} not found).')
