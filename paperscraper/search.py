@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, and arXiv, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, and medRxiv, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -7,6 +7,7 @@ that appear in multiple sources.
 
 from __future__ import annotations
 
+import datetime
 import html
 import os
 import sqlite3
@@ -17,12 +18,12 @@ import re
 import requests
 from tqdm import tqdm
 
-from paperscraper import arxiv, elsevier, openalex, pubmed
+from paperscraper import arxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
-SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'arxiv', 'all'}
+SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
@@ -501,6 +502,115 @@ def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
     return _arxiv_rows(entries[:target])
 
 
+def _medrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert medRxiv records into normalized paper rows."""
+    rows = []
+    for entry in entries:
+        normalized = normalize_paper(entry)
+        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def medrxiv_search(query: str, count: int = 200, today: str = '') -> pd.DataFrame:
+    """Search medRxiv records.
+
+    medRxiv publishes no search endpoint, so the query is answered by walking
+    the posting archive and matching each record locally. The walk runs newest
+    first and stops as soon as ``count`` papers match, which keeps an ordinary
+    query cheap; a term that matches nothing recent is what makes it expensive,
+    so the size of the archive being scanned is printed before the walk starts
+    rather than discovered as a hang.
+
+    The query string carries its own scope, because narrowing the walk is the
+    only way to bound it: ``category:``, ``from:``, and ``to:`` restrict the
+    archive that is read, and everything else is a match term. Terms are
+    combined with ``AND`` over each record's title, abstract, authors, and
+    category.
+
+    One search reads at most :data:`paperscraper.medrxiv.MAX_SCAN_RECORDS`
+    postings. That bound is what keeps ``--source all`` usable: a query aimed
+    at another provider's subject matter matches nothing here, and without a
+    stop it would read the entire archive before reporting nothing found. The
+    shortfall is printed rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+    today : str, default=''
+        Interval end used when the query names none, as ``YYYY-MM-DD``.
+        Defaults to the current UTC date.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date.
+    RuntimeError
+        If a medRxiv request cannot be completed.
+    """
+    terms, scope = medrxiv.parse_query(query)
+    target = max(int(count), 0)
+    if not target:
+        return _medrxiv_rows([])
+    category = scope.get('category', '')
+    start = scope.get('from', medrxiv.CORPUS_START)
+    end = scope.get('to') or today or datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d')
+    first = medrxiv.interval_page(start, end, category=category)
+    total = medrxiv.total_results(first)
+    step = medrxiv.page_size(first, medrxiv.endpoint(category)[1])
+    if not total:
+        return _medrxiv_rows([])
+    print(f'medRxiv has no search endpoint, so PaperScraper is reading the {total} postings '
+          f'between {start} and {end}'
+          f'{f" filed under {category}" if category else ""}, newest first, and matching them '
+          f'locally. Add category:, from:, or to: terms to the query to read fewer.')
+    matched: list[Mapping[str, Any]] = []
+    papers: list[Mapping[str, Any]] = []
+    scanned = 0
+    unread = 0
+    with tqdm(total=target, desc='Searching medRxiv', colour='yellow') as pbar:
+        for cursor in medrxiv.page_cursors(total, step):
+            # The first page was already fetched to learn the record count, so
+            # it is reused rather than requested again when the walk reaches it.
+            payload = first if cursor == 0 else medrxiv.interval_page(
+                start, end, cursor=cursor, category=category)
+            page = medrxiv.parse_records(payload)
+            if not page:
+                continue
+            scanned += len(page)
+            # Pages run oldest first with no way to reverse them at the API, so
+            # each one is reversed as it arrives to keep the walk newest first.
+            matched.extend(entry for entry in reversed(page) if medrxiv.matches(entry, terms))
+            # Versions of one preprint are separate records that can fall on
+            # different pages, so papers are collapsed against everything
+            # matched so far rather than within a page.
+            papers = medrxiv.latest_versions(matched)
+            pbar.n = min(len(papers), target)
+            pbar.refresh()
+            if len(papers) >= target:
+                break
+            if scanned >= medrxiv.MAX_SCAN_RECORDS:
+                # Cursors count records, so the cursor of the page that tripped
+                # the limit is exactly how many older postings go unread.
+                unread = cursor
+                break
+    print(f'medRxiv matched {len(papers)} papers in {scanned} postings read.')
+    if unread:
+        print(f'{unread} older postings in {start} to {end} were left unread after the '
+              f'{medrxiv.MAX_SCAN_RECORDS}-posting scan limit; narrow the query with '
+              f'category:, from:, or to: terms to reach them.')
+    return _medrxiv_rows(papers[:target])
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -542,7 +652,7 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv'}, default='all'
+    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv'}, default='all'
         Provider or provider set to search.
     count : int, default=200
         Maximum number of records requested from each provider.
@@ -565,7 +675,7 @@ def search_for_papers(query: str,
     requests.RequestException
         If the explicitly selected CORE provider fails.
     RuntimeError
-        If the explicitly selected OpenAlex, PubMed, or arXiv provider fails.
+        If the explicitly selected OpenAlex, PubMed, arXiv, or medRxiv provider fails.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:
@@ -606,6 +716,13 @@ def search_for_papers(query: str,
             if source == 'arxiv':
                 raise
             print(f'arXiv search skipped: {e}')
+    if source in {'medrxiv', 'all'}:
+        try:
+            frames.append(medrxiv_search(query, count=count))
+        except Exception as e:
+            if source == 'medrxiv':
+                raise
+            print(f'medRxiv search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:

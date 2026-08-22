@@ -218,8 +218,10 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
-    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv']
-    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv']
+    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv',
+                                                   'medrxiv']
+    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv',
+                                                      'medrxiv']
     assert enrichment.configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
         enrichment.configured_sources(['scopus'])
@@ -1098,6 +1100,183 @@ def test_enrich_batch_keeps_other_provider_subjects_when_only_arxiv_is_requested
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
 
     assert sources == {'openalex', 'arxiv'}
+
+
+def medrxiv_entry(published: str = '10.1234/medrxiv-one') -> dict[str, Any]:
+    """Return a medRxiv record shaped like medrxiv.record_to_paper output."""
+    return {
+        'paper_id': f'doi:{published}' if published else 'doi:10.1101/2024.03.01.24303596',
+        'doi': published or '10.1101/2024.03.01.24303596',
+        'medrxiv_doi': '10.1101/2024.03.01.24303596',
+        'title': 'medRxiv title',
+        'journal': '' if published else 'medRxiv',
+        'publication_date': '2024-03-04',
+        'authors': 'Guangmin Xu',
+        'version': '2',
+        'license': 'cc_by',
+        'category': 'Health Policy',
+        'published_doi': published,
+        'jatsxml': 'https://www.medrxiv.org/content/early/2024/03/04/x.source.xml',
+        'categories': [{'id': 'health policy', 'name': 'Health Policy', 'is_primary': True}],
+    }
+
+
+def test_medrxiv_candidates_key_rows_by_the_doi_medrxiv_issued() -> None:
+    """Read a medRxiv DOI from the stored column, the paper ID, or the DOI."""
+    candidates = [
+        {'paper_id': 'doi:10.1234/a', 'medrxiv_doi': '10.1101/2024.03.01.24303596v2'},
+        {'paper_id': 'doi:10.64898/2026.08.05.26359794'},
+        {'paper_id': 'doi:10.1234/b', 'doi': '10.1234/b'},
+        {'paper_id': '', 'medrxiv_doi': '10.1101/2024.03.01.24303597'},
+    ]
+
+    assert enrichment.medrxiv_candidates(candidates) == {
+        '10.1101/2024.03.01.24303596': 'doi:10.1234/a',
+        '10.64898/2026.08.05.26359794': 'doi:10.64898/2026.08.05.26359794',
+    }
+
+
+def test_medrxiv_fields_map_the_shared_enrichment_columns() -> None:
+    """Assert open access and keep the preprint DOI beside the published one."""
+    fields = enrichment.medrxiv_fields(medrxiv_entry())
+
+    assert fields['doi'] == '10.1234/medrxiv-one'
+    assert fields['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
+    assert fields['license'] == 'cc_by'
+    assert fields['is_oa'] == 1
+    assert fields['oa_status'] == 'green'
+    # A published paper is no longer a preprint, whatever medRxiv still hosts.
+    assert fields['work_type'] == ''
+    assert enrichment.medrxiv_fields(medrxiv_entry(published=''))['work_type'] == 'preprint'
+    assert enrichment.medrxiv_fields(medrxiv_entry(published=''))['journal'] == 'medRxiv'
+
+
+def test_medrxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -> None:
+    """Flag the single category medRxiv files a preprint under."""
+    rows = enrichment.medrxiv_subject_rows('doi:10.1234/medrxiv-one', medrxiv_entry())
+
+    assert len(rows) == 1
+    assert rows[0]['scheme'] == 'medrxiv_category'
+    assert rows[0]['subject_id'] == 'health policy'
+    assert rows[0]['display_name'] == 'Health Policy'
+    assert rows[0]['is_primary'] == 1
+    assert rows[0]['source'] == 'medrxiv'
+    assert enrichment.medrxiv_subject_rows('doi:x', None) == []
+
+    schemes = {row['scheme'] for row in
+               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())}
+    assert schemes == {'arxiv_category', 'medrxiv_category'}
+
+
+def test_merge_fields_ranks_medrxiv_below_the_other_providers() -> None:
+    """Fill only what no better-placed provider supplied for the same column."""
+    update = enrichment.merge_fields('doi:10.1234/medrxiv-one', None, None,
+                                     ['crossref', 'medrxiv'], None, None, medrxiv_entry())
+
+    assert update['enrichment_status'] == 'partial'
+    assert update['enrichment_sources'] == 'medrxiv'
+    assert update['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
+    assert update['title'] == 'medRxiv title'
+    assert update['is_oa'] == 1
+    assert update['oa_status'] == 'green'
+    # OPENALEX_ONLY blanks the licence, so medRxiv's own statement fills it.
+    assert update['license'] == 'cc_by'
+    assert update['enrichment_json']['medrxiv']['category'] == 'Health Policy'
+    assert update['enrichment_json']['medrxiv']['published_doi'] == '10.1234/medrxiv-one'
+
+
+def test_merge_fields_lets_a_better_placed_provider_win_over_medrxiv() -> None:
+    """Keep Crossref's title and licence when both providers answered."""
+    crossref = {'DOI': '10.1234/medrxiv-one', 'title': ['Crossref title'],
+                'container-title': ['The Lancet'], 'type': 'journal-article'}
+    openalex = {'id': 'https://openalex.org/W1',
+                'open_access': {'is_oa': True, 'oa_status': 'gold'},
+                'best_oa_location': {'license': 'cc-by-4.0'}}
+    update = enrichment.merge_fields('doi:10.1234/medrxiv-one', crossref, openalex,
+                                     ['crossref', 'openalex', 'medrxiv'], None, None,
+                                     medrxiv_entry())
+
+    assert update['title'] == 'Crossref title'
+    assert update['journal'] == 'The Lancet'
+    assert update['license'] == 'cc-by-4.0'
+    assert update['oa_status'] == 'gold'
+    # medRxiv still contributes the identifier none of the others carry.
+    assert update['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
+    assert update['enrichment_sources'] == 'crossref;openalex;medrxiv'
+
+
+def test_enrich_batch_enriches_a_medrxiv_only_row_and_stores_its_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve a row that has only a medRxiv DOI and store its subject row."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1101/2024.03.01.24303596',
+                           'medrxiv_doi': '10.1101/2024.03.01.24303596', 'title': 'Seeded'}])
+    monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi',
+                        lambda *_, **__: medrxiv_entry(published=''))
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['medrxiv'], '')
+        subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
+        rows = corpus.paper_rows(conn)
+
+    assert summary['unresolved'] == 0
+    assert summary['succeeded'] == 1
+    assert {row['scheme'] for row in subjects} == {'medrxiv_category'}
+    assert rows[0]['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
+    assert rows[0]['enrichment_sources'] == 'medrxiv'
+    assert rows[0]['is_oa'] == 1
+
+
+def test_enrich_batch_skips_medrxiv_for_a_row_carrying_only_a_published_doi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spend no request on a DOI medRxiv has no way to look up."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/journal-only', 'doi': '10.1234/journal-only'}])
+
+    def unreachable(*_: object, **__: object) -> None:
+        """Fail the test if medRxiv is queried for a non-medRxiv DOI."""
+        raise AssertionError('medRxiv should not be queried for a published DOI')
+
+    monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi', unreachable)
+
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+                                          ['medrxiv'], '')
+
+    assert summary['not_found'] == 1
+
+
+def test_enrich_batch_keeps_other_provider_subjects_when_only_medrxiv_is_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave another provider's child rows intact when enriching from medRxiv."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/medrxiv-one', 'doi': '10.1234/medrxiv-one',
+                           'medrxiv_doi': '10.1101/2024.03.01.24303596'}])
+    monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+
+    with open_corpus(db_path) as conn:
+        corpus.write_enrichment(
+            conn,
+            [{**{field: '' for field in corpus.enrichment_update_fields()},
+              'paper_id': 'doi:10.1234/medrxiv-one', 'enrichment_status': 'pending',
+              'updated_at': ''}],
+            subjects=[{'paper_id': 'doi:10.1234/medrxiv-one', 'scheme': 'topic',
+                       'subject_id': 'T1', 'display_name': 'Vaccines', 'source': 'openalex'}],
+            sources=['openalex'])
+        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+                                ['medrxiv'], '')
+        sources = {row['source'] for row in
+                   conn.execute('SELECT source FROM paper_subjects').fetchall()}
+
+    assert sources == {'openalex', 'medrxiv'}
 
 
 def test_merge_fields_records_pubmed_as_a_found_source() -> None:

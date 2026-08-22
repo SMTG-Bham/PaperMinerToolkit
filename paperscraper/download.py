@@ -1,10 +1,13 @@
 """Download paper text and PDFs from configured open-access and publisher sources.
 
-This module powers ``ps_download``. It can fetch Elsevier full text and PubMed
-Central open-access full text, try PDFs from Unpaywall, OpenAlex, CORE,
-Elsevier, PubMed Central, and arXiv, and update per-paper download status in
-the SQLite paper corpus after each row. arXiv serves PDFs and abstracts but no
-full text, because it publishes no machine-readable full-text format.
+This module powers ``ps_download``. It can fetch Elsevier, PubMed Central
+open-access, and medRxiv full text, try PDFs from Unpaywall, OpenAlex, CORE,
+Elsevier, PubMed Central, medRxiv, and arXiv, and update per-paper download
+status in the SQLite paper corpus after each row. arXiv serves PDFs and
+abstracts but no full text, because it publishes no machine-readable full-text
+format. medRxiv publishes both: its PDFs and its JATS full text, the latter
+being the same format PubMed Central serves, so medRxiv text needs no PDF
+scrape.
 """
 
 from __future__ import annotations
@@ -24,13 +27,15 @@ from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
-from paperscraper import arxiv, elsevier, openalex, pubmed
+from paperscraper import arxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv'}
+DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv'}
+# Providers that serve a machine-readable full text rather than only a PDF.
+TEXT_SOURCES = {'pubmed', 'medrxiv'}
 _Paper: TypeAlias = dict[str, Any]
 
 
@@ -591,6 +596,149 @@ def _download_pubmed_abstract(
     return False, f'no PubMed abstract found for {pmid}', ''
 
 
+def _medrxiv_identifier(paper: Mapping[str, Any]) -> str | None:
+    """Resolve a stored medRxiv DOI for a paper row.
+
+    Only values already held in the corpus are considered, so this never issues
+    a request. medRxiv publishes no title search, so there is no lookup to fall
+    back on for a row that carries neither a medRxiv DOI nor a medRxiv URL.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a medRxiv DOI, a medRxiv paper ID, or a
+        medRxiv content URL.
+
+    Returns
+    -------
+    str or None
+        Bare medRxiv DOI, or ``None`` when the row stores none.
+    """
+    return medrxiv.resolve_medrxiv_doi(paper) or None
+
+
+def _medrxiv_record(paper: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str]:
+    """Fetch the newest posted version of a row's medRxiv preprint.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a medRxiv DOI.
+
+    Returns
+    -------
+    tuple[Mapping[str, Any] or None, str]
+        Normalized record, or ``None`` and a failure reason.
+    """
+    identifier = _medrxiv_identifier(paper)
+    if identifier is None:
+        return None, 'missing medRxiv DOI'
+    try:
+        entry = medrxiv.fetch_doi(identifier)
+    except RuntimeError as e:
+        return None, str(e)
+    if entry is None:
+        return None, f'no medRxiv record found for {identifier}'
+    return entry, ''
+
+
+def _download_medrxiv_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Download a paper's PDF from medRxiv.
+
+    The version is read from the record rather than assumed, because a
+    preprint's PDF is served per posted version and the newest one is the
+    document the corpus row describes. medRxiv fronts these files with a bot
+    challenge that can refuse a client outright; a refusal is reported as the
+    failure reason rather than worked around, and full text remains reachable
+    through the medRxiv text source when it happens.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a medRxiv DOI.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the source URL or a failure reason.
+    """
+    entry, error = _medrxiv_record(paper)
+    if entry is None:
+        return False, error
+    url = medrxiv.pdf_url(str(entry.get('medrxiv_doi') or ''), str(entry.get('version') or ''))
+    if not url:
+        return False, 'missing medRxiv DOI'
+    ok, error = _download_url_to_pdf(url, filepath, headers=medrxiv.request_headers())
+    return (True, url) if ok else (False, error)
+
+
+def _download_medrxiv_text(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Write medRxiv JATS full text for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a medRxiv DOI.
+    filepath : str or os.PathLike[str]
+        Destination path for the extracted text.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and an empty string or a failure reason.
+
+    Raises
+    ------
+    OSError
+        If the text cannot be written.
+    """
+    entry, error = _medrxiv_record(paper)
+    if entry is None:
+        return False, error
+    try:
+        text = medrxiv.full_text(entry)
+    except RuntimeError as e:
+        return False, str(e)
+    if not text:
+        return False, f'no medRxiv full text for {entry.get("medrxiv_doi")}'
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(text)
+    return True, ''
+
+
+def _download_medrxiv_abstract(
+    paper: Mapping[str, Any],
+) -> tuple[bool, str, str]:
+    """Fetch and return a medRxiv abstract for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a medRxiv DOI.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and normalized abstract
+        text. The text is empty when retrieval fails.
+    """
+    entry, error = _medrxiv_record(paper)
+    if entry is None:
+        return False, error, ''
+    abstract = _clean_abstract(entry.get('abstract'))
+    if abstract:
+        return True, 'medrxiv', abstract
+    return False, f'no medRxiv abstract found for {entry.get("medrxiv_doi")}', ''
+
+
 def _arxiv_identifier(paper: Mapping[str, Any]) -> str | None:
     """Resolve a stored arXiv identifier for a paper row.
 
@@ -832,6 +980,11 @@ def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]
         if ok:
             return ok, source, abstract
         errors.append(f'pubmed: {source}')
+    if _medrxiv_identifier(paper) is not None:
+        ok, source, abstract = _download_medrxiv_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'medrxiv: {source}')
     if _arxiv_identifier(paper) is not None:
         ok, source, abstract = _download_arxiv_abstract(paper)
         if ok:
@@ -863,6 +1016,7 @@ def _configured_sources(sources: Iterable[str] | None) -> list[str]:
         if settings.get('elsevier_api_key'):
             enabled.append('elsevier')
         enabled.append('pubmed')
+        enabled.append('medrxiv')
         enabled.append('arxiv')
         return enabled
     invalid = set(sources) - DOWNLOAD_SOURCES
@@ -888,6 +1042,7 @@ def _download_pdf_from_sources(
         'core': _download_core_pdf,
         'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
         'pubmed': _download_pubmed_pdf,
+        'medrxiv': _download_medrxiv_pdf,
         'arxiv': _download_arxiv_pdf,
     }
     errors = []
@@ -944,12 +1099,36 @@ def _download_text_from_sources(
             errors.append(f'pubmed: {detail}')
         except Exception as e:
             errors.append(f'pubmed: {e}')
+    if 'medrxiv' in sources and _should_try_medrxiv_text(paper):
+        try:
+            ok, detail = _download_medrxiv_text(paper, filepath)
+            if ok:
+                return True, 'medrxiv', ''
+            errors.append(f'medrxiv: {detail}')
+        except Exception as e:
+            errors.append(f'medrxiv: {e}')
     return False, '; '.join(errors) or 'no full-text source available', ''
 
 
 def _should_try_elsevier_text(paper: Mapping[str, Any]) -> bool:
     """Return whether a paper row advertises Elsevier full text."""
     return _full_text_uri(paper) is not None
+
+
+def _should_try_medrxiv_text(paper: Mapping[str, Any]) -> bool:
+    """Return whether a paper row can be looked up on medRxiv.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    bool
+        Whether the row carries a medRxiv DOI to fetch a JATS document with.
+    """
+    return _medrxiv_identifier(paper) is not None
 
 
 def _store_downloaded_asset(
@@ -1020,16 +1199,18 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     elsevier_text_available = _elsevier_configured()
     with connect(db_path) as conn:
         papers = paper_rows(conn)
-        if download_format == 'text' and not elsevier_text_available and 'pubmed' not in sources:
+        if (download_format == 'text' and not elsevier_text_available
+                and not TEXT_SOURCES.intersection(sources)):
             missing_text = force or any(
                 get_asset_metadata(conn, paper['paper_id'], 'text') is None
                 for paper in papers
             )
             if missing_text:
                 raise ValueError(
-                    'Text download requires an Elsevier API key or the pubmed source. '
-                    'Run ps_elsevier_key first, or pass --source pubmed for PubMed Central '
-                    'open-access full text.'
+                    'Text download requires an Elsevier API key, the pubmed source, or the '
+                    'medrxiv source. Run ps_elsevier_key first, pass --source pubmed for '
+                    'PubMed Central open-access full text, or pass --source medrxiv for '
+                    'medRxiv JATS full text.'
                 )
         if download_format in {'pdf', 'both'} and not sources:
             missing_pdf = force or any(
@@ -1105,6 +1286,7 @@ def _download_paper(
     text_available = (
         (elsevier_text_available and _should_try_elsevier_text(paper))
         or ('pubmed' in sources and _should_try_pmc_text(paper))
+        or ('medrxiv' in sources and _should_try_medrxiv_text(paper))
     )
     text_attempt_needed = (
         text_requested
@@ -1171,12 +1353,14 @@ def _download_paper(
             if ok:
                 paper['pdf_path'] = ''
                 paper['pdf_source'] = source_or_error
-                if source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv'} and source_url:
+                if source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv',
+                                       'medrxiv'} and source_url:
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
                 summary['pdfs'] += 1
-                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv'}
+                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core',
+                                                            'arxiv', 'medrxiv'}
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
         except Exception as e:

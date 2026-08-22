@@ -743,6 +743,8 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
 
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
+
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'Elsevier search skipped: elsevier down' in capsys.readouterr().out
@@ -769,6 +771,8 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
         lambda *_, **__: (_ for _ in ()).throw(search.requests.RequestException('core down')),
     )
 
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
+
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'CORE search skipped: core down' in capsys.readouterr().out
@@ -794,6 +798,8 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
         'openalex_search',
         lambda *_, **__: (_ for _ in ()).throw(RuntimeError('openalex down')),
     )
+
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1000,6 +1006,8 @@ def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
         lambda *_, **__: (_ for _ in ()).throw(RuntimeError('pubmed down')),
     )
 
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
+
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'PubMed search skipped: pubmed down' in capsys.readouterr().out
@@ -1161,6 +1169,8 @@ def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
         lambda *_, **__: (_ for _ in ()).throw(RuntimeError('arxiv down')),
     )
 
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
+
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
     assert 'arXiv search skipped: arxiv down' in capsys.readouterr().out
@@ -1168,6 +1178,227 @@ def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
 
     with pytest.raises(RuntimeError, match='arxiv down'):
         search.search_for_papers('query', source='arxiv', count=1)
+
+
+def medrxiv_records(count: int, start: int = 0, version: str = '1',
+                    date: str = '2024-03-01') -> list[dict[str, Any]]:
+    """Return mapped medRxiv records numbered from an offset."""
+    return [{'paper_id': f'doi:10.1101/2024.03.01.2430{start + index:04d}',
+             'doi': f'10.1101/2024.03.01.2430{start + index:04d}',
+             'medrxiv_doi': f'10.1101/2024.03.01.2430{start + index:04d}',
+             'title': f'Preprint {start + index} on vaccines',
+             'abstract': f'  Abstract {start + index}\n  wrapped.  ',
+             'publication_date': date,
+             'version': version,
+             'category': 'infectious diseases',
+             'sources': 'medrxiv'} for index in range(count)]
+
+
+def stub_medrxiv_walk(monkeypatch: pytest.MonkeyPatch,
+                      pages: list[list[dict[str, Any]]],
+                      total: int | None = None,
+                      step: int = 100) -> list[dict[str, Any]]:
+    """Serve prepared interval pages and record the cursors requested.
+
+    Pages are indexed by cursor so a walk that revisits the first page reads
+    the same records, which is what the reuse of the count-probing request
+    depends on.
+    """
+    calls: list[dict[str, Any]] = []
+    by_cursor = {index * step: page for index, page in enumerate(pages)}
+
+    def fake_interval_page(start: str, end: str, cursor: int = 0,
+                           category: str = '', **_: Any) -> object:
+        """Record the requested window and return a page marker."""
+        calls.append({'start': start, 'end': end, 'cursor': cursor, 'category': category})
+        return {'cursor': cursor}
+
+    monkeypatch.setattr(search.medrxiv, 'interval_page', fake_interval_page)
+    monkeypatch.setattr(search.medrxiv, 'parse_records',
+                        lambda payload: by_cursor.get(payload['cursor'], []))
+    monkeypatch.setattr(search.medrxiv, 'total_results',
+                        lambda _: total if total is not None else step * len(pages))
+    monkeypatch.setattr(search.medrxiv, 'page_size', lambda *_, **__: step)
+    return calls
+
+
+def test_medrxiv_rows_normalize_records_and_clean_abstracts() -> None:
+    """Frame medRxiv records on the search schema with compacted abstracts."""
+    rows = search._medrxiv_rows(medrxiv_records(2))
+
+    assert list(rows.columns) == search.SEARCH_FIELDS
+    assert rows.loc[0, 'sources'] == 'medrxiv'
+    assert rows.loc[0, 'medrxiv_doi'] == '10.1101/2024.03.01.24300000'
+    assert rows.loc[0, 'abstract'] == 'Abstract 0 wrapped.'
+    assert search._medrxiv_rows([]).empty
+
+
+def test_medrxiv_search_walks_pages_newest_first_and_stops_at_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read the last page first and stop once the requested count matches."""
+    pages = [medrxiv_records(2, start=index * 2) for index in range(4)]
+    calls = stub_medrxiv_walk(monkeypatch, pages, total=400)
+
+    rows = search.medrxiv_search('vaccines from:2024-01-01 to:2024-12-31', count=3)
+
+    assert len(rows) == 3
+    # The count probe runs at cursor zero, then the walk starts at the last page.
+    assert [call['cursor'] for call in calls] == [0, 300, 200]
+    # Records within a page are reversed, so the newest posting leads.
+    assert rows.loc[0, 'medrxiv_doi'] == '10.1101/2024.03.01.24300007'
+
+
+def test_medrxiv_search_reuses_the_page_it_fetched_to_learn_the_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spend one request on the first page rather than fetching it twice."""
+    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(2)], total=2)
+
+    rows = search.medrxiv_search('vaccines', count=50)
+
+    assert len(rows) == 2
+    assert [call['cursor'] for call in calls] == [0]
+
+
+def test_medrxiv_search_collapses_versions_that_fall_on_different_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count a revised preprint once even when its postings are pages apart."""
+    pages = [medrxiv_records(1, version='1', date='2024-01-05'),
+             medrxiv_records(1, version='2', date='2024-06-05')]
+    stub_medrxiv_walk(monkeypatch, pages, total=200)
+
+    rows = search.medrxiv_search('vaccines', count=5)
+
+    assert len(rows) == 1
+    # The walk met the newest posting first, and the earlier one dated it.
+    assert rows.loc[0, 'publication_date'] == '2024-01-05'
+
+
+def test_medrxiv_search_applies_the_scope_terms_to_the_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Send the interval and category the query named to the API."""
+    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1, step=30)
+
+    search.medrxiv_search('vaccines category:"Infectious Diseases" from:2024-02-01 to:2024-02-29',
+                          count=1)
+
+    assert calls[0] == {'start': '2024-02-01', 'end': '2024-02-29',
+                        'cursor': 0, 'category': 'Infectious Diseases'}
+
+
+def test_medrxiv_search_defaults_the_interval_to_the_whole_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read from the first medRxiv posting to today when the query says nothing."""
+    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+
+    search.medrxiv_search('vaccines', count=1, today='2026-08-22')
+
+    assert calls[0]['start'] == search.medrxiv.CORPUS_START
+    assert calls[0]['end'] == '2026-08-22'
+    assert calls[0]['category'] == ''
+
+
+def test_medrxiv_search_matches_terms_rather_than_returning_the_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep only the postings that carry every term of the query."""
+    stub_medrxiv_walk(monkeypatch, [medrxiv_records(3)], total=3)
+
+    assert len(search.medrxiv_search('vaccines', count=10)) == 3
+    assert search.medrxiv_search('lithium electrolyte', count=10).empty
+
+
+def test_medrxiv_search_stops_at_the_scan_limit_and_reports_the_shortfall(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End a fruitless walk at the scan limit instead of reading the archive."""
+    monkeypatch.setattr(search.medrxiv, 'MAX_SCAN_RECORDS', 200)
+    pages = [medrxiv_records(100, start=index * 100) for index in range(10)]
+    calls = stub_medrxiv_walk(monkeypatch, pages, total=1000)
+
+    rows = search.medrxiv_search('lithium', count=5)
+
+    assert rows.empty
+    # Two pages of a ten-page archive were read before the limit stopped it.
+    assert len(calls) == 3
+    output = capsys.readouterr().out
+    assert 'medRxiv matched 0 papers in 200 postings read.' in output
+    assert '800 older postings in' in output
+    assert '200-posting scan limit' in output
+
+
+def test_medrxiv_search_announces_the_scan_before_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Say how much is about to be read rather than appearing to hang."""
+    stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+
+    search.medrxiv_search('vaccines category:oncology from:2024-01-01 to:2024-12-31', count=1)
+
+    output = capsys.readouterr().out
+    assert 'medRxiv has no search endpoint' in output
+    assert 'reading the 1 postings between 2024-01-01 and 2024-12-31 filed under oncology' in output
+
+
+def test_medrxiv_search_returns_no_rows_for_an_empty_or_unmatched_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip the walk when the count is zero or the interval holds nothing."""
+    assert search.medrxiv_search('vaccines', count=0).empty
+
+    stub_medrxiv_walk(monkeypatch, [], total=0)
+    assert search.medrxiv_search('vaccines', count=10).empty
+
+
+def test_medrxiv_search_rejects_a_scope_date_it_cannot_use() -> None:
+    """Refuse a malformed interval before spending any request on it."""
+    with pytest.raises(ValueError, match='from: must be an ISO date'):
+        search.medrxiv_search('vaccines from:january', count=1)
+
+
+def test_search_for_papers_skips_failed_medrxiv_for_all_but_raises_for_medrxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Skip a failing medRxiv provider under all but surface it when selected."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
+    monkeypatch.setattr(search, 'pubmed_search', lambda *_, **__: search._pubmed_rows([]))
+    monkeypatch.setattr(search, 'arxiv_search', lambda *_, **__: search._arxiv_rows([]))
+    monkeypatch.setattr(
+        search,
+        'medrxiv_search',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('medrxiv down')),
+    )
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    assert 'medRxiv search skipped: medrxiv down' in capsys.readouterr().out
+    assert db_path.exists()
+
+    with pytest.raises(RuntimeError, match='medrxiv down'):
+        search.search_for_papers('query', source='medrxiv', count=1)
+
+
+@pytest.mark.network
+def test_medrxiv_search_uses_the_real_api() -> None:
+    """Search the real medRxiv archive over a small interval."""
+    rows = search.medrxiv_search('covid category:"infectious diseases" '
+                                 'from:2024-03-01 to:2024-03-05', count=1)
+
+    assert len(rows) <= 1
+    assert list(rows.columns) == search.SEARCH_FIELDS
 
 
 @pytest.mark.network

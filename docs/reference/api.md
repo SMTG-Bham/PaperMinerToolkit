@@ -22,6 +22,7 @@ modules/crossref
 modules/openalex
 modules/pubmed
 modules/arxiv
+modules/medrxiv
 modules/enrichment
 modules/elsevier
 modules/metadata

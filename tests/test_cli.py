@@ -743,7 +743,7 @@ def test_enrich_reports_the_run_summary(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result.exit_code == 0
     assert '8 enriched, 1 partial, 2 not found' in result.output
     assert 'Stored 40 author records, 20 subject records, and 100 references.' in result.output
-    assert ('3 papers have no DOI, OpenAlex identifier, PMID, or arXiv identifier'
+    assert ('3 papers have no DOI, OpenAlex identifier, PMID, arXiv identifier, or medRxiv DOI'
             in result.output)
 
 

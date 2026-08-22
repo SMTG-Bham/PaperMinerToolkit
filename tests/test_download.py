@@ -491,7 +491,8 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
         },
     )
 
-    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier', 'pubmed', 'arxiv']
+    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier',
+                                                     'pubmed', 'medrxiv', 'arxiv']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
@@ -499,7 +500,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
     monkeypatch.delenv('CORE_API_KEY', raising=False)
-    assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'arxiv']
+    assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'medrxiv', 'arxiv']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(
@@ -533,6 +534,83 @@ def test_should_try_elsevier_text_detects_full_text_links() -> None:
     assert download._should_try_elsevier_text({'doi': '10.1234/example', 'elsevier_link': 'abstract only'}) is True
     assert download._should_try_elsevier_text({'elsevier_link': 'abstract only'}) is False
     assert download._should_try_elsevier_text({'elsevier_link': None}) is False
+
+
+def test_should_try_medrxiv_text_needs_the_doi_medrxiv_issued() -> None:
+    """Offer medRxiv text only for a row medRxiv can actually be asked about."""
+    assert download._should_try_medrxiv_text(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}) is True
+    assert download._should_try_medrxiv_text({'doi': '10.1038/s41467-021-21444-5'}) is False
+    assert download._should_try_medrxiv_text({}) is False
+
+
+def test_download_papers_accepts_medrxiv_as_a_full_text_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat medRxiv as satisfying the text-format precondition, like PubMed."""
+    def fake_medrxiv_text(paper: Mapping[str, Any], filepath: object) -> tuple[bool, str]:
+        """Write the text a successful medRxiv fetch would have written."""
+        with open(filepath, 'w', encoding='utf-8') as out_file:
+            out_file.write('Full text.')
+        return True, ''
+
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'doi:10.1101/2024.03.01.24303596',
+                            'medrxiv_doi': '10.1101/2024.03.01.24303596'}])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(download, '_download_medrxiv_text', fake_medrxiv_text)
+    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+
+    download.download_papers(str(db_path), download_format='text', sources=['medrxiv'])
+
+    row = read_corpus(db_path)[0]
+    assert row['text_download_status'] == 'succeeded'
+    assert row['text_source'] == 'medrxiv'
+
+    # Without a full-text provider the precondition still refuses the run, and
+    # now names medRxiv among the ways to satisfy it.
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
+    with pytest.raises(ValueError, match='the medrxiv source'):
+        download.download_papers(str(db_path), download_format='text', force=True)
+
+
+def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reach the text sources for a row only medRxiv can supply text for."""
+    attempts = []
+    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+
+    def fake_text_sources(paper: Mapping[str, Any], filepath: object, sources: object,
+                          elsevier: object) -> tuple[bool, str, str]:
+        """Record the attempt and write the text a real provider would."""
+        attempts.append(dict(paper))
+        with open(filepath, 'w', encoding='utf-8') as out_file:
+            out_file.write('Full text.')
+        return True, 'medrxiv', ''
+
+    monkeypatch.setattr(download, '_download_text_from_sources', fake_text_sources)
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'doi:10.1101/2024.03.01.24303596'}])
+
+    with download.connect(db_path) as conn:
+        paper = {'paper_id': 'doi:10.1101/2024.03.01.24303596',
+                 'medrxiv_doi': '10.1101/2024.03.01.24303596'}
+        summary = download._download_paper(conn, paper, tmp_path, 'text', ['medrxiv'], False,
+                                           download_abstract=False)
+
+    assert len(attempts) == 1
+    assert summary['texts'] == 1
+    assert paper['text_source'] == 'medrxiv'
+
+    # A row with no medRxiv DOI has no text provider at all, so nothing is tried.
+    attempts.clear()
+    with download.connect(db_path) as conn:
+        download._download_paper(conn, {'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x'},
+                                 tmp_path, 'text', ['medrxiv'], False, download_abstract=False)
+    assert attempts == []
 
 
 def test_download_papers_validates_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1528,6 +1606,236 @@ def test_download_abstract_tries_pubmed_between_openalex_and_core(
 
     assert result == (True, 'pubmed', 'From PubMed.')
     assert calls == ['openalex', 'pubmed']
+
+
+def medrxiv_entry(**overrides: Any) -> dict[str, Any]:
+    """Return a mapped medRxiv record for the download helpers."""
+    entry = {
+        'medrxiv_doi': '10.1101/2024.03.01.24303596',
+        'version': '2',
+        'abstract': '  A trial\n  abstract. ',
+        'jatsxml': 'https://www.medrxiv.org/content/early/2024/03/04/x.source.xml',
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_medrxiv_identifier_reads_stored_values_without_a_request() -> None:
+    """Recognise every stored form of a medRxiv DOI, and nothing else."""
+    assert download._medrxiv_identifier(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596v2'}) == '10.1101/2024.03.01.24303596'
+    assert download._medrxiv_identifier(
+        {'paper_id': 'doi:10.64898/2026.08.05.26359794'}) == '10.64898/2026.08.05.26359794'
+    assert download._medrxiv_identifier(
+        {'pdf_url': 'https://www.medrxiv.org/content/10.1101/2020.09.09.20191205v1.full.pdf'}
+    ) == '10.1101/2020.09.09.20191205'
+    assert download._medrxiv_identifier({}) is None
+    # A published DOI names the journal version, which medRxiv does not index.
+    assert download._medrxiv_identifier({'doi': '10.1038/s41467-021-21444-5'}) is None
+
+
+def test_download_medrxiv_pdf_asks_for_the_version_the_record_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fetch the posted version's PDF and report a row that carries no DOI."""
+    attempted = []
+
+    def fake_download_url_to_pdf(url: str, filepath: object,
+                                 headers: object = None) -> tuple[bool, str]:
+        """Provide a fake PDF fetch that records the attempted URL."""
+        attempted.append(url)
+        return True, ''
+
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download_url_to_pdf)
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+
+    ok, detail = download._download_medrxiv_pdf(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, tmp_path / 'out.pdf')
+
+    expected = ('https://www.medrxiv.org/content/10.1101/2024.03.01.24303596v2.full.pdf')
+    assert (ok, detail) == (True, expected)
+    assert attempted == [expected]
+
+    assert download._download_medrxiv_pdf({}, tmp_path / 'out.pdf') == (
+        False, 'missing medRxiv DOI')
+
+
+def test_download_medrxiv_pdf_reports_a_refused_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Surface the reason a PDF was refused rather than working around it."""
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+    monkeypatch.setattr(download, '_download_url_to_pdf',
+                        lambda *_, **__: (False, 'HTTP 403 for medrxiv.org'))
+
+    assert download._download_medrxiv_pdf(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, tmp_path / 'out.pdf') == (
+        False, 'HTTP 403 for medrxiv.org')
+
+
+def test_download_medrxiv_text_writes_the_flattened_jats(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Store the JATS full text medRxiv publishes beside every record."""
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+    monkeypatch.setattr(download.medrxiv, 'full_text',
+                        lambda *_, **__: 'Title\n\nBody text.')
+    filepath = tmp_path / 'out.txt'
+
+    assert download._download_medrxiv_text(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, filepath) == (True, '')
+    assert filepath.read_text(encoding='utf-8') == 'Title\n\nBody text.'
+
+    monkeypatch.setattr(download.medrxiv, 'full_text', lambda *_, **__: '')
+    assert download._download_medrxiv_text(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, filepath) == (
+        False, 'no medRxiv full text for 10.1101/2024.03.01.24303596')
+
+    assert download._download_medrxiv_text({}, filepath) == (False, 'missing medRxiv DOI')
+
+
+def test_download_medrxiv_helpers_report_a_failed_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pass a request failure through as the reason rather than raising."""
+    def fail(*_: object, **__: object) -> None:
+        """Raise the error a failed medRxiv request produces."""
+        raise RuntimeError('medRxiv request failed after 4 attempts')
+
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', fail)
+    row = {'medrxiv_doi': '10.1101/2024.03.01.24303596'}
+
+    assert download._download_medrxiv_abstract(row) == (
+        False, 'medRxiv request failed after 4 attempts', '')
+    assert download._download_medrxiv_text(row, tmp_path / 'out.txt') == (
+        False, 'medRxiv request failed after 4 attempts')
+
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: None)
+    assert download._download_medrxiv_abstract(row) == (
+        False, 'no medRxiv record found for 10.1101/2024.03.01.24303596', '')
+
+
+def test_download_medrxiv_abstract_uses_the_stored_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the record's abstract, compacted, and report an empty one."""
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+    assert download._download_medrxiv_abstract(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}) == (True, 'medrxiv', 'A trial abstract.')
+
+    monkeypatch.setattr(download.medrxiv, 'fetch_doi',
+                        lambda *_, **__: medrxiv_entry(abstract=''))
+    assert download._download_medrxiv_abstract(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}) == (
+        False, 'no medRxiv abstract found for 10.1101/2024.03.01.24303596', '')
+
+    assert download._download_medrxiv_abstract({}) == (False, 'missing medRxiv DOI', '')
+
+
+def test_download_abstract_tries_medrxiv_between_pubmed_and_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall through OpenAlex and PubMed to medRxiv before reaching arXiv."""
+    calls = []
+
+    def record(name: str, ok: bool) -> object:
+        """Build a fake abstract lookup that records that it ran."""
+        def lookup(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+            """Record the provider and return the prepared outcome."""
+            calls.append(name)
+            return (True, name, f'From {name}.') if ok else (False, f'no {name} abstract', '')
+        return lookup
+
+    monkeypatch.setattr(download, '_download_openalex_abstract', record('openalex', False))
+    monkeypatch.setattr(download, '_download_pubmed_abstract', record('pubmed', False))
+    monkeypatch.setattr(download, '_download_medrxiv_abstract', record('medrxiv', True))
+    monkeypatch.setattr(download, '_download_arxiv_abstract', record('arxiv', True))
+    monkeypatch.setattr(download, '_download_core_abstract', record('core', False))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    result = download._download_abstract(
+        {'doi': '10.1234/x', 'medrxiv_doi': '10.1101/2024.03.01.24303596',
+         'arxiv_id': '2301.12345', 'core_id': '5'})
+
+    assert result == (True, 'medrxiv', 'From medrxiv.')
+    assert calls == ['openalex', 'pubmed', 'medrxiv']
+
+
+def test_download_abstract_skips_medrxiv_without_an_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never spend a medRxiv lookup on a row with no medRxiv DOI."""
+    def unreachable(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+        """Fail the test if the medRxiv lookup is attempted."""
+        raise AssertionError('medRxiv should not be queried without an identifier')
+
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda _: (False, 'no openalex abstract', ''))
+    monkeypatch.setattr(download, '_download_pubmed_abstract',
+                        lambda _: (False, 'no pubmed abstract', ''))
+    monkeypatch.setattr(download, '_download_medrxiv_abstract', unreachable)
+    monkeypatch.setattr(download, '_download_arxiv_abstract',
+                        lambda _: (False, 'no arxiv abstract', ''))
+    monkeypatch.setattr(download, '_download_core_abstract',
+                        lambda _: (False, 'no core abstract', ''))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    ok, reason, abstract = download._download_abstract({'doi': '10.1234/x'})
+
+    assert ok is False
+    assert 'medrxiv' not in reason
+
+
+def test_download_text_from_sources_falls_through_pubmed_to_medrxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Offer medRxiv full text once PubMed Central has nothing to give."""
+    monkeypatch.setattr(download, '_should_try_pmc_text', lambda _: True)
+    monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (False, 'missing PMC ID'))
+    monkeypatch.setattr(download, '_download_medrxiv_text', lambda *_: (True, ''))
+
+    row = {'medrxiv_doi': '10.1101/2024.03.01.24303596'}
+    assert download._download_text_from_sources(
+        row, tmp_path / 'out.txt', ['pubmed', 'medrxiv'], False) == (True, 'medrxiv', '')
+
+    # A row with no medRxiv DOI never reaches the provider at all.
+    ok, reason, _ = download._download_text_from_sources(
+        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['pubmed', 'medrxiv'], False)
+    assert ok is False
+    assert reason == 'pubmed: missing PMC ID'
+
+
+def test_download_text_from_sources_reports_a_failed_medrxiv_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Name medRxiv in the joined reason when its text lookup fails."""
+    monkeypatch.setattr(download, '_should_try_pmc_text', lambda _: False)
+    monkeypatch.setattr(download, '_download_medrxiv_text',
+                        lambda *_: (False, 'no medRxiv full text for 10.1101/x'))
+
+    ok, reason, _ = download._download_text_from_sources(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, tmp_path / 'out.txt', ['medrxiv'], False)
+
+    assert ok is False
+    assert reason == 'medrxiv: no medRxiv full text for 10.1101/x'
+
+
+def test_download_pdf_from_sources_can_select_medrxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Route a medRxiv PDF request through the registered downloader."""
+    monkeypatch.setattr(download, '_download_medrxiv_pdf',
+                        lambda *_: (True, 'https://www.medrxiv.org/content/x.full.pdf'))
+
+    assert download._download_pdf_from_sources({}, tmp_path / 'out.pdf', ['medrxiv']) == (
+        True, 'medrxiv', 'https://www.medrxiv.org/content/x.full.pdf')
 
 
 def test_arxiv_identifier_reads_stored_values_without_a_request() -> None:

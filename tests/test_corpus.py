@@ -556,6 +556,7 @@ def test_enrichment_stats_reports_status_and_child_counts(tmp_path: Path) -> Non
 
 V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
 V6_PAPER_FIELDS = V5_PAPER_FIELDS + ['pmid', 'pmcid']
+V7_PAPER_FIELDS = V6_PAPER_FIELDS + ['arxiv_id']
 
 
 def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
@@ -568,7 +569,7 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 7
+    assert version == corpus.SCHEMA_VERSION == 8
     assert {'pmid', 'pmcid'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -586,11 +587,28 @@ def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: 
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 7
+    assert version == corpus.SCHEMA_VERSION == 8
     assert 'arxiv_id' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
     assert rows[0]['arxiv_id'] is None
+
+
+def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the medRxiv DOI column to an existing version-seven corpus."""
+    db_path = tmp_path / 'v7.db'
+    write_legacy_corpus(db_path, V7_PAPER_FIELDS, version=7)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 8
+    assert 'medrxiv_doi' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['medrxiv_doi'] is None
 
 
 def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
@@ -599,6 +617,9 @@ def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
     assert corpus._fallback_paper_id({'pmid': '31234567', 'core_id': '2'}) == 'pmid:31234567'
     assert corpus._fallback_paper_id(
         {'arxiv_id': '2301.12345', 'core_id': '2'}) == 'arxiv:2301.12345'
+    assert corpus._fallback_paper_id(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596', 'core_id': '2'}
+    ) == 'doi:10.1101/2024.03.01.24303596'
     assert corpus._fallback_paper_id({'core_id': '2'}) == 'core:2'
     assert corpus._fallback_paper_id({'title': 'A paper'}).startswith('paper:')
 
@@ -616,6 +637,16 @@ def test_papers_match_on_a_shared_arxiv_identifier() -> None:
     """Treat rows sharing an arXiv identifier as the same publication."""
     existing = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'One'}
     incoming = {'paper_id': 'doi:10.1/x', 'arxiv_id': '2301.12345', 'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_papers_match_on_a_shared_medrxiv_identifier() -> None:
+    """Treat rows sharing a medRxiv DOI as the same publication."""
+    existing = {'paper_id': 'doi:10.1101/2024.03.01.24303596',
+                'medrxiv_doi': '10.1101/2024.03.01.24303596', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'medrxiv_doi': '10.1101/2024.03.01.24303596',
+                'title': 'Different title'}
 
     assert corpus._papers_match(existing, incoming)
 
