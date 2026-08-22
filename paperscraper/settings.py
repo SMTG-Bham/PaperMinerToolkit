@@ -176,7 +176,7 @@ def load_settings() -> dict[str, Any]:
 
     merged = deepcopy(DEFAULT_SETTINGS)
     for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_api_key', 'openai_api_key',
-                'anthropic_api_key', 'crossref_email']:
+                'anthropic_api_key', 'crossref_email', 'ncbi_api_key', 'ncbi_email']:
         if key in settings:
             merged[key] = settings[key]
 
@@ -205,6 +205,12 @@ def load_settings() -> dict[str, Any]:
     crossref_email = os.environ.get('CROSSREF_EMAIL')
     if crossref_email:
         merged['crossref_email'] = crossref_email
+    ncbi_api_key = os.environ.get('NCBI_API_KEY')
+    if ncbi_api_key:
+        merged['ncbi_api_key'] = ncbi_api_key
+    ncbi_email = os.environ.get('NCBI_EMAIL')
+    if ncbi_email:
+        merged['ncbi_email'] = ncbi_email
 
     text_env = _env_profile('PAPERSCRAPER_MODEL_')
     if text_env:
@@ -559,6 +565,52 @@ def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> No
     if '@' not in email:
         raise ValueError('Crossref email must be a valid email address.')
     settings['crossref_email'] = email
+    save_settings(settings)
+
+
+def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+    """Prompt for and save an NCBI E-utilities API key.
+
+    The key is optional. PubMed and PMC serve unauthenticated clients at three
+    requests per second; a key raises that ceiling to ten.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True], default=True
+        Settings mapping to update. A true value loads the current settings.
+    """
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'ncbi_api_key', 'NCBI API key')
+    api_key = input('Enter NCBI API key: ')
+    settings['ncbi_api_key'] = api_key
+    save_settings(settings)
+
+
+def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
+    """Prompt for and save the contact email sent to NCBI E-utilities.
+
+    NCBI asks that automated clients identify themselves so it can warn a
+    contact before blocking an address. PaperScraper falls back to the Crossref
+    address when no NCBI-specific address is configured.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True], default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered value does not contain an ``@`` character.
+    """
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'ncbi_email', 'NCBI email', secret=False)
+    email = input('Enter NCBI email: ').strip()
+    if '@' not in email:
+        raise ValueError('NCBI email must be a valid email address.')
+    settings['ncbi_email'] = email
     save_settings(settings)
 
 

@@ -552,3 +552,96 @@ def test_enrichment_stats_reports_status_and_child_counts(tmp_path: Path) -> Non
     assert stats['authors_with_orcid'] == 1
     assert stats['subject_records'] == 1
     assert stats['reference_records'] == 1
+
+
+V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
+
+
+def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
+    """Add the PubMed identifier columns to an existing version-five corpus."""
+    db_path = tmp_path / 'v5.db'
+    write_legacy_corpus(db_path, V5_PAPER_FIELDS, version=5)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 6
+    assert {'pmid', 'pmcid'} <= columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['pmid'] is None
+    assert rows[0]['pmcid'] is None
+
+
+def test_fallback_paper_id_prefers_doi_then_pmid_then_core() -> None:
+    """Choose the most portable identifier available for a paper without one."""
+    assert corpus._fallback_paper_id({'doi': '10.1/x', 'pmid': '1', 'core_id': '2'}) == 'doi:10.1/x'
+    assert corpus._fallback_paper_id({'pmid': '31234567', 'core_id': '2'}) == 'pmid:31234567'
+    assert corpus._fallback_paper_id({'core_id': '2'}) == 'core:2'
+    assert corpus._fallback_paper_id({'title': 'A paper'}).startswith('paper:')
+
+
+def test_papers_match_on_a_shared_pubmed_identifier() -> None:
+    """Treat rows sharing a PubMed identifier as the same publication."""
+    existing = {'paper_id': 'pmid:31234567', 'pmid': '31234567', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'pmid': '31234567', 'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+    assert corpus._papers_match({'pmcid': 'PMC1', 'paper_id': 'a'}, {'pmcid': 'PMC1', 'paper_id': 'b'})
+    assert not corpus._papers_match({'pmid': '1', 'paper_id': 'a'}, {'pmid': '2', 'paper_id': 'b'})
+
+
+def test_upsert_merges_a_pubmed_row_into_a_matching_doi_row(tmp_path: Path) -> None:
+    """Merge a PubMed record into an existing row rather than duplicating it."""
+    db_path = tmp_path / 'papers.db'
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [{'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x',
+                                     'sources': 'openalex', 'title': 'Shared paper'}])
+        added, updated = corpus.upsert_papers(conn, [
+            {'paper_id': 'pmid:31234567', 'doi': '10.1234/x', 'pmid': '31234567',
+             'pmcid': 'PMC9876543', 'sources': 'pubmed', 'title': 'Shared paper'}])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (0, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'doi:10.1234/x'
+    assert rows[0]['pmid'] == '31234567'
+    assert rows[0]['pmcid'] == 'PMC9876543'
+    assert 'pubmed' in rows[0]['sources']
+
+
+def test_write_enrichment_scopes_child_deletes_to_the_queried_sources(tmp_path: Path) -> None:
+    """Replace only the queried provider's child rows and keep the others."""
+    db_path = tmp_path / 'papers.db'
+
+    def update(paper_id: str) -> dict[str, Any]:
+        """Return a minimal enrichment update for one paper."""
+        fields = {field: '' for field in corpus.enrichment_update_fields()}
+        fields.update({'paper_id': paper_id, 'enrichment_status': 'succeeded', 'updated_at': ''})
+        return fields
+
+    def subject(paper_id: str, scheme: str, subject_id: str, source: str) -> dict[str, Any]:
+        """Return a minimal paper_subjects row."""
+        return {'paper_id': paper_id, 'scheme': scheme, 'subject_id': subject_id,
+                'display_name': subject_id, 'source': source}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/x', 'doi': '10.1/x'})
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'topic', 'T1', 'openalex')],
+                                sources=['openalex'])
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'mesh', 'D1', 'pubmed')],
+                                sources=['pubmed'])
+        scoped = {(row['scheme'], row['source'])
+                  for row in conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()}
+
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'topic', 'T2', 'openalex')])
+        unscoped = {(row['scheme'], row['source'])
+                    for row in conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()}
+
+    assert scoped == {('topic', 'openalex'), ('mesh', 'pubmed')}
+    assert unscoped == {('topic', 'openalex')}

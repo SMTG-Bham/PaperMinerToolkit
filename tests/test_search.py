@@ -885,3 +885,134 @@ def test_search_for_papers_skips_enrichment_by_default(
     search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
     assert 'Enriched' not in capsys.readouterr().out
+
+
+def pubmed_articles() -> list[dict[str, Any]]:
+    """Return PubMed article mappings covering a DOI-less and a normal record."""
+    return [
+        {'paper_id': 'doi:10.1234/one', 'doi': '10.1234/one', 'pmid': '1', 'pmcid': 'PMC1',
+         'title': 'Garnet electrolytes', 'journal': 'Test Journal',
+         'publication_date': '2024-03-07', 'authors': 'Jane A Smith',
+         'sources': 'pubmed', 'metadata_status': 'retrieved',
+         'abstract': '<p>BACKGROUND: Solid   electrolytes  matter.</p>'},
+        {'paper_id': 'pmid:2', 'doi': '', 'pmid': '2', 'pmcid': '',
+         'title': 'An older paper', 'journal': 'Old Journal', 'publication_date': '2019',
+         'authors': 'J Doe', 'sources': 'pubmed', 'metadata_status': 'retrieved',
+         'abstract': ''},
+    ]
+
+
+def test_pubmed_rows_normalize_records_and_clean_abstracts() -> None:
+    """Map PubMed records onto the shared search columns and clean abstract markup."""
+    rows = search._pubmed_rows(pubmed_articles())
+
+    assert list(rows.columns) == search.SEARCH_FIELDS
+    assert rows['paper_id'].tolist() == ['doi:10.1234/one', 'pmid:2']
+    assert rows['pmid'].tolist() == ['1', '2']
+    assert rows['pmcid'].tolist() == ['PMC1', '']
+    assert rows['sources'].tolist() == ['pubmed', 'pubmed']
+    assert rows.loc[0, 'abstract'] == 'BACKGROUND: Solid electrolytes matter.'
+    assert rows.loc[1, 'abstract'] == ''
+    assert search._pubmed_rows([]).empty
+
+
+def test_pubmed_search_pages_efetch_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Page a stored result set and stop once the requested count is reached."""
+    class FakeTqdm:
+        """Provide a progress-bar test double."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Initialize the test double."""
+            return None
+
+        def __enter__(self) -> Self:
+            """Enter the test-double context."""
+            return self
+
+        def __exit__(self, *_: object) -> bool:
+            """Exit the test-double context."""
+            return False
+
+        def update(self, _: int) -> None:
+            """Ignore a progress update."""
+            return None
+
+    pages = []
+
+    def fake_esearch_history(query: str, **kwargs: Any) -> tuple[str, str, int]:
+        """Provide a fake stored-search implementation."""
+        return 'WE1', '1', 500
+
+    def fake_efetch_history(webenv: str, query_key: str, **kwargs: Any) -> object:
+        """Provide a fake record-page implementation."""
+        pages.append((kwargs['retstart'], kwargs['retmax']))
+        return object()
+
+    def fake_parse_articles(_: object) -> list[dict[str, Any]]:
+        """Return one page worth of article mappings."""
+        start = len(pages) - 1
+        return [{'paper_id': f'pmid:{start * 200 + index}', 'pmid': str(start * 200 + index),
+                 'sources': 'pubmed'} for index in range(pages[-1][1])]
+
+    monkeypatch.setattr(search.pubmed, 'esearch_history', fake_esearch_history)
+    monkeypatch.setattr(search.pubmed, 'efetch_history', fake_efetch_history)
+    monkeypatch.setattr(search.pubmed, 'parse_articles', fake_parse_articles)
+    monkeypatch.setattr(search.pubmed, 'configured_api_key', lambda *_, **__: None)
+    monkeypatch.setattr(search.pubmed, 'configured_email', lambda *_, **__: '')
+    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+
+    rows = search.pubmed_search('lithium', count=250)
+
+    assert len(rows) == 250
+    assert pages == [(0, 200), (200, 50)]
+
+
+def test_pubmed_search_reports_the_ten_thousand_result_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Warn when a query matches more records than PubMed will ever return."""
+    monkeypatch.setattr(search.pubmed, 'esearch_history', lambda *_, **__: ('', '', 240000))
+    monkeypatch.setattr(search.pubmed, 'configured_api_key', lambda *_, **__: None)
+    monkeypatch.setattr(search.pubmed, 'configured_email', lambda *_, **__: '')
+
+    rows = search.pubmed_search('lithium', count=10)
+
+    assert rows.empty
+    assert 'PubMed matched 240000 records but exposes only the first 10000' in capsys.readouterr().out
+
+
+def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Skip a failing PubMed provider under all but surface it when selected."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
+    monkeypatch.setattr(
+        search,
+        'pubmed_search',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('pubmed down')),
+    )
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    assert 'PubMed search skipped: pubmed down' in capsys.readouterr().out
+    assert db_path.exists()
+
+    with pytest.raises(RuntimeError, match='pubmed down'):
+        search.search_for_papers('query', source='pubmed', count=1)
+
+
+@pytest.mark.network
+def test_pubmed_search_uses_the_real_eutilities_api() -> None:
+    """PubMed search uses the real E-utilities service."""
+    rows = search.pubmed_search('solid electrolyte', count=1)
+
+    assert len(rows) <= 1
+    assert rows.empty or rows.loc[0, 'sources'] == 'pubmed'

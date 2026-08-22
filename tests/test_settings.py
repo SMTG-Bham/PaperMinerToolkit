@@ -25,6 +25,8 @@ API_ENV_KEYS = [
     'UNPAYWALL_EMAIL',
     'OPENALEX_API_KEY',
     'CROSSREF_EMAIL',
+    'NCBI_API_KEY',
+    'NCBI_EMAIL',
 ]
 
 MODEL_ENV_KEYS = [
@@ -166,6 +168,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
         'crossref_email': 'file-crossref@example.com',
+        'ncbi_api_key': 'file-ncbi',
+        'ncbi_email': 'file-ncbi@example.com',
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
@@ -174,6 +178,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
     monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
+    monkeypatch.setenv('NCBI_API_KEY', 'env-ncbi')
+    monkeypatch.setenv('NCBI_EMAIL', 'env-ncbi@example.com')
 
     loaded = settings.load_settings()
 
@@ -184,6 +190,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
     assert loaded['crossref_email'] == 'env-crossref@example.com'
+    assert loaded['ncbi_api_key'] == 'env-ncbi'
+    assert loaded['ncbi_email'] == 'env-ncbi@example.com'
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:

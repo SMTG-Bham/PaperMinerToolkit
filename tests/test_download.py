@@ -491,7 +491,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
         },
     )
 
-    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier']
+    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier', 'pubmed']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
@@ -499,7 +499,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
     monkeypatch.delenv('CORE_API_KEY', raising=False)
-    assert download._configured_sources(['all']) == ['openalex']
+    assert download._configured_sources(['all']) == ['openalex', 'pubmed']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(
@@ -545,7 +545,7 @@ def test_download_papers_validates_configuration(tmp_path: Path, monkeypatch: py
 
     monkeypatch.setattr(download, '_configured_sources', lambda _: [])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
-    with pytest.raises(ValueError, match='Elsevier text download requires'):
+    with pytest.raises(ValueError, match='Text download requires an Elsevier API key'):
         download.download_papers(str(db_path), download_format='text')
 
     with pytest.raises(ValueError, match='No PDF download sources are configured'):
@@ -1247,7 +1247,7 @@ def test_download_papers_records_initial_text_download_exception(
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'failed'
-    assert papers[0]['last_error'] == 'text exploded'
+    assert papers[0]['last_error'] == 'elsevier: text exploded'
 
 
 def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_pdf(
@@ -1450,3 +1450,203 @@ def test_download_elsevier_pdf_uses_real_api_when_entitled(tmp_path: Path) -> No
     if not ok:
         pytest.skip('Elsevier API key is configured, but this account/DOI did not return a PDF entitlement.')
     assert pdf_path.read_bytes().startswith(b'%PDF')
+
+
+def test_pubmed_identifier_reads_stored_values_without_a_request() -> None:
+    """Resolve a PubMed identifier from the corpus row alone."""
+    assert download._pubmed_identifier({'pmid': '31234567'}) == '31234567'
+    assert download._pubmed_identifier({'paper_id': 'pmid:31234567'}) == '31234567'
+    assert download._pubmed_identifier({'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x'}) is None
+    assert download._pubmed_identifier({}) is None
+
+
+def test_download_pubmed_abstract_uses_a_stored_pmid_and_records_a_resolved_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetch by stored PMID, and write back an identifier resolved from a DOI."""
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
+    monkeypatch.setattr(download.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(download.pubmed, 'parse_articles',
+                        lambda _: [{'abstract': '<i>Structured</i>   abstract.'}])
+
+    paper = {'pmid': '31234567'}
+    monkeypatch.setattr(download.pubmed, 'resolve_pmid', lambda row, **__: str(row.get('pmid') or ''))
+    assert download._download_pubmed_abstract(paper) == (True, 'pubmed', 'Structured abstract.')
+
+    paper = {'doi': '10.1234/x'}
+    monkeypatch.setattr(download.pubmed, 'resolve_pmid', lambda *_, **__: '99')
+    assert download._download_pubmed_abstract(paper)[:2] == (True, 'pubmed')
+    assert paper['pmid'] == '99'
+
+
+def test_download_pubmed_abstract_reports_missing_and_empty_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report an unresolvable row and a record that carries no abstract."""
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
+    monkeypatch.setattr(download.pubmed, 'resolve_pmid', lambda *_, **__: '')
+    assert download._download_pubmed_abstract({}) == (False, 'missing PMID', '')
+
+    monkeypatch.setattr(download.pubmed, 'resolve_pmid', lambda *_, **__: '7')
+    monkeypatch.setattr(download.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(download.pubmed, 'parse_articles', lambda _: [])
+    assert download._download_pubmed_abstract({'pmid': '7'}) == (
+        False, 'no PubMed record found for 7', '')
+
+    monkeypatch.setattr(download.pubmed, 'parse_articles', lambda _: [{'abstract': ''}])
+    assert download._download_pubmed_abstract({'pmid': '7'}) == (
+        False, 'no PubMed abstract found for 7', '')
+
+
+def test_download_abstract_tries_pubmed_between_openalex_and_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall through OpenAlex to PubMed before reaching CORE."""
+    calls = []
+
+    def fake_openalex(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+        """Provide a fake OpenAlex abstract lookup."""
+        calls.append('openalex')
+        return False, 'no OpenAlex abstract found', ''
+
+    def fake_pubmed(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+        """Provide a fake PubMed abstract lookup."""
+        calls.append('pubmed')
+        return True, 'pubmed', 'From PubMed.'
+
+    def fake_core(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+        """Provide a fake CORE abstract lookup."""
+        calls.append('core')
+        return False, 'no CORE abstract found', ''
+
+    monkeypatch.setattr(download, '_download_openalex_abstract', fake_openalex)
+    monkeypatch.setattr(download, '_download_pubmed_abstract', fake_pubmed)
+    monkeypatch.setattr(download, '_download_core_abstract', fake_core)
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    result = download._download_abstract({'doi': '10.1234/x', 'core_id': '5'})
+
+    assert result == (True, 'pubmed', 'From PubMed.')
+    assert calls == ['openalex', 'pubmed']
+
+
+def test_download_abstract_skips_pubmed_without_a_pmid_or_doi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never spend a PubMed lookup on a row with nothing to resolve from."""
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda _: (False, 'no OpenAlex abstract found', ''))
+    monkeypatch.setattr(download, '_download_pubmed_abstract',
+                        lambda _: pytest.fail('PubMed must not be queried'))
+    monkeypatch.setattr(download, '_download_core_abstract', lambda _: (True, 'core', 'From CORE.'))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    assert download._download_abstract({'core_id': '5'}) == (True, 'core', 'From CORE.')
+
+
+def test_download_pdf_from_sources_dispatches_every_configured_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Look up a downloader for every name the source set accepts."""
+    monkeypatch.setattr(download, '_download_unpaywall_pdf', lambda *_: (False, 'no'))
+    monkeypatch.setattr(download, '_download_openalex_pdf', lambda *_: (False, 'no'))
+    monkeypatch.setattr(download, '_download_core_pdf', lambda *_: (False, 'no'))
+    monkeypatch.setattr(download, '_download_pdf', lambda *_: False)
+    monkeypatch.setattr(download, '_download_pubmed_pdf', lambda *_: (True, 'https://pmc/a.pdf'))
+
+    ok, source, url = download._download_pdf_from_sources(
+        {'doi': '10.1234/x'}, tmp_path / 'out.pdf', sorted(download.DOWNLOAD_SOURCES))
+
+    assert (ok, source, url) == (True, 'pubmed', 'https://pmc/a.pdf')
+
+
+def test_download_pubmed_pdf_uses_only_open_access_pdf_links(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Try the offered PDF links and ignore package archives."""
+    attempted = []
+
+    def fake_download_url_to_pdf(url: str, filepath: object, headers: object = None) -> tuple[bool, str]:
+        """Provide a fake PDF fetch that records each attempted URL."""
+        attempted.append(url)
+        return url.endswith('.pdf'), 'not a PDF'
+
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *_, **__: 'PMC1')
+    monkeypatch.setattr(download.pubmed, 'oa_package_urls',
+                        lambda *_, **__: ['https://ftp.ncbi.nlm.nih.gov/a.tar.gz',
+                                          'https://ftp.ncbi.nlm.nih.gov/a.pdf'])
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download_url_to_pdf)
+
+    assert download._download_pubmed_pdf({'pmcid': 'PMC1'}, tmp_path / 'out.pdf') == (
+        True, 'https://ftp.ncbi.nlm.nih.gov/a.pdf')
+    assert attempted == ['https://ftp.ncbi.nlm.nih.gov/a.pdf']
+
+    monkeypatch.setattr(download.pubmed, 'oa_package_urls', lambda *_, **__: [])
+    assert download._download_pubmed_pdf({'pmcid': 'PMC1'}, tmp_path / 'out.pdf') == (
+        False, 'no open-access PDF offered for PMC1')
+
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *_, **__: '')
+    assert download._download_pubmed_pdf({}, tmp_path / 'out.pdf') == (False, 'missing PMC ID')
+
+
+def test_download_pmc_text_writes_open_access_full_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Write PMC full text to disk and report an absent record cleanly."""
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *_, **__: 'PMC1')
+    monkeypatch.setattr(download.pubmed, 'pmc_full_text', lambda *_, **__: 'Full text body.')
+
+    filepath = tmp_path / 'paper.txt'
+    assert download._download_pmc_text({'pmcid': 'PMC1'}, filepath) == (True, '')
+    assert filepath.read_text(encoding='utf-8') == 'Full text body.'
+
+    monkeypatch.setattr(download.pubmed, 'pmc_full_text', lambda *_, **__: '')
+    assert download._download_pmc_text({'pmcid': 'PMC1'}, filepath) == (
+        False, 'no open-access full text for PMC1')
+
+
+def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Try Elsevier first, then PMC, and join the reasons when both fail."""
+    monkeypatch.setattr(download, '_should_try_elsevier_text', lambda _: True)
+    monkeypatch.setattr(download, '_download_text',
+                        lambda *_: (_ for _ in ()).throw(RuntimeError('elsevier down')))
+    monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (True, ''))
+
+    filepath = tmp_path / 'paper.txt'
+    assert download._download_text_from_sources(
+        {'pmid': '1'}, filepath, ['pubmed'], True) == (True, 'pubmed', '')
+
+    monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (False, 'not open access'))
+    ok, detail, _ = download._download_text_from_sources({'pmid': '1'}, filepath, ['pubmed'], True)
+    assert ok is False
+    assert detail == 'elsevier: elsevier down; pubmed: not open access'
+
+    assert download._download_text_from_sources({}, filepath, [], False) == (
+        False, 'no full-text source available', '')
+
+
+def test_download_papers_allows_text_without_elsevier_when_pubmed_is_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accept a text run without an Elsevier key once PubMed can supply text."""
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'pmid:1', 'pmid': '1'}])
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['pubmed'])
+    monkeypatch.setattr(download, '_download_pmc_text',
+                        lambda _, filepath: (Path(filepath).write_text('Body.', encoding='utf-8'), (True, ''))[1])
+
+    download.download_papers(str(db_path), download_format='text', download_abstract=False)
+
+    papers = read_corpus(db_path)
+    assert papers[0]['text_download_status'] == 'succeeded'
+    assert papers[0]['text_source'] == 'pubmed'

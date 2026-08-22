@@ -553,6 +553,8 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
     monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
     monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
+    monkeypatch.setattr(cli, 'update_ncbi_key', lambda: calls.append('ncbi-key'))
+    monkeypatch.setattr(cli, 'update_ncbi_email', lambda: calls.append('ncbi-email'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
@@ -561,10 +563,13 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     cli.update_unpaywall_api_email()
     cli.update_crossref_api_email()
     cli.update_openalex_api_key()
+    cli.update_ncbi_api_key()
+    cli.update_ncbi_api_email()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'crossref', 'openalex', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'unpaywall', 'crossref', 'openalex',
+                     'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -793,3 +798,50 @@ def test_corpus_status_prints_enrichment_counts(tmp_path: Path) -> None:
     assert 'Papers enriched: 1' in result.output
     assert 'Papers open access: 1' in result.output
     assert 'Author records: 1 (1 with ORCID)' in result.output
+
+
+def test_search_download_and_enrich_source_choices_accept_pubmed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accept PubMed as a search, download, and enrichment source."""
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'pubmed'
+
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    download_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+            {'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['pubmed']
+
+    enrich_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'enrich_corpus',
+        lambda path, **kwargs: enrich_calls.update({'sources': kwargs.get('sources')}) or {
+            key: 0 for key in ('succeeded', 'partial', 'not_found', 'unresolved',
+                               'failed', 'authors', 'subjects', 'references', 'batches')},
+    )
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path), '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert enrich_calls['sources'] == ['pubmed']

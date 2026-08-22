@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -36,6 +36,8 @@ PAPER_COLUMNS = [
     'text_source',
     'abstract_source',
     'elsevier_link',
+    'pmid',
+    'pmcid',
 ]
 PIPELINE_COLUMNS = {
     'metadata_status': 'pending',
@@ -79,7 +81,7 @@ ENRICHMENT_COLUMNS = {
     'enrichment_json': 'TEXT',
     'enriched_at': 'TEXT',
 }
-ENRICHMENT_FILL_COLUMNS = ['doi', 'title', 'journal', 'publication_date', 'authors']
+ENRICHMENT_FILL_COLUMNS = ['doi', 'title', 'journal', 'publication_date', 'authors', 'pmid', 'pmcid']
 AUTHOR_COLUMNS = [
     'paper_id', 'author_position', 'affiliation_rank', 'position_label', 'display_name',
     'given_name', 'family_name', 'orcid', 'is_corresponding', 'affiliation',
@@ -537,11 +539,14 @@ def _fallback_paper_id(paper: _PaperInput) -> str:
     Returns
     -------
     str
-        DOI-, CORE-, or content-derived paper identifier.
+        DOI-, PubMed-, CORE-, or content-derived paper identifier.
     """
     doi = _clean_doi(paper.get('doi'))
     if doi:
         return f'doi:{doi}'
+    pmid = paper.get('pmid')
+    if _has_value(pmid):
+        return f'pmid:{pmid}'
     core_id = paper.get('core_id')
     if _has_value(core_id):
         return f'core:{core_id}'
@@ -634,7 +639,7 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
         return True
-    for column in ['paper_id', 'core_id']:
+    for column in ['paper_id', 'core_id', 'pmid', 'pmcid']:
         if _has_value(existing.get(column)) and str(existing.get(column)) == str(incoming.get(column)):
             return True
     existing_title = _title_key(existing.get('title'))
@@ -860,7 +865,7 @@ def enrichment_candidates(conn: sqlite3.Connection,
     rows = conn.execute(
         f"""
         SELECT rowid AS rowid, paper_id, doi, title, journal, publication_date, authors,
-               openalex_id, enrichment_status, enriched_at
+               openalex_id, pmid, pmcid, enrichment_status, enriched_at
         FROM papers
         WHERE rowid > ?
           AND (enrichment_status IN ({placeholders})
@@ -919,11 +924,14 @@ def write_enrichment(conn: sqlite3.Connection,
                      updates: Iterable[_PaperInput],
                      authors: Iterable[_PaperInput] = (),
                      subjects: Iterable[_PaperInput] = (),
-                     references: Iterable[_PaperInput] = ()) -> int:
+                     references: Iterable[_PaperInput] = (),
+                     sources: Iterable[str] = ()) -> int:
     """Write one batch of enrichment updates and child rows in a transaction.
 
     Child rows are replaced per paper rather than merged, so re-running
-    enrichment cannot leave stale authors, subjects, or references behind.
+    enrichment cannot leave stale authors, subjects, or references behind. The
+    replacement is scoped to ``sources`` so enriching from one provider leaves
+    another provider's rows for the same paper intact.
 
     Parameters
     ----------
@@ -937,6 +945,9 @@ def write_enrichment(conn: sqlite3.Connection,
         Rows for the ``paper_subjects`` table.
     references : Iterable[_PaperInput], optional
         Rows for the ``paper_references`` table.
+    sources : Iterable[str], optional
+        Providers these rows came from. Only their rows are replaced; an empty
+        value replaces every child row for the papers being updated.
 
     Returns
     -------
@@ -951,12 +962,19 @@ def write_enrichment(conn: sqlite3.Connection,
         'paper_subjects': [dict(row) for row in subjects],
         'paper_references': [dict(row) for row in references],
     }
-    paper_ids = [(str(update['paper_id']),) for update in updates]
+    scoped = [str(source) for source in sources if str(source)]
+    if scoped:
+        placeholders = ', '.join('?' for _ in scoped)
+        delete_clause = f'WHERE paper_id = ? AND source IN ({placeholders})'
+        delete_parameters = [(str(update['paper_id']), *scoped) for update in updates]
+    else:
+        delete_clause = 'WHERE paper_id = ?'
+        delete_parameters = [(str(update['paper_id']),) for update in updates]
     try:
         conn.execute('BEGIN')
         conn.executemany(_enrichment_update_sql(), updates)
         for table, rows in child_rows.items():
-            conn.executemany(f'DELETE FROM {table} WHERE paper_id = ?', paper_ids)
+            conn.executemany(f'DELETE FROM {table} {delete_clause}', delete_parameters)
             columns = ENRICHMENT_CHILD_TABLES[table]
             defaults = _child_column_defaults(conn, table)
             placeholders = ', '.join(f':{column}' for column in columns)

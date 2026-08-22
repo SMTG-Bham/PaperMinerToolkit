@@ -218,8 +218,8 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
-    assert enrichment.configured_sources(None) == ['crossref', 'openalex']
-    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex']
+    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed']
+    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed']
     assert enrichment.configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
         enrichment.configured_sources(['scopus'])
@@ -844,3 +844,154 @@ def test_resolve_reference_dois_deduplicates_identifiers_across_papers(tmp_path:
     assert session.calls[0]['params']['filter'] == 'ids.openalex:W9'
     assert updated == 2
     assert references[0]['referenced_doi'] == '10.1234/cited'
+
+
+def pubmed_article(pmid: str = '31234567',
+                   doi: str = '10.1234/pubmed-one') -> dict[str, Any]:
+    """Return a PubMed article mapping exercising every consumed field."""
+    return {
+        'paper_id': f'doi:{doi}' if doi else f'pmid:{pmid}',
+        'doi': doi,
+        'pmid': pmid,
+        'pmcid': 'PMC9876543',
+        'title': 'PubMed title',
+        'journal': 'PubMed Journal',
+        'publication_date': '2024-03-07',
+        'authors': 'Jane A Smith',
+        'sources': 'pubmed',
+        'abstract': 'An abstract.',
+        'mesh': [
+            {'scheme': 'mesh', 'id': 'D007854', 'name': 'Lithium', 'is_primary': '1'},
+            {'scheme': 'mesh_qualifier', 'id': 'Q000032', 'name': 'analysis', 'is_primary': '0'},
+        ],
+        'keywords': ['garnet'],
+        'publication_types': [{'id': 'D016428', 'name': 'Journal Article'}],
+        'article_type': 'article',
+    }
+
+
+def test_openalex_fields_backfill_pubmed_identifiers_from_the_ids_block() -> None:
+    """Recover a PMID that OpenAlex already reports rather than requesting it."""
+    fields = enrichment.openalex_fields(openalex_work())
+
+    assert fields['pmid'] == '1'
+    assert enrichment.openalex_fields({})['pmid'] == ''
+    assert enrichment.openalex_fields(
+        {'ids': {'pmcid': 'https://www.ncbi.nlm.nih.gov/pmc/articles/PMC55'}})['pmcid'] == 'PMC55'
+
+
+def test_pubmed_candidates_key_rows_by_their_pubmed_identifier() -> None:
+    """Read a PMID from the stored column or from a PubMed paper identifier."""
+    candidates = [
+        {'paper_id': 'doi:10.1234/a', 'pmid': '11'},
+        {'paper_id': 'pmid:22'},
+        {'paper_id': 'doi:10.1234/c'},
+        {'paper_id': ''},
+    ]
+
+    assert enrichment.pubmed_candidates(candidates) == {'11': 'doi:10.1234/a', '22': 'pmid:22'}
+
+
+def test_pubmed_fields_map_the_shared_enrichment_columns() -> None:
+    """Contribute the bibliographic columns PubMed can fill."""
+    fields = enrichment.pubmed_fields(pubmed_article())
+
+    assert fields['doi'] == '10.1234/pubmed-one'
+    assert fields['title'] == 'PubMed title'
+    assert fields['journal'] == 'PubMed Journal'
+    assert fields['publication_date'] == '2024-03-07'
+    assert fields['pmid'] == '31234567'
+    assert fields['pmcid'] == 'PMC9876543'
+    assert fields['work_type'] == 'Journal Article'
+
+
+def test_pubmed_subject_rows_split_descriptors_qualifiers_types_and_keywords() -> None:
+    """Keep each controlled vocabulary in its own scheme and drop duplicates."""
+    rows = enrichment.pubmed_subject_rows('doi:10.1234/pubmed-one', pubmed_article())
+
+    assert [(row['scheme'], row['subject_id'], row['display_name']) for row in rows] == [
+        ('mesh', 'D007854', 'Lithium'),
+        ('mesh_qualifier', 'Q000032', 'analysis'),
+        ('publication_type', 'D016428', 'Journal Article'),
+        ('mesh_keyword', 'garnet', 'garnet'),
+    ]
+    assert {row['source'] for row in rows} == {'pubmed'}
+    assert rows[0]['is_primary'] == 1
+    assert rows[1]['is_primary'] == 0
+    assert enrichment.pubmed_subject_rows('doi:10.1234/x', None) == []
+
+
+def test_pubmed_keywords_use_a_scheme_distinct_from_openalex_keywords() -> None:
+    """Keep both providers' keywords addressable under the composite key."""
+    openalex_schemes = {row['scheme'] for row in enrichment.subject_rows('p', openalex_work())}
+    pubmed_schemes = {row['scheme'] for row in enrichment.pubmed_subject_rows('p', pubmed_article())}
+
+    assert 'keyword' in openalex_schemes
+    assert 'mesh_keyword' in pubmed_schemes
+    assert not openalex_schemes & pubmed_schemes
+
+
+def test_merge_fields_records_pubmed_as_a_found_source() -> None:
+    """Count PubMed towards the enrichment status and store its provenance."""
+    update = enrichment.merge_fields('doi:10.1234/pubmed-one', None, None,
+                                     ['pubmed'], pubmed_article())
+
+    assert update['enrichment_status'] == 'succeeded'
+    assert update['enrichment_sources'] == 'pubmed'
+    assert update['pmid'] == '31234567'
+    assert update['pmcid'] == 'PMC9876543'
+    assert update['enrichment_json']['pubmed']['mesh_count'] == 2
+
+    partial = enrichment.merge_fields('doi:10.1234/pubmed-one', None, None,
+                                      ['crossref', 'pubmed'], pubmed_article())
+    assert partial['enrichment_status'] == 'partial'
+
+
+def test_enrich_batch_enriches_a_pubmed_only_row_and_stores_mesh(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve a row that has only a PMID and store its MeSH terms."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'pmid:31234567', 'pmid': '31234567', 'title': 'Seeded'}])
+    monkeypatch.setattr(enrichment.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.pubmed, 'parse_articles', lambda _: [pubmed_article(doi='')])
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['pubmed'], '')
+        subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
+        rows = corpus.paper_rows(conn)
+
+    assert summary['unresolved'] == 0
+    assert summary['succeeded'] == 1
+    assert {row['scheme'] for row in subjects} == {'mesh', 'mesh_qualifier',
+                                                   'publication_type', 'mesh_keyword'}
+    assert rows[0]['pmcid'] == 'PMC9876543'
+    assert rows[0]['enrichment_sources'] == 'pubmed'
+
+
+def test_enrich_batch_keeps_openalex_subjects_when_only_pubmed_is_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave another provider's child rows intact when enriching from PubMed."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/pubmed-one', 'doi': '10.1234/pubmed-one',
+                           'pmid': '31234567'}])
+    monkeypatch.setattr(enrichment.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.pubmed, 'parse_articles', lambda _: [pubmed_article()])
+
+    with open_corpus(db_path) as conn:
+        corpus.write_enrichment(
+            conn,
+            [{**{field: '' for field in corpus.enrichment_update_fields()},
+              'paper_id': 'doi:10.1234/pubmed-one', 'enrichment_status': 'pending',
+              'updated_at': ''}],
+            subjects=[{'paper_id': 'doi:10.1234/pubmed-one', 'scheme': 'topic',
+                       'subject_id': 'T1', 'display_name': 'Batteries', 'source': 'openalex'}],
+            sources=['openalex'])
+        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+                                ['pubmed'], '')
+        sources = {row['source'] for row in
+                   conn.execute('SELECT source FROM paper_subjects').fetchall()}
+
+    assert sources == {'openalex', 'pubmed'}

@@ -125,6 +125,10 @@ parsers:
      - Crossref contact email
    * - ``ps_openalex_key``
      - OpenAlex API key
+   * - ``ps_ncbi_key``
+     - NCBI E-utilities API key
+   * - ``ps_ncbi_email``
+     - NCBI contact email
    * - ``ps_openai_key``
      - OpenAI API key
    * - ``ps_anthropic_key``

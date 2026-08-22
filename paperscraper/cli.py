@@ -38,6 +38,8 @@ from paperscraper.settings import (get_model_profile,
                                    update_core_key,
                                    update_crossref_email,
                                    update_elsevier_key,
+                                   update_ncbi_email,
+                                   update_ncbi_key,
                                    update_openai_key,
                                    update_openalex_key,
                                    update_unpaywall_email)
@@ -57,7 +59,7 @@ def _format_bytes(size: int) -> str:
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
-              type=click.Choice(['all', 'elsevier', 'core', 'openalex']),
+              type=click.Choice(['all', 'elsevier', 'core', 'openalex', 'pubmed']),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -149,10 +151,11 @@ def import_author(db_path: str,
               show_default=True)
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex']),
+              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed']),
               default=('all',),
               show_default=True,
-              help='PDF source to use. Repeat to choose more than one.')
+              help='Content source to use for PDFs and PubMed Central full text. '
+                   'Repeat to choose more than one.')
 @click.option('--abstract/--no-abstract',
               'download_abstract',
               default=True,
@@ -181,7 +184,7 @@ def download(
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'crossref', 'openalex']),
+              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed']),
               default=('all',),
               show_default=True,
               help='Metadata source to use. Repeat to choose more than one.')
@@ -873,6 +876,16 @@ def update_crossref_api_email() -> None:
 def update_openalex_api_key() -> None:
     """Prompt for and save an OpenAlex API key."""
     update_openalex_key()
+
+
+def update_ncbi_api_key() -> None:
+    """Prompt for and save an NCBI E-utilities API key."""
+    update_ncbi_key()
+
+
+def update_ncbi_api_email() -> None:
+    """Prompt for and save an NCBI E-utilities contact email address."""
+    update_ncbi_email()
 
 
 def update_openai_api_key() -> None:

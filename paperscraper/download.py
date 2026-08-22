@@ -1,8 +1,9 @@
 """Download paper text and PDFs from configured open-access and publisher sources.
 
-This module powers ``ps_download``. It can fetch Elsevier full text when
-available, try PDFs from Unpaywall, OpenAlex, CORE, and Elsevier, and update
-per-paper download status in the SQLite paper corpus after each row.
+This module powers ``ps_download``. It can fetch Elsevier full text and PubMed
+Central open-access full text, try PDFs from Unpaywall, OpenAlex, CORE,
+Elsevier, and PubMed Central, and update per-paper download status in the
+SQLite paper corpus after each row.
 """
 
 from __future__ import annotations
@@ -15,20 +16,20 @@ import re
 import requests
 import sqlite3
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
-from paperscraper import elsevier, openalex
+from paperscraper import elsevier, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex'}
+DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed'}
 _Paper: TypeAlias = dict[str, Any]
 
 
@@ -414,6 +415,181 @@ def _download_openalex_pdf(
     return False, last_error
 
 
+def _pubmed_identifier(paper: Mapping[str, Any]) -> str | None:
+    """Resolve a stored PubMed identifier for a paper row.
+
+    Only values already held in the corpus are considered, so this never issues
+    a request. Rows without a PMID can still be resolved from their DOI by
+    :func:`paperscraper.pubmed.resolve_pmid`, at the cost of one lookup.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a PMID or a ``pmid:`` paper ID.
+
+    Returns
+    -------
+    str or None
+        Bare PMID digits, or ``None`` when the row stores no PubMed identifier.
+    """
+    pmid = pubmed.normalize_pmid(paper.get('pmid')) if _has_value(paper.get('pmid')) else ''
+    if pmid:
+        return pmid
+    paper_id = str(paper.get('paper_id') or '')
+    if paper_id.startswith('pmid:'):
+        return pubmed.normalize_pmid(paper_id.split(':', 1)[1]) or None
+    return None
+
+
+def _pubmed_credentials() -> tuple[str | None, str]:
+    """Return the configured NCBI API key and contact address.
+
+    Returns
+    -------
+    tuple[str or None, str]
+        API key, which may be ``None``, and contact address, which may be empty.
+    """
+    settings = load_settings()
+    return pubmed.configured_api_key(settings), pubmed.configured_email(settings)
+
+
+def _download_pubmed_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Download an open-access PDF through the PubMed Central OA service.
+
+    Only the open-access subset is redistributable, so a paper outside it
+    reports that no PDF is offered rather than failing.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the source URL or a failure reason.
+    """
+    api_key, email = _pubmed_credentials()
+    try:
+        pmcid = pubmed.resolve_pmcid(paper, api_key=api_key, email=email)
+    except RuntimeError as e:
+        return False, str(e)
+    if not pmcid:
+        return False, 'missing PMC ID'
+    try:
+        urls = pubmed.oa_package_urls(pmcid, api_key=api_key, email=email)
+    except RuntimeError as e:
+        return False, str(e)
+    last_error = f'no open-access PDF offered for {pmcid}'
+    for url in urls:
+        if not url.lower().endswith('.pdf'):
+            continue
+        ok, error = _download_url_to_pdf(url, filepath)
+        if ok:
+            return True, url
+        last_error = error
+    return False, last_error
+
+
+def _should_try_pmc_text(paper: Mapping[str, Any]) -> bool:
+    """Return whether a paper row can be looked up in PubMed Central.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    bool
+        Whether the row carries a PMC ID, PMID, or DOI to resolve from.
+    """
+    return any(_has_value(paper.get(column)) for column in ['pmcid', 'pmid', 'doi'])
+
+
+def _download_pmc_text(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Write PubMed Central open-access full text for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the extracted text.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and an empty string or a failure reason.
+
+    Raises
+    ------
+    OSError
+        If the text cannot be written.
+    """
+    api_key, email = _pubmed_credentials()
+    try:
+        pmcid = pubmed.resolve_pmcid(paper, api_key=api_key, email=email)
+        if not pmcid:
+            return False, 'missing PMC ID'
+        text = pubmed.pmc_full_text(pmcid, api_key=api_key, email=email)
+    except RuntimeError as e:
+        return False, str(e)
+    if not text:
+        return False, f'no open-access full text for {pmcid}'
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(text)
+    return True, ''
+
+
+def _download_pubmed_abstract(
+    paper: MutableMapping[str, Any],
+) -> tuple[bool, str, str]:
+    """Fetch and return a PubMed abstract for one paper row.
+
+    A stored PMID is used directly. A row that has only a DOI is resolved
+    through the PMC ID converter, and the resolved identifier is recorded on
+    ``paper`` so the corpus keeps it and later runs take the direct path.
+
+    Parameters
+    ----------
+    paper : MutableMapping[str, Any]
+        Corpus paper row containing a PMID or a DOI. A resolved PMID is stored
+        back into this mapping.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and normalized abstract
+        text. The text is empty when retrieval fails.
+    """
+    api_key, email = _pubmed_credentials()
+    try:
+        pmid = pubmed.resolve_pmid(paper, api_key=api_key, email=email)
+        if not pmid:
+            return False, 'missing PMID', ''
+        paper['pmid'] = pmid
+        articles = pubmed.parse_articles(
+            pubmed.efetch_ids([pmid], api_key=api_key, email=email)
+        )
+    except RuntimeError as e:
+        return False, str(e), ''
+    if not articles:
+        return False, f'no PubMed record found for {pmid}', ''
+    abstract = _clean_abstract(articles[0].get('abstract'))
+    if abstract:
+        return True, 'pubmed', abstract
+    return False, f'no PubMed abstract found for {pmid}', ''
+
+
 def _download_openalex_abstract(
     paper: Mapping[str, Any],
 ) -> tuple[bool, str, str]:
@@ -547,14 +723,23 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
     return False, last_error, ''
 
 
-def _download_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
-    """Fetch abstract text from available metadata providers."""
+def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]:
+    """Fetch abstract text from available metadata providers.
+
+    A PubMed identifier resolved from a DOI is recorded on ``paper`` so the
+    corpus keeps it after the caller upserts the row.
+    """
     errors = []
     if _openalex_identifier(paper) is not None:
         ok, source, abstract = _download_openalex_abstract(paper)
         if ok:
             return ok, source, abstract
         errors.append(f'openalex: {source}')
+    if _pubmed_identifier(paper) is not None or _has_value(paper.get('doi')):
+        ok, source, abstract = _download_pubmed_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'pubmed: {source}')
     if _has_value(paper.get('core_id')):
         ok, source, abstract = _download_core_abstract(paper)
         if ok:
@@ -580,6 +765,7 @@ def _configured_sources(sources: Iterable[str] | None) -> list[str]:
             enabled.append('core')
         if settings.get('elsevier_api_key'):
             enabled.append('elsevier')
+        enabled.append('pubmed')
         return enabled
     invalid = set(sources) - DOWNLOAD_SOURCES
     if invalid:
@@ -603,6 +789,7 @@ def _download_pdf_from_sources(
         'openalex': _download_openalex_pdf,
         'core': _download_core_pdf,
         'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
+        'pubmed': _download_pubmed_pdf,
     }
     errors = []
     for source in sources:
@@ -615,6 +802,50 @@ def _download_pdf_from_sources(
             return True, source, detail
         errors.append(f'{source}: {detail}')
     return False, '; '.join(errors), ''
+
+
+def _download_text_from_sources(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+    sources: Iterable[str],
+    elsevier_text_available: bool,
+) -> tuple[bool, str, str]:
+    """Try each configured full-text source in order and report the outcome.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded text.
+    sources : Iterable[str]
+        Resolved provider names for this run.
+    elsevier_text_available : bool
+        Whether an Elsevier API key is configured.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or joined failure reasons, and an empty
+        string reserved for a source URL.
+    """
+    errors = []
+    if elsevier_text_available and _should_try_elsevier_text(paper):
+        try:
+            if os.path.isfile(filepath) or _download_text(paper, filepath):
+                return True, 'elsevier', ''
+            errors.append('elsevier: Elsevier text download failed')
+        except Exception as e:
+            errors.append(f'elsevier: {e}')
+    if 'pubmed' in sources and _should_try_pmc_text(paper):
+        try:
+            ok, detail = _download_pmc_text(paper, filepath)
+            if ok:
+                return True, 'pubmed', ''
+            errors.append(f'pubmed: {detail}')
+        except Exception as e:
+            errors.append(f'pubmed: {e}')
+    return False, '; '.join(errors) or 'no full-text source available', ''
 
 
 def _should_try_elsevier_text(paper: Mapping[str, Any]) -> bool:
@@ -664,7 +895,9 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     download_format : {'abstract', 'both', 'pdf', 'text'}, default='text'
         Primary asset types to download.
     sources : Iterable[str] or None, optional
-        Ordered PDF providers to try. ``all`` expands to configured providers.
+        Ordered content providers to try. ``all`` expands to the configured
+        providers. The selection orders PDF retrieval and also decides whether
+        PubMed Central is consulted for full text.
     download_abstract : bool, default=True
         Whether to retrieve and store abstracts.
     force : bool, default=False
@@ -688,14 +921,16 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     elsevier_text_available = _elsevier_configured()
     with connect(db_path) as conn:
         papers = paper_rows(conn)
-        if download_format == 'text' and not elsevier_text_available:
+        if download_format == 'text' and not elsevier_text_available and 'pubmed' not in sources:
             missing_text = force or any(
                 get_asset_metadata(conn, paper['paper_id'], 'text') is None
                 for paper in papers
             )
             if missing_text:
                 raise ValueError(
-                    'Elsevier text download requires an Elsevier API key. Run ps_elsevier_key first.'
+                    'Text download requires an Elsevier API key or the pubmed source. '
+                    'Run ps_elsevier_key first, or pass --source pubmed for PubMed Central '
+                    'open-access full text.'
                 )
         if download_format in {'pdf', 'both'} and not sources:
             missing_pdf = force or any(
@@ -768,10 +1003,13 @@ def _download_paper(
     }
     text_requested = download_format in {'text', 'both'}
     pdf_requested = download_format in {'pdf', 'both'}
+    text_available = (
+        (elsevier_text_available and _should_try_elsevier_text(paper))
+        or ('pubmed' in sources and _should_try_pmc_text(paper))
+    )
     text_attempt_needed = (
         text_requested
-        and elsevier_text_available
-        and _should_try_elsevier_text(paper)
+        and text_available
         and (force or existing_assets['text'] is None)
     )
     pdf_attempt_needed = pdf_requested and (force or existing_assets['pdf'] is None)
@@ -808,14 +1046,17 @@ def _download_paper(
     if text_attempt_needed:
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
         try:
-            if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):
+            ok, text_source_or_error, _ = _download_text_from_sources(
+                paper, text_filepath, sources, elsevier_text_available)
+            if ok:
                 paper['text_path'] = ''
-                paper['text_source'] = 'elsevier'
+                paper['text_source'] = text_source_or_error
                 _set_status(paper, 'text_download_status', 'succeeded')
-                _store_downloaded_asset(conn, paper, text_filepath, role='text', source='elsevier')
+                _store_downloaded_asset(conn, paper, text_filepath, role='text',
+                                        source=text_source_or_error)
                 summary['texts'] += 1
             else:
-                _set_status(paper, 'text_download_status', 'failed', 'Elsevier text download failed')
+                _set_status(paper, 'text_download_status', 'failed', text_source_or_error)
         except Exception as e:
             _set_status(paper, 'text_download_status', 'failed', str(e))
 

@@ -16,7 +16,12 @@ Select a single provider when you need reproducible source coverage:
 ps_search "Lithium solid electrolyte" papers.db --source core --count 100
 ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100
 ps_search "Lithium solid electrolyte" papers.db --source elsevier --count 100
+ps_search "Lithium solid electrolyte" papers.db --source pubmed --count 100
 ```
+
+PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
+search matches more than that, PaperScraper prints the shortfall; split the query by date range to
+reach the rest.
 
 `--count` is applied to each selected provider. Add `--store-abstract` to retain abstracts returned in search records immediately; otherwise abstracts can be fetched during downloading.
 
@@ -59,7 +64,7 @@ Inspect the review CSV before downloading. Crossref provides metadata and DOIs, 
 ## Supplement metadata
 
 Search and import records carry only a handful of bibliographic fields. `ps_enrich` fills in the rest
-from Crossref and OpenAlex:
+from Crossref, OpenAlex, and PubMed:
 
 ```bash
 ps_enrich papers.db
@@ -70,6 +75,12 @@ volume, issue, pages, ISSNs and language. OpenAlex supplies what it derives — 
 open-access status and licence, retraction flags, and subject classification. Structured authors
 (with ORCID and institution ROR), subjects, and reference lists are written to the `paper_authors`,
 `paper_subjects`, and `paper_references` tables.
+
+PubMed supplies the National Library of Medicine's controlled vocabulary for papers that carry a
+PMID: MeSH descriptors and qualifiers, publication types, and author keywords, written to
+`paper_subjects` under the `mesh`, `mesh_qualifier`, `publication_type`, and `mesh_keyword` schemes.
+Each provider's child rows are replaced independently, so enriching from one source never discards
+another's.
 
 Enrichment is re-runnable and resumable. A second run costs nothing because it only selects papers
 that are still pending, and an interrupted run keeps everything it already committed:
@@ -86,9 +97,12 @@ Restrict the providers, or skip reference lists when you only want the bibliogra
 ```bash
 ps_enrich papers.db --source crossref
 ps_enrich papers.db --source openalex --no-references
+ps_enrich papers.db --source pubmed
 ```
 
-Papers with neither a DOI nor an OpenAlex identifier are reported as skipped and cost no requests.
+Papers with no DOI, OpenAlex identifier, or PMID are reported as skipped and cost no requests. A
+row that carries only a PMID — common for records found through PubMed itself — is resolvable
+whenever PubMed is among the selected sources.
 To supplement rows as they arrive instead of in a separate pass, add `--enrich` to discovery:
 
 ```bash
@@ -108,7 +122,9 @@ ps_download papers.db --format pdf
 ps_download papers.db --format both
 ```
 
-Abstract retrieval tries OpenAlex, CORE, and Elsevier. PDF retrieval can use Unpaywall, OpenAlex, CORE, and Elsevier. Select PDF sources by repeating `--source`:
+Abstract retrieval tries OpenAlex, PubMed, CORE, and Elsevier in that order; PubMed is attempted for
+any row carrying a PMID or a DOI. PDF retrieval can use Unpaywall, OpenAlex, CORE, Elsevier, and
+PubMed Central, which is tried last. Select PDF sources by repeating `--source`:
 
 ```bash
 ps_download papers.db --format pdf \
@@ -121,6 +137,18 @@ PaperScraper tracks abstracts, full text, and PDFs independently. It skips a req
 ```bash
 ps_download papers.db --format both --force
 ```
+
+Full text comes from Elsevier when a key is configured, and otherwise from the PubMed Central
+open-access subset, which needs no credentials:
+
+```bash
+ps_download papers.db --format text --source pubmed
+```
+
+Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
+subset reports that no full text is offered rather than failing. An NCBI API key raises the PubMed
+request rate from three to ten per second, which matters most on large download runs; see
+[Credentials and model configuration](../getting-started/configuration.md).
 
 By default, abstracts are also attempted while downloading text or PDFs. Disable that with `--no-abstract`.
 

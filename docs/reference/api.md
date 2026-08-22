@@ -20,6 +20,7 @@ modules/corpus
 modules/search
 modules/crossref
 modules/openalex
+modules/pubmed
 modules/enrichment
 modules/elsevier
 modules/metadata

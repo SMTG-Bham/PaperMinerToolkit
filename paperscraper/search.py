@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus, CORE, and OpenAlex, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, OpenAlex, and PubMed, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -17,12 +17,12 @@ import re
 import requests
 from tqdm import tqdm
 
-from paperscraper import elsevier, openalex
+from paperscraper import elsevier, openalex, pubmed
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
-SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'all'}
+SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
@@ -351,6 +351,68 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     return _openalex_rows(works)
 
 
+def _pubmed_rows(articles: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert PubMed article records into normalized paper rows."""
+    rows = []
+    for article in articles:
+        normalized = normalize_paper(article)
+        normalized['abstract'] = _clean_search_abstract(article.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search PubMed records.
+
+    PubMed exposes only the first 10000 matches for any query, so a larger
+    corpus needs the query split by date range. The shortfall is printed rather
+    than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    RuntimeError
+        If a PubMed request cannot be completed.
+    """
+    api_key = pubmed.configured_api_key()
+    email = pubmed.configured_email()
+    webenv, query_key, total = pubmed.esearch_history(query, api_key=api_key, email=email)
+    reachable = min(total, pubmed.MAX_SEARCH_RESULTS)
+    target = min(max(int(count), 0), reachable)
+    if total > pubmed.MAX_SEARCH_RESULTS:
+        print(f'PubMed matched {total} records but exposes only the first '
+              f'{pubmed.MAX_SEARCH_RESULTS}; narrow the query by date to reach the rest.')
+    if not target or not webenv or not query_key:
+        return _pubmed_rows([])
+    articles = []
+    with tqdm(total=target, desc='Searching PubMed', colour='magenta') as pbar:
+        while len(articles) < target:
+            page = pubmed.parse_articles(pubmed.efetch_history(
+                webenv,
+                query_key,
+                retstart=len(articles),
+                retmax=min(pubmed.EFETCH_BATCH_SIZE, target - len(articles)),
+                api_key=api_key,
+                email=email,
+            ))
+            if not page:
+                break
+            articles.extend(page)
+            pbar.update(len(page))
+    return _pubmed_rows(articles[:target])
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -392,7 +454,7 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex'}, default='all'
+    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed'}, default='all'
         Provider or provider set to search.
     count : int, default=200
         Maximum number of records requested from each provider.
@@ -414,7 +476,7 @@ def search_for_papers(query: str,
     requests.RequestException
         If the explicitly selected CORE provider fails.
     RuntimeError
-        If the explicitly selected OpenAlex provider fails.
+        If the explicitly selected OpenAlex or PubMed provider fails.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:
@@ -441,6 +503,13 @@ def search_for_papers(query: str,
             if source == 'openalex':
                 raise
             print(f'OpenAlex search skipped: {e}')
+    if source in {'pubmed', 'all'}:
+        try:
+            frames.append(pubmed_search(query, count=count))
+        except Exception as e:
+            if source == 'pubmed':
+                raise
+            print(f'PubMed search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:

@@ -11,6 +11,8 @@ PaperScraper keeps search/download credentials separate from the text and vision
 | OpenAlex | `OPENALEX_API_KEY` | `ps_openalex_key` | Higher API budget for search, abstracts, and OA locations |
 | Unpaywall | `UNPAYWALL_EMAIL` | `ps_unpaywall_email` | Open-access PDF discovery |
 | Crossref | `CROSSREF_EMAIL` | `ps_crossref_email` | Author imports and metadata enrichment |
+| NCBI | `NCBI_API_KEY` | `ps_ncbi_key` | Higher PubMed and PMC request rate |
+| NCBI | `NCBI_EMAIL` | `ps_ncbi_email` | Contact address sent to PubMed and PMC |
 
 OpenAlex works without a key, but authenticated use has a substantially larger credit budget. The
 OpenAlex `mailto` parameter identifies your client but no longer affects throughput, so
@@ -19,6 +21,14 @@ OpenAlex `mailto` parameter identifies your client but no longer affects through
 Crossref has no API key. It asks automated clients to identify themselves with a contact address,
 which `ps_crossref_email` stores once for `ps_import_author`, `ps_enrich`, and the Crossref lookup
 that `ps_import_pdfs` performs. `--email` still overrides the stored value for a single command.
+
+PubMed and PubMed Central need no credentials at all, but both NCBI settings are worth having.
+NCBI paces unauthenticated clients at three requests per second and keyed clients at ten, counted
+per IP address across every endpoint, so `ps_ncbi_key` is the single highest-leverage setting for
+PubMed throughput: a 200-paper download run spends roughly three times less time waiting with a
+key than without one. Keys are free from the Settings page of an NCBI account. `ps_ncbi_email`
+stores the contact address NCBI uses to warn you before blocking an address; when it is unset,
+PaperScraper reuses the Crossref address, so running `ps_crossref_email` covers both services.
 
 ## Hosted model providers
 
