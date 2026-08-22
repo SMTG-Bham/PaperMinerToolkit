@@ -858,7 +858,7 @@ def test_search_for_papers_enriches_new_rows_when_requested(
 
     output = capsys.readouterr().out
     assert len(calls['records']) == 1
-    assert 'Enriched 1 papers from Crossref and OpenAlex' in output
+    assert 'Enriched 1 papers' in output
 
 
 def test_search_for_papers_skips_enrichment_by_default(
@@ -1007,6 +1007,176 @@ def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
 
     with pytest.raises(RuntimeError, match='pubmed down'):
         search.search_for_papers('query', source='pubmed', count=1)
+
+
+def arxiv_entries(count: int, start: int = 0) -> list[dict[str, Any]]:
+    """Return mapped arXiv entries numbered from an offset."""
+    return [{'paper_id': f'arxiv:2301.{start + index:05d}',
+             'arxiv_id': f'2301.{start + index:05d}',
+             'title': f'Preprint {start + index}',
+             'abstract': f'  Abstract {start + index}\n  wrapped.  ',
+             'sources': 'arxiv'} for index in range(count)]
+
+
+def test_arxiv_rows_normalize_records_and_clean_abstracts() -> None:
+    """Frame arXiv entries on the search schema with compacted abstracts."""
+    rows = search._arxiv_rows(arxiv_entries(2))
+
+    assert list(rows.columns) == search.SEARCH_FIELDS
+    assert rows.loc[0, 'sources'] == 'arxiv'
+    assert rows.loc[0, 'arxiv_id'] == '2301.00000'
+    assert rows.loc[0, 'abstract'] == 'Abstract 0 wrapped.'
+    assert search._arxiv_rows([]).empty
+
+
+def test_arxiv_search_pages_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Walk arXiv pages until the requested count is filled."""
+    class FakeTqdm:
+        """Record progress-bar interactions without rendering anything."""
+
+        def __init__(self, *_: object, **__: object) -> None:
+            """Initialize the test double."""
+            self.total = 0
+
+        def __enter__(self) -> Self:
+            """Enter the test-double context."""
+            return self
+
+        def __exit__(self, *_: object) -> bool:
+            """Exit the test-double context."""
+            return False
+
+        def update(self, _: int) -> None:
+            """Ignore a progress update."""
+            return None
+
+    pages = []
+
+    def fake_search_page(query: str, **kwargs: Any) -> object:
+        """Record the requested window and return a page marker."""
+        pages.append((kwargs['start'], kwargs['max_results']))
+        return object()
+
+    def fake_parse_entries(_: object) -> list[dict[str, Any]]:
+        """Return one page worth of entry mappings."""
+        start, size = pages[-1]
+        return arxiv_entries(size, start=start)
+
+    monkeypatch.setattr(search.arxiv, 'search_page', fake_search_page)
+    monkeypatch.setattr(search.arxiv, 'parse_entries', fake_parse_entries)
+    monkeypatch.setattr(search.arxiv, 'total_results', lambda _: 500)
+    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+
+    rows = search.arxiv_search('lithium', count=250)
+
+    assert len(rows) == 250
+    assert pages == [(0, 200), (200, 50)]
+
+
+def test_arxiv_search_deduplicates_entries_repeated_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep each identifier once and still advance past a page of repeats."""
+    pages = []
+
+    def fake_search_page(query: str, **kwargs: Any) -> object:
+        """Record the requested window and return a page marker."""
+        pages.append((kwargs['start'], kwargs['max_results']))
+        return object()
+
+    def fake_parse_entries(_: object) -> list[dict[str, Any]]:
+        """Return pages that overlap by one entry, then run dry."""
+        return [arxiv_entries(3), arxiv_entries(3, start=2), []][len(pages) - 1]
+
+    monkeypatch.setattr(search.arxiv, 'search_page', fake_search_page)
+    monkeypatch.setattr(search.arxiv, 'parse_entries', fake_parse_entries)
+    monkeypatch.setattr(search.arxiv, 'total_results', lambda _: 500)
+
+    rows = search.arxiv_search('lithium', count=10)
+
+    # Five distinct entries across two overlapping pages, and the cursor moved by
+    # what arXiv returned rather than by what survived, so the walk terminates.
+    assert len(rows) == 5
+    assert [start for start, _ in pages] == [0, 3, 6]
+
+
+def test_arxiv_search_stops_once_it_has_paged_past_every_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End the walk at the reported match total instead of looping on repeats."""
+    pages = []
+
+    def fake_search_page(query: str, **kwargs: Any) -> object:
+        """Record the requested window and return a page marker."""
+        pages.append((kwargs['start'], kwargs['max_results']))
+        return object()
+
+    monkeypatch.setattr(search.arxiv, 'search_page', fake_search_page)
+    monkeypatch.setattr(search.arxiv, 'parse_entries', lambda _: arxiv_entries(2))
+    monkeypatch.setattr(search.arxiv, 'total_results', lambda _: 4)
+
+    rows = search.arxiv_search('lithium', count=50)
+
+    assert len(rows) == 2
+    assert len(pages) == 2
+
+
+def test_arxiv_search_reports_the_deep_paging_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Warn when a query matches more records than arXiv will page through."""
+    monkeypatch.setattr(search.arxiv, 'search_page', lambda *_, **__: object())
+    monkeypatch.setattr(search.arxiv, 'parse_entries', lambda _: arxiv_entries(1))
+    monkeypatch.setattr(search.arxiv, 'total_results', lambda _: 240000)
+
+    rows = search.arxiv_search('lithium', count=1)
+
+    assert len(rows) == 1
+    assert 'arXiv matched 240000 records but exposes only the first 30000' in capsys.readouterr().out
+
+
+def test_arxiv_search_returns_no_rows_for_an_empty_query() -> None:
+    """Skip the request entirely when the query reduces to nothing."""
+    assert search.arxiv_search('   ', count=10).empty
+    assert search.arxiv_search('lithium', count=0).empty
+
+
+def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Skip a failing arXiv provider under all but surface it when selected."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
+    monkeypatch.setattr(search, 'pubmed_search', lambda *_, **__: search._pubmed_rows([]))
+    monkeypatch.setattr(
+        search,
+        'arxiv_search',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('arxiv down')),
+    )
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    assert 'arXiv search skipped: arxiv down' in capsys.readouterr().out
+    assert db_path.exists()
+
+    with pytest.raises(RuntimeError, match='arxiv down'):
+        search.search_for_papers('query', source='arxiv', count=1)
+
+
+@pytest.mark.network
+def test_arxiv_search_uses_the_real_api() -> None:
+    """Search the real arXiv query service."""
+    rows = search.arxiv_search('cat:cond-mat.mtrl-sci', count=1)
+
+    assert len(rows) <= 1
+    assert rows.empty or rows.loc[0, 'sources'] == 'arxiv'
 
 
 @pytest.mark.network

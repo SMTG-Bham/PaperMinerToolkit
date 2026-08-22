@@ -491,7 +491,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
         },
     )
 
-    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier', 'pubmed']
+    assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier', 'pubmed', 'arxiv']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
@@ -499,7 +499,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch.setattr(download, 'load_settings', lambda: {})
     monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
     monkeypatch.delenv('CORE_API_KEY', raising=False)
-    assert download._configured_sources(['all']) == ['openalex', 'pubmed']
+    assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'arxiv']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(
@@ -1530,6 +1530,107 @@ def test_download_abstract_tries_pubmed_between_openalex_and_core(
     assert calls == ['openalex', 'pubmed']
 
 
+def test_arxiv_identifier_reads_stored_values_without_a_request() -> None:
+    """Recognise every stored form of an arXiv identifier, and nothing else."""
+    assert download._arxiv_identifier({'arxiv_id': '2301.12345v2'}) == '2301.12345'
+    assert download._arxiv_identifier(
+        {'paper_id': 'arxiv:cond-mat/0501001'}) == 'cond-mat/0501001'
+    assert download._arxiv_identifier(
+        {'pdf_url': 'https://arxiv.org/pdf/2405.00001v1'}) == '2405.00001'
+    assert download._arxiv_identifier({}) is None
+    # A DOI is not a route into arXiv, so a DOI-only row stays unresolved.
+    assert download._arxiv_identifier({'doi': '10.1234/x'}) is None
+    assert download._arxiv_identifier({'pdf_url': 'https://example.com/a.pdf'}) is None
+
+
+def test_download_arxiv_pdf_builds_the_canonical_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fetch the identifier's PDF and report a row that carries none."""
+    attempted = []
+
+    def fake_download_url_to_pdf(url: str, filepath: object,
+                                 headers: object = None) -> tuple[bool, str]:
+        """Provide a fake PDF fetch that records the attempted URL."""
+        attempted.append(url)
+        return True, ''
+
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download_url_to_pdf)
+
+    ok, detail = download._download_arxiv_pdf({'arxiv_id': '2301.12345'}, tmp_path / 'out.pdf')
+    assert (ok, detail) == (True, 'https://arxiv.org/pdf/2301.12345')
+    assert attempted == ['https://arxiv.org/pdf/2301.12345']
+
+    # An old-style identifier keeps the slash that separates its archive name.
+    download._download_arxiv_pdf({'arxiv_id': 'cond-mat/0501001'}, tmp_path / 'out.pdf')
+    assert attempted[-1] == 'https://arxiv.org/pdf/cond-mat/0501001'
+
+    assert download._download_arxiv_pdf({}, tmp_path / 'out.pdf') == (False, 'missing arXiv ID')
+
+
+def test_download_arxiv_abstract_uses_the_stored_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the entry's summary, and report an identifier that finds nothing."""
+    monkeypatch.setattr(download.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(download.arxiv, 'parse_entries',
+                        lambda _: [{'abstract': '  A garnet\n  abstract. '}])
+
+    assert download._download_arxiv_abstract({'arxiv_id': '2301.12345'}) == (
+        True, 'arxiv', 'A garnet abstract.')
+
+    monkeypatch.setattr(download.arxiv, 'parse_entries', lambda _: [])
+    assert download._download_arxiv_abstract({'arxiv_id': '2301.12345'}) == (
+        False, 'no arXiv record found for 2301.12345', '')
+
+    assert download._download_arxiv_abstract({}) == (False, 'missing arXiv ID', '')
+
+
+def test_download_abstract_tries_arxiv_between_pubmed_and_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall through OpenAlex and PubMed to arXiv before reaching CORE."""
+    calls = []
+
+    def record(name: str, ok: bool) -> object:
+        """Build a fake abstract lookup that records that it ran."""
+        def lookup(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+            """Record the provider and return the prepared outcome."""
+            calls.append(name)
+            return (True, name, f'From {name}.') if ok else (False, f'no {name} abstract', '')
+        return lookup
+
+    monkeypatch.setattr(download, '_download_openalex_abstract', record('openalex', False))
+    monkeypatch.setattr(download, '_download_pubmed_abstract', record('pubmed', False))
+    monkeypatch.setattr(download, '_download_arxiv_abstract', record('arxiv', True))
+    monkeypatch.setattr(download, '_download_core_abstract', record('core', False))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    result = download._download_abstract(
+        {'doi': '10.1234/x', 'arxiv_id': '2301.12345', 'core_id': '5'})
+
+    assert result == (True, 'arxiv', 'From arxiv.')
+    assert calls == ['openalex', 'pubmed', 'arxiv']
+
+
+def test_download_abstract_skips_arxiv_without_an_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never spend an arXiv lookup on a row with no arXiv identifier."""
+    monkeypatch.setattr(download, '_download_openalex_abstract',
+                        lambda _: (False, 'no OpenAlex abstract found', ''))
+    monkeypatch.setattr(download, '_download_pubmed_abstract',
+                        lambda _: (False, 'no PubMed abstract found', ''))
+    monkeypatch.setattr(download, '_download_arxiv_abstract',
+                        lambda _: pytest.fail('arXiv must not be queried'))
+    monkeypatch.setattr(download, '_download_core_abstract', lambda _: (True, 'core', 'From CORE.'))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    assert download._download_abstract({'doi': '10.1/x', 'core_id': '5'}) == (
+        True, 'core', 'From CORE.')
+
+
 def test_download_abstract_skips_pubmed_without_a_pmid_or_doi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1554,6 +1655,7 @@ def test_download_pdf_from_sources_dispatches_every_configured_source(
     monkeypatch.setattr(download, '_download_core_pdf', lambda *_: (False, 'no'))
     monkeypatch.setattr(download, '_download_pdf', lambda *_: False)
     monkeypatch.setattr(download, '_download_pubmed_pdf', lambda *_: (True, 'https://pmc/a.pdf'))
+    monkeypatch.setattr(download, '_download_arxiv_pdf', lambda *_: (False, 'no'))
 
     ok, source, url = download._download_pdf_from_sources(
         {'doi': '10.1234/x'}, tmp_path / 'out.pdf', sorted(download.DOWNLOAD_SOURCES))

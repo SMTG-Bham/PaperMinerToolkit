@@ -2,8 +2,9 @@
 
 This module powers ``ps_download``. It can fetch Elsevier full text and PubMed
 Central open-access full text, try PDFs from Unpaywall, OpenAlex, CORE,
-Elsevier, and PubMed Central, and update per-paper download status in the
-SQLite paper corpus after each row.
+Elsevier, PubMed Central, and arXiv, and update per-paper download status in
+the SQLite paper corpus after each row. arXiv serves PDFs and abstracts but no
+full text, because it publishes no machine-readable full-text format.
 """
 
 from __future__ import annotations
@@ -23,13 +24,13 @@ from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
-from paperscraper import elsevier, openalex, pubmed
+from paperscraper import arxiv, elsevier, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed'}
+DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv'}
 _Paper: TypeAlias = dict[str, Any]
 
 
@@ -590,6 +591,97 @@ def _download_pubmed_abstract(
     return False, f'no PubMed abstract found for {pmid}', ''
 
 
+def _arxiv_identifier(paper: Mapping[str, Any]) -> str | None:
+    """Resolve a stored arXiv identifier for a paper row.
+
+    Only values already held in the corpus are considered, so this never issues
+    a request. arXiv has no DOI lookup, so the only alternative would be a
+    title search, which costs one paced request per paper and can match the
+    wrong record; :func:`paperscraper.arxiv.resolve_arxiv_id` offers that
+    deliberately as an opt-in rather than running it on every download.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing an arXiv ID, an ``arxiv:`` paper ID, or an
+        arXiv PDF URL.
+
+    Returns
+    -------
+    str or None
+        Bare arXiv identifier, or ``None`` when the row stores none.
+    """
+    identifier = arxiv.normalize_arxiv_id(paper.get('arxiv_id')) if _has_value(paper.get('arxiv_id')) else ''
+    if identifier:
+        return identifier
+    paper_id = str(paper.get('paper_id') or '')
+    if paper_id.startswith('arxiv:'):
+        identifier = arxiv.normalize_arxiv_id(paper_id.split(':', 1)[1])
+        if identifier:
+            return identifier
+    url = str(paper.get('pdf_url') or '')
+    if 'arxiv.org' in url.lower():
+        return arxiv.normalize_arxiv_id(url) or None
+    return None
+
+
+def _download_arxiv_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Download a paper's PDF from arXiv.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying an arXiv identifier.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the source URL or a failure reason.
+    """
+    identifier = _arxiv_identifier(paper)
+    if identifier is None:
+        return False, 'missing arXiv ID'
+    url = f'{arxiv.PDF_URL}/{quote(identifier, safe="/")}'
+    ok, error = _download_url_to_pdf(url, filepath, headers=arxiv.request_headers())
+    return (True, url) if ok else (False, error)
+
+
+def _download_arxiv_abstract(
+    paper: Mapping[str, Any],
+) -> tuple[bool, str, str]:
+    """Fetch and return an arXiv abstract for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying an arXiv identifier.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and normalized abstract
+        text. The text is empty when retrieval fails.
+    """
+    identifier = _arxiv_identifier(paper)
+    if identifier is None:
+        return False, 'missing arXiv ID', ''
+    try:
+        entries = arxiv.parse_entries(arxiv.fetch_ids([identifier]))
+    except RuntimeError as e:
+        return False, str(e), ''
+    if not entries:
+        return False, f'no arXiv record found for {identifier}', ''
+    abstract = _clean_abstract(entries[0].get('abstract'))
+    if abstract:
+        return True, 'arxiv', abstract
+    return False, f'no arXiv abstract found for {identifier}', ''
+
+
 def _download_openalex_abstract(
     paper: Mapping[str, Any],
 ) -> tuple[bool, str, str]:
@@ -740,6 +832,11 @@ def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]
         if ok:
             return ok, source, abstract
         errors.append(f'pubmed: {source}')
+    if _arxiv_identifier(paper) is not None:
+        ok, source, abstract = _download_arxiv_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'arxiv: {source}')
     if _has_value(paper.get('core_id')):
         ok, source, abstract = _download_core_abstract(paper)
         if ok:
@@ -766,6 +863,7 @@ def _configured_sources(sources: Iterable[str] | None) -> list[str]:
         if settings.get('elsevier_api_key'):
             enabled.append('elsevier')
         enabled.append('pubmed')
+        enabled.append('arxiv')
         return enabled
     invalid = set(sources) - DOWNLOAD_SOURCES
     if invalid:
@@ -790,6 +888,7 @@ def _download_pdf_from_sources(
         'core': _download_core_pdf,
         'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
         'pubmed': _download_pubmed_pdf,
+        'arxiv': _download_arxiv_pdf,
     }
     errors = []
     for source in sources:
@@ -1072,12 +1171,12 @@ def _download_paper(
             if ok:
                 paper['pdf_path'] = ''
                 paper['pdf_source'] = source_or_error
-                if source_or_error in {'unpaywall', 'openalex', 'core'} and source_url:
+                if source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv'} and source_url:
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
                 summary['pdfs'] += 1
-                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core'}
+                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv'}
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
         except Exception as e:

@@ -21,6 +21,7 @@ modules/search
 modules/crossref
 modules/openalex
 modules/pubmed
+modules/arxiv
 modules/enrichment
 modules/elsevier
 modules/metadata

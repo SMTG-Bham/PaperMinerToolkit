@@ -555,6 +555,7 @@ def test_enrichment_stats_reports_status_and_child_counts(tmp_path: Path) -> Non
 
 
 V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
+V6_PAPER_FIELDS = V5_PAPER_FIELDS + ['pmid', 'pmcid']
 
 
 def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
@@ -567,7 +568,7 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 6
+    assert version == corpus.SCHEMA_VERSION == 7
     assert {'pmid', 'pmcid'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -575,10 +576,29 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
     assert rows[0]['pmcid'] is None
 
 
-def test_fallback_paper_id_prefers_doi_then_pmid_then_core() -> None:
+def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the arXiv identifier column to an existing version-six corpus."""
+    db_path = tmp_path / 'v6.db'
+    write_legacy_corpus(db_path, V6_PAPER_FIELDS, version=6)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 7
+    assert 'arxiv_id' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['arxiv_id'] is None
+
+
+def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
     """Choose the most portable identifier available for a paper without one."""
     assert corpus._fallback_paper_id({'doi': '10.1/x', 'pmid': '1', 'core_id': '2'}) == 'doi:10.1/x'
     assert corpus._fallback_paper_id({'pmid': '31234567', 'core_id': '2'}) == 'pmid:31234567'
+    assert corpus._fallback_paper_id(
+        {'arxiv_id': '2301.12345', 'core_id': '2'}) == 'arxiv:2301.12345'
     assert corpus._fallback_paper_id({'core_id': '2'}) == 'core:2'
     assert corpus._fallback_paper_id({'title': 'A paper'}).startswith('paper:')
 
@@ -590,6 +610,63 @@ def test_papers_match_on_a_shared_pubmed_identifier() -> None:
 
     assert corpus._papers_match(existing, incoming)
     assert corpus._papers_match({'pmcid': 'PMC1', 'paper_id': 'a'}, {'pmcid': 'PMC1', 'paper_id': 'b'})
+
+
+def test_papers_match_on_a_shared_arxiv_identifier() -> None:
+    """Treat rows sharing an arXiv identifier as the same publication."""
+    existing = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'arxiv_id': '2301.12345', 'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_upsert_merges_an_arxiv_preprint_into_a_matching_doi_row(tmp_path: Path) -> None:
+    """Fold a preprint carrying a deposited DOI into the published row."""
+    db_path = tmp_path / 'papers.db'
+    published = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                 'journal': 'Phys. Rev. B', 'publication_date': '2024-02-01',
+                 'sources': 'openalex'}
+    preprint = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                'arxiv_id': '2301.12345', 'publication_date': '2023-01-30',
+                'pdf_url': 'https://arxiv.org/pdf/2301.12345', 'sources': 'arxiv'}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [published])
+        added, updated = corpus.upsert_papers(conn, [preprint])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (0, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'doi:10.1/x'
+    assert rows[0]['arxiv_id'] == '2301.12345'
+    assert rows[0]['sources'] == 'openalex;arxiv'
+    # The published journal and date win; the preprint only fills what was empty.
+    assert rows[0]['journal'] == 'Phys. Rev. B'
+    assert rows[0]['publication_date'] == '2024-02-01'
+
+
+def test_upsert_keeps_a_preprint_separate_when_its_year_differs(tmp_path: Path) -> None:
+    """Record the accepted limit: a DOI-less preprint posted in an earlier year.
+
+    Without a deposited DOI the only remaining rule is title and year, so a
+    preprint that crossed a calendar boundary before publication is stored as
+    its own row. This is asserted so the behaviour stays a known trade-off
+    rather than becoming an unnoticed regression.
+    """
+    db_path = tmp_path / 'papers.db'
+    published = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                 'publication_date': '2024-02-01', 'sources': 'openalex'}
+    preprint = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345',
+                'title': 'Garnet conductivity', 'publication_date': '2023-01-30',
+                'sources': 'arxiv'}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [published])
+        added, updated = corpus.upsert_papers(conn, [preprint])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (1, 0)
+    assert len(rows) == 2
     assert not corpus._papers_match({'pmid': '1', 'paper_id': 'a'}, {'pmid': '2', 'paper_id': 'b'})
 
 

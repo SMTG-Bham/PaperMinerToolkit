@@ -30,6 +30,11 @@ key than without one. Keys are free from the Settings page of an NCBI account. `
 stores the contact address NCBI uses to warn you before blocking an address; when it is unset,
 PaperScraper reuses the Crossref address, so running `ps_crossref_email` covers both services.
 
+arXiv needs no credentials and accepts no contact address, so there is nothing to configure
+for it. arXiv asks that clients leave three seconds between consecutive requests, which
+PaperScraper enforces itself; a search or enrichment run that spans many pages will spend a
+noticeable part of its time waiting, and that is expected rather than a fault.
+
 ## Hosted model providers
 
 Save provider keys interactively or export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`:

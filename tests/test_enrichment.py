@@ -218,8 +218,8 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
-    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed']
-    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed']
+    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv']
+    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv']
     assert enrichment.configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
         enrichment.configured_sources(['scopus'])
@@ -929,6 +929,175 @@ def test_pubmed_keywords_use_a_scheme_distinct_from_openalex_keywords() -> None:
     assert 'keyword' in openalex_schemes
     assert 'mesh_keyword' in pubmed_schemes
     assert not openalex_schemes & pubmed_schemes
+
+
+def arxiv_entry(doi: str = '10.1234/arxiv-one') -> dict[str, Any]:
+    """Return an arXiv entry mapping shaped like arxiv.entry_to_paper output."""
+    return {
+        'paper_id': f'doi:{doi}' if doi else 'arxiv:2301.12345',
+        'doi': doi,
+        'arxiv_id': '2301.12345',
+        'title': 'arXiv title',
+        'journal': 'Phys. Rev. B',
+        'journal_ref': 'Phys. Rev. B 108, 014101 (2023)',
+        'publication_date': '2023-01-30',
+        'authors': 'Ada Lovelace; Grace Hopper',
+        'version': 'v2',
+        'comment': '12 pages',
+        'primary_category': 'cond-mat.mtrl-sci',
+        'categories': [
+            {'id': 'cond-mat.mtrl-sci', 'name': 'cond-mat.mtrl-sci', 'is_primary': True},
+            {'id': 'physics.chem-ph', 'name': 'physics.chem-ph', 'is_primary': False},
+        ],
+    }
+
+
+def test_arxiv_candidates_key_rows_by_their_arxiv_identifier() -> None:
+    """Read an arXiv ID from the stored column or from an arXiv paper identifier."""
+    candidates = [
+        {'paper_id': 'doi:10.1234/a', 'arxiv_id': '2301.00001v3'},
+        {'paper_id': 'arxiv:cond-mat/0501001'},
+        {'paper_id': 'doi:10.1234/c'},
+        {'paper_id': ''},
+    ]
+
+    assert enrichment.arxiv_candidates(candidates) == {
+        '2301.00001': 'doi:10.1234/a',
+        'cond-mat/0501001': 'arxiv:cond-mat/0501001',
+    }
+
+
+def test_arxiv_fields_map_the_shared_enrichment_columns() -> None:
+    """Contribute the bibliographic columns arXiv can fill, plus its open access."""
+    fields = enrichment.arxiv_fields(arxiv_entry())
+
+    assert fields['doi'] == '10.1234/arxiv-one'
+    assert fields['title'] == 'arXiv title'
+    assert fields['journal'] == 'Phys. Rev. B'
+    assert fields['publication_date'] == '2023-01-30'
+    assert fields['arxiv_id'] == '2301.12345'
+    assert fields['work_type'] == 'preprint'
+    assert (fields['is_oa'], fields['oa_status']) == (1, 'green')
+
+
+def test_arxiv_subject_rows_flag_the_primary_category() -> None:
+    """Emit one row per category and mark the primary one."""
+    rows = enrichment.arxiv_subject_rows('p', arxiv_entry())
+
+    assert [(row['scheme'], row['subject_id'], row['is_primary']) for row in rows] == [
+        ('arxiv_category', 'cond-mat.mtrl-sci', 1),
+        ('arxiv_category', 'physics.chem-ph', 0),
+    ]
+    assert {row['source'] for row in rows} == {'arxiv'}
+    assert enrichment.arxiv_subject_rows('p', None) == []
+
+
+def test_arxiv_categories_use_a_scheme_distinct_from_the_other_providers() -> None:
+    """Keep arXiv categories off the primary key OpenAlex and PubMed share."""
+    openalex_schemes = {row['scheme'] for row in enrichment.subject_rows('p', openalex_work())}
+    pubmed_schemes = {row['scheme'] for row in enrichment.pubmed_subject_rows('p', pubmed_article())}
+    arxiv_schemes = {row['scheme'] for row in enrichment.arxiv_subject_rows('p', arxiv_entry())}
+
+    assert arxiv_schemes == {'arxiv_category'}
+    assert not arxiv_schemes & openalex_schemes
+    assert not arxiv_schemes & pubmed_schemes
+
+
+def test_merge_fields_ranks_arxiv_last_and_records_it_as_a_found_source() -> None:
+    """Let a version-of-record value win, and fall back to arXiv when none exists."""
+    update = enrichment.merge_fields('p', crossref_work(), openalex_work(),
+                                     ['crossref', 'openalex', 'arxiv'],
+                                     None, arxiv_entry())
+
+    assert 'arxiv' in update['enrichment_sources'].split(';')
+    assert update['arxiv_id'] == '2301.12345'
+    # Crossref deposits the journal of record, so arXiv's citation string loses.
+    assert update['journal'] == crossref_work()['container-title'][0]
+
+    # With only arXiv, its values fill the row and its open access is asserted.
+    solo = enrichment.merge_fields('p', None, None, ['arxiv'], None, arxiv_entry())
+    assert solo['enrichment_status'] == 'succeeded'
+    assert solo['enrichment_sources'] == 'arxiv'
+    assert solo['journal'] == 'Phys. Rev. B'
+    assert (solo['is_oa'], solo['oa_status']) == (1, 'green')
+    assert solo['enrichment_json']['arxiv']['primary_category'] == 'cond-mat.mtrl-sci'
+
+
+def test_enrich_batch_enriches_an_arxiv_only_row_and_stores_categories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve a row that has only an arXiv identifier and store its categories."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345',
+                           'title': 'Seeded'}])
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: [arxiv_entry(doi='')])
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['arxiv'], '')
+        subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
+        rows = corpus.paper_rows(conn)
+
+    assert summary['unresolved'] == 0
+    assert summary['succeeded'] == 1
+    assert {row['scheme'] for row in subjects} == {'arxiv_category'}
+    assert rows[0]['arxiv_id'] == '2301.12345'
+    assert rows[0]['enrichment_sources'] == 'arxiv'
+    assert rows[0]['is_oa'] == 1
+
+
+def test_enrich_batch_resolves_rows_only_pubmed_or_arxiv_can_reach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report neither identifier-only row as unresolved when both providers run."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [
+        {'paper_id': 'pmid:31234567', 'pmid': '31234567', 'title': 'PubMed only'},
+        {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'arXiv only'},
+        {'paper_id': 'paper:abc', 'title': 'Nothing to resolve from'},
+    ])
+    monkeypatch.setattr(enrichment.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.pubmed, 'parse_articles', lambda _: [pubmed_article(doi='')])
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: [arxiv_entry(doi='')])
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['pubmed', 'arxiv'], '')
+
+    assert summary['succeeded'] == 2
+    assert summary['unresolved'] == 1
+
+
+def test_enrich_batch_keeps_other_provider_subjects_when_only_arxiv_is_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave another provider's child rows intact when enriching from arXiv."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/arxiv-one', 'doi': '10.1234/arxiv-one',
+                           'arxiv_id': '2301.12345'}])
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: [arxiv_entry()])
+
+    with open_corpus(db_path) as conn:
+        corpus.write_enrichment(
+            conn,
+            [{**{field: '' for field in corpus.enrichment_update_fields()},
+              'paper_id': 'doi:10.1234/arxiv-one', 'enrichment_status': 'pending',
+              'updated_at': ''}],
+            subjects=[{'paper_id': 'doi:10.1234/arxiv-one', 'scheme': 'topic',
+                       'subject_id': 'T1', 'display_name': 'Batteries', 'source': 'openalex'}],
+            sources=['openalex'])
+        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+                                ['arxiv'], '')
+        sources = {row['source'] for row in
+                   conn.execute('SELECT source FROM paper_subjects').fetchall()}
+
+    assert sources == {'openalex', 'arxiv'}
 
 
 def test_merge_fields_records_pubmed_as_a_found_source() -> None:

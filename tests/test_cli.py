@@ -743,7 +743,8 @@ def test_enrich_reports_the_run_summary(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result.exit_code == 0
     assert '8 enriched, 1 partial, 2 not found' in result.output
     assert 'Stored 40 author records, 20 subject records, and 100 references.' in result.output
-    assert '3 papers have no DOI or OpenAlex identifier' in result.output
+    assert ('3 papers have no DOI, OpenAlex identifier, PMID, or arXiv identifier'
+            in result.output)
 
 
 def test_enrich_wraps_worker_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -798,6 +799,53 @@ def test_corpus_status_prints_enrichment_counts(tmp_path: Path) -> None:
     assert 'Papers enriched: 1' in result.output
     assert 'Papers open access: 1' in result.output
     assert 'Author records: 1 (1 with ORCID)' in result.output
+
+
+def test_search_download_and_enrich_source_choices_accept_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accept arXiv as a search, download, and enrichment source."""
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'arxiv'
+
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    download_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+            {'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['arxiv']
+
+    enrich_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'enrich_corpus',
+        lambda path, **kwargs: enrich_calls.update({'sources': kwargs.get('sources')}) or {
+            key: 0 for key in ('succeeded', 'partial', 'not_found', 'unresolved',
+                               'failed', 'authors', 'subjects', 'references', 'batches')},
+    )
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path), '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert enrich_calls['sources'] == ['arxiv']
 
 
 def test_search_download_and_enrich_source_choices_accept_pubmed(

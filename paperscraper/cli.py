@@ -59,7 +59,7 @@ def _format_bytes(size: int) -> str:
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
-              type=click.Choice(['all', 'elsevier', 'core', 'openalex', 'pubmed']),
+              type=click.Choice(['all', 'elsevier', 'core', 'openalex', 'pubmed', 'arxiv']),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -151,7 +151,7 @@ def import_author(db_path: str,
               show_default=True)
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed']),
+              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv']),
               default=('all',),
               show_default=True,
               help='Content source to use for PDFs and PubMed Central full text. '
@@ -184,7 +184,7 @@ def download(
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed']),
+              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed', 'arxiv']),
               default=('all',),
               show_default=True,
               help='Metadata source to use. Repeat to choose more than one.')
@@ -251,7 +251,8 @@ def enrich(db_path: str,
     )
     if summary['unresolved']:
         click.echo(
-            f'{summary["unresolved"]} papers have no DOI or OpenAlex identifier and were skipped.',
+            f'{summary["unresolved"]} papers have no DOI, OpenAlex identifier, PMID, or '
+            f'arXiv identifier and were skipped.',
             err=True,
         )
 

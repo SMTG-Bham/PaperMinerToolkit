@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus, CORE, OpenAlex, and PubMed, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, and arXiv, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -17,12 +17,12 @@ import re
 import requests
 from tqdm import tqdm
 
-from paperscraper import elsevier, openalex, pubmed
+from paperscraper import arxiv, elsevier, openalex, pubmed
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
-SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'all'}
+SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'arxiv', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
@@ -413,6 +413,94 @@ def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
     return _pubmed_rows(articles[:target])
 
 
+def _arxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert arXiv entry records into normalized paper rows."""
+    rows = []
+    for entry in entries:
+        normalized = normalize_paper(entry)
+        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search arXiv records.
+
+    A plain phrase is translated into arXiv's fielded query language by
+    :func:`paperscraper.arxiv.query_expression`; a native arXiv expression is
+    used as written. Results are ordered by submission date rather than by
+    relevance so that paging is stable, because relevance ordering can shift
+    between the requests that make up one page walk. Entries are deduplicated
+    by identifier for the same reason: arXiv repeats records across page
+    boundaries often enough to inflate a naive count.
+
+    arXiv exposes only the first 30000 matches for any query, so a larger
+    corpus needs the query split by category or date. The shortfall is printed
+    rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search expression, either a plain phrase or a native arXiv query.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    RuntimeError
+        If an arXiv request cannot be completed.
+    """
+    expression = arxiv.query_expression(query)
+    target = max(int(count), 0)
+    if not expression or not target:
+        return _arxiv_rows([])
+    entries: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    offset = 0
+    reachable = 0
+    reported = False
+    with tqdm(total=target, desc='Searching arXiv', colour='yellow') as pbar:
+        while len(entries) < target:
+            root = arxiv.search_page(expression, start=offset,
+                                     max_results=min(arxiv.PAGE_SIZE, target - len(entries)))
+            page = arxiv.parse_entries(root)
+            if not reported:
+                total = arxiv.total_results(root)
+                if total > arxiv.MAX_SEARCH_RESULTS:
+                    print(f'arXiv matched {total} records but exposes only the first '
+                          f'{arxiv.MAX_SEARCH_RESULTS}; narrow the query by category or date '
+                          f'to reach the rest.')
+                reachable = min(total, arxiv.MAX_SEARCH_RESULTS)
+                target = min(target, reachable)
+                pbar.total = target
+                reported = True
+            if not page:
+                break
+            # Advance by what arXiv returned, not by what survived deduplication,
+            # so a page of repeats still moves the cursor forward.
+            offset += len(page)
+            for entry in page:
+                identifier = str(entry.get('arxiv_id') or entry.get('paper_id') or '')
+                if identifier and identifier in seen:
+                    continue
+                if identifier:
+                    seen.add(identifier)
+                entries.append(entry)
+                pbar.update(1)
+                if len(entries) >= target:
+                    break
+            # Stop once the walk has passed everything arXiv reports, so a run
+            # of duplicate pages cannot keep the loop going indefinitely.
+            if offset >= reachable:
+                break
+    return _arxiv_rows(entries[:target])
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -454,14 +542,15 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed'}, default='all'
+    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv'}, default='all'
         Provider or provider set to search.
     count : int, default=200
         Maximum number of records requested from each provider.
     store_abstract : bool, default=False
         Whether to store search-result abstracts as corpus assets.
     enrich : bool, default=False
-        Whether to supplement stored rows with Crossref and OpenAlex metadata.
+        Whether to supplement stored rows with metadata from the configured
+        enrichment providers.
 
     Returns
     -------
@@ -476,7 +565,7 @@ def search_for_papers(query: str,
     requests.RequestException
         If the explicitly selected CORE provider fails.
     RuntimeError
-        If the explicitly selected OpenAlex or PubMed provider fails.
+        If the explicitly selected OpenAlex, PubMed, or arXiv provider fails.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:
@@ -510,6 +599,13 @@ def search_for_papers(query: str,
             if source == 'pubmed':
                 raise
             print(f'PubMed search skipped: {e}')
+    if source in {'arxiv', 'all'}:
+        try:
+            frames.append(arxiv_search(query, count=count))
+        except Exception as e:
+            if source == 'arxiv':
+                raise
+            print(f'arXiv search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:
@@ -524,6 +620,6 @@ def search_for_papers(query: str,
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')
     if enrich:
-        print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers from Crossref and OpenAlex '
+        print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers '
               f'({enrichment_summary.get("partial", 0)} partial, '
               f'{enrichment_summary.get("not_found", 0)} not found).')

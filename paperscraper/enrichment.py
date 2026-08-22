@@ -1,4 +1,4 @@
-"""Supplement corpus paper metadata with Crossref and OpenAlex records.
+"""Supplement corpus paper metadata with Crossref, OpenAlex, PubMed, and arXiv records.
 
 Discovery and download populate only a handful of bibliographic fields. This
 module fills in the rest: publisher, work type, volume/issue/pages, ISSNs and
@@ -10,6 +10,14 @@ Crossref is treated as authoritative for the metadata a publisher deposits
 against the DOI, and OpenAlex for everything it derives that no publisher
 deposits. Where the two disagree, both values are recorded in
 ``papers.enrichment_json`` so nothing is silently discarded.
+
+arXiv ranks last of the four, because its record describes a preprint rather
+than the version of record. It contributes what no other provider holds: the
+arXiv subject taxonomy, the author-deposited DOI that lets a preprint-only row
+reach Crossref and OpenAlex on a later pass, and the fact that the paper is
+freely readable. Unlike the other three it cannot be reached from a DOI at all,
+because arXiv exposes no DOI search field, so it enriches only rows that
+already carry an arXiv identifier.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from typing import Any, TypeAlias
 
 from tqdm import tqdm
 
+from paperscraper import arxiv
 from paperscraper import crossref as crossref_client
 from paperscraper import openalex
 from paperscraper import pubmed
@@ -36,7 +45,7 @@ from paperscraper.corpus import (connect,
                                  write_enrichment)
 from paperscraper.metadata import clean_doi, crossref_fields as crossref_metadata_fields
 
-ENRICHMENT_SOURCES = ('crossref', 'openalex', 'pubmed')
+ENRICHMENT_SOURCES = ('crossref', 'openalex', 'pubmed', 'arxiv')
 MAX_BATCH_SIZE = 100
 _Record: TypeAlias = dict[str, Any]
 _Fields: TypeAlias = dict[str, Any]
@@ -226,6 +235,105 @@ def pubmed_subject_rows(paper_id: str, article: Mapping[str, Any] | None) -> lis
     return unique
 
 
+def arxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Map each candidate's arXiv identifier to its paper identifier.
+
+    Unlike :func:`pubmed_candidates`, which can fall back to resolving a PMID
+    from a DOI, this can only ever see rows that already carry an arXiv
+    identifier: arXiv publishes no DOI search field, so a DOI-only row is
+    unreachable no matter how many requests are spent.
+
+    Parameters
+    ----------
+    candidates : Sequence[Mapping[str, Any]]
+        Candidate corpus rows carrying ``paper_id`` and ``arxiv_id``.
+
+    Returns
+    -------
+    dict[str, str]
+        Bare arXiv identifier to paper identifier, for rows that carry one.
+    """
+    by_arxiv = {}
+    for candidate in candidates:
+        paper_id = str(candidate.get('paper_id') or '')
+        if not paper_id:
+            continue
+        identifier = arxiv.normalize_arxiv_id(candidate.get('arxiv_id'))
+        if not identifier and paper_id.startswith('arxiv:'):
+            identifier = arxiv.normalize_arxiv_id(paper_id.split(':', 1)[1])
+        if identifier:
+            by_arxiv[identifier] = paper_id
+    return by_arxiv
+
+
+def arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
+    """Map one arXiv entry onto the shared enrichment field set.
+
+    Every arXiv paper is freely readable, so ``is_oa`` and ``oa_status`` are
+    asserted here rather than left at the OpenAlex default, which would record
+    a plainly false value for a row OpenAlex has never seen.
+
+    Parameters
+    ----------
+    entry : Mapping[str, Any]
+        Entry mapping produced by :func:`paperscraper.arxiv.entry_to_paper`.
+
+    Returns
+    -------
+    dict[str, Any]
+        Enrichment fields contributed by arXiv.
+    """
+    return {
+        'doi': clean_doi(entry.get('doi')) if entry.get('doi') else '',
+        'title': _text(entry.get('title')),
+        'journal': _text(entry.get('journal')),
+        'publication_date': _text(entry.get('publication_date')),
+        'authors': _text(entry.get('authors')),
+        'arxiv_id': arxiv.normalize_arxiv_id(entry.get('arxiv_id')),
+        'work_type': 'preprint',
+        'is_oa': 1,
+        'oa_status': 'green',
+    }
+
+
+def arxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
+    """Build ``paper_subjects`` rows from an arXiv entry's categories.
+
+    Categories use the ``arxiv_category`` scheme, which is disjoint from every
+    scheme OpenAlex and PubMed write, so the three providers cannot collide on
+    the ``(paper_id, scheme, subject_id)`` primary key. The primary category is
+    flagged rather than given a scheme of its own, matching how a major MeSH
+    descriptor is marked.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the rows belong to.
+    entry : Mapping[str, Any] or None
+        Entry mapping produced by :func:`paperscraper.arxiv.entry_to_paper`.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Rows for the ``paper_subjects`` table.
+    """
+    if not entry:
+        return []
+    rows: list[_Record] = []
+    seen = set()
+    for rank, category in enumerate(entry.get('categories') or []):
+        term = _text(category.get('id'))
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        rows.append({
+            'paper_id': paper_id, 'scheme': 'arxiv_category', 'subject_id': term,
+            'display_name': _text(category.get('name')) or term, 'subject_rank': rank,
+            'is_primary': int(bool(category.get('is_primary'))), 'source': 'arxiv',
+        })
+    return rows
+
+
 def openalex_fields(work: Mapping[str, Any]) -> _Fields:
     """Map one OpenAlex work onto the shared enrichment field set.
 
@@ -341,7 +449,8 @@ def _crossref_license(work: Mapping[str, Any]) -> str:
 
 def _provenance(crossref: Mapping[str, Any] | None,
                 openalex_work: Mapping[str, Any] | None,
-                pubmed_article: Mapping[str, Any] | None = None) -> _Record:
+                pubmed_article: Mapping[str, Any] | None = None,
+                arxiv_entry: Mapping[str, Any] | None = None) -> _Record:
     """Build the trimmed provenance document stored in ``enrichment_json``."""
     provenance: _Record = {'fetched_at': utc_now()}
     if crossref is not None:
@@ -379,6 +488,16 @@ def _provenance(crossref: Mapping[str, Any] | None,
                                   for entry in pubmed_article.get('publication_types') or []],
             'mesh_count': len(pubmed_article.get('mesh') or []),
         }
+    if arxiv_entry is not None:
+        provenance['arxiv'] = {
+            'arxiv_id': arxiv.normalize_arxiv_id(arxiv_entry.get('arxiv_id')),
+            'version': _text(arxiv_entry.get('version')),
+            'primary_category': _text(arxiv_entry.get('primary_category')),
+            'categories': [_text(term.get('id'))
+                           for term in arxiv_entry.get('categories') or []],
+            'journal_ref': _text(arxiv_entry.get('journal_ref')),
+            'comment': _text(arxiv_entry.get('comment')),
+        }
     return provenance
 
 
@@ -393,14 +512,16 @@ def _date_parts(value: object) -> str:
 
 CROSSREF_PREFERRED = ('publisher', 'work_type', 'volume', 'issue', 'pages', 'issn', 'language')
 OPENALEX_ONLY = ('openalex_id', 'issn_l', 'is_oa', 'oa_status', 'license', 'cited_by_count')
-FILL_COLUMNS = ('doi', 'title', 'journal', 'publication_date', 'authors', 'pmid', 'pmcid')
+FILL_COLUMNS = ('doi', 'title', 'journal', 'publication_date', 'authors', 'pmid', 'pmcid',
+                'arxiv_id')
 
 
 def merge_fields(paper_id: str,
                  crossref: Mapping[str, Any] | None,
                  openalex_work: Mapping[str, Any] | None,
                  requested: Sequence[str],
-                 pubmed_article: Mapping[str, Any] | None = None) -> _Record:
+                 pubmed_article: Mapping[str, Any] | None = None,
+                 arxiv_entry: Mapping[str, Any] | None = None) -> _Record:
     """Apply the provider precedence rules and build one paper's update.
 
     Parameters
@@ -415,6 +536,8 @@ def merge_fields(paper_id: str,
         Providers that were queried for this paper.
     pubmed_article : Mapping[str, Any] or None, optional
         PubMed article mapping, or ``None`` when PubMed had no record.
+    arxiv_entry : Mapping[str, Any] or None, optional
+        arXiv entry mapping, or ``None`` when arXiv had no record.
 
     Returns
     -------
@@ -424,12 +547,14 @@ def merge_fields(paper_id: str,
     from_crossref = crossref_fields(crossref) if crossref is not None else {}
     from_openalex = openalex_fields(openalex_work) if openalex_work is not None else {}
     from_pubmed = pubmed_fields(pubmed_article) if pubmed_article is not None else {}
+    from_arxiv = arxiv_fields(arxiv_entry) if arxiv_entry is not None else {}
     update = {field: '' for field in enrichment_update_fields()}
 
     for column in FILL_COLUMNS + CROSSREF_PREFERRED:
         update[column] = (from_crossref.get(column)
                           or from_openalex.get(column)
                           or from_pubmed.get(column)
+                          or from_arxiv.get(column)
                           or '')
     for column in OPENALEX_ONLY:
         update[column] = from_openalex.get(column) if from_openalex.get(column) is not None else ''
@@ -437,12 +562,15 @@ def merge_fields(paper_id: str,
                                         or from_crossref.get('referenced_works_count') or 0)
     update['is_retracted'] = int(bool(from_crossref.get('is_retracted'))
                                  or bool(from_openalex.get('is_retracted')))
-    update['is_oa'] = int(bool(from_openalex.get('is_oa')))
+    update['is_oa'] = int(bool(from_openalex.get('is_oa')) or bool(from_arxiv.get('is_oa')))
+    if not update['oa_status'] and from_arxiv.get('oa_status'):
+        update['oa_status'] = from_arxiv['oa_status']
     update['cited_by_count'] = from_openalex.get('cited_by_count') or 0
 
     found = [source for source, record in (('crossref', crossref),
                                            ('openalex', openalex_work),
-                                           ('pubmed', pubmed_article))
+                                           ('pubmed', pubmed_article),
+                                           ('arxiv', arxiv_entry))
              if record is not None]
     if not found:
         status = 'not_found'
@@ -455,7 +583,7 @@ def merge_fields(paper_id: str,
     update.update({
         'paper_id': paper_id,
         'enrichment_sources': ';'.join(found),
-        'enrichment_json': _provenance(crossref, openalex_work, pubmed_article),
+        'enrichment_json': _provenance(crossref, openalex_work, pubmed_article, arxiv_entry),
         'enriched_at': now if found else '',
         'enrichment_status': status,
         'updated_at': now,
@@ -714,13 +842,19 @@ def _fetch(sources: Sequence[str],
            pace: float,
            pmids: Sequence[str] = (),
            pubmed_session: pubmed._HTTPClient | None = None,
-           pubmed_api_key: str | None = None) -> tuple[dict[str, _Record], dict[str, _Record],
-                                                       dict[str, _Record], dict[str, _Record]]:
+           pubmed_api_key: str | None = None,
+           arxiv_ids: Sequence[str] = (),
+           arxiv_session: arxiv._HTTPClient | None = None) -> tuple[dict[str, _Record],
+                                                                    dict[str, _Record],
+                                                                    dict[str, _Record],
+                                                                    dict[str, _Record],
+                                                                    dict[str, _Record]]:
     """Fetch one batch from each requested provider."""
     crossref_works: dict[str, _Record] = {}
     openalex_by_doi: dict[str, _Record] = {}
     openalex_by_id: dict[str, _Record] = {}
     pubmed_by_pmid: dict[str, _Record] = {}
+    arxiv_by_id: dict[str, _Record] = {}
     if 'crossref' in sources and dois:
         crossref_works = crossref_client.works_by_doi(
             dois, email=email, session=crossref_session, pace=pace)
@@ -740,7 +874,13 @@ def _fetch(sources: Sequence[str],
                 pmid = pubmed.normalize_pmid(article.get('pmid'))
                 if pmid:
                     pubmed_by_pmid[pmid] = article
-    return crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid
+    if 'arxiv' in sources and arxiv_ids:
+        for chunk in arxiv._chunked(list(arxiv_ids), arxiv.ID_BATCH_SIZE):
+            for entry in arxiv.parse_entries(arxiv.fetch_ids(chunk, session=arxiv_session)):
+                identifier = arxiv.normalize_arxiv_id(entry.get('arxiv_id'))
+                if identifier:
+                    arxiv_by_id[identifier] = entry
+    return crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid, arxiv_by_id
 
 
 def enrich_batch(conn: sqlite3.Connection,
@@ -753,7 +893,8 @@ def enrich_batch(conn: sqlite3.Connection,
                  crossref_session: crossref_client._CrossrefSessionLike | None = None,
                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
                  pubmed_session: pubmed._HTTPClient | None = None,
-                 pubmed_api_key: str | None = None) -> dict[str, int]:
+                 pubmed_api_key: str | None = None,
+                 arxiv_session: arxiv._HTTPClient | None = None) -> dict[str, int]:
     """Fetch, map and store enrichment for one batch of papers.
 
     Parameters
@@ -780,6 +921,8 @@ def enrich_batch(conn: sqlite3.Connection,
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key to attach to PubMed requests.
+    arxiv_session : arxiv._HTTPClient or None, optional
+        HTTP client used for arXiv requests.
 
     Returns
     -------
@@ -794,38 +937,48 @@ def enrich_batch(conn: sqlite3.Connection,
 
     by_doi, by_openalex, unresolved = partition_candidates(candidates)
     by_pmid = pubmed_candidates(candidates) if 'pubmed' in sources else {}
+    by_arxiv = arxiv_candidates(candidates) if 'arxiv' in sources else {}
     pubmed_papers = set(by_pmid.values())
-    # A PubMed-only row carries no DOI or OpenAlex ID, so partition_candidates
-    # reports it unresolved. It is resolvable whenever PubMed is being queried.
-    pubmed_only = [paper_id for paper_id in unresolved if paper_id in pubmed_papers]
-    unresolved = [paper_id for paper_id in unresolved if paper_id not in pubmed_papers]
+    arxiv_papers = set(by_arxiv.values())
+    # A PubMed- or arXiv-only row carries no DOI or OpenAlex ID, so
+    # partition_candidates reports it unresolved. It is resolvable whenever the
+    # provider that already knows its identifier is being queried.
+    identifier_papers = pubmed_papers | arxiv_papers
+    identifier_only = [paper_id for paper_id in unresolved if paper_id in identifier_papers]
+    unresolved = [paper_id for paper_id in unresolved if paper_id not in identifier_papers]
     if unresolved:
         set_enrichment_status(conn, unresolved, 'unresolved')
         summary['unresolved'] += len(unresolved)
-    if not by_doi and not by_openalex and not pubmed_only:
+    if not by_doi and not by_openalex and not identifier_only:
         return summary
 
-    crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid = _fetch(
+    crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid, arxiv_by_id = _fetch(
         sources, list(by_doi), list(by_openalex), email, api_key,
         openalex_session, crossref_session, pace,
-        pmids=list(by_pmid), pubmed_session=pubmed_session, pubmed_api_key=pubmed_api_key)
+        pmids=list(by_pmid), pubmed_session=pubmed_session, pubmed_api_key=pubmed_api_key,
+        arxiv_ids=list(by_arxiv), arxiv_session=arxiv_session)
     pubmed_by_paper = {paper_id: pubmed_by_pmid[pmid]
                        for pmid, paper_id in by_pmid.items() if pmid in pubmed_by_pmid}
+    arxiv_by_paper = {paper_id: arxiv_by_id[identifier]
+                      for identifier, paper_id in by_arxiv.items() if identifier in arxiv_by_id}
 
     targets = [(paper_id, crossref_works.get(key), openalex_by_doi.get(key), True)
                for key, paper_id in by_doi.items()]
     targets += [(paper_id, None, openalex_by_id.get(key), False)
                 for key, paper_id in by_openalex.items()]
-    targets += [(paper_id, None, None, False) for paper_id in pubmed_only]
+    targets += [(paper_id, None, None, False) for paper_id in identifier_only]
 
     updates, authors, subjects, reference_records = [], [], [], []
     for paper_id, crossref_work, openalex_work, keyed_by_doi in targets:
         pubmed_article = pubmed_by_paper.get(paper_id)
+        arxiv_entry = arxiv_by_paper.get(paper_id)
         requested = [source for source in sources
                      if (source == 'crossref' and keyed_by_doi)
                      or source == 'openalex'
-                     or (source == 'pubmed' and paper_id in pubmed_papers)]
-        update = merge_fields(paper_id, crossref_work, openalex_work, requested, pubmed_article)
+                     or (source == 'pubmed' and paper_id in pubmed_papers)
+                     or (source == 'arxiv' and paper_id in arxiv_papers)]
+        update = merge_fields(paper_id, crossref_work, openalex_work, requested,
+                              pubmed_article, arxiv_entry)
         updates.append(update)
         summary[update['enrichment_status']] += 1
         if update['enrichment_status'] == 'not_found':
@@ -833,6 +986,7 @@ def enrich_batch(conn: sqlite3.Connection,
         authors.extend(author_rows(paper_id, crossref_work, openalex_work))
         subjects.extend(subject_rows(paper_id, openalex_work))
         subjects.extend(pubmed_subject_rows(paper_id, pubmed_article))
+        subjects.extend(arxiv_subject_rows(paper_id, arxiv_entry))
         if references:
             reference_records.extend(reference_rows(paper_id, crossref_work, openalex_work))
 
@@ -892,7 +1046,8 @@ def enrich_papers(conn: sqlite3.Connection,
                   crossref_session: crossref_client._CrossrefSessionLike | None = None,
                   pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
                   pubmed_session: pubmed._HTTPClient | None = None,
-                  pubmed_api_key: str | None = None) -> dict[str, int]:
+                  pubmed_api_key: str | None = None,
+                  arxiv_session: arxiv._HTTPClient | None = None) -> dict[str, int]:
     """Enrich specific papers on an already-open corpus connection.
 
     Incoming rows are resolved against the corpus first, because discovery
@@ -925,6 +1080,8 @@ def enrich_papers(conn: sqlite3.Connection,
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key. Defaults to the configured key.
+    arxiv_session : arxiv._HTTPClient or None, optional
+        HTTP client used for arXiv requests.
 
     Returns
     -------
@@ -956,7 +1113,8 @@ def enrich_papers(conn: sqlite3.Connection,
         batch = candidates[start:start + batch_size]
         for key, value in enrich_batch(conn, batch, sources, email, api_key, references,
                                        openalex_session, crossref_session, pace,
-                                       pubmed_session, pubmed_api_key).items():
+                                       pubmed_session, pubmed_api_key,
+                                       arxiv_session).items():
             summary[key] += value
     return summary
 
@@ -986,7 +1144,8 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                   crossref_session: crossref_client._CrossrefSessionLike | None = None,
                   pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
                   pubmed_session: pubmed._HTTPClient | None = None,
-                  pubmed_api_key: str | None = None) -> dict[str, int]:
+                  pubmed_api_key: str | None = None,
+                  arxiv_session: arxiv._HTTPClient | None = None) -> dict[str, int]:
     """Supplement every candidate paper in a corpus with provider metadata.
 
     Progress is committed after each batch, so an interrupted or budget-limited
@@ -1027,6 +1186,8 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key. Defaults to the configured key.
+    arxiv_session : arxiv._HTTPClient or None, optional
+        HTTP client used for arXiv requests.
 
     Returns
     -------
@@ -1073,7 +1234,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                 after_rowid = int(candidates[-1]['rowid'])
                 counts = enrich_batch(conn, candidates, sources, email, api_key, references,
                                       openalex_session, crossref_session, pace,
-                                      pubmed_session, pubmed_api_key)
+                                      pubmed_session, pubmed_api_key, arxiv_session)
                 for key, value in counts.items():
                     summary[key] += value
                 summary['batches'] += 1
