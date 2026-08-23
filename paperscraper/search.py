@@ -22,18 +22,9 @@ from paperscraper import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper import sources
-from paperscraper.settings import load_settings
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
-
-
-def _elsevier_api_key() -> str:
-    """Return the configured Elsevier API key."""
-    api_key = load_settings().get('elsevier_api_key')
-    if not api_key:
-        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    return api_key
 
 
 def _recast_elsevier_records(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -79,34 +70,31 @@ def document_search(query: str,
     ------
     ValueError
         If no Elsevier API key is configured.
-    requests.RequestException
-        If an Elsevier request fails.
+    RuntimeError
+        If an Elsevier request cannot be completed.
     """
-    api_key = _elsevier_api_key()
+    api_key = elsevier.configured_api_key()
     max_results = max(int(count), 1)
     page_size = min(max_results, 200)
     index = index.lower()
     url = elsevier.search_url(index, query, page_size, search_fields)
-    api_response = elsevier.get_json(api_key, url)
-    tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
+    api_response = elsevier.request_json(url, api_key) or {}
+    tot_num_res = elsevier.total_results(api_response)
     target_results = min(tot_num_res, max_results)
     print('Document search is retrieving', target_results, 'of', tot_num_res, 'results.')
     if tot_num_res == 0:
         return pd.DataFrame()
-    results = api_response['search-results'].get('entry', [])
+    results = elsevier.parse_records(api_response)
     if get_all:
         with tqdm(total=target_results, desc='Searching Scopus', colour='blue') as pbar:
             pbar.update(min(len(results), target_results))
             upper_limit_reached = False
             while (len(results) < target_results) and not upper_limit_reached:
-                next_url = None
-                for e in api_response['search-results']['link']:
-                    if e['@ref'] == 'next':
-                        next_url = e['@href']
+                next_url = elsevier.next_page_url(api_response)
                 if not next_url:
                     break
-                api_response = elsevier.get_json(api_key, next_url)
-                next_results = api_response['search-results'].get('entry', [])
+                api_response = elsevier.request_json(next_url, api_key) or {}
+                next_results = elsevier.parse_records(api_response)
                 remaining = target_results - len(results)
                 results += next_results[:remaining]
                 if len(results) >= 5000 and index != 'scopus':

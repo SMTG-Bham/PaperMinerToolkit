@@ -42,86 +42,6 @@ TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
 
 
-def _elsevier_api_key() -> str:
-    """Return the configured Elsevier API key."""
-    api_key = load_settings().get('elsevier_api_key')
-    if not api_key:
-        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    return api_key
-
-
-def retrieve_document(uri: str) -> None:
-    """Retrieve an Elsevier full-text document.
-
-    The decoded response is written to ``data/elsevier_document.json`` after
-    existing files in the directory are removed.
-
-    Parameters
-    ----------
-    uri : str
-        Elsevier full-text endpoint URL.
-
-    Returns
-    -------
-    None
-        The document is written to the local ``data`` directory. If the
-        request fails, an error is printed and no document is written.
-
-    Raises
-    ------
-    ValueError
-        If no Elsevier API key is configured.
-    OSError
-        If the output directory or its files cannot be created, removed, or
-        written.
-    """
-    os.makedirs('data', exist_ok=True)
-    for file in os.listdir('data'):
-        os.remove(os.path.join('data', file))
-    try:
-        response = elsevier.get_content(
-            _elsevier_api_key(),
-            uri,
-            accept='application/json',
-            params={'httpAccept': 'application/json'},
-        )
-    except requests.RequestException:
-        print('Read document failed.')
-        return
-    with open(os.path.join('data', 'elsevier_document.json'), 'w', encoding='utf-8') as out_file:
-        json.dump(response.json(), out_file)
-
-
-def json_to_text(filepath: str | PathLike[str]) -> str:
-    """Read original text from an Elsevier JSON document.
-
-    Parameters
-    ----------
-    filepath : str or os.PathLike[str]
-        Path to the downloaded JSON document.
-
-    Returns
-    -------
-    str
-        Original text, or ``'failed'`` when text is missing or structured.
-
-    Raises
-    ------
-    OSError
-        If the document cannot be read.
-    json.JSONDecodeError
-        If the document is not valid JSON.
-    """
-    with open(filepath, 'r', encoding='utf-8') as f:
-        doc = json.load(f)
-    text = doc.get('originalText')
-    if text is None:
-        text = (doc.get('full-text-retrieval-response') or {}).get('originalText')
-    if type(text) == dict:
-        return 'failed'
-    return text or 'failed'
-
-
 def elsevier_string_formatter(text: str) -> str:
     """Clean wrapper artifacts from Elsevier original text.
 
@@ -220,21 +140,35 @@ def _set_status(paper: _Paper, column: str, status: str, error: str | None = Non
 
 
 def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
-    """Download Elsevier full text for one paper row to ``filepath``."""
+    """Download Elsevier full text for one paper row to ``filepath``.
+
+    The payload is read in memory and written straight to the destination. It
+    used to be staged through a ``data`` directory created in the working
+    directory, every file of which was deleted first -- so a download run wiped
+    whatever a user happened to keep in ``./data``.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded text.
+
+    Returns
+    -------
+    bool
+        Whether text was retrieved and written.
+    """
     uri = _full_text_uri(paper)
     if not uri:
         return False
-    retrieve_document(uri)
-    files = os.listdir('data')
-    if len(files) < 1:
+    payload = elsevier.request_json(uri, elsevier.configured_api_key(),
+                                    params={'httpAccept': 'application/json'})
+    text = elsevier.full_text(payload)
+    if not text:
         return False
-    temp_file = os.path.join('data', files[0])
-    text = json_to_text(temp_file)
-    if text == 'failed':
-        return False
-    formatted_text = elsevier_string_formatter(text)
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(formatted_text)
+        out_file.write(elsevier_string_formatter(text))
     return True
 
 
@@ -252,7 +186,7 @@ def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
 
 def _download_pdf(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
     """Try to download an Elsevier PDF for one paper row."""
-    api_key = _elsevier_api_key()
+    api_key = elsevier.configured_api_key()
     params = {'httpAccept': 'application/pdf'}
     last_error = None
     for url in _pdf_urls(paper):
@@ -1211,7 +1145,7 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
     urls = _elsevier_abstract_urls(paper)
     if not urls:
         return False, 'missing Elsevier abstract URL', ''
-    api_key = _elsevier_api_key()
+    api_key = elsevier.configured_api_key()
     last_error = 'no Elsevier abstract found'
     for url in urls:
         try:

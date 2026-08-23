@@ -15,8 +15,6 @@ import requests
 from copy import deepcopy
 from typing import Any, Literal
 
-from paperscraper import elsevier
-
 SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.pscraperrc.json')
 DEFAULT_MODEL = 'gpt-5.4-mini'
 DEFAULT_TEMPERATURE = 0
@@ -470,13 +468,8 @@ def check_elsevier_api_key(api_key: str) -> bool:
     bool
         ``True`` when the request succeeds, otherwise ``False``.
     """
-    try:
-        url = elsevier.search_url('scopus', 'Test', 1, 'TITLE-ABS-KEY')
-        elsevier.get_json(api_key, url)
-    except requests.RequestException:
-        return False
-    else:
-        return True
+    from paperscraper.elsevier import check_api_key
+    return check_api_key(api_key)
 
 
 def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True) -> None:

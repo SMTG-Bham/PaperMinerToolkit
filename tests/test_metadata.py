@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 import paperscraper.corpus as corpus
+import paperscraper.crossref as crossref
 import paperscraper.metadata as metadata
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -201,7 +202,8 @@ def test_get_crossref_metadata_normalizes_text_fields(monkeypatch: pytest.Monkey
                 }
             }
 
-    monkeypatch.setattr(metadata.requests, 'get', lambda *_, **__: FakeResponse())
+    monkeypatch.setattr(crossref, 'work_by_doi',
+                        lambda *_, **__: FakeResponse().json()['message'])
 
     crossref_metadata = metadata.get_crossref_metadata('10.1234/example', email='me@example.com')
 
@@ -233,7 +235,8 @@ def test_get_crossref_metadata_returns_only_known_keys(monkeypatch: pytest.Monke
             """Return a minimal Crossref message."""
             return {'message': {'DOI': '10.1234/example'}}
 
-    monkeypatch.setattr(metadata.requests, 'get', lambda *_, **__: FakeResponse())
+    monkeypatch.setattr(crossref, 'work_by_doi',
+                        lambda *_, **__: FakeResponse().json()['message'])
 
     keys = set(metadata.get_crossref_metadata('10.1234/example', email='me@example.com'))
 
@@ -242,33 +245,6 @@ def test_get_crossref_metadata_returns_only_known_keys(monkeypatch: pytest.Monke
     assert 'crossref_type' not in keys
     assert 'crossref_publisher' not in keys
 
-
-def test_get_crossref_metadata_sends_mailto_in_query_and_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Identify the client to Crossref through both polite-pool signals."""
-    captured = {}
-
-    class FakeResponse:
-        """Provide a minimal Crossref metadata response."""
-
-        def raise_for_status(self) -> None:
-            """Accept the fake response status."""
-            return None
-
-        def json(self) -> dict[str, Any]:
-            """Return a minimal Crossref message."""
-            return {'message': {'DOI': '10.1234/example'}}
-
-    def fake_get(url: str, params: dict[str, str], headers: dict[str, str], timeout: int) -> FakeResponse:
-        """Record the outgoing Crossref request."""
-        captured.update({'url': url, 'params': params, 'headers': headers})
-        return FakeResponse()
-
-    monkeypatch.setattr(metadata.requests, 'get', fake_get)
-
-    metadata.get_crossref_metadata('10.1234/example', email='me@example.com')
-
-    assert captured['params'] == {'mailto': 'me@example.com'}
-    assert 'mailto:me@example.com' in captured['headers']['User-Agent']
 
 
 def test_metadata_from_pdf_handles_missing_doi(monkeypatch: pytest.MonkeyPatch) -> None:

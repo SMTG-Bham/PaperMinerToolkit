@@ -8,7 +8,6 @@ configured source resolution, and corpus status updates.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-import json
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -32,67 +31,16 @@ def read_corpus(db_path: str | Path) -> list[dict[str, Any]]:
         return corpus.paper_rows(conn)
 
 
-def test_elsevier_api_key_requires_and_uses_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Elsevier API key requires and uses configured API key."""
-    monkeypatch.setattr(download, 'load_settings', lambda: {})
-    with pytest.raises(ValueError, match='Elsevier API key is not configured'):
-        download._elsevier_api_key()
 
-    monkeypatch.setattr(download, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
-    assert download._elsevier_api_key() == 'elsevier-key'
-
-
-def test_retrieve_document_clears_data_folder_and_writes_successful_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Retrieve document clears data folder and writes successful document."""
-    monkeypatch.chdir(tmp_path)
-    data_dir = tmp_path / 'data'
-    data_dir.mkdir()
-    (data_dir / 'old.json').write_text('old')
-
-    class FakeResponse:
-        """Provide a response test double."""
-
-        def json(self) -> dict[str, str]:
-            """Return the prepared JSON payload."""
-            return {'originalText': 'new'}
-
-    def fake_get_content(
-        api_key: str,
-        uri: str,
-        accept: str,
-        params: Mapping[str, str],
-    ) -> FakeResponse:
-        """Provide fake content retrieval for this test."""
-        assert api_key == 'elsevier-key'
-        assert uri == 'full-text-uri'
-        assert accept == 'application/json'
-        assert params == {'httpAccept': 'application/json'}
-        return FakeResponse()
-
-    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
-    monkeypatch.setattr(download.elsevier, 'get_content', fake_get_content)
-
-    download.retrieve_document('full-text-uri')
-
-    assert not (data_dir / 'old.json').exists()
-    assert json.loads((data_dir / 'elsevier_document.json').read_text()) == {'originalText': 'new'}
-
-
-def test_json_to_text_and_elsevier_string_formatter(tmp_path: Path) -> None:
-    """JSON to text and Elsevier string formatter."""
-    text_path = tmp_path / 'text.json'
-    nested_text_path = tmp_path / 'nested_text.json'
-    failed_path = tmp_path / 'failed.json'
-    text_path.write_text(json.dumps({'originalText': 'paper text'}))
-    nested_text_path.write_text(json.dumps({'full-text-retrieval-response': {'originalText': 'nested text'}}))
-    failed_path.write_text(json.dumps({'originalText': {'bad': 'text'}}))
-
-    assert download.json_to_text(str(text_path)) == 'paper text'
-    assert download.json_to_text(str(nested_text_path)) == 'nested text'
-    assert download.json_to_text(str(failed_path)) == 'failed'
+def test_json_to_text_and_elsevier_string_formatter() -> None:
+    """Read text out of a full-text payload and tidy what comes back."""
+    assert download.elsevier.full_text({'originalText': 'paper text'}) == 'paper text'
+    assert download.elsevier.full_text(
+        {'full-text-retrieval-response': {'originalText': 'nested text'}}) == 'nested text'
+    # Structured XML rather than text is not usable, and is reported as absent.
+    assert download.elsevier.full_text({'originalText': {'bad': 'text'}}) == ''
+    assert download.elsevier.full_text({}) == ''
+    assert download.elsevier.full_text(None) == ''
     assert download.elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
     assert download.elsevier_string_formatter('A References clean References') == ' clean '
     assert download.elsevier_string_formatter('prefix amazonaws.com/key paper text') == ' paper text'
@@ -126,18 +74,17 @@ def test_full_text_uri_and_download_text_success_and_failure(
         'elsevier_link': '[{"@ref": "full-text", "@href": "json-full-text-link"}]',
     }) == 'json-full-text-link'
 
-    def fake_retrieve_document(_: str) -> None:
-        """Provide fake document retrieval for this test."""
-        os.makedirs('data', exist_ok=True)
-        with open('data/doc.json', 'w', encoding='utf-8') as f:
-            json.dump({'originalText': 'downloaded text'}, f)
-
-    monkeypatch.setattr(download, 'retrieve_document', fake_retrieve_document)
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(download.elsevier, 'request_json',
+                        lambda *_, **__: {'originalText': 'downloaded text'})
     out_path = tmp_path / 'paper.txt'
     assert download._download_text(paper, str(out_path)) is True
     assert out_path.read_text() == 'downloaded text'
 
-    monkeypatch.setattr(download, 'json_to_text', lambda _: 'failed')
+    # Nothing is written to the working directory any more.
+    assert not (tmp_path / 'data').exists()
+
+    monkeypatch.setattr(download.elsevier, 'request_json', lambda *_, **__: {'originalText': {}})
     assert download._download_text(paper, str(out_path)) is False
     assert download._download_text({'elsevier_link': ''}, str(out_path)) is False
 
@@ -480,7 +427,7 @@ def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatc
     assert download._download_core_abstract({'core_id': '123'}) == (
         False, 'CORE rejected the request with 404', '')
 
-    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(
         download.elsevier,
         'get_content',
@@ -1148,24 +1095,6 @@ def test_download_papers_force_redownloads_existing_content(
     assert 'Skipped existing corpus assets' not in output
 
 
-def test_retrieve_document_reports_failed_read(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Retrieve document reports failed read."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
-    monkeypatch.setattr(
-        download.elsevier,
-        'get_content',
-        lambda *_, **__: (_ for _ in ()).throw(download.requests.RequestException('read failed')),
-    )
-
-    download.retrieve_document('full-text-uri')
-
-    assert 'Read document failed.' in capsys.readouterr().out
-
 
 def test_full_text_uri_and_download_text_handle_malformed_or_empty_retrieval(
     tmp_path: Path,
@@ -1175,11 +1104,8 @@ def test_full_text_uri_and_download_text_handle_malformed_or_empty_retrieval(
     monkeypatch.chdir(tmp_path)
     assert download._full_text_uri({'elsevier_link': 'full-text without quoted uri'}) is None
 
-    def fake_retrieve_document(_: str) -> None:
-        """Provide fake document retrieval for this test."""
-        os.makedirs('data', exist_ok=True)
-
-    monkeypatch.setattr(download, 'retrieve_document', fake_retrieve_document)
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(download.elsevier, 'request_json', lambda *_, **__: None)
 
     assert download._download_text({'elsevier_link': "x 'uri' full-text"}, str(tmp_path / 'paper.txt')) is False
 
@@ -1205,11 +1131,13 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(
             self.headers = {'Content-Type': content_type}
 
     out_path = tmp_path / 'paper.pdf'
-    monkeypatch.setattr(download, 'load_settings', lambda: {})
+    monkeypatch.setattr(download.elsevier, 'configured_api_key',
+                        lambda *_: (_ for _ in ()).throw(
+                            ValueError('Elsevier API key is not configured.')))
     with pytest.raises(ValueError, match='Elsevier API key is not configured'):
         download._download_pdf({'doi': '10.1234/example'}, str(out_path))
 
-    monkeypatch.setattr(download, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(download, '_pdf_urls', lambda _: ['bad-status', 'bad-request', 'bad-content', 'good-pdf'])
 
     def fake_get_content(

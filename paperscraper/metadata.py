@@ -14,7 +14,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from os import PathLike
 from typing import Any, Literal
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 from pypdf import PdfReader
 
@@ -475,19 +475,15 @@ def get_crossref_metadata(doi: str, timeout: int = 30, email: str | None = None)
 
     Raises
     ------
-    requests.RequestException
-        If the Crossref request fails.
+    ValueError
+        If no contact email is available.
+    RuntimeError
+        If the Crossref request exhausts its retries.
     """
-    from paperscraper.crossref import configured_email
+    from paperscraper.crossref import work_by_doi
 
-    contact = str(email or '').strip() or configured_email()
-    url = f'https://api.crossref.org/works/{quote(doi, safe="")}'
-    agent = 'PaperScraper/0.0.1 (https://github.com/SMTG-Bham/PaperScraper'
-    headers = {'User-Agent': f'{agent}; mailto:{contact})' if contact else f'{agent})'}
-    params = {'mailto': contact} if contact else {}
-    response = requests.get(url, params=params, headers=headers, timeout=timeout)
-    response.raise_for_status()
-    return crossref_fields(response.json().get('message', {}), doi)
+    work = work_by_doi(doi, email=email or None, timeout=timeout)
+    return crossref_fields(work or {}, doi)
 
 
 def metadata_from_pdf(

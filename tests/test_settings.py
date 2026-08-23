@@ -367,32 +367,25 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, mon
     assert settings.load_settings()['core_api_key'] == 'core-key'
 
 
-def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Accept an Elsevier key when the validation request succeeds."""
-    calls = {}
+def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validate a key through the Elsevier module rather than inline here.
 
-    def fake_get_json(api_key: str, url: str) -> dict[str, bool]:
-        """Record Elsevier request arguments and return a response."""
-        calls['api_key'] = api_key
-        calls['url'] = url
-        return {'ok': True}
+    settings used to import paperscraper.elsevier at module level for this one
+    function, which was the single edge stopping the Elsevier client from
+    importing settings the way every other source module does.
+    """
+    import paperscraper.elsevier as elsevier
 
-    monkeypatch.setattr(settings.elsevier, 'get_json', fake_get_json)
-
+    calls = []
+    monkeypatch.setattr(elsevier, 'check_api_key',
+                        lambda key, **_: calls.append(key) or True)
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is True
-    assert calls['api_key'] == 'placeholder-elsevier-key'
-    assert 'content/search/scopus' in calls['url']
+    assert calls == ['placeholder-elsevier-key']
 
-
-def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject an Elsevier key when the validation request fails."""
-    monkeypatch.setattr(
-        settings.elsevier,
-        'get_json',
-        lambda *_, **__: (_ for _ in ()).throw(settings.requests.HTTPError('invalid key')),
-    )
-
-    assert settings.check_elsevier_api_key('placeholder-elsevier-key') is False
+    monkeypatch.setattr(elsevier, 'check_api_key', lambda *_, **__: False)
+    assert settings.check_elsevier_api_key('bad-key') is False
 
 
 def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

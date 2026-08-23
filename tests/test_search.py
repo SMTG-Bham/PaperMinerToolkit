@@ -18,19 +18,6 @@ import paperscraper.corpus as corpus
 import paperscraper.search as search
 
 
-def test_elsevier_api_key_requires_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Elsevier API key requires configured API key."""
-    monkeypatch.setattr(search, 'load_settings', lambda: {})
-
-    with pytest.raises(ValueError, match='Elsevier API key is not configured'):
-        search._elsevier_api_key()
-
-
-def test_elsevier_api_key_returns_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Elsevier API key returns configured API key."""
-    monkeypatch.setattr(search, 'load_settings', lambda: {'elsevier_api_key': 'elsevier-key'})
-
-    assert search._elsevier_api_key() == 'elsevier-key'
 
 
 def test_document_search_caps_count_and_paginates_results(
@@ -40,8 +27,23 @@ def test_document_search_caps_count_and_paginates_results(
     """Document search caps count and paginates results."""
     urls = []
 
-    def fake_get_json(api_key: str, url: str) -> dict[str, Any]:
-        """Provide fake JSON retrieval for this test."""
+    def fake_request_json(url: str, api_key: str, **_: object) -> dict[str, Any]:
+        """Provide fake JSON retrieval for this test.
+
+        Parameters
+        ----------
+        url : str
+            Endpoint requested.
+        api_key : str
+            Key the client sent.
+        **_ : object
+            Session and paging arguments, unused.
+
+        Returns
+        -------
+        dict[str, Any]
+            One page of search results.
+        """
         assert api_key == 'elsevier-key'
         urls.append(url)
         if len(urls) == 1:
@@ -79,8 +81,8 @@ def test_document_search_caps_count_and_paginates_results(
             """Record a progress update."""
             self.updates.append(value)
 
-    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
-    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
+    monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
     results = search.document_search('solid electrolyte', count=2, get_all=True)
@@ -94,11 +96,11 @@ def test_document_search_caps_count_and_paginates_results(
 
 def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search returns empty dataframe for zero results."""
-    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(
         search.elsevier,
-        'get_json',
-        lambda *_: {'search-results': {'opensearch:totalResults': '0', 'entry': [], 'link': []}},
+        'request_json',
+        lambda *_, **__: {'search-results': {'opensearch:totalResults': '0', 'entry': [], 'link': []}},
     )
 
     assert search.document_search('missing').empty
@@ -106,11 +108,11 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch: p
 
 def test_document_search_without_get_all_returns_first_page_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     """Document search without get all returns first page slice."""
-    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(
         search.elsevier,
-        'get_json',
-        lambda *_: {
+        'request_json',
+        lambda *_, **__: {
             'search-results': {
                 'opensearch:totalResults': '3',
                 'entry': [{'dc:title': 'first'}, {'dc:title': 'second'}, {'dc:title': 'third'}],
@@ -128,7 +130,7 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.Mon
     """Document search stops when next link is missing."""
     calls = []
 
-    def fake_get_json(*_: object) -> dict[str, Any]:
+    def fake_request_json(*_: object, **__: object) -> dict[str, Any]:
         """Provide fake JSON retrieval for this test."""
         calls.append(True)
         return {
@@ -158,8 +160,8 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.Mon
             """Ignore a progress update."""
             return None
 
-    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
-    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
+    monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
     results = search.document_search('solid electrolyte', count=3, get_all=True)
@@ -174,7 +176,7 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
 
     calls = []
 
-    def fake_get_json(*_: object) -> dict[str, Any]:
+    def fake_request_json(*_: object, **__: object) -> dict[str, Any]:
         """Provide fake JSON retrieval for this test."""
         calls.append(True)
         if len(calls) == 1:
@@ -212,8 +214,8 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
             """Ignore a progress update."""
             return None
 
-    monkeypatch.setattr(search, '_elsevier_api_key', lambda: 'elsevier-key')
-    monkeypatch.setattr(search.elsevier, 'get_json', fake_get_json)
+    monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
     results = search.document_search('solid electrolyte', index='article', count=6000, get_all=True)
