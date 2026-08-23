@@ -11,7 +11,7 @@ import datetime
 import html
 import os
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import ModuleType
 from typing import Any
 import pandas as pd
@@ -813,6 +813,58 @@ def chemrxiv_search(query: str, count: int = 200) -> pd.DataFrame:
     return _chemrxiv_rows(papers[:target])
 
 
+def _elsevier_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search Elsevier and map its records onto normalized paper rows.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+    """
+    return _elsevier_rows(document_search(query, count=count))
+
+
+# One entry per searchable source, keyed by registry name. The order a run
+# actually uses comes from the registry, not from this mapping.
+SEARCH_BY_SOURCE = {
+    'elsevier': '_elsevier_search',
+    'core': 'core_search',
+    'openalex': 'openalex_search',
+    'pubmed': 'pubmed_search',
+    'arxiv': 'arxiv_search',
+    'medrxiv': 'medrxiv_search',
+    'biorxiv': 'biorxiv_search',
+    'chemrxiv': 'chemrxiv_search',
+}
+
+
+def source_search(name: str) -> Callable[..., pd.DataFrame]:
+    """Return the search function for one source.
+
+    The function is looked up by name at call time rather than bound into
+    :data:`SEARCH_BY_SOURCE`, so that replacing a module-level search function
+    -- which is how the tests stand a provider in -- actually takes effect.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+
+    Returns
+    -------
+    Callable[..., pandas.DataFrame]
+        Function answering a query for that source.
+    """
+    return globals()[SEARCH_BY_SOURCE[name]]
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -874,72 +926,20 @@ def search_for_papers(query: str,
     ValueError
         If ``source`` is unsupported or required provider configuration is
         missing.
-    requests.RequestException
-        If the explicitly selected CORE provider fails.
-    RuntimeError
-        If the explicitly selected OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, or
-        chemRxiv provider fails.
+    Exception
+        Whatever the provider raised, when exactly one source was selected. A
+        run over several sources reports a failing one and carries on with the
+        rest, because a partial corpus is more useful than none.
     """
-    source = source.lower()
-    if source not in SEARCH_SOURCES:
-        raise ValueError(f'source must be one of: {", ".join(sorted(SEARCH_SOURCES))}')
+    requested = sources.resolve_names([source], sources.SEARCH)
     frames = []
-    if source in {'elsevier', 'all'}:
+    for name in requested:
         try:
-            frames.append(_elsevier_rows(document_search(query, count=count)))
+            frames.append(source_search(name)(query, count=count))
         except Exception as e:
-            if source == 'elsevier':
+            if len(requested) == 1:
                 raise
-            print(f'Elsevier search skipped: {e}')
-    if source in {'core', 'all'}:
-        try:
-            frames.append(core_search(query, count=count))
-        except requests.RequestException as e:
-            if source == 'core':
-                raise
-            print(f'CORE search skipped: {e}')
-    if source in {'openalex', 'all'}:
-        try:
-            frames.append(openalex_search(query, count=count))
-        except Exception as e:
-            if source == 'openalex':
-                raise
-            print(f'OpenAlex search skipped: {e}')
-    if source in {'pubmed', 'all'}:
-        try:
-            frames.append(pubmed_search(query, count=count))
-        except Exception as e:
-            if source == 'pubmed':
-                raise
-            print(f'PubMed search skipped: {e}')
-    if source in {'arxiv', 'all'}:
-        try:
-            frames.append(arxiv_search(query, count=count))
-        except Exception as e:
-            if source == 'arxiv':
-                raise
-            print(f'arXiv search skipped: {e}')
-    if source in {'medrxiv', 'all'}:
-        try:
-            frames.append(medrxiv_search(query, count=count))
-        except Exception as e:
-            if source == 'medrxiv':
-                raise
-            print(f'medRxiv search skipped: {e}')
-    if source in {'biorxiv', 'all'}:
-        try:
-            frames.append(biorxiv_search(query, count=count))
-        except Exception as e:
-            if source == 'biorxiv':
-                raise
-            print(f'bioRxiv search skipped: {e}')
-    if source in {'chemrxiv', 'all'}:
-        try:
-            frames.append(chemrxiv_search(query, count=count))
-        except Exception as e:
-            if source == 'chemrxiv':
-                raise
-            print(f'chemRxiv search skipped: {e}')
+            print(f'{sources.SOURCES[name].label} search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:

@@ -786,6 +786,36 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
         search.search_for_papers('query', source='core', count=1)
 
 
+def test_search_for_papers_skips_a_core_failure_that_is_not_an_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Carry on past any CORE failure, not only a request one.
+
+    Every other provider's block caught bare Exception while CORE's caught only
+    requests.RequestException, so a CORE failure of any other kind -- a
+    malformed payload raising ValueError, say -- aborted a --source all run
+    that should have carried on with the seven remaining providers.
+    """
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(
+        pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(
+        search, 'core_search',
+        lambda *_, **__: (_ for _ in ()).throw(ValueError('core returned nonsense')))
+    for name in ['openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv']:
+        monkeypatch.setattr(search, f'{name}_search', lambda *_, **__: search._rxiv_rows([]))
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    output = capsys.readouterr().out
+    assert 'CORE search skipped: core returned nonsense' in output
+    assert 'found 1 new results' in output
+
+
 def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
