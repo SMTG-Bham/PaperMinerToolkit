@@ -41,13 +41,22 @@ ARXIV_MIN_INTERVAL = 3.0
 SORT_ORDERS = ('relevance', 'lastUpdatedDate', 'submittedDate')
 SORT_DIRECTIONS = ('ascending', 'descending')
 FIELD_PREFIXES = ('ti', 'au', 'abs', 'co', 'jr', 'cat', 'rn', 'id', 'all')
+# Fields arXiv accepts in a search_query but that cannot serve as the default
+# for a plain phrase, because they take a range rather than a term. They are
+# recognized so a native query carrying one is passed through rather than
+# being rewritten into nonsense.
+RANGE_FIELDS = ('submittedDate', 'lastUpdatedDate')
 ATOM_NS = 'http://www.w3.org/2005/Atom'
 ARXIV_NS = 'http://arxiv.org/schemas/atom'
 OPENSEARCH_NS = 'http://a9.com/-/spec/opensearch/1.1/'
 ERROR_ID_MARKER = 'arxiv.org/api/errors'
+# Matched case-insensitively because arXiv resolves identifiers that way and a
+# citation may capitalize the archive; the trailing lookahead stops a shorter
+# run from matching inside a longer one, as it does for the preprint DOIs.
 _ARXIV_ID = re.compile(
-    r'(?P<id>[a-z][a-z-]*(?:\.[a-zA-Z]{2})?/\d{7}|\d{4}\.\d{4,5})'
-    r'(?P<version>v\d+)?'
+    r'(?P<id>[a-z][a-z-]*(?:\.[a-zA-Z]{2})?/\d{7}|\d{4}\.\d{4,5})(?!\d)'
+    r'(?P<version>v\d+)?',
+    re.IGNORECASE,
 )
 _ArxivRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(ARXIV_MIN_INTERVAL)
@@ -239,9 +248,13 @@ def normalize_arxiv_id(value: object) -> str:
 
     Both identifier schemes are accepted: the current ``2301.12345`` form and
     the pre-2007 ``cond-mat/0501001`` form, with or without an ``arXiv:``
-    label, a resolver URL, or a trailing version suffix. Case is preserved,
-    because the subject class of an old-style identifier such as
-    ``math.GT/0309136`` is part of the identifier.
+    label, a resolver URL, or a trailing version suffix.
+
+    An old-style identifier is recognized whatever its case, because arXiv
+    resolves it that way and a citation may capitalize the archive, and is
+    returned in the form arXiv writes it: a lower-case archive and an
+    upper-case two-letter subject class, as in ``math.GT/0309136``. Folding
+    here is what keeps one preprint from being stored under two identifiers.
 
     Parameters
     ----------
@@ -262,7 +275,15 @@ def normalize_arxiv_id(value: object) -> str:
     text = re.sub(r'^arxiv[:\s]*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\.pdf$', '', text, flags=re.IGNORECASE)
     match = _ARXIV_ID.search(text)
-    return match.group('id') if match else ''
+    if not match:
+        return ''
+    identifier = match.group('id')
+    archive, separator, number = identifier.partition('/')
+    if not separator:
+        return identifier
+    subject, dot, subclass = archive.partition('.')
+    canonical = f'{subject.lower()}{dot}{subclass.upper()}' if dot else subject.lower()
+    return f'{canonical}/{number}'
 
 
 def arxiv_version(value: object) -> str:
@@ -556,7 +577,12 @@ def query_expression(query: str, default_field: str = 'all') -> str:
     result counts stay comparable across providers. An expression that already
     carries a field prefix or a boolean operator is passed through untouched,
     which is what lets a caller write a native arXiv query such as
-    ``cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"``.
+    ``cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"``. A date range counts
+    as a field prefix for that purpose, so
+    ``submittedDate:[20230101 TO 20240101]`` survives intact rather than being
+    split into terms; without that it became
+    ``all:submittedDate:[20230101 AND all:TO AND all:20240101]``, which arXiv
+    rejects.
 
     Parameters
     ----------
@@ -582,7 +608,7 @@ def query_expression(query: str, default_field: str = 'all') -> str:
         return ''
     if re.search(r'\b(?:AND|OR|ANDNOT)\b', expression):
         return expression
-    if re.search(rf'\b(?:{"|".join(FIELD_PREFIXES)}):', expression):
+    if re.search(rf'\b(?:{"|".join((*FIELD_PREFIXES, *RANGE_FIELDS))}):', expression):
         return expression
     terms = re.findall(r'"[^"]+"|\S+', expression)
     return ' AND '.join(f'{default_field}:{term}' for term in terms)

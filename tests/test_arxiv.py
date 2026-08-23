@@ -206,6 +206,38 @@ def test_normalize_arxiv_id_strips_versions_labels_and_urls() -> None:
     assert arxiv.normalize_arxiv_id('not an identifier') == ''
 
 
+def test_normalize_arxiv_id_folds_the_case_of_an_old_style_identifier() -> None:
+    """Recognize a capitalized archive instead of silently truncating it.
+
+    arXiv resolves identifiers case-insensitively and a citation may write
+    ``Math.GT/0309136``. Matching case-sensitively did not reject such a value:
+    it consumed the identifier from the first lower-case letter and returned
+    ``ath.GT/0309136``, so a corrupted identifier reached the corpus.
+    """
+    canonical = 'math.GT/0309136'
+    for written in ['math.GT/0309136', 'Math.GT/0309136', 'MATH.GT/0309136',
+                    'arXiv:Math.GT/0309136v2',
+                    'https://arxiv.org/abs/MATH.GT/0309136']:
+        assert arxiv.normalize_arxiv_id(written) == canonical
+    assert arxiv.normalize_arxiv_id('COND-MAT/0501001') == 'cond-mat/0501001'
+
+
+def test_query_expression_passes_a_native_date_range_through_untouched() -> None:
+    """Leave a range query intact rather than splitting it into terms.
+
+    ``submittedDate`` was not among the recognized prefixes, so a date range
+    became ``all:submittedDate:[20230101 AND all:TO AND all:20240101]``, which
+    arXiv rejects -- while the search documentation tells callers to narrow a
+    query by date.
+    """
+    for query in ['submittedDate:[20230101 TO 20240101]',
+                  'lastUpdatedDate:[202301010000 TO 202401010000]']:
+        assert arxiv.query_expression(query) == query
+    # A date field takes a range, so it cannot be the default for a phrase.
+    with pytest.raises(ValueError, match='default_field must be one of'):
+        arxiv.query_expression('garnet', default_field='submittedDate')
+
+
 def test_arxiv_version_reads_the_suffix_when_one_is_present() -> None:
     """Report the version suffix separately from the bare identifier."""
     assert arxiv.arxiv_version('http://arxiv.org/abs/2301.12345v2') == 'v2'
