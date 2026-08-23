@@ -56,7 +56,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
-from paperscraper import provider
+from paperscraper import _rxiv, provider
 from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://chemrxiv.org/engage/chemrxiv/public-api/v1'
@@ -65,7 +65,7 @@ PAGE_SIZE = 50
 MAX_SEARCH_RESULTS = 10000
 CHEMRXIV_MIN_INTERVAL = 1.0
 DEFAULT_SORT = 'PUBLISHED_DATE_DESC'
-QUERY_PREFIXES = ('category', 'from', 'to')
+QUERY_PREFIXES = _rxiv.QUERY_PREFIXES
 # Five suffix shapes across three hosting platforms, told apart by the
 # ``chemrxiv`` token rather than by the prefix. The version is captured with
 # its separator so it can be written back exactly as it was issued: the dated
@@ -77,8 +77,7 @@ _CHEMRXIV_DOI = re.compile(
     r'(?:(?P<sep>[-./])v(?P<version>\d+))?(?![\w-])',
     re.IGNORECASE,
 )
-_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-_NOT_AVAILABLE = {'', 'na', 'n/a', 'none', 'null'}
+_DATE = _rxiv.DATE_PATTERN
 _ChemrxivRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(CHEMRXIV_MIN_INTERVAL)
 _categories_cache: list[dict[str, Any]] | None = None
@@ -99,25 +98,6 @@ def request_headers() -> dict[str, str]:
     return provider.default_headers()
 
 
-def _text(value: object) -> str:
-    """Collapse an API value to trimmed text, treating placeholders as absent.
-
-    Parameters
-    ----------
-    value : object
-        Raw API field value.
-
-    Returns
-    -------
-    str
-        Whitespace-collapsed text, or an empty string when the value is absent.
-    """
-    if value is None:
-        return ''
-    text = re.sub(r'\s+', ' ', str(value)).strip()
-    return '' if text.lower() in _NOT_AVAILABLE else text
-
-
 def _date(value: object) -> str:
     """Reduce an API timestamp to its ISO calendar date.
 
@@ -135,7 +115,7 @@ def _date(value: object) -> str:
     str
         Date as ``YYYY-MM-DD``, or an empty string when none is present.
     """
-    text = _text(value)
+    text = provider.clean_text(value)
     match = re.match(r'(\d{4}-\d{2}-\d{2})', text)
     return match.group(1) if match else ''
 
@@ -545,16 +525,16 @@ def _authors(value: object) -> str:
         Author names in record order, ``Given Family`` and semicolon-separated.
     """
     if isinstance(value, str):
-        return _text(value)
+        return provider.clean_text(value)
     if not isinstance(value, Sequence):
         return ''
     names = []
     for author in value:
         if isinstance(author, str):
-            name = _text(author)
+            name = provider.clean_text(author)
         elif isinstance(author, Mapping):
-            given = _text(author.get('firstName'))
-            family = _text(author.get('lastName'))
+            given = provider.clean_text(author.get('firstName'))
+            family = provider.clean_text(author.get('lastName'))
             name = ' '.join(part for part in (given, family) if part)
         else:
             continue
@@ -589,10 +569,10 @@ def _categories(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     categories = []
     for entry in raw:
         if isinstance(entry, Mapping):
-            name = _text(entry.get('name'))
-            identifier = _text(entry.get('id')) or name.lower()
+            name = provider.clean_text(entry.get('name'))
+            identifier = provider.clean_text(entry.get('id')) or name.lower()
         else:
-            name = _text(entry)
+            name = provider.clean_text(entry)
             identifier = name.lower()
         if not name:
             continue
@@ -621,7 +601,7 @@ def _keywords(record: Mapping[str, Any]) -> list[str]:
         return []
     keywords = []
     for entry in raw:
-        keyword = _text(entry.get('name')) if isinstance(entry, Mapping) else _text(entry)
+        keyword = provider.clean_text(entry.get('name')) if isinstance(entry, Mapping) else provider.clean_text(entry)
         if keyword:
             keywords.append(keyword)
     return keywords
@@ -649,7 +629,7 @@ def _published_doi(record: Mapping[str, Any]) -> str:
     if not isinstance(vor, Mapping):
         return ''
     for field in ('vorDoi', 'doi', 'url'):
-        doi = clean_doi(_text(vor.get(field)))
+        doi = clean_doi(provider.clean_text(vor.get(field)))
         if doi:
             return doi
     return ''
@@ -678,8 +658,8 @@ def _asset_url(record: Mapping[str, Any]) -> str:
         return ''
     original = asset.get('original')
     if isinstance(original, Mapping):
-        return _text(original.get('url'))
-    return _text(asset.get('url'))
+        return provider.clean_text(original.get('url'))
+    return provider.clean_text(asset.get('url'))
 
 
 def record_to_paper(record: Mapping[str, Any]) -> _ChemrxivRecord:
@@ -714,27 +694,27 @@ def record_to_paper(record: Mapping[str, Any]) -> _ChemrxivRecord:
     doi = published or chemrxiv_doi
     categories = _categories(record)
     license_value = record.get('license')
-    license_name = (_text(license_value.get('name')) if isinstance(license_value, Mapping)
-                    else _text(license_value))
+    license_name = (provider.clean_text(license_value.get('name')) if isinstance(license_value, Mapping)
+                    else provider.clean_text(license_value))
     return {
         'paper_id': f'doi:{doi}' if doi else '',
         'doi': doi,
         'chemrxiv_doi': chemrxiv_doi,
-        'title': _text(record.get('title')),
+        'title': provider.clean_text(record.get('title')),
         'journal': '' if published else 'chemRxiv',
         'publication_date': _date(record.get('publishedDate') or record.get('submittedDate')),
         'authors': _authors(record.get('authors')),
         'sources': 'chemrxiv',
         'pdf_url': pdf_url(chemrxiv_doi),
         'metadata_status': 'retrieved',
-        'abstract': _text(record.get('abstract')),
+        'abstract': provider.clean_text(record.get('abstract')),
         'categories': categories,
         'category': categories[0]['name'] if categories else '',
         'keywords': _keywords(record),
         'license': license_name,
-        'version': _text(record.get('version')) or chemrxiv_version(chemrxiv_doi),
+        'version': provider.clean_text(record.get('version')) or chemrxiv_version(chemrxiv_doi),
         'chemrxiv_stem': chemrxiv_stem(chemrxiv_doi),
-        'chemrxiv_id': _text(record.get('id')),
+        'chemrxiv_id': provider.clean_text(record.get('id')),
         'published_doi': published,
         'asset_url': _asset_url(record),
     }
@@ -810,8 +790,7 @@ def _version_rank(entry: Mapping[str, Any]) -> int:
     int
         Version number, or ``0`` when the record carries none.
     """
-    version = _text(entry.get('version'))
-    return int(version) if version.isdigit() else 0
+    return _rxiv._version_rank(entry)
 
 
 def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecord]:
@@ -862,15 +841,12 @@ def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecor
 
 
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:
-    """Split a search phrase into match terms and search scope.
+    """Split a chemRxiv search phrase into match terms and query scope.
 
-    The grammar matches the one medRxiv and bioRxiv accept, so a query written
-    for one preprint source reads the same here. What differs is where the
-    scope is applied: those archives publish no search endpoint and so filter
-    records after reading them, while chemRxiv accepts ``categoryIds``,
-    ``searchDateFrom``, and ``searchDateTo``, and these terms are forwarded to
-    it. Narrowing a chemRxiv search therefore makes the server do less work
-    rather than making the client read less.
+    chemRxiv answers a search itself rather than being walked, so unlike the
+    bioRxiv-family archives the scope is forwarded to the service rather than
+    applied here. The grammar is the same one, so it is read by the same parser
+    and the three sources stay comparable from a user's point of view.
 
     Parameters
     ----------
@@ -889,23 +865,7 @@ def parse_query(query: str) -> tuple[list[str], dict[str, str]]:
     ValueError
         If ``from:`` or ``to:`` is not an ISO ``YYYY-MM-DD`` date.
     """
-    terms: list[str] = []
-    scope: dict[str, str] = {}
-    pattern = re.compile(rf'(?:(?P<field>{"|".join(QUERY_PREFIXES)}):)?(?:"(?P<quoted>[^"]*)"|(?P<bare>\S+))',
-                         re.IGNORECASE)
-    for match in pattern.finditer(str(query or '')):
-        value = match.group('quoted') if match.group('quoted') is not None else match.group('bare')
-        value = ' '.join(str(value or '').split())
-        if not value:
-            continue
-        field = (match.group('field') or '').lower()
-        if not field:
-            terms.append(value)
-            continue
-        if field in {'from', 'to'} and not _DATE.match(value):
-            raise ValueError(f'{field}: must be an ISO date such as 2024-01-31, got {value!r}')
-        scope[field] = value
-    return terms, scope
+    return _rxiv.parse_query(query)
 
 
 def search_terms(terms: Sequence[str]) -> str:
@@ -963,8 +923,8 @@ def categories(session: provider.HTTPClient | None = None) -> list[dict[str, Any
         for entry in raw:
             if not isinstance(entry, Mapping):
                 continue
-            name = _text(entry.get('name'))
-            identifier = _text(entry.get('id'))
+            name = provider.clean_text(entry.get('name'))
+            identifier = provider.clean_text(entry.get('id'))
             if name and identifier:
                 found.append({'id': identifier, 'name': name})
     _categories_cache = found
@@ -1014,7 +974,7 @@ def category_ids(names: Sequence[str], session: provider.HTTPClient | None = Non
     RuntimeError
         If the category listing cannot be fetched.
     """
-    wanted = [_text(name) for name in names if _text(name)]
+    wanted = [provider.clean_text(name) for name in names if provider.clean_text(name)]
     if not wanted:
         return []
     listing = categories(session=session)
@@ -1074,14 +1034,14 @@ def search_page(
     params: dict[str, object] = {'skip': max(int(skip), 0),
                                  'limit': max(int(limit), 1),
                                  'sort': sort}
-    if _text(term):
-        params['term'] = _text(term)
-    if _text(category_id):
-        params['categoryIds'] = _text(category_id)
-    if _text(date_from):
-        params['searchDateFrom'] = _text(date_from)
-    if _text(date_to):
-        params['searchDateTo'] = _text(date_to)
+    if provider.clean_text(term):
+        params['term'] = provider.clean_text(term)
+    if provider.clean_text(category_id):
+        params['categoryIds'] = provider.clean_text(category_id)
+    if provider.clean_text(date_from):
+        params['searchDateFrom'] = provider.clean_text(date_from)
+    if provider.clean_text(date_to):
+        params['searchDateTo'] = provider.clean_text(date_to)
     return request_json(search_url(), params=params, session=session)
 
 
@@ -1105,9 +1065,9 @@ def fetch_item(item_id: str, session: provider.HTTPClient | None = None) -> _Che
     RuntimeError
         If the request cannot be completed.
     """
-    if not _text(item_id):
+    if not provider.clean_text(item_id):
         return None
-    entries = parse_records(request_json(item_url(_text(item_id)), session=session))
+    entries = parse_records(request_json(item_url(provider.clean_text(item_id)), session=session))
     return entries[0] if entries else None
 
 
