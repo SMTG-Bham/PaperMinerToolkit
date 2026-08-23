@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import click
+from paperscraper import sources
 from paperscraper.corpus import connect, corpus_stats, enrichment_stats
 from paperscraper.crossref import import_author_works
 from paperscraper.search import search_for_papers
@@ -45,6 +46,16 @@ from paperscraper.settings import (get_model_profile,
                                    update_unpaywall_email)
 from paperscraper.utilities import reset, status
 
+# A download may fetch a PDF, full text, or an abstract, so its choices are
+# the union of the three, kept in PDF order because that is the one a caller
+# most often means.
+DOWNLOAD_CHOICES = [
+    'all',
+    *dict.fromkeys((*sources.names(sources.PDF),
+                    *sources.names(sources.TEXT),
+                    *sources.names(sources.ABSTRACT))),
+]
+
 
 def _format_bytes(size: int) -> str:
     """Format a byte count using compact binary units."""
@@ -59,8 +70,7 @@ def _format_bytes(size: int) -> str:
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
-              type=click.Choice(['all', 'elsevier', 'core', 'openalex', 'pubmed', 'arxiv',
-                                 'medrxiv', 'biorxiv', 'chemrxiv']),
+              type=click.Choice(sources.choices(sources.SEARCH)),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -152,8 +162,7 @@ def import_author(db_path: str,
               show_default=True)
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed',
-                                 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv']),
+              type=click.Choice(DOWNLOAD_CHOICES),
               default=('all',),
               show_default=True,
               help='Content source to use for PDFs and PubMed Central full text. '
@@ -186,8 +195,7 @@ def download(
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv',
-                                 'biorxiv', 'chemrxiv']),
+              type=click.Choice(sources.choices(sources.ENRICH)),
               default=('all',),
               show_default=True,
               help='Metadata source to use. Repeat to choose more than one.')

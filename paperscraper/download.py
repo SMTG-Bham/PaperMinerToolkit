@@ -30,13 +30,14 @@ from urllib.parse import quote
 from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
+from paperscraper import sources
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv',
-                    'biorxiv', 'chemrxiv'}
+DOWNLOAD_SOURCES = {*sources.names(sources.PDF), *sources.names(sources.TEXT),
+                    *sources.names(sources.ABSTRACT)}
 # Providers that serve a machine-readable full text rather than only a PDF.
-TEXT_SOURCES = {'pubmed', 'medrxiv', 'biorxiv'}
+TEXT_SOURCES = set(sources.names(sources.TEXT)) - {'elsevier'}
 _Paper: TypeAlias = dict[str, Any]
 
 

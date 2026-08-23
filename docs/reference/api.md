@@ -18,6 +18,7 @@ modules/cli
 
 modules/corpus
 modules/provider
+modules/sources
 modules/search
 modules/crossref
 modules/openalex

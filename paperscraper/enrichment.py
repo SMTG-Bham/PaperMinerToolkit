@@ -43,6 +43,7 @@ from tqdm import tqdm
 
 from paperscraper import arxiv
 from paperscraper import provider
+from paperscraper import sources
 from paperscraper import biorxiv
 from paperscraper import chemrxiv
 from paperscraper import crossref as crossref_client
@@ -59,8 +60,7 @@ from paperscraper.corpus import (connect,
                                  write_enrichment)
 from paperscraper.metadata import clean_doi, crossref_fields as crossref_metadata_fields
 
-ENRICHMENT_SOURCES = ('crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv',
-                      'chemrxiv')
+ENRICHMENT_SOURCES = sources.names(sources.ENRICH)
 MAX_BATCH_SIZE = 100
 _Record: TypeAlias = dict[str, Any]
 _Fields: TypeAlias = dict[str, Any]

@@ -22,10 +22,10 @@ from tqdm import tqdm
 from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
+from paperscraper import sources
 from paperscraper.settings import load_settings
 
-SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv',
-                  'chemrxiv', 'all'}
+SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
