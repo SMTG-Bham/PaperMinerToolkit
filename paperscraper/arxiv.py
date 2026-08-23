@@ -31,7 +31,6 @@ from paperscraper import provider
 from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://export.arxiv.org/api/query'
-ABS_URL = 'https://arxiv.org/abs'
 PDF_URL = 'https://arxiv.org/pdf'
 MAX_SEARCH_RESULTS = 30000
 PAGE_SIZE = 200

@@ -369,7 +369,16 @@ def _search_params(term: str,
     -------
     dict[str, object]
         Query parameters excluding paging and history options.
+
+    Raises
+    ------
+    ValueError
+        If ``sort`` or ``datetype`` is not one E-utilities accepts.
     """
+    if sort and sort not in SORT_ORDERS:
+        raise ValueError(f'sort must be one of: {", ".join(SORT_ORDERS)}')
+    if datetype and datetype not in DATE_TYPES:
+        raise ValueError(f'datetype must be one of: {", ".join(DATE_TYPES)}')
     params: dict[str, object] = {'db': db, 'term': term, 'retmode': 'json'}
     if sort:
         params['sort'] = sort

@@ -245,10 +245,14 @@ ps_download papers.db --format pdf
 ps_download papers.db --format both
 ```
 
-Abstract retrieval tries OpenAlex, PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, and Elsevier
-in that order; PubMed is attempted for any row carrying a PMID or a DOI, and the preprint servers
-for any row carrying the identifier each issued. PDF retrieval can use Unpaywall, OpenAlex, CORE,
-Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, and arXiv, in that order. The four preprint
+`--source` applies to abstracts, full text, and PDFs alike. Abstract retrieval tries OpenAlex,
+PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, and Elsevier in that order, skipping any source
+the run did not select and any the row cannot reach; PubMed is attempted for any row carrying a
+PMID or a DOI, and the preprint servers for any row carrying the identifier each issued. Full text
+comes from Elsevier, PubMed Central, medRxiv, or bioRxiv, in that order and likewise only from the
+selected sources -- so `--source elsevier --format text` uses Elsevier alone, and `--source pubmed`
+no longer also reaches for it. PDF retrieval can use Unpaywall, OpenAlex, CORE, Elsevier, PubMed
+Central, medRxiv, bioRxiv, chemRxiv, and arXiv, in that order. The four preprint
 servers are tried last because the other sources may hold the publisher's version of record while a preprint server
 holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
 
@@ -297,7 +301,9 @@ rejected for that format. Text for a chemRxiv paper comes from scraping its down
 PDFs sit behind the same bot challenge, which PaperScraper reports rather than works around, so a
 download run on a network the challenge refuses will report those papers and carry on.
 
-By default, abstracts are also attempted while downloading text or PDFs. Disable that with `--no-abstract`.
+By default, abstracts are also attempted while downloading text or PDFs. Disable that with
+`--no-abstract`. Because `--source` now scopes abstracts too, a run narrowed to one provider
+fetches abstracts from that provider alone; leave `--source` at its default to cast the wide net.
 
 ## Inspect the corpus
 
