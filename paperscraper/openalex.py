@@ -9,20 +9,20 @@ requests without an API key still work but draw on a much smaller budget.
 from __future__ import annotations
 
 import os
-import time
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Protocol, TypeAlias
+from collections.abc import Mapping, Sequence
+from typing import Any, TypeAlias
 from urllib.parse import quote
 
-import requests
-
+from paperscraper import provider
 from paperscraper.metadata import clean_doi
 from paperscraper.settings import load_settings
 
 BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
-USER_AGENT = 'PaperScraper/0.0.1'
+# OpenAlex documents ten requests a second; pacing at that rate keeps a long
+# cursor walk inside the published limit instead of relying on it not noticing.
+OPENALEX_MIN_INTERVAL = 0.1
 MAX_FILTER_VALUES = 100
 WORK_SELECT_FIELDS = (
     'id',
@@ -51,36 +51,7 @@ WORK_SELECT_FIELDS = (
     'sustainable_development_goals',
 )
 _OpenAlexRecord: TypeAlias = dict[str, Any]
-
-
-class _ResponseLike(Protocol):
-    """HTTP response surface used by OpenAlex helpers."""
-
-    status_code: int
-    headers: Mapping[str, str]
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-    def json(self) -> _OpenAlexRecord:
-        """Decode the response JSON object."""
-        ...
-
-
-class _HTTPClient(Protocol):
-    """HTTP client surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, object],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _ResponseLike:
-        """Issue an HTTP GET request."""
-        ...
+LIMITER = provider.RateLimiter(OPENALEX_MIN_INTERVAL)
 
 
 def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
@@ -108,7 +79,7 @@ def request_headers() -> dict[str, str]:
     dict[str, str]
         Headers containing the PaperScraper user agent.
     """
-    return {'User-Agent': USER_AGENT}
+    return provider.default_headers()
 
 
 def request_params(
@@ -146,8 +117,19 @@ def request_params(
     return merged
 
 
-def _budget_error(response: _ResponseLike) -> str:
-    """Describe an exhausted OpenAlex credit budget using the rate-limit headers."""
+def _budget_error(response: provider.ResponseLike) -> str:
+    """Describe an exhausted OpenAlex credit budget using the rate-limit headers.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        The rate-limited response, read for its reset header.
+
+    Returns
+    -------
+    str
+        Message naming the reset window when the header supplies one.
+    """
     reset = response.headers.get('X-RateLimit-Reset')
     try:
         wait = f' Budget resets in {round(float(reset) / 3600, 1)} hours.' if reset else ''
@@ -158,11 +140,36 @@ def _budget_error(response: _ResponseLike) -> str:
             'to raise the budget.')
 
 
+def _terminal_error(response: provider.ResponseLike) -> str:
+    """Report the OpenAlex statuses that are pointless to retry.
+
+    A rejected key stays rejected, and a 429 here means the daily credit budget
+    is gone rather than that the client is going too fast, so neither is worth
+    another attempt. Every other client error takes the shared rule.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        Response to classify.
+
+    Returns
+    -------
+    str
+        Failure message, or an empty string to fall through to the shared rule.
+    """
+    if response.status_code == 401:
+        return ('OpenAlex rejected the API key. Set a valid key with ps_openalex_key or '
+                'OPENALEX_API_KEY, or unset it to use the smaller keyless budget.')
+    if response.status_code == 429:
+        return _budget_error(response)
+    return ''
+
+
 def request_json(
     url: str,
     params: Mapping[str, object] | None = None,
     api_key: str | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
     mailto: str = '',
@@ -177,7 +184,7 @@ def request_json(
         Query parameters for the request.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -197,34 +204,10 @@ def request_json(
         If the API key is rejected, the credit budget is exhausted, or all
         request attempts fail.
     """
-    session = session or requests
-    headers = request_headers()
-    params = request_params(params, api_key, mailto)
-    last_error = None
-    for attempt in range(attempts):
-        try:
-            response = session.get(url, params=params, headers=headers, timeout=timeout)
-            if response.status_code == 404:
-                return None
-            if response.status_code == 401:
-                raise RuntimeError('OpenAlex rejected the API key. Set a valid key with '
-                                   'ps_openalex_key or OPENALEX_API_KEY, or unset it to use '
-                                   'the smaller keyless budget.')
-            if response.status_code == 429:
-                raise RuntimeError(_budget_error(response))
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError) as error:
-            last_error = error
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'OpenAlex request failed after {attempts} attempts: {last_error}') from last_error
+    return provider.request_mapping(url, label='OpenAlex', limiter=LIMITER,
+                                    params=request_params(params, api_key, mailto),
+                                    session=session, timeout=timeout, attempts=attempts,
+                                    client_error=_terminal_error)
 
 
 def work_url(identifier: str) -> str:
@@ -246,7 +229,7 @@ def work_url(identifier: str) -> str:
 def get_work(
     identifier: str,
     api_key: str | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
 ) -> _OpenAlexRecord | None:
     """Fetch one OpenAlex work record.
 
@@ -256,7 +239,7 @@ def get_work(
         OpenAlex W-identifier or ``doi:``-prefixed DOI.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -310,31 +293,12 @@ def reconstruct_abstract(inverted_index: Mapping[str, list[int]] | None) -> str:
     return ' '.join(token for _, token in sorted(positions))
 
 
-def _chunked(values: Sequence[str], size: int) -> Iterator[list[str]]:
-    """Split a sequence into consecutive chunks.
-
-    Parameters
-    ----------
-    values : Sequence[str]
-        Values to split.
-    size : int
-        Maximum chunk length.
-
-    Yields
-    ------
-    list[str]
-        Consecutive chunk of at most ``size`` values.
-    """
-    for start in range(0, len(values), size):
-        yield list(values[start:start + size])
-
-
 def works_page(filter_value: str,
                filter_name: str = 'doi',
                select: Sequence[str] | None = WORK_SELECT_FIELDS,
                per_page: int = MAX_FILTER_VALUES,
                api_key: str | None = None,
-               session: _HTTPClient | None = None,
+               session: provider.HTTPClient | None = None,
                mailto: str = '') -> list[_OpenAlexRecord]:
     """Request one OR-filtered page of OpenAlex works.
 
@@ -354,7 +318,7 @@ def works_page(filter_value: str,
         Page size requested from OpenAlex.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
     mailto : str, default=''
         Contact email address sent with the request.
@@ -384,7 +348,7 @@ def works_batch(identifiers: Sequence[str],
                 filter_name: str = 'doi',
                 select: Sequence[str] | None = WORK_SELECT_FIELDS,
                 api_key: str | None = None,
-                session: _HTTPClient | None = None,
+                session: provider.HTTPClient | None = None,
                 batch_size: int = MAX_FILTER_VALUES,
                 mailto: str = '') -> dict[str, _OpenAlexRecord]:
     """Look up many OpenAlex works and key the results by their identifier.
@@ -403,7 +367,7 @@ def works_batch(identifiers: Sequence[str],
         Root-level fields to request.
     api_key : str or None, optional
         OpenAlex API key to attach.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
     batch_size : int, default=100
         Identifiers requested per page, capped at the OpenAlex maximum.
@@ -427,7 +391,7 @@ def works_batch(identifiers: Sequence[str],
     wanted = list(dict.fromkeys(identifier for identifier in identifiers if identifier))
     batch_size = min(batch_size, MAX_FILTER_VALUES)
     works = {}
-    for chunk in _chunked(wanted, batch_size):
+    for chunk in provider.chunked(wanted, batch_size):
         results = works_page('|'.join(chunk),
                              filter_name=filter_name,
                              select=select,

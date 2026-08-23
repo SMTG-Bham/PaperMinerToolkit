@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pytest
-import requests
 
 import paperscraper.openalex as openalex
+from paperscraper import provider
+
+from tests.doubles import FakeResponse, FakeSession
 
 
 def work(
@@ -37,50 +38,6 @@ def work(
         'open_access': {'oa_url': 'https://example.org/landing'},
         'abstract_inverted_index': {'Despite': [0], 'growth': [2], 'the': [1]},
     }
-
-
-class FakeResponse:
-    """Prepared OpenAlex JSON response with a configurable status code."""
-
-    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
-        """Initialize the response test double."""
-        self.payload = payload
-        self.status_code = status_code
-        self.headers = {}
-
-    def raise_for_status(self) -> None:
-        """Validate the prepared response status."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f'{self.status_code} error', response=self)
-
-    def json(self) -> dict[str, Any]:
-        """Return the prepared JSON payload."""
-        return self.payload
-
-
-class FakeSession:
-    """Return prepared OpenAlex responses and record request arguments."""
-
-    def __init__(self, responses: Iterable[FakeResponse]) -> None:
-        """Initialize the session with prepared responses."""
-        self.responses = iter(responses)
-        self.calls = []
-
-    def get(
-        self,
-        url: str,
-        params: Mapping[str, Any],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> FakeResponse:
-        """Return the next prepared response and record the request."""
-        self.calls.append({
-            'url': url,
-            'params': dict(params),
-            'headers': dict(headers),
-            'timeout': timeout,
-        })
-        return next(self.responses)
 
 
 def test_reconstruct_abstract_orders_tokens_and_handles_missing_index() -> None:
@@ -127,39 +84,42 @@ def test_work_to_paper_without_doi_uses_openalex_identifier() -> None:
 def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sleep for Retry-After seconds when numeric and exponential backoff otherwise."""
     sleeps = []
-    monkeypatch.setattr(openalex.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
 
-    unavailable = FakeResponse({}, status_code=503)
+    unavailable = FakeResponse(payload={}, status_code=503)
     unavailable.headers['Retry-After'] = '7'
-    session = FakeSession([unavailable, FakeResponse({'ok': True})])
+    session = FakeSession([unavailable, FakeResponse(payload={'ok': True})])
     assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
 
-    malformed = FakeResponse({}, status_code=503)
+    malformed = FakeResponse(payload={}, status_code=503)
     malformed.headers['Retry-After'] = 'soon'
-    session = FakeSession([malformed, FakeResponse({'ok': True})])
+    session = FakeSession([malformed, FakeResponse(payload={'ok': True})])
     assert openalex.request_json(openalex.WORKS_URL, session=session) == {'ok': True}
 
-    assert sleeps == [7.0, 1]
+    # Pacing sleeps are interleaved now that OpenAlex has a courtesy delay, so
+    # check for the backoff values rather than for the whole sequence.
+    assert 7.0 in sleeps
+    assert 1 in sleeps
 
 
 def test_request_json_returns_none_for_missing_work() -> None:
     """Treat a 404 as a terminal miss instead of retrying."""
-    session = FakeSession([FakeResponse({'error': 'not found'}, status_code=404)])
+    session = FakeSession([FakeResponse(payload={'error': 'not found'}, status_code=404)])
     assert openalex.request_json(openalex.WORKS_URL, session=session) is None
     assert len(session.calls) == 1
 
 
 def test_request_json_raises_after_exhausting_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Surface a RuntimeError containing the last error once retries run out."""
-    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
-    session = FakeSession([FakeResponse({}, status_code=500), FakeResponse({}, status_code=500)])
+    monkeypatch.setattr(provider.time, 'sleep', lambda delay: None)
+    session = FakeSession([FakeResponse(payload={}, status_code=500), FakeResponse(payload={}, status_code=500)])
     with pytest.raises(RuntimeError, match='OpenAlex request failed after 2 attempts'):
         openalex.request_json(openalex.WORKS_URL, session=session, attempts=2)
 
 
 def test_get_work_builds_doi_and_id_urls() -> None:
     """Request single works by DOI or W-identifier, sending the key when configured."""
-    session = FakeSession([FakeResponse(work()), FakeResponse(work())])
+    session = FakeSession([FakeResponse(payload=work()), FakeResponse(payload=work())])
 
     openalex.get_work('doi:10.1234/example.one', api_key='oa-key', session=session)
     openalex.get_work('W123', session=session)
@@ -184,8 +144,8 @@ def test_request_params_adds_api_key_only_when_configured() -> None:
 
 def test_request_json_raises_immediately_for_a_rejected_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail fast on 401 rather than retrying a key OpenAlex will keep rejecting."""
-    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
-    session = FakeSession([FakeResponse({'error': 'Invalid or missing API key'}, status_code=401)])
+    monkeypatch.setattr(provider.time, 'sleep', lambda delay: None)
+    session = FakeSession([FakeResponse(payload={'error': 'Invalid or missing API key'}, status_code=401)])
 
     with pytest.raises(RuntimeError, match='OpenAlex rejected the API key'):
         openalex.request_json(openalex.WORKS_URL, api_key='bad-key', session=session)
@@ -197,8 +157,8 @@ def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fail fast on 429 and report the reset window, which outlasts any backoff."""
-    monkeypatch.setattr(openalex.time, 'sleep', lambda delay: None)
-    exhausted = FakeResponse({}, status_code=429)
+    monkeypatch.setattr(provider.time, 'sleep', lambda delay: None)
+    exhausted = FakeResponse(payload={}, status_code=429)
     exhausted.headers['X-RateLimit-Reset'] = '32841'
     session = FakeSession([exhausted])
 
@@ -208,7 +168,7 @@ def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(
     assert 'resets in 9.1 hours' in str(excinfo.value)
     assert len(session.calls) == 1
 
-    unlabelled = FakeResponse({}, status_code=429)
+    unlabelled = FakeResponse(payload={}, status_code=429)
     unlabelled.headers['X-RateLimit-Reset'] = 'soon'
     session = FakeSession([unlabelled])
     with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
@@ -254,7 +214,7 @@ def test_request_params_adds_mailto_only_when_supplied() -> None:
 
 def test_works_page_builds_an_or_filter_and_pins_the_page_size() -> None:
     """Request an OR-joined filter with a page size covering every value."""
-    session = FakeSession([FakeResponse({'results': [work()]})])
+    session = FakeSession([FakeResponse(payload={'results': [work()]})])
 
     results = openalex.works_page('10.1/a|10.1/b', per_page=2, session=session,
                                   mailto='me@example.com')
@@ -275,7 +235,7 @@ def test_work_select_fields_are_root_level_only() -> None:
 
 def test_works_batch_keys_results_by_clean_doi_and_reports_misses() -> None:
     """Key batch results by cleaned DOI regardless of the response order."""
-    session = FakeSession([FakeResponse({'results': [
+    session = FakeSession([FakeResponse(payload={'results': [
         work(doi='https://doi.org/10.1234/Second'),
         work(doi='https://doi.org/10.1234/First'),
     ]})])
@@ -289,7 +249,7 @@ def test_works_batch_keys_results_by_clean_doi_and_reports_misses() -> None:
 
 def test_works_batch_chunks_requests_at_the_openalex_maximum() -> None:
     """Split more than one hundred identifiers across several requests."""
-    session = FakeSession([FakeResponse({'results': []}), FakeResponse({'results': []})])
+    session = FakeSession([FakeResponse(payload={'results': []}), FakeResponse(payload={'results': []})])
 
     openalex.works_batch([f'10.1234/paper{index}' for index in range(101)], session=session)
 
@@ -300,7 +260,7 @@ def test_works_batch_chunks_requests_at_the_openalex_maximum() -> None:
 
 def test_works_batch_uses_the_identifier_filter_for_openalex_ids() -> None:
     """Key results by short identifier when filtering on OpenAlex ids."""
-    session = FakeSession([FakeResponse({'results': [work(doi=None)]})])
+    session = FakeSession([FakeResponse(payload={'results': [work(doi=None)]})])
 
     works = openalex.works_batch(['W123'], filter_name='ids.openalex', session=session)
 

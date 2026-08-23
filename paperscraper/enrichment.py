@@ -42,6 +42,7 @@ from typing import Any, TypeAlias
 from tqdm import tqdm
 
 from paperscraper import arxiv
+from paperscraper import provider
 from paperscraper import biorxiv
 from paperscraper import chemrxiv
 from paperscraper import crossref as crossref_client
@@ -1235,20 +1236,20 @@ def _fetch(sources: Sequence[str],
            identifiers: Sequence[str],
            email: str,
            api_key: str | None,
-           openalex_session: openalex._HTTPClient | None,
-           crossref_session: crossref_client._CrossrefSessionLike | None,
+           openalex_session: provider.HTTPClient | None,
+           crossref_session: provider.HTTPClient | None,
            pace: float,
            pmids: Sequence[str] = (),
-           pubmed_session: pubmed._HTTPClient | None = None,
+           pubmed_session: provider.HTTPClient | None = None,
            pubmed_api_key: str | None = None,
            arxiv_ids: Sequence[str] = (),
-           arxiv_session: arxiv._HTTPClient | None = None,
+           arxiv_session: provider.HTTPClient | None = None,
            medrxiv_dois: Sequence[str] = (),
-           medrxiv_session: medrxiv._HTTPClient | None = None,
+           medrxiv_session: provider.HTTPClient | None = None,
            biorxiv_dois: Sequence[str] = (),
-           biorxiv_session: biorxiv._HTTPClient | None = None,
+           biorxiv_session: provider.HTTPClient | None = None,
            chemrxiv_dois: Sequence[str] = (),
-           chemrxiv_session: chemrxiv._HTTPClient | None = None) -> tuple[dict[str, _Record],
+           chemrxiv_session: provider.HTTPClient | None = None) -> tuple[dict[str, _Record],
                                                                           dict[str, _Record],
                                                                           dict[str, _Record],
                                                                           dict[str, _Record],
@@ -1277,7 +1278,7 @@ def _fetch(sources: Sequence[str],
                 identifiers, filter_name='ids.openalex', api_key=api_key,
                 session=openalex_session, mailto=email)
     if 'pubmed' in sources and pmids:
-        for chunk in pubmed._chunked(list(pmids), pubmed.EFETCH_BATCH_SIZE):
+        for chunk in provider.chunked(list(pmids), pubmed.EFETCH_BATCH_SIZE):
             articles = pubmed.parse_articles(pubmed.efetch_ids(
                 chunk, api_key=pubmed_api_key, email=email, session=pubmed_session))
             for article in articles:
@@ -1285,7 +1286,7 @@ def _fetch(sources: Sequence[str],
                 if pmid:
                     pubmed_by_pmid[pmid] = article
     if 'arxiv' in sources and arxiv_ids:
-        for chunk in arxiv._chunked(list(arxiv_ids), arxiv.ID_BATCH_SIZE):
+        for chunk in provider.chunked(list(arxiv_ids), arxiv.ID_BATCH_SIZE):
             for entry in arxiv.parse_entries(arxiv.fetch_ids(chunk, session=arxiv_session)):
                 identifier = arxiv.normalize_arxiv_id(entry.get('arxiv_id'))
                 if identifier:
@@ -1320,15 +1321,15 @@ def enrich_batch(conn: sqlite3.Connection,
                  email: str,
                  api_key: str | None = None,
                  references: bool = True,
-                 openalex_session: openalex._HTTPClient | None = None,
-                 crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                 openalex_session: provider.HTTPClient | None = None,
+                 crossref_session: provider.HTTPClient | None = None,
                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
-                 pubmed_session: pubmed._HTTPClient | None = None,
+                 pubmed_session: provider.HTTPClient | None = None,
                  pubmed_api_key: str | None = None,
-                 arxiv_session: arxiv._HTTPClient | None = None,
-                 medrxiv_session: medrxiv._HTTPClient | None = None,
-                 biorxiv_session: biorxiv._HTTPClient | None = None,
-                 chemrxiv_session: chemrxiv._HTTPClient | None = None) -> dict[str, int]:
+                 arxiv_session: provider.HTTPClient | None = None,
+                 medrxiv_session: provider.HTTPClient | None = None,
+                 biorxiv_session: provider.HTTPClient | None = None,
+                 chemrxiv_session: provider.HTTPClient | None = None) -> dict[str, int]:
     """Fetch, map and store enrichment for one batch of papers.
 
     Parameters
@@ -1345,23 +1346,23 @@ def enrich_batch(conn: sqlite3.Connection,
         OpenAlex API key to attach.
     references : bool, default=True
         Whether to store reference lists.
-    openalex_session : openalex._HTTPClient or None, optional
+    openalex_session : provider.HTTPClient or None, optional
         HTTP client used for OpenAlex requests.
-    crossref_session : crossref._CrossrefSessionLike or None, optional
+    crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
     pace : float, optional
         Seconds to wait between consecutive Crossref requests.
-    pubmed_session : pubmed._HTTPClient or None, optional
+    pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key to attach to PubMed requests.
-    arxiv_session : arxiv._HTTPClient or None, optional
+    arxiv_session : provider.HTTPClient or None, optional
         HTTP client used for arXiv requests.
-    medrxiv_session : medrxiv._HTTPClient or None, optional
+    medrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for medRxiv requests.
-    biorxiv_session : biorxiv._HTTPClient or None, optional
+    biorxiv_session : provider.HTTPClient or None, optional
         HTTP client used for bioRxiv requests.
-    chemrxiv_session : chemrxiv._HTTPClient or None, optional
+    chemrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for chemRxiv requests.
 
     Returns
@@ -1513,15 +1514,15 @@ def enrich_papers(conn: sqlite3.Connection,
                   references: bool = True,
                   email: str | None = None,
                   api_key: str | None = None,
-                  openalex_session: openalex._HTTPClient | None = None,
-                  crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                  openalex_session: provider.HTTPClient | None = None,
+                  crossref_session: provider.HTTPClient | None = None,
                   pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
-                  pubmed_session: pubmed._HTTPClient | None = None,
+                  pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
-                  arxiv_session: arxiv._HTTPClient | None = None,
-                  medrxiv_session: medrxiv._HTTPClient | None = None,
-                  biorxiv_session: biorxiv._HTTPClient | None = None,
-                  chemrxiv_session: chemrxiv._HTTPClient | None = None) -> dict[str, int]:
+                  arxiv_session: provider.HTTPClient | None = None,
+                  medrxiv_session: provider.HTTPClient | None = None,
+                  biorxiv_session: provider.HTTPClient | None = None,
+                  chemrxiv_session: provider.HTTPClient | None = None) -> dict[str, int]:
     """Enrich specific papers on an already-open corpus connection.
 
     Incoming rows are resolved against the corpus first, because discovery
@@ -1544,23 +1545,23 @@ def enrich_papers(conn: sqlite3.Connection,
         Contact email. Defaults to the stored Crossref setting.
     api_key : str or None, optional
         OpenAlex API key. Defaults to the configured key.
-    openalex_session : openalex._HTTPClient or None, optional
+    openalex_session : provider.HTTPClient or None, optional
         HTTP client used for OpenAlex requests.
-    crossref_session : crossref._CrossrefSessionLike or None, optional
+    crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
     pace : float, optional
         Seconds to wait between consecutive Crossref requests.
-    pubmed_session : pubmed._HTTPClient or None, optional
+    pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key. Defaults to the configured key.
-    arxiv_session : arxiv._HTTPClient or None, optional
+    arxiv_session : provider.HTTPClient or None, optional
         HTTP client used for arXiv requests.
-    medrxiv_session : medrxiv._HTTPClient or None, optional
+    medrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for medRxiv requests.
-    biorxiv_session : biorxiv._HTTPClient or None, optional
+    biorxiv_session : provider.HTTPClient or None, optional
         HTTP client used for bioRxiv requests.
-    chemrxiv_session : chemrxiv._HTTPClient or None, optional
+    chemrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for chemRxiv requests.
 
     Returns
@@ -1621,15 +1622,15 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                   resolve_references: bool = False,
                   email: str | None = None,
                   api_key: str | None = None,
-                  openalex_session: openalex._HTTPClient | None = None,
-                  crossref_session: crossref_client._CrossrefSessionLike | None = None,
+                  openalex_session: provider.HTTPClient | None = None,
+                  crossref_session: provider.HTTPClient | None = None,
                   pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
-                  pubmed_session: pubmed._HTTPClient | None = None,
+                  pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
-                  arxiv_session: arxiv._HTTPClient | None = None,
-                  medrxiv_session: medrxiv._HTTPClient | None = None,
-                  biorxiv_session: biorxiv._HTTPClient | None = None,
-                  chemrxiv_session: chemrxiv._HTTPClient | None = None) -> dict[str, int]:
+                  arxiv_session: provider.HTTPClient | None = None,
+                  medrxiv_session: provider.HTTPClient | None = None,
+                  biorxiv_session: provider.HTTPClient | None = None,
+                  chemrxiv_session: provider.HTTPClient | None = None) -> dict[str, int]:
     """Supplement every candidate paper in a corpus with provider metadata.
 
     Progress is committed after each batch, so an interrupted or budget-limited
@@ -1660,23 +1661,23 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
         Contact email. Defaults to the stored Crossref setting.
     api_key : str or None, optional
         OpenAlex API key. Defaults to the configured key.
-    openalex_session : openalex._HTTPClient or None, optional
+    openalex_session : provider.HTTPClient or None, optional
         HTTP client used for OpenAlex requests.
-    crossref_session : crossref._CrossrefSessionLike or None, optional
+    crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
     pace : float, optional
         Seconds to wait between consecutive Crossref requests.
-    pubmed_session : pubmed._HTTPClient or None, optional
+    pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
         NCBI API key. Defaults to the configured key.
-    arxiv_session : arxiv._HTTPClient or None, optional
+    arxiv_session : provider.HTTPClient or None, optional
         HTTP client used for arXiv requests.
-    medrxiv_session : medrxiv._HTTPClient or None, optional
+    medrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for medRxiv requests.
-    biorxiv_session : biorxiv._HTTPClient or None, optional
+    biorxiv_session : provider.HTTPClient or None, optional
         HTTP client used for bioRxiv requests.
-    chemrxiv_session : chemrxiv._HTTPClient or None, optional
+    chemrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for chemRxiv requests.
 
     Returns
@@ -1740,7 +1741,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
 def resolve_reference_dois(db_path: str | PathLike[str] = 'papers.db',
                            batch_size: int = MAX_BATCH_SIZE,
                            api_key: str | None = None,
-                           session: openalex._HTTPClient | None = None,
+                           session: provider.HTTPClient | None = None,
                            mailto: str = '') -> int:
     """Resolve stored OpenAlex reference identifiers to DOIs.
 
@@ -1755,7 +1756,7 @@ def resolve_reference_dois(db_path: str | PathLike[str] = 'papers.db',
         Identifiers looked up per OpenAlex request.
     api_key : str or None, optional
         OpenAlex API key. Defaults to the configured key.
-    session : openalex._HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client used for OpenAlex requests.
     mailto : str, default=''
         Contact email sent with the requests.

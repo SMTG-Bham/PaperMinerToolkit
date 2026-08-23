@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import re
-import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Any, TypeAlias
 from urllib.parse import quote
 
 import pandas as pd
 import requests
 
 from paperscraper.corpus import connect, find_paper, upsert_paper, upsert_papers
+from paperscraper import provider
 from paperscraper.metadata import clean_doi
 from paperscraper.settings import load_settings
 
@@ -27,36 +27,7 @@ BATCHABLE_DOI_PATTERN = re.compile(r'^10\.\d{4,9}/[^\s,]+$')
 ORCID_PATTERN = re.compile(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', re.IGNORECASE)
 REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources']
 _CrossrefRecord: TypeAlias = dict[str, Any]
-
-
-class _CrossrefResponseLike(Protocol):
-    """HTTP response surface used by Crossref requests."""
-
-    status_code: int
-    headers: Mapping[str, str]
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-    def json(self) -> _CrossrefRecord:
-        """Decode the response JSON object."""
-        ...
-
-
-class _CrossrefSessionLike(Protocol):
-    """HTTP session surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, str | int],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _CrossrefResponseLike:
-        """Issue an HTTP GET request."""
-        ...
+LIMITER = provider.RateLimiter(CROSSREF_MIN_INTERVAL)
 
 
 def normalize_orcid(value: str | None) -> str:
@@ -239,18 +210,19 @@ def work_matches_author(
 
 
 def _request_page(
-    session: _CrossrefSessionLike,
+    session: provider.HTTPClient,
     params: dict[str, str | int],
     email: str,
     url: str = CROSSREF_WORKS_URL,
     timeout: float = 60,
     attempts: int = 4,
+    pace: float | None = None,
 ) -> _CrossrefRecord:
     """Request one Crossref page with bounded retries.
 
     Parameters
     ----------
-    session : _CrossrefSessionLike
+    session : provider.HTTPClient
         HTTP session used for the request.
     params : dict[str, str or int]
         Crossref query parameters.
@@ -262,6 +234,8 @@ def _request_page(
         Request timeout in seconds.
     attempts : int, optional
         Maximum number of request attempts.
+    pace : float or None, optional
+        Pacing override for this request, in seconds.
 
     Returns
     -------
@@ -273,27 +247,14 @@ def _request_page(
     RuntimeError
         If every request attempt fails or returns an invalid payload.
     """
-    headers = {'User-Agent': f'PaperScraper/0.0.1 (mailto:{email})'}
-    last_error = None
-    for attempt in range(attempts):
-        try:
-            response = session.get(url, params=params, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            return response.json()['message']
-        except (requests.RequestException, KeyError, ValueError) as error:
-            last_error = error
-            status = getattr(getattr(error, 'response', None), 'status_code', None)
-            if status is not None and 400 <= status < 500 and status != 429:
-                break
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'Crossref request failed after {attempts} attempts: {last_error}') from last_error
+    response = provider.request(url, label='Crossref', limiter=LIMITER, params=params,
+                                headers=provider.default_headers(email), session=session,
+                                timeout=timeout, attempts=attempts, missing_ok=False,
+                                interval=pace,
+                                error_types=(*provider.RETRY_ERRORS, KeyError))
+    if response is None:
+        raise RuntimeError(f'Crossref request failed after {attempts} attempts: 404')
+    return response.json()['message']
 
 
 def configured_email(settings: Mapping[str, str] | None = None) -> str:
@@ -342,7 +303,7 @@ def resolve_email(email: str | None = None) -> str:
 
 def work_by_doi(doi: str,
                 email: str | None = None,
-                session: _CrossrefSessionLike | None = None,
+                session: provider.HTTPClient | None = None,
                 timeout: float = 60) -> _CrossrefRecord | None:
     """Look up one Crossref work through the single-work route.
 
@@ -352,7 +313,7 @@ def work_by_doi(doi: str,
         DOI to look up.
     email : str or None, optional
         Contact email for Crossref requests.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session used for the request.
     timeout : float, default=60
         Request timeout in seconds.
@@ -383,7 +344,7 @@ def work_by_doi(doi: str,
 
 def works_by_doi(dois: Sequence[str],
                  email: str | None = None,
-                 session: _CrossrefSessionLike | None = None,
+                 session: provider.HTTPClient | None = None,
                  batch_size: int = MAX_FILTER_VALUES,
                  pace: float = CROSSREF_MIN_INTERVAL) -> dict[str, _CrossrefRecord]:
     """Look up Crossref works in paced DOI batches.
@@ -401,7 +362,7 @@ def works_by_doi(dois: Sequence[str],
         DOIs to look up.
     email : str or None, optional
         Contact email for Crossref requests.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session used for the requests.
     batch_size : int, default=100
         DOIs requested per Crossref page.
@@ -429,12 +390,8 @@ def works_by_doi(dois: Sequence[str],
     individual = [doi for doi in wanted if not BATCHABLE_DOI_PATTERN.match(doi)]
 
     works = {}
-    first = True
     for start in range(0, len(batched), batch_size):
         chunk = batched[start:start + batch_size]
-        if not first and pace:
-            time.sleep(pace)
-        first = False
         try:
             message = _request_page(
                 session,
@@ -444,6 +401,7 @@ def works_by_doi(dois: Sequence[str],
                     'mailto': email,
                 },
                 email,
+                pace=pace,
             )
         except RuntimeError:
             # Crossref rejects an entire filter when one value is unusable, so
@@ -455,8 +413,6 @@ def works_by_doi(dois: Sequence[str],
             if key:
                 works[key] = work
     for doi in individual:
-        if pace:
-            time.sleep(pace)
         work = work_by_doi(doi, email=email, session=session)
         if work:
             works[clean_doi(work.get('DOI')) or doi] = work
@@ -469,7 +425,7 @@ def author_works(orcid: str | None = None,
                  email: str | None = None,
                  max_results: int | None = 500,
                  page_size: int = 200,
-                 session: _CrossrefSessionLike | None = None) -> list[_CrossrefRecord]:
+                 session: provider.HTTPClient | None = None) -> list[_CrossrefRecord]:
     """Retrieve DOI-bearing works for one author.
 
     Parameters
@@ -486,7 +442,7 @@ def author_works(orcid: str | None = None,
         Maximum accepted works, or ``None`` for no explicit limit.
     page_size : int, optional
         Number of records requested per Crossref page.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session, primarily for connection reuse or testing.
 
     Returns
@@ -622,7 +578,7 @@ def import_author_works(db_path: str | PathLike[str],
                         affiliation: str | None = None,
                         max_results: int | None = 500,
                         review_csv: str | PathLike[str] | None = None,
-                        session: _CrossrefSessionLike | None = None,
+                        session: provider.HTTPClient | None = None,
                         enrich: bool = False) -> dict[str, int]:
     """Discover and import an author's Crossref works.
 
@@ -643,7 +599,7 @@ def import_author_works(db_path: str | PathLike[str],
         Maximum number of works to import.
     review_csv : str, os.PathLike[str], or None, optional
         CSV path for a human-readable import review.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session used for discovery.
     enrich : bool, default=False
         Whether to supplement imported works with Crossref and OpenAlex

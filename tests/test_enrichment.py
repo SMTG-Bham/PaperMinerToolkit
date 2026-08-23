@@ -169,9 +169,10 @@ class FakeOpenAlexSession:
 class FakeCrossrefResponse:
     """Successful Crossref response wrapping one prepared message."""
 
-    def __init__(self, message: dict[str, Any]) -> None:
+    def __init__(self, message: dict[str, Any], status_code: int = 200) -> None:
         """Store the prepared Crossref message."""
         self.message = message
+        self.status_code = status_code
         self.headers: dict[str, str] = {}
 
     def raise_for_status(self) -> None:

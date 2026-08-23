@@ -7,7 +7,6 @@ unit conversion, append behavior, user confirmation, and paper status updates.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 

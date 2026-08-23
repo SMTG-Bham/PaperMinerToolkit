@@ -17,6 +17,7 @@ modules/cli
 :maxdepth: 1
 
 modules/corpus
+modules/provider
 modules/search
 modules/crossref
 modules/openalex

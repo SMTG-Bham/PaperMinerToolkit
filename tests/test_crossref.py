@@ -13,6 +13,9 @@ import requests
 
 import paperscraper.corpus as corpus
 import paperscraper.crossref as crossref
+from paperscraper import provider
+
+from tests.doubles import FakeResponse
 
 
 def work(
@@ -37,29 +40,33 @@ def work(
     }
 
 
-class FakeResponse:
-    """Successful requests response containing one prepared Crossref message."""
-
-    def __init__(self, message: dict[str, Any]) -> None:
-        """Store a prepared Crossref response message."""
-        self.message = message
-
-    def raise_for_status(self) -> None:
-        """Represent a successful HTTP status check."""
-        return None
-
-    def json(self) -> dict[str, dict[str, Any]]:
-        """Return the prepared message as a response payload."""
-        return {'message': self.message}
-
-
 class FakeSession:
-    """Return prepared Crossref pages and record request arguments."""
+    """Return prepared Crossref pages and record request arguments.
+
+    Crossref answers every route with a ``message`` envelope, so this takes the
+    messages themselves and wraps each one, keeping the tests readable.
+
+    Parameters
+    ----------
+    messages : Iterable[dict[str, Any]]
+        Crossref messages to hand out, one per ``get`` call.
+    """
 
     def __init__(self, messages: Iterable[dict[str, Any]]) -> None:
-        """Initialize the session with prepared response messages."""
+        """Store the prepared messages.
+
+        Parameters
+        ----------
+        messages : Iterable[dict[str, Any]]
+            Crossref messages to hand out, one per ``get`` call.
+
+        Returns
+        -------
+        None
+            The double is initialized in place.
+        """
         self.messages = iter(messages)
-        self.calls = []
+        self.calls: list[dict[str, Any]] = []
 
     def get(
         self,
@@ -68,14 +75,32 @@ class FakeSession:
         headers: dict[str, str],
         timeout: float,
     ) -> FakeResponse:
-        """Record a GET request and return the next prepared response."""
+        """Record a GET request and return the next prepared response.
+
+        Parameters
+        ----------
+        url : str
+            Endpoint the client asked for.
+        params : dict[str, str or int]
+            Query parameters the client sent.
+        headers : dict[str, str]
+            Headers the client sent.
+        timeout : float
+            Timeout the client asked for.
+
+        Returns
+        -------
+        FakeResponse
+            The next prepared message, wrapped in a Crossref envelope.
+        """
         self.calls.append({
             'url': url,
             'params': params.copy(),
             'headers': headers.copy(),
             'timeout': timeout,
         })
-        return FakeResponse(next(self.messages))
+        return FakeResponse(payload={'message': next(self.messages)})
+
 
 
 def test_normalize_orcid_accepts_urls_and_rejects_invalid_values() -> None:
@@ -105,14 +130,14 @@ def test_request_page_ignores_malformed_retry_after(monkeypatch: pytest.MonkeyPa
             self.calls += 1
             if self.calls == 1:
                 raise requests.HTTPError('rate limited', response=response)
-            return FakeResponse({'items': []})
+            return FakeResponse(payload={'message': {'items': []}})
 
     sleeps = []
-    monkeypatch.setattr(crossref.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
     message = crossref._request_page(RetrySession(), {}, 'person@example.ac.uk', attempts=2)
 
     assert message == {'items': []}
-    assert sleeps == [1]
+    assert 1 in sleeps
 
 
 def test_work_matches_exact_orcid_or_conservative_name_and_affiliation() -> None:
@@ -258,13 +283,13 @@ def test_works_by_doi_routes_comma_bearing_dois_to_the_single_work_route() -> No
 def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pace consecutive Crossref requests without sleeping before the first."""
     sleeps = []
-    monkeypatch.setattr(crossref.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
     session = FakeSession([{'items': []}, {'items': []}])
 
     crossref.works_by_doi(['10.1234/one', '10.1234/two'], email='me@example.com',
                           session=session, batch_size=1)
 
-    assert sleeps == [crossref.CROSSREF_MIN_INTERVAL]
+    assert sleeps == [pytest.approx(crossref.CROSSREF_MIN_INTERVAL, abs=1e-3)]
 
 
 def test_works_by_doi_rejects_an_invalid_batch_size() -> None:
@@ -301,7 +326,7 @@ def test_work_by_doi_ignores_an_empty_doi() -> None:
 def test_request_page_does_not_retry_a_client_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give up immediately on a deterministic 4xx rather than retrying it."""
     sleeps: list[float] = []
-    monkeypatch.setattr(crossref.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
 
     class BadRequestResponse:
         """Reject every request with an HTTP 400."""

@@ -23,19 +23,16 @@ them at arbitrary user-supplied XML.
 from __future__ import annotations
 
 import re
-import time
 import xml.etree.ElementTree as ET
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Protocol, TypeAlias
+from collections.abc import Mapping, Sequence
+from typing import Any, TypeAlias
 
-import requests
-
+from paperscraper import provider
 from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://export.arxiv.org/api/query'
 ABS_URL = 'https://arxiv.org/abs'
 PDF_URL = 'https://arxiv.org/pdf'
-USER_AGENT = 'PaperScraper/0.0.1'
 MAX_SEARCH_RESULTS = 30000
 PAGE_SIZE = 200
 ID_BATCH_SIZE = 100
@@ -53,59 +50,7 @@ _ARXIV_ID = re.compile(
     r'(?P<version>v\d+)?'
 )
 _ArxivRecord: TypeAlias = dict[str, Any]
-_last_request_at = 0.0
-
-
-class _ResponseLike(Protocol):
-    """HTTP response surface used by the arXiv helpers."""
-
-    status_code: int
-    headers: Mapping[str, str]
-    text: str
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-
-class _HTTPClient(Protocol):
-    """HTTP client surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, object],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _ResponseLike:
-        """Issue an HTTP GET request."""
-        ...
-
-
-def _throttle(interval: float = ARXIV_MIN_INTERVAL) -> None:
-    """Sleep until the shared arXiv request window allows another request.
-
-    arXiv counts its courtesy delay per IP address against one endpoint, so the
-    window is module-level state rather than a per-call loop delay.
-
-    Parameters
-    ----------
-    interval : float, default=ARXIV_MIN_INTERVAL
-        Minimum seconds required between consecutive requests.
-
-    Returns
-    -------
-    None
-        The shared request window is updated in place.
-    """
-    global _last_request_at
-    now = time.monotonic()
-    wait = interval - (now - _last_request_at)
-    if wait > 0:
-        time.sleep(wait)
-        now = time.monotonic()
-    _last_request_at = now
+LIMITER = provider.RateLimiter(ARXIV_MIN_INTERVAL)
 
 
 def request_headers() -> dict[str, str]:
@@ -116,7 +61,7 @@ def request_headers() -> dict[str, str]:
     dict[str, str]
         Headers containing the PaperScraper user agent.
     """
-    return {'User-Agent': USER_AGENT}
+    return provider.default_headers()
 
 
 def request_params(
@@ -206,10 +151,10 @@ def _error_text(root: ET.Element) -> str:
 def request(
     url: str = BASE_URL,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
-    timeout: float = 60,
-    attempts: int = 4,
-) -> _ResponseLike | None:
+    session: provider.HTTPClient | None = None,
+    timeout: float = provider.DEFAULT_TIMEOUT,
+    attempts: int = provider.DEFAULT_ATTEMPTS,
+) -> provider.ResponseLike | None:
     """Request an arXiv endpoint with courtesy pacing and bounded retries.
 
     A 429 means the courtesy delay was not honoured rather than that a budget
@@ -222,16 +167,16 @@ def request(
         arXiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
-    timeout : int or float, default=60
+    timeout : float, default=60.0
         Request timeout in seconds.
     attempts : int, default=4
         Maximum number of request attempts.
 
     Returns
     -------
-    _ResponseLike or None
+    provider.ResponseLike or None
         Successful response, or ``None`` for a 404 response.
 
     Raises
@@ -239,42 +184,21 @@ def request(
     RuntimeError
         If the request is rejected, or all request attempts fail.
     """
-    session = session or requests
-    headers = request_headers()
-    merged = dict(params or {})
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        _throttle()
-        try:
-            response = session.get(url, params=merged, headers=headers, timeout=timeout)
-            if response.status_code == 404:
-                return None
-            if 400 <= response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(f'arXiv rejected the request with '
-                                   f'{response.status_code} from {url}')
-            response.raise_for_status()
-            return response
-        except (requests.RequestException, ValueError) as error:
-            last_error = error
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'arXiv request failed after {attempts} attempts: {last_error}') from last_error
+    return provider.request(url, label='arXiv', limiter=LIMITER, params=params,
+                            session=session, timeout=timeout, attempts=attempts)
 
 
 def request_xml(
     url: str = BASE_URL,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
-    timeout: float = 60,
-    attempts: int = 4,
+    session: provider.HTTPClient | None = None,
+    timeout: float = provider.DEFAULT_TIMEOUT,
+    attempts: int = provider.DEFAULT_ATTEMPTS,
 ) -> ET.Element | None:
     """Request an arXiv endpoint and parse its Atom payload.
+
+    arXiv reports a rejected query in the body of an HTTP 200 as a feed holding
+    a single error entry, so a parsed feed is inspected before it is returned.
 
     Parameters
     ----------
@@ -282,9 +206,9 @@ def request_xml(
         arXiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
-    timeout : int or float, default=60
+    timeout : float, default=60.0
         Request timeout in seconds.
     attempts : int, default=4
         Maximum number of request attempts.
@@ -300,16 +224,10 @@ def request_xml(
         If the request fails, the payload is not well-formed, or the feed
         reports an error.
     """
-    response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
-    if response is None:
+    root = provider.request_xml(url, label='arXiv', limiter=LIMITER, params=params,
+                                session=session, timeout=timeout, attempts=attempts)
+    if root is None:
         return None
-    text = response.text or ''
-    if not text.strip():
-        return None
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as error:
-        raise RuntimeError(f'arXiv returned malformed XML: {error}') from error
     error_text = _error_text(root)
     if error_text:
         raise RuntimeError(f'arXiv rejected the request: {error_text}')
@@ -628,25 +546,6 @@ def total_results(root: ET.Element | None) -> int:
     return int(text) if text.isdigit() else 0
 
 
-def _chunked(values: Sequence[str], size: int) -> Iterator[list[str]]:
-    """Split a sequence into consecutive chunks.
-
-    Parameters
-    ----------
-    values : Sequence[str]
-        Values to split.
-    size : int
-        Maximum chunk length.
-
-    Yields
-    ------
-    list[str]
-        Consecutive chunk of at most ``size`` values.
-    """
-    for start in range(0, len(values), size):
-        yield list(values[start:start + size])
-
-
 def query_expression(query: str, default_field: str = 'all') -> str:
     """Translate a plain search phrase into an arXiv fielded expression.
 
@@ -694,7 +593,7 @@ def search_page(query: str,
                 max_results: int = PAGE_SIZE,
                 sort_by: str = 'submittedDate',
                 sort_order: str = 'descending',
-                session: _HTTPClient | None = None) -> ET.Element | None:
+                session: provider.HTTPClient | None = None) -> ET.Element | None:
     """Fetch one page of arXiv search results.
 
     Parameters
@@ -709,7 +608,7 @@ def search_page(query: str,
         Result ordering, one of :data:`SORT_ORDERS`.
     sort_order : str, default='descending'
         Sort direction, one of :data:`SORT_DIRECTIONS`.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -728,14 +627,14 @@ def search_page(query: str,
 
 
 def fetch_ids(identifiers: Sequence[str],
-              session: _HTTPClient | None = None) -> ET.Element | None:
+              session: provider.HTTPClient | None = None) -> ET.Element | None:
     """Fetch the records for one batch of arXiv identifiers.
 
     Parameters
     ----------
     identifiers : Sequence[str]
         arXiv identifiers, at most :data:`ID_BATCH_SIZE` per call.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -756,7 +655,7 @@ def fetch_ids(identifiers: Sequence[str],
     return request_xml(BASE_URL, params=params, session=session)
 
 
-def find_arxiv_id(title: str, session: _HTTPClient | None = None) -> str:
+def find_arxiv_id(title: str, session: provider.HTTPClient | None = None) -> str:
     """Find the arXiv identifier for a paper title.
 
     arXiv has no DOI search field, so a title query is the only way to reach a
@@ -767,7 +666,7 @@ def find_arxiv_id(title: str, session: _HTTPClient | None = None) -> str:
     ----------
     title : str
         Paper title to look up.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -793,7 +692,7 @@ def find_arxiv_id(title: str, session: _HTTPClient | None = None) -> str:
 
 
 def resolve_arxiv_id(paper: Mapping[str, Any],
-                     session: _HTTPClient | None = None) -> str:
+                     session: provider.HTTPClient | None = None) -> str:
     """Resolve one paper row's arXiv identifier.
 
     A stored identifier, an ``arxiv:`` paper identifier, or an arXiv URL
@@ -804,7 +703,7 @@ def resolve_arxiv_id(paper: Mapping[str, Any],
     ----------
     paper : Mapping[str, Any]
         Corpus paper row.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns

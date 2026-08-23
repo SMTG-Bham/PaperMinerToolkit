@@ -8,11 +8,13 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 import pytest
-import requests
 
 import paperscraper.biorxiv as biorxiv
 import paperscraper.chemrxiv as chemrxiv
+from paperscraper import provider
 import paperscraper.medrxiv as medrxiv
+
+from tests.doubles import FakeResponse, FakeSession
 
 
 def items() -> list[dict[str, Any]]:
@@ -96,61 +98,6 @@ def empty_payload() -> str:
 def parsed_records() -> list[dict[str, Any]]:
     """Map the prepared chemRxiv records onto the paper schema."""
     return chemrxiv.parse_records(json.loads(search_payload()))
-
-
-class FakeResponse:
-    """Prepared chemRxiv response with a configurable status code and body."""
-
-    def __init__(self,
-                 text: str = '',
-                 status_code: int = 200,
-                 headers: Mapping[str, str] | None = None) -> None:
-        """Initialize the response test double."""
-        self.text = text
-        self.status_code = status_code
-        self.headers = dict(headers or {})
-
-    def json(self) -> Any:
-        """Decode the prepared body as JSON."""
-        return json.loads(self.text)
-
-    def raise_for_status(self) -> None:
-        """Validate the prepared response status."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f'{self.status_code} error', response=self)
-
-
-class FakeSession:
-    """Return prepared chemRxiv responses and record request arguments."""
-
-    def __init__(self, responses: Iterable[FakeResponse]) -> None:
-        """Initialize the session with prepared responses."""
-        self.responses = iter(responses)
-        self.calls = []
-
-    def get(
-        self,
-        url: str,
-        params: Mapping[str, Any],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> FakeResponse:
-        """Return the next prepared response and record the request."""
-        self.calls.append({
-            'url': url,
-            'params': dict(params),
-            'headers': dict(headers),
-            'timeout': timeout,
-        })
-        return next(self.responses)
-
-
-@pytest.fixture(autouse=True)
-def reset_pacer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear the shared request window, cache, and pacing sleeps."""
-    monkeypatch.setattr(chemrxiv, '_last_request_at', 0.0, raising=False)
-    monkeypatch.setattr(chemrxiv, '_categories_cache', None, raising=False)
-    monkeypatch.setattr(chemrxiv.time, 'sleep', lambda _: None)
 
 
 def test_normalize_chemrxiv_doi_preserves_the_version_the_registry_issued() -> None:
@@ -403,17 +350,17 @@ def test_request_paces_consecutive_calls_with_the_courtesy_delay() -> None:
     """Space consecutive requests through the shared window."""
     slept: list[float] = []
     session = FakeSession([FakeResponse(search_payload()), FakeResponse(search_payload())])
-    original = chemrxiv.time.sleep
+    original = provider.time.sleep
     try:
-        chemrxiv.time.sleep = slept.append
+        provider.time.sleep = slept.append
         chemrxiv.request(chemrxiv.search_url(), session=session)
         chemrxiv.request(chemrxiv.search_url(), session=session)
     finally:
-        chemrxiv.time.sleep = original
+        provider.time.sleep = original
 
     assert len(slept) == 1
     assert 0 < slept[0] <= chemrxiv.CHEMRXIV_MIN_INTERVAL
-    assert session.calls[0]['headers'] == {'User-Agent': chemrxiv.USER_AGENT}
+    assert session.calls[0]['headers'] == {'User-Agent': provider.USER_AGENT}
 
 
 def test_request_returns_none_for_a_missing_document() -> None:
@@ -445,12 +392,12 @@ def test_request_retries_a_rate_limited_response_and_honours_retry_after() -> No
         FakeResponse('', status_code=429, headers={'Retry-After': '7'}),
         FakeResponse(search_payload()),
     ])
-    original = chemrxiv.time.sleep
+    original = provider.time.sleep
     try:
-        chemrxiv.time.sleep = slept.append
+        provider.time.sleep = slept.append
         response = chemrxiv.request(chemrxiv.search_url(), session=session)
     finally:
-        chemrxiv.time.sleep = original
+        provider.time.sleep = original
 
     assert response is not None
     assert 7 in slept
@@ -692,7 +639,7 @@ def test_the_live_registry_still_issues_the_doi_shapes_the_module_reads() -> Non
     """
     url = ('https://api.crossref.org/works?filter=prefix:10.26434&rows=200&select=DOI'
            '&mailto=paperscraper@example.com')
-    with urlopen(Request(url, headers={'User-Agent': chemrxiv.USER_AGENT}), timeout=60) as handle:
+    with urlopen(Request(url, headers={'User-Agent': provider.USER_AGENT}), timeout=60) as handle:
         dois = [item['DOI'] for item in json.load(handle)['message']['items']]
     assert len(dois) > 100
 

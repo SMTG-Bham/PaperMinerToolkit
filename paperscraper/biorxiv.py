@@ -66,21 +66,17 @@ one is accepted here alone.
 from __future__ import annotations
 
 import re
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Protocol, TypeAlias
+from typing import Any, TypeAlias
 
-import requests
-
-from paperscraper import pubmed
+from paperscraper import provider, pubmed
 from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://api.medrxiv.org'
 CATEGORY_BASE_URL = 'https://api.biorxiv.org'
 WEB_URL = 'https://www.biorxiv.org'
 SERVER = 'biorxiv'
-USER_AGENT = 'PaperScraper/0.0.1'
 PAGE_SIZE = 100
 CATEGORY_PAGE_SIZE = 30
 CORPUS_START = '2013-11-01'
@@ -105,63 +101,7 @@ _BIORXIV_DOI = re.compile(
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _NOT_AVAILABLE = {'', 'na', 'n/a', 'none', 'null'}
 _BiorxivRecord: TypeAlias = dict[str, Any]
-_last_request_at = 0.0
-
-
-class _ResponseLike(Protocol):
-    """HTTP response surface used by the bioRxiv helpers."""
-
-    status_code: int
-    headers: Mapping[str, str]
-    text: str
-
-    def json(self) -> Any:
-        """Decode the response body as JSON."""
-        ...
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-
-class _HTTPClient(Protocol):
-    """HTTP client surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, object],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _ResponseLike:
-        """Issue an HTTP GET request."""
-        ...
-
-
-def _throttle(interval: float = BIORXIV_MIN_INTERVAL) -> None:
-    """Sleep until the shared bioRxiv request window allows another request.
-
-    A page walk is a long run of requests against one host, so the window is
-    module-level state rather than a per-call loop delay.
-
-    Parameters
-    ----------
-    interval : float, default=BIORXIV_MIN_INTERVAL
-        Minimum seconds required between consecutive requests.
-
-    Returns
-    -------
-    None
-        The shared request window is updated in place.
-    """
-    global _last_request_at
-    now = time.monotonic()
-    wait = interval - (now - _last_request_at)
-    if wait > 0:
-        time.sleep(wait)
-        now = time.monotonic()
-    _last_request_at = now
+LIMITER = provider.RateLimiter(BIORXIV_MIN_INTERVAL)
 
 
 def request_headers() -> dict[str, str]:
@@ -172,7 +112,7 @@ def request_headers() -> dict[str, str]:
     dict[str, str]
         Headers containing the PaperScraper user agent.
     """
-    return {'User-Agent': USER_AGENT}
+    return provider.default_headers()
 
 
 def _text(value: object) -> str:
@@ -322,10 +262,10 @@ def pdf_url(doi: str, version: str = '') -> str:
 def request(
     url: str,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
-) -> _ResponseLike | None:
+) -> provider.ResponseLike | None:
     """Request a bioRxiv endpoint with courtesy pacing and bounded retries.
 
     A 429 means the request rate was too high rather than that a budget is
@@ -338,7 +278,7 @@ def request(
         bioRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -347,7 +287,7 @@ def request(
 
     Returns
     -------
-    _ResponseLike or None
+    provider.ResponseLike or None
         Successful response, or ``None`` for a 404 response.
 
     Raises
@@ -355,38 +295,14 @@ def request(
     RuntimeError
         If the request is rejected, or all request attempts fail.
     """
-    session = session or requests
-    headers = request_headers()
-    merged = dict(params or {})
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        _throttle()
-        try:
-            response = session.get(url, params=merged, headers=headers, timeout=timeout)
-            if response.status_code == 404:
-                return None
-            if 400 <= response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(f'bioRxiv rejected the request with '
-                                   f'{response.status_code} from {url}')
-            response.raise_for_status()
-            return response
-        except (requests.RequestException, ValueError) as error:
-            last_error = error
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'bioRxiv request failed after {attempts} attempts: {last_error}') from last_error
+    return provider.request(url, label='bioRxiv', limiter=LIMITER, params=params,
+                            session=session, timeout=timeout, attempts=attempts)
 
 
 def request_json(
     url: str,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
 ) -> _BiorxivRecord | None:
@@ -403,7 +319,7 @@ def request_json(
         bioRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -778,7 +694,7 @@ def interval_page(start_date: str,
                   end_date: str,
                   cursor: int = 0,
                   category: str = '',
-                  session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+                  session: provider.HTTPClient | None = None) -> _BiorxivRecord | None:
     """Fetch one page of bioRxiv records posted within a date interval.
 
     Parameters
@@ -791,7 +707,7 @@ def interval_page(start_date: str,
         Zero-based index of the first record requested.
     category : str, default=''
         bioRxiv subject category to restrict the interval to.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -813,7 +729,7 @@ def interval_page(start_date: str,
 
 def details(doi: str,
             version: str = 'na',
-            session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+            session: provider.HTTPClient | None = None) -> _BiorxivRecord | None:
     """Fetch the posted versions of one bioRxiv preprint.
 
     Parameters
@@ -822,7 +738,7 @@ def details(doi: str,
         bioRxiv DOI, with or without a version suffix.
     version : str, default='na'
         Posted version to request, or ``'na'`` for every version.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -841,14 +757,14 @@ def details(doi: str,
     return request_json(details_url(identifier, version), session=session)
 
 
-def fetch_doi(doi: str, session: _HTTPClient | None = None) -> _BiorxivRecord | None:
+def fetch_doi(doi: str, session: provider.HTTPClient | None = None) -> _BiorxivRecord | None:
     """Fetch the newest posted version of one bioRxiv preprint.
 
     Parameters
     ----------
     doi : str
         bioRxiv DOI, with or without a version suffix.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -897,7 +813,7 @@ def resolve_biorxiv_doi(paper: Mapping[str, Any]) -> str:
     return ''
 
 
-def full_text(entry: Mapping[str, Any], session: _HTTPClient | None = None) -> str:
+def full_text(entry: Mapping[str, Any], session: provider.HTTPClient | None = None) -> str:
     """Fetch and flatten a bioRxiv preprint's JATS full text.
 
     Every bioRxiv record names a JATS document, which is the same format
@@ -910,7 +826,7 @@ def full_text(entry: Mapping[str, Any], session: _HTTPClient | None = None) -> s
     ----------
     entry : Mapping[str, Any]
         Normalized record from :func:`record_to_paper`.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns

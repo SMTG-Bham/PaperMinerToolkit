@@ -53,17 +53,14 @@ retried, because repeating a refused request only spends more of them.
 from __future__ import annotations
 
 import re
-import time
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, TypeAlias
+from typing import Any, TypeAlias
 
-import requests
-
+from paperscraper import provider
 from paperscraper.metadata import clean_doi
 
 BASE_URL = 'https://chemrxiv.org/engage/chemrxiv/public-api/v1'
 WEB_URL = 'https://chemrxiv.org'
-USER_AGENT = 'PaperScraper/0.0.1'
 PAGE_SIZE = 50
 MAX_SEARCH_RESULTS = 10000
 CHEMRXIV_MIN_INTERVAL = 1.0
@@ -83,64 +80,8 @@ _CHEMRXIV_DOI = re.compile(
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _NOT_AVAILABLE = {'', 'na', 'n/a', 'none', 'null'}
 _ChemrxivRecord: TypeAlias = dict[str, Any]
-_last_request_at = 0.0
+LIMITER = provider.RateLimiter(CHEMRXIV_MIN_INTERVAL)
 _categories_cache: list[dict[str, Any]] | None = None
-
-
-class _ResponseLike(Protocol):
-    """HTTP response surface used by the chemRxiv helpers."""
-
-    status_code: int
-    headers: Mapping[str, str]
-    text: str
-
-    def json(self) -> Any:
-        """Decode the response body as JSON."""
-        ...
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-
-class _HTTPClient(Protocol):
-    """HTTP client surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, object],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _ResponseLike:
-        """Issue an HTTP GET request."""
-        ...
-
-
-def _throttle(interval: float = CHEMRXIV_MIN_INTERVAL) -> None:
-    """Sleep until the shared chemRxiv request window allows another request.
-
-    A search is a run of requests against one host, so the window is
-    module-level state rather than a per-call loop delay.
-
-    Parameters
-    ----------
-    interval : float, default=CHEMRXIV_MIN_INTERVAL
-        Minimum seconds required between consecutive requests.
-
-    Returns
-    -------
-    None
-        The shared request window is updated in place.
-    """
-    global _last_request_at
-    now = time.monotonic()
-    wait = interval - (now - _last_request_at)
-    if wait > 0:
-        time.sleep(wait)
-        now = time.monotonic()
-    _last_request_at = now
 
 
 def request_headers() -> dict[str, str]:
@@ -155,7 +96,7 @@ def request_headers() -> dict[str, str]:
     dict[str, str]
         Headers containing the PaperScraper user agent.
     """
-    return {'User-Agent': USER_AGENT}
+    return provider.default_headers()
 
 
 def _text(value: object) -> str:
@@ -300,10 +241,10 @@ def landing_url(doi: str) -> str:
 def request(
     url: str,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
-) -> _ResponseLike | None:
+) -> provider.ResponseLike | None:
     """Request a chemRxiv endpoint with courtesy pacing and bounded retries.
 
     A 429 means the request rate was too high rather than that a budget is
@@ -322,7 +263,7 @@ def request(
         chemRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -331,7 +272,7 @@ def request(
 
     Returns
     -------
-    _ResponseLike or None
+    provider.ResponseLike or None
         Successful response, or ``None`` for a 404 response.
 
     Raises
@@ -340,44 +281,35 @@ def request(
         If the request is refused by the bot challenge, is otherwise rejected,
         or all request attempts fail.
     """
-    session = session or requests
-    headers = request_headers()
-    merged = dict(params or {})
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        _throttle()
-        try:
-            response = session.get(url, params=merged, headers=headers, timeout=timeout)
-            if response.status_code == 404:
-                return None
-            if response.status_code == 403:
-                raise RuntimeError(
-                    f'chemRxiv refused the request with 403 from {url}. chemrxiv.org is '
-                    f'behind a bot challenge that PaperScraper does not try to bypass; '
-                    f'the same papers can be reached through the openalex or crossref '
-                    f'sources.')
-            if 400 <= response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(f'chemRxiv rejected the request with '
-                                   f'{response.status_code} from {url}')
-            response.raise_for_status()
-            return response
-        except (requests.RequestException, ValueError) as error:
-            last_error = error
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'chemRxiv request failed after {attempts} attempts: {last_error}') from last_error
+    def challenge(response: provider.ResponseLike) -> str:
+        """Report the bot challenge chemRxiv answers a refused request with.
+
+        Parameters
+        ----------
+        response : provider.ResponseLike
+            Response to classify.
+
+        Returns
+        -------
+        str
+            Failure message for a 403, or an empty string for anything else.
+        """
+        if response.status_code != 403:
+            return ''
+        return (f'chemRxiv refused the request with 403 from {url}. chemrxiv.org is '
+                f'behind a bot challenge that PaperScraper does not try to bypass; '
+                f'the same papers can be reached through the openalex or crossref '
+                f'sources.')
+
+    return provider.request(url, label='chemRxiv', limiter=LIMITER, params=params,
+                            session=session, timeout=timeout, attempts=attempts,
+                            client_error=challenge)
 
 
 def request_payload(
     url: str,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
 ) -> Any:
@@ -398,7 +330,7 @@ def request_payload(
         chemRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -435,7 +367,7 @@ def request_payload(
 def request_json(
     url: str,
     params: Mapping[str, object] | None = None,
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
     timeout: float = 60,
     attempts: int = 4,
 ) -> _ChemrxivRecord | None:
@@ -447,7 +379,7 @@ def request_json(
         chemRxiv endpoint URL.
     params : Mapping[str, object] or None, optional
         Query parameters for the request.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
     timeout : int or float, default=60
         Request timeout in seconds.
@@ -995,7 +927,7 @@ def search_terms(terms: Sequence[str]) -> str:
     return ' '.join(f'"{term}"' if ' ' in term else term for term in terms if term)
 
 
-def categories(session: _HTTPClient | None = None) -> list[dict[str, Any]]:
+def categories(session: provider.HTTPClient | None = None) -> list[dict[str, Any]]:
     """List the subject categories chemRxiv files preprints under.
 
     The listing is fetched once and cached for the process, because it changes
@@ -1003,7 +935,7 @@ def categories(session: _HTTPClient | None = None) -> list[dict[str, Any]]:
 
     Parameters
     ----------
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -1039,7 +971,24 @@ def categories(session: _HTTPClient | None = None) -> list[dict[str, Any]]:
     return found
 
 
-def category_ids(names: Sequence[str], session: _HTTPClient | None = None) -> list[str]:
+def reset_categories_cache() -> None:
+    """Discard the cached chemRxiv category list.
+
+    The list is fetched once per process because it changes rarely and every
+    category-scoped search needs it. A test run wants each case to start from
+    the same state, so it is cleared through this rather than by reaching into
+    the module global.
+
+    Returns
+    -------
+    None
+        The cache is cleared in place.
+    """
+    global _categories_cache
+    _categories_cache = None
+
+
+def category_ids(names: Sequence[str], session: provider.HTTPClient | None = None) -> list[str]:
     """Resolve chemRxiv category names to the identifiers the API filters on.
 
     An unmatched name raises rather than being dropped, because silently
@@ -1050,7 +999,7 @@ def category_ids(names: Sequence[str], session: _HTTPClient | None = None) -> li
     ----------
     names : Sequence[str]
         Category names as a query's ``category:`` terms spelled them.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -1088,7 +1037,7 @@ def search_page(
     category_id: str = '',
     date_from: str = '',
     date_to: str = '',
-    session: _HTTPClient | None = None,
+    session: provider.HTTPClient | None = None,
 ) -> _ChemrxivRecord | None:
     """Request one page of chemRxiv search results.
 
@@ -1109,7 +1058,7 @@ def search_page(
         Earliest posting date to include, as ``YYYY-MM-DD``.
     date_to : str, default=''
         Latest posting date to include, as ``YYYY-MM-DD``.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -1136,14 +1085,14 @@ def search_page(
     return request_json(search_url(), params=params, session=session)
 
 
-def fetch_item(item_id: str, session: _HTTPClient | None = None) -> _ChemrxivRecord | None:
+def fetch_item(item_id: str, session: provider.HTTPClient | None = None) -> _ChemrxivRecord | None:
     """Fetch one chemRxiv item by its internal identifier.
 
     Parameters
     ----------
     item_id : str
         chemRxiv internal item identifier.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns
@@ -1162,7 +1111,7 @@ def fetch_item(item_id: str, session: _HTTPClient | None = None) -> _ChemrxivRec
     return entries[0] if entries else None
 
 
-def fetch_doi(doi: str, session: _HTTPClient | None = None) -> _ChemrxivRecord | None:
+def fetch_doi(doi: str, session: provider.HTTPClient | None = None) -> _ChemrxivRecord | None:
     """Fetch one chemRxiv preprint by DOI.
 
     The DOI lookup route is tried first. When it reports nothing, the DOI is
@@ -1178,7 +1127,7 @@ def fetch_doi(doi: str, session: _HTTPClient | None = None) -> _ChemrxivRecord |
     doi : str
         chemRxiv DOI, in any of the shapes
         :func:`normalize_chemrxiv_doi` accepts.
-    session : _HTTPClient or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
 
     Returns

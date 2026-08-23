@@ -97,7 +97,7 @@ ps_reset = "paperscraper.cli:reset_scraper"
 ps_status = "paperscraper.cli:scraper_status"
 
 [tool.setuptools.dynamic]
-version = { attr = "paperscraper.__version__" }
+version = { attr = "paperscraper._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -118,7 +118,7 @@ addopts = [
 ]
 
 [tool.ruff.lint]
-select = ["D"]
+select = ["D", "F"]
 extend-select = ["ANN", "D212"]
 # Dynamic provider payloads and test doubles legitimately require Any.
 ignore = ["ANN401"]

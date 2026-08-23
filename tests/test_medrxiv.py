@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pytest
-import requests
 
 import paperscraper.medrxiv as medrxiv
+from paperscraper import provider
+
+from tests.doubles import FakeResponse, FakeSession
 
 
 def collection() -> list[dict[str, Any]]:
@@ -106,60 +107,6 @@ def empty_payload(status: str = 'no posts found') -> str:
 def parsed_records() -> list[dict[str, Any]]:
     """Return the shared fixture records mapped onto the paper schema."""
     return medrxiv.parse_records(json.loads(interval_payload()))
-
-
-class FakeResponse:
-    """Prepared medRxiv response with a configurable status code and body."""
-
-    def __init__(self,
-                 text: str = '',
-                 status_code: int = 200,
-                 headers: Mapping[str, str] | None = None) -> None:
-        """Initialize the response test double."""
-        self.text = text
-        self.status_code = status_code
-        self.headers = dict(headers or {})
-
-    def json(self) -> Any:
-        """Decode the prepared body as JSON."""
-        return json.loads(self.text)
-
-    def raise_for_status(self) -> None:
-        """Validate the prepared response status."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f'{self.status_code} error', response=self)
-
-
-class FakeSession:
-    """Return prepared medRxiv responses and record request arguments."""
-
-    def __init__(self, responses: Iterable[FakeResponse]) -> None:
-        """Initialize the session with prepared responses."""
-        self.responses = iter(responses)
-        self.calls = []
-
-    def get(
-        self,
-        url: str,
-        params: Mapping[str, Any],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> FakeResponse:
-        """Return the next prepared response and record the request."""
-        self.calls.append({
-            'url': url,
-            'params': dict(params),
-            'headers': dict(headers),
-            'timeout': timeout,
-        })
-        return next(self.responses)
-
-
-@pytest.fixture(autouse=True)
-def reset_pacer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear the shared request window and silence pacing sleeps."""
-    monkeypatch.setattr(medrxiv, '_last_request_at', 0.0, raising=False)
-    monkeypatch.setattr(medrxiv.time, 'sleep', lambda _: None)
 
 
 def test_record_to_paper_prefers_the_published_doi_for_the_paper_id() -> None:
@@ -352,8 +299,8 @@ def test_request_paces_consecutive_calls_with_the_courtesy_delay(
     """Sleep the chosen delay between requests using one shared window."""
     sleeps: list[float] = []
     clock = {'now': 100.0}
-    monkeypatch.setattr(medrxiv.time, 'sleep', lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(medrxiv.time, 'monotonic', lambda: clock['now'])
+    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(provider.time, 'monotonic', lambda: clock['now'])
 
     session = FakeSession([FakeResponse(text=empty_payload()) for _ in range(3)])
     for _ in range(3):
@@ -373,7 +320,7 @@ def test_request_retries_a_rate_limited_response_and_honours_retry_after(
 ) -> None:
     """Wait the advertised interval and retry rather than giving up on a 429."""
     sleeps: list[float] = []
-    monkeypatch.setattr(medrxiv.time, 'sleep', lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
     session = FakeSession([
         FakeResponse(status_code=429, headers={'Retry-After': '5'}),
         FakeResponse(text=empty_payload()),
@@ -434,7 +381,7 @@ def test_interval_page_sends_the_category_to_the_host_that_applies_it() -> None:
     assert session.calls[0]['url'] == (
         f'{medrxiv.CATEGORY_BASE_URL}/details/medrxiv/2024-01-01/2024-12-31/60/json')
     assert session.calls[0]['params'] == {'category': 'Oncology'}
-    assert session.calls[0]['headers']['User-Agent'] == medrxiv.USER_AGENT
+    assert session.calls[0]['headers']['User-Agent'] == provider.USER_AGENT
 
     session = FakeSession([FakeResponse(text=interval_payload())])
     medrxiv.interval_page('2024-01-01', '2024-12-31', session=session)
