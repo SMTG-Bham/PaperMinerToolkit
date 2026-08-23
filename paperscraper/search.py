@@ -9,17 +9,16 @@ from __future__ import annotations
 
 import datetime
 import html
-import os
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from types import ModuleType
 from typing import Any
 import pandas as pd
 import re
-import requests
 from tqdm import tqdm
 
-from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
+from paperscraper import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
+                          openalex, pubmed)
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper import sources
@@ -182,85 +181,33 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
-def _core_api_key() -> str | None:
-    """Return the configured CORE API key, if one is available."""
-    settings = load_settings()
-    return settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
-
-
-def _core_headers() -> dict[str, str]:
-    """Build request headers for CORE API calls."""
-    api_key = _core_api_key()
-    headers = {'User-Agent': 'PaperScraper/0.0.1'}
-    if api_key:
-        headers['Authorization'] = f'Bearer {api_key}'
-    return headers
-
-
-def _core_download_url(work: Mapping[str, Any]) -> str:
-    """Return the best CORE PDF download URL for a work record."""
-    download_url = work.get('downloadUrl') or work.get('download_url')
-    if download_url:
-        return download_url
-    core_id = work.get('id')
-    if core_id:
-        return f'https://api.core.ac.uk/v3/works/{core_id}/download'
-    return ''
-
-
-def _core_authors(work: Mapping[str, Any]) -> str:
-    """Format CORE author data as a semicolon-separated author string."""
-    authors = work.get('authors') or []
-    names = []
-    for author in authors:
-        if isinstance(author, dict):
-            names.append(author.get('name') or author.get('fullName') or '')
-        else:
-            names.append(str(author))
-    return '; '.join(name for name in names if name)
-
-
-def _core_journal(work: Mapping[str, Any]) -> object:
-    """Extract a journal or publisher name from a CORE work record."""
-    journal = work.get('journal') or work.get('publisher') or ''
-    if isinstance(journal, dict):
-        return journal.get('title') or journal.get('name') or ''
-    return journal
-
-
-def _core_date(work: Mapping[str, Any]) -> object:
-    """Extract the best available publication date/year from a CORE work record."""
-    return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get(
-        'year') or ''
-
-
 def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
-    """Convert CORE work records into normalized paper rows."""
+    """Convert CORE work records into normalized paper rows.
+
+    Parameters
+    ----------
+    works : Iterable[Mapping[str, Any]]
+        CORE work records.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows.
+    """
     rows = []
     for work in works:
-        core_id = work.get('id') or ''
-        doi = _first(work.get('doi') or work.get('DOI'))
-        identifier = f'core:{core_id}' if core_id else (f'doi:{doi}' if doi else '')
-        row = {
-            'paper_id': identifier,
-            'doi': doi,
-            'title': _first(work.get('title')),
-            'journal': _core_journal(work),
-            'publication_date': _core_date(work),
-            'authors': _core_authors(work),
-            'sources': 'core',
-            'core_id': core_id,
-            'pdf_url': _core_download_url(work),
-            'metadata_status': 'retrieved',
-        }
-        normalized = normalize_paper(row)
-        normalized['abstract'] = _abstract_from_search_record(work)
+        record = core.work_to_paper(work)
+        normalized = normalize_paper(record)
+        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
         rows.append(normalized)
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
 def core_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search CORE works.
+
+    CORE pages by offset and reports a total, so the walk stops at whichever
+    comes first: the caller's count, the reported total, or a short page.
 
     Parameters
     ----------
@@ -276,29 +223,26 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
 
     Raises
     ------
-    requests.RequestException
-        If a CORE request fails.
+    RuntimeError
+        If a CORE request cannot be completed.
     """
-    url = 'https://api.core.ac.uk/v3/search/works'
-    limit = min(max(int(count), 1), 100)
+    api_key = core.configured_api_key()
+    works: list[Mapping[str, Any]] = []
     offset = 0
-    works = []
     with tqdm(total=count, desc='Searching CORE', colour='cyan') as pbar:
         while len(works) < count:
-            params = {'q': query, 'limit': min(limit, count - len(works)), 'offset': offset}
-            response = requests.get(url, headers=_core_headers(), params=params, timeout=60)
-            response.raise_for_status()
-            payload = response.json()
-            results = payload.get('results') or payload.get('data') or []
+            payload = core.search_page(query, limit=min(core.PAGE_SIZE, count - len(works)),
+                                       offset=offset, api_key=api_key)
+            results = core.parse_records(payload)
             if not results:
                 break
             works.extend(results)
             offset += len(results)
             pbar.update(len(results))
-            total_hits = payload.get('totalHits') or payload.get('total') or payload.get('count')
-            if total_hits is not None and offset >= int(total_hits):
+            total = core.total_results(payload)
+            if total and offset >= total:
                 break
-            if len(results) < params['limit']:
+            if len(results) < min(core.PAGE_SIZE, count - len(works) + len(results)):
                 break
     return _core_rows(works)
 

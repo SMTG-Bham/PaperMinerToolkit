@@ -30,6 +30,8 @@ modules/biorxiv
 modules/chemrxiv
 modules/enrichment
 modules/elsevier
+modules/core
+modules/unpaywall
 modules/metadata
 modules/imports
 modules/download

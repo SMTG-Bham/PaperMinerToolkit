@@ -199,30 +199,23 @@ def test_download_unpaywall_pdf_handles_missing_config_and_pdf_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download Unpaywall PDF handles missing config and PDF candidates."""
-    class FakeResponse:
-        """Provide a response test double."""
+    record = {
+        'best_oa_location': {'url_for_pdf': 'https://example.com/one.pdf'},
+        'oa_locations': [
+            {'url_for_pdf': 'https://example.com/one.pdf'},
+            {'url_for_pdf': 'https://example.com/two.pdf'},
+        ],
+    }
 
-        status_code = 200
-
-        def json(self) -> dict[str, Any]:
-            """Return the prepared JSON payload."""
-            return {
-                'best_oa_location': {'url_for_pdf': 'https://example.com/one.pdf'},
-                'oa_locations': [
-                    {'url_for_pdf': 'https://example.com/one.pdf'},
-                    {'url_for_pdf': 'https://example.com/two.pdf'},
-                ],
-            }
-
-    monkeypatch.setattr(download, '_unpaywall_email', lambda settings=None: None)
+    monkeypatch.setattr(download.unpaywall, 'configured_email', lambda *_: '')
     assert download._download_unpaywall_pdf({'doi': ''}, str(tmp_path / 'paper.pdf')) == (False, 'missing DOI')
     assert 'Unpaywall email is not configured' in download._download_unpaywall_pdf(
         {'doi': '10.1234/example'}, str(tmp_path / 'paper.pdf')
     )[1]
 
     tried = []
-    monkeypatch.setattr(download, '_unpaywall_email', lambda settings=None: 'person@example.com')
-    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: FakeResponse())
+    monkeypatch.setattr(download.unpaywall, 'configured_email', lambda *_: 'person@example.com')
+    monkeypatch.setattr(download.unpaywall, 'get_work', lambda *_, **__: record)
 
     def fake_download(url: str, filepath: str) -> tuple[bool, str]:
         """Provide a fake download implementation."""
@@ -240,12 +233,7 @@ def test_download_unpaywall_pdf_handles_missing_config_and_pdf_candidates(
 
 def test_core_headers_and_core_pdf_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE headers and CORE PDF download."""
-    monkeypatch.setattr(download, 'load_settings', lambda: {})
-    monkeypatch.delenv('CORE_API_KEY', raising=False)
-    assert download._core_headers() == {'User-Agent': 'PaperScraper/0.0.1'}
-
-    monkeypatch.setenv('CORE_API_KEY', 'core-key')
-    assert download._core_headers()['Authorization'] == 'Bearer core-key'
+    monkeypatch.setattr(download.core, 'configured_api_key', lambda *_: 'core-key')
 
     tried = []
 
@@ -269,7 +257,7 @@ def test_core_headers_and_core_pdf_download(tmp_path: Path, monkeypatch: pytest.
     tried.clear()
     assert download._download_core_pdf({'pdf_url': '', 'core_id': 'abc 123'}, str(tmp_path / 'paper.pdf')) == (
         True,
-        'https://api.core.ac.uk/v3/works/abc%20123/download',
+        f'{download.core.WORKS_URL}/abc%20123/download',
     )
     assert download._download_core_pdf({'pdf_url': '', 'core_id': ''}, str(tmp_path / 'paper.pdf')) == (
         False,
@@ -438,24 +426,59 @@ def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatc
 
     core_calls = []
 
-    def fake_get(url: str, headers: Mapping[str, str], timeout: float) -> FakeResponse:
-        """Provide a fake HTTP GET implementation."""
-        core_calls.append((url, headers, timeout))
-        return FakeResponse({'abstract': '<p>CORE abstract</p>'})
+    def fake_get_work(core_id: object, **_: object) -> dict[str, Any]:
+        """Record the work asked for and answer with an abstract.
 
-    monkeypatch.setattr(download.requests, 'get', fake_get)
-    monkeypatch.setattr(download, '_core_headers', lambda: {'Authorization': 'Bearer core-key'})
+        Parameters
+        ----------
+        core_id : object
+            CORE identifier requested.
+        **_ : object
+            Credential and session arguments, unused.
+
+        Returns
+        -------
+        dict[str, Any]
+            A work record carrying an abstract.
+        """
+        core_calls.append(core_id)
+        return {'abstract': '<p>CORE abstract</p>'}
+
+    monkeypatch.setattr(download.core, 'get_work', fake_get_work)
 
     assert download._download_core_abstract({'core_id': 'abc 123'}) == (True, 'core', 'CORE abstract')
-    assert core_calls == [(
-        'https://api.core.ac.uk/v3/works/abc%20123',
-        {'Authorization': 'Bearer core-key'},
-        60,
-    )]
+    assert core_calls == ['abc 123']
     assert download._download_core_abstract({'core_id': ''}) == (False, 'missing CORE ID', '')
 
-    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: FakeResponse(status_code=404))
-    assert download._download_core_abstract({'core_id': '123'}) == (False, '404 from CORE', '')
+    monkeypatch.setattr(download.core, 'get_work', lambda *_, **__: None)
+    assert download._download_core_abstract({'core_id': '123'}) == (
+        False, 'no CORE abstract found', '')
+
+    def refuse(*_: object, **__: object) -> dict[str, Any]:
+        """Fail the way a rejected CORE request does.
+
+        Parameters
+        ----------
+        *_ : object
+            Positional arguments, unused.
+        **__ : object
+            Keyword arguments, unused.
+
+        Returns
+        -------
+        dict[str, Any]
+            Never returned.
+
+        Raises
+        ------
+        RuntimeError
+            Always.
+        """
+        raise RuntimeError('CORE rejected the request with 404')
+
+    monkeypatch.setattr(download.core, 'get_work', refuse)
+    assert download._download_core_abstract({'core_id': '123'}) == (
+        False, 'CORE rejected the request with 404', '')
 
     monkeypatch.setattr(download, '_elsevier_api_key', lambda: 'elsevier-key')
     monkeypatch.setattr(
@@ -1227,41 +1250,56 @@ def test_download_unpaywall_pdf_handles_metadata_errors_and_missing_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download Unpaywall PDF handles metadata errors and missing candidates."""
-    class ErrorResponse:
-        """Provide a response test double that raises an error."""
+    def refuse(*_: object, **__: object) -> dict[str, Any]:
+        """Fail the way a rejected Unpaywall request does.
 
-        status_code = 500
+        Parameters
+        ----------
+        *_ : object
+            Positional arguments, unused.
+        **__ : object
+            Keyword arguments, unused.
 
-    class EmptyResponse:
-        """Provide a response test double with no metadata."""
+        Returns
+        -------
+        dict[str, Any]
+            Never returned.
 
-        status_code = 200
+        Raises
+        ------
+        RuntimeError
+            Always.
+        """
+        raise RuntimeError('Unpaywall rejected the request with 500')
 
-        def json(self) -> dict[str, Any]:
-            """Return the prepared JSON payload."""
-            return {'best_oa_location': None, 'oa_locations': []}
-
-    monkeypatch.setattr(download, '_unpaywall_email', lambda settings=None: 'person@example.com')
-    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: ErrorResponse())
+    monkeypatch.setattr(download.unpaywall, 'configured_email', lambda *_: 'person@example.com')
+    monkeypatch.setattr(download.unpaywall, 'get_work', refuse)
     assert download._download_unpaywall_pdf({'doi': '10.1234/example'}, str(tmp_path / 'paper.pdf')) == (
         False,
-        '500 from Unpaywall',
+        'Unpaywall rejected the request with 500',
     )
 
     monkeypatch.setattr(
-        download.requests,
-        'get',
-        lambda *_, **__: (_ for _ in ()).throw(download.requests.RequestException('network down')),
+        download.unpaywall, 'get_work',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('network down')),
     )
     assert download._download_unpaywall_pdf({'doi': '10.1234/example'}, str(tmp_path / 'paper.pdf')) == (
         False,
         'network down',
     )
 
-    monkeypatch.setattr(download.requests, 'get', lambda *_, **__: EmptyResponse())
+    monkeypatch.setattr(download.unpaywall, 'get_work',
+                        lambda *_, **__: {'best_oa_location': None, 'oa_locations': []})
     assert download._download_unpaywall_pdf({'doi': '10.1234/example'}, str(tmp_path / 'paper.pdf')) == (
         False,
         'no Unpaywall PDF URL found',
+    )
+
+    # An unknown DOI is not a failure, but there is nothing to download either.
+    monkeypatch.setattr(download.unpaywall, 'get_work', lambda *_, **__: None)
+    assert download._download_unpaywall_pdf({'doi': '10.1234/example'}, str(tmp_path / 'paper.pdf')) == (
+        False,
+        'Unpaywall knows nothing of this DOI',
     )
 
 

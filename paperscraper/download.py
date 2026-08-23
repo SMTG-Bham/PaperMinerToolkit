@@ -27,7 +27,8 @@ from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
-from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
+from paperscraper import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
+                          openalex, pubmed, unpaywall)
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper import sources as registry
@@ -287,9 +288,19 @@ def _safe_filename(paper: Mapping[str, Any]) -> str:
 
 
 def _unpaywall_email(settings: Mapping[str, str] | None = None) -> str | None:
-    """Return the configured email address used for Unpaywall requests."""
-    settings = settings or load_settings()
-    return settings.get('unpaywall_email') or os.environ.get('UNPAYWALL_EMAIL')
+    """Return the configured email address used for Unpaywall requests.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Loaded PaperScraper settings.
+
+    Returns
+    -------
+    str or None
+        Contact address, or ``None`` when none is configured.
+    """
+    return unpaywall.configured_email(settings) or None
 
 
 def _download_url_to_pdf(
@@ -318,42 +329,36 @@ def _download_unpaywall_pdf(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
 ) -> tuple[bool, str]:
-    """Use Unpaywall metadata to locate and download an open-access PDF."""
+    """Use Unpaywall metadata to locate and download an open-access PDF.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the URL used or the failure reason.
+    """
     doi = paper.get('doi')
     if not _has_value(doi):
         return False, 'missing DOI'
-    api_url = f'https://api.unpaywall.org/v2/{quote(str(doi).strip(), safe="")}'
     try:
-        email = _unpaywall_email()
-        if not email:
-            return False, 'Unpaywall email is not configured. Run ps_unpaywall_email first.'
-        response = requests.get(api_url, params={'email': email}, timeout=60)
-        if response.status_code >= 400:
-            return False, f'{response.status_code} from Unpaywall'
-        metadata = response.json()
-    except requests.RequestException as e:
+        metadata = unpaywall.get_work(doi)
+    except (ValueError, RuntimeError) as e:
         return False, str(e)
-    candidates = []
-    best = metadata.get('best_oa_location') or {}
-    candidates.append(best.get('url_for_pdf'))
-    for location in metadata.get('oa_locations') or []:
-        candidates.append(location.get('url_for_pdf'))
-    for url in dict.fromkeys(url for url in candidates if url):
+    if not metadata:
+        return False, 'Unpaywall knows nothing of this DOI'
+    last_error = 'no Unpaywall PDF URL found'
+    for url in unpaywall.pdf_candidates(metadata):
         ok, error = _download_url_to_pdf(url, filepath)
         if ok:
             return True, url
         last_error = error
-    return False, locals().get('last_error', 'no Unpaywall PDF URL found')
-
-
-def _core_headers() -> dict[str, str]:
-    """Build request headers for CORE downloads."""
-    settings = load_settings()
-    api_key = settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
-    headers = {'User-Agent': 'PaperScraper/0.0.1'}
-    if api_key:
-        headers['Authorization'] = f'Bearer {api_key}'
-    return headers
+    return False, last_error
 
 
 def _download_core_pdf(
@@ -365,12 +370,12 @@ def _download_core_pdf(
     url = paper.get('pdf_url')
     if _has_value(url):
         urls.append(str(url).strip())
-    core_id = paper.get('core_id')
-    if _has_value(core_id):
-        urls.append(f'https://api.core.ac.uk/v3/works/{quote(str(core_id).strip(), safe="")}/download')
+    core_id = core.resolve_core_id(paper)
+    if core_id:
+        urls.append(f'{core.work_url(core_id)}/download')
     last_error = 'no CORE download URL found'
     for candidate in dict.fromkeys(urls):
-        ok, error = _download_url_to_pdf(candidate, filepath, headers=_core_headers())
+        ok, error = _download_url_to_pdf(candidate, filepath, headers=core.request_headers())
         if ok:
             return True, candidate
         last_error = error
@@ -1154,26 +1159,27 @@ def _abstract_from_mapping(value: object) -> str:
     return ''
 
 
-def _core_work_url(paper: Mapping[str, Any]) -> str | None:
-    """Return a CORE work metadata URL for a paper row when possible."""
-    core_id = paper.get('core_id')
-    if not _has_value(core_id):
-        return None
-    return f'https://api.core.ac.uk/v3/works/{quote(str(core_id).strip(), safe="")}'
-
-
 def _download_core_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
-    """Fetch and return a CORE abstract for one paper row."""
-    url = _core_work_url(paper)
-    if not url:
+    """Fetch and return a CORE abstract for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and the abstract text.
+    """
+    core_id = core.resolve_core_id(paper)
+    if not core_id:
         return False, 'missing CORE ID', ''
     try:
-        response = requests.get(url, headers=_core_headers(), timeout=60)
-        if response.status_code >= 400:
-            return False, f'{response.status_code} from CORE', ''
-        abstract = _abstract_from_mapping(response.json())
-    except requests.RequestException as e:
+        work = core.get_work(core_id)
+    except RuntimeError as e:
         return False, str(e), ''
+    abstract = _abstract_from_mapping(work) if work else ''
     if abstract:
         return True, 'core', abstract
     return False, 'no CORE abstract found', ''

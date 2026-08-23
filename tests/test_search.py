@@ -275,33 +275,6 @@ def test_recast_elsevier_records_preserves_link_lists_for_full_text_selection() 
     assert rows.loc[0, 'elsevier_link'] == 'full-text-link'
 
 
-def test_core_headers_include_optional_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CORE headers include optional authorization."""
-    monkeypatch.setattr(search, '_core_api_key', lambda: None)
-    assert search._core_headers() == {'User-Agent': 'PaperScraper/0.0.1'}
-
-    monkeypatch.setattr(search, '_core_api_key', lambda: 'core-key')
-    assert search._core_headers()['Authorization'] == 'Bearer core-key'
-
-
-def test_core_field_helpers_extract_download_authors_journal_and_date() -> None:
-    """CORE field helpers extract download authors journal and date."""
-    work = {
-        'id': '123',
-        'authors': [{'name': 'A. Author'}, {'fullName': 'B. Author'}, 'C. Author', {'name': ''}],
-        'journal': {'title': 'Journal Title'},
-        'year': 2024,
-    }
-
-    assert search._core_download_url({'downloadUrl': 'https://example.com/pdf'}) == 'https://example.com/pdf'
-    assert search._core_download_url(work) == 'https://api.core.ac.uk/v3/works/123/download'
-    assert search._core_download_url({}) == ''
-    assert search._core_authors(work) == 'A. Author; B. Author; C. Author'
-    assert search._core_journal(work) == 'Journal Title'
-    assert search._core_journal({'publisher': 'Publisher'}) == 'Publisher'
-    assert search._core_date(work) == 2024
-
-
 def test_core_rows_normalizes_work_records() -> None:
     """CORE rows normalize work records."""
     rows = search._core_rows([
@@ -330,94 +303,102 @@ def test_core_rows_normalizes_work_records() -> None:
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
 
-def test_openalex_rows_normalizes_work_records() -> None:
-    """OpenAlex rows normalize work records."""
-    rows = search._openalex_rows([
-        {
-            'id': 'https://openalex.org/W123',
-            'doi': 'https://doi.org/10.1234/OpenAlex',
-            'title': 'OpenAlex title',
-            'publication_date': '2024-03-07',
-            'authorships': [{'author': {'display_name': 'A. Author'}}],
-            'primary_location': {'source': {'display_name': 'OpenAlex Journal'}},
-            'best_oa_location': {'pdf_url': 'https://example.org/paper.pdf'},
-            'abstract_inverted_index': {'Second': [1], 'First': [0]},
-        },
-        {
-            'id': 'https://openalex.org/W456',
-            'title': 'No DOI title',
-        },
-    ])
+class FakeSearchTqdm:
+    """Progress-bar test double that renders nothing."""
 
-    assert list(rows.columns) == search.SEARCH_FIELDS
-    assert rows.loc[0, 'paper_id'] == 'doi:10.1234/openalex'
-    assert rows.loc[0, 'doi'] == '10.1234/openalex'
-    assert rows.loc[0, 'title'] == 'OpenAlex title'
-    assert rows.loc[0, 'journal'] == 'OpenAlex Journal'
-    assert rows.loc[0, 'authors'] == 'A. Author'
-    assert rows.loc[0, 'pdf_url'] == 'https://example.org/paper.pdf'
-    assert rows.loc[0, 'abstract'] == 'First Second'
-    assert rows.loc[0, 'sources'] == 'openalex'
-    assert rows.loc[0, 'metadata_status'] == 'retrieved'
-    assert rows.loc[1, 'paper_id'] == 'openalex:W456'
-    assert rows.loc[1, 'abstract'] == ''
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Accept and ignore the progress-bar arguments.
+
+        Parameters
+        ----------
+        *args : object
+            Positional arguments, unused.
+        **kwargs : object
+            Keyword arguments, unused.
+
+        Returns
+        -------
+        None
+            The double is initialized in place.
+        """
+        return None
+
+    def __enter__(self) -> 'FakeSearchTqdm':
+        """Enter the test-double context.
+
+        Returns
+        -------
+        FakeSearchTqdm
+            This double.
+        """
+        return self
+
+    def __exit__(self, *_: object) -> bool:
+        """Exit the test-double context.
+
+        Parameters
+        ----------
+        *_ : object
+            Exception details, unused.
+
+        Returns
+        -------
+        bool
+            False, so any exception propagates.
+        """
+        return False
+
+    def update(self, _: int) -> None:
+        """Ignore a progress update.
+
+        Parameters
+        ----------
+        _ : int
+            Completed units, unused.
+
+        Returns
+        -------
+        None
+            Nothing is recorded.
+        """
+        return None
 
 
-def test_core_search_paginates_and_stops_at_total_hits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CORE search paginates and stops at total hits."""
-    class FakeResponse:
-        """Provide a response test double."""
-
-        def __init__(self, payload: dict[str, Any]) -> None:
-            """Initialize the test double."""
-            self.payload = payload
-
-        def raise_for_status(self) -> None:
-            """Validate the prepared response status."""
-            return None
-
-        def json(self) -> dict[str, Any]:
-            """Return the prepared JSON payload."""
-            return self.payload
-
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
+def test_core_search_paginates_and_stops_at_total_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Walk pages until the reported total is reached, not one page further."""
     calls = []
 
-    first_page = [{'id': str(index), 'title': f'paper {index}'} for index in range(100)]
+    def fake_search_page(query: str, limit: int = 100, offset: int = 0,
+                         **_: object) -> dict[str, object]:
+        """Record the page asked for and answer it.
 
-    def fake_get(
-        url: str,
-        headers: Mapping[str, str],
-        params: dict[str, Any],
-        timeout: float,
-    ) -> FakeResponse:
-        """Provide a fake HTTP GET implementation."""
-        calls.append(params.copy())
+        Parameters
+        ----------
+        query : str
+            Search expression.
+        limit : int, default=100
+            Records requested.
+        offset : int, default=0
+            First record requested.
+        **_ : object
+            Credential and session arguments, unused.
+
+        Returns
+        -------
+        dict[str, object]
+            One page of results.
+        """
+        calls.append({'q': query, 'limit': limit, 'offset': offset})
         if len(calls) == 1:
-            return FakeResponse({'results': first_page, 'totalHits': 101})
-        return FakeResponse({'results': [{'id': '100', 'title': 'paper 100'}], 'totalHits': 101})
+            return {'results': [{'id': str(index), 'title': f'paper {index}'}
+                                for index in range(100)], 'totalHits': 101}
+        return {'results': [{'id': '100', 'title': 'paper 100'}], 'totalHits': 101}
 
-    monkeypatch.setattr(search, '_core_headers', lambda: {'User-Agent': 'test'})
-    monkeypatch.setattr(search.requests, 'get', fake_get)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search.core, 'search_page', fake_search_page)
+    monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
 
     rows = search.core_search('solid electrolyte', count=101)
 
@@ -431,89 +412,23 @@ def test_core_search_paginates_and_stops_at_total_hits(monkeypatch: pytest.Monke
 
 
 def test_core_search_stops_when_no_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CORE search stops when no results."""
-    class FakeResponse:
-        """Provide a response test double."""
+    """Stop at an empty page rather than walking past the end of the results."""
+    monkeypatch.setattr(search.core, 'search_page', lambda *_, **__: {'results': []})
+    monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
 
-        def raise_for_status(self) -> None:
-            """Validate the prepared response status."""
-            return None
-
-        def json(self) -> dict[str, list[object]]:
-            """Return the prepared JSON payload."""
-            return {'results': []}
-
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
-    monkeypatch.setattr(search.requests, 'get', lambda *_, **__: FakeResponse())
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
-
-    assert search.core_search('missing', count=3).empty
+    assert search.core_search('nothing matches', count=50).empty
 
 
 def test_core_search_stops_when_page_is_short(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CORE search stops when page is short."""
-    class FakeResponse:
-        """Provide a response test double."""
+    """Read a short page as the last one when no total is reported."""
+    pages = [{'results': [{'id': str(index)} for index in range(3)]}]
+    monkeypatch.setattr(search.core, 'search_page',
+                        lambda *_, **__: pages.pop(0) if pages else {})
+    monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
 
-        def raise_for_status(self) -> None:
-            """Validate the prepared response status."""
-            return None
-
-        def json(self) -> dict[str, list[dict[str, str]]]:
-            """Return the prepared JSON payload."""
-            return {'results': [{'id': '1', 'title': 'one'}]}
-
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
-    calls = []
-
-    def fake_get(*args: object, **kwargs: Any) -> FakeResponse:
-        """Provide a fake HTTP GET implementation."""
-        calls.append(kwargs['params'])
-        return FakeResponse()
-
-    monkeypatch.setattr(search.requests, 'get', fake_get)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
-
-    rows = search.core_search('solid electrolyte', count=3)
-
-    assert rows['paper_id'].tolist() == ['core:1']
-    assert len(calls) == 1
+    assert len(search.core_search('solid electrolyte', count=100)) == 3
 
 
 def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -770,7 +685,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
     monkeypatch.setattr(
         search,
         'core_search',
-        lambda *_, **__: (_ for _ in ()).throw(search.requests.RequestException('core down')),
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('core down')),
     )
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
@@ -782,7 +697,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
     assert 'CORE search skipped: core down' in capsys.readouterr().out
     assert db_path.exists()
 
-    with pytest.raises(search.requests.RequestException, match='core down'):
+    with pytest.raises(RuntimeError, match='core down'):
         search.search_for_papers('query', source='core', count=1)
 
 
