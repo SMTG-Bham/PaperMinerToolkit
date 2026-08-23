@@ -62,6 +62,10 @@ class Source:
         Environment variable that also supplies that credential.
     setup_command : str, default=''
         Console script that stores the credential.
+    credential_required : bool, default=False
+        Whether the source is unusable without that credential. An optional
+        credential raises a rate limit or a quota; a required one is the
+        difference between the source answering and not.
     open_access : bool, default=False
         Whether a PDF from this source is openly licensed. A closed-access
         download is not re-advertised as the paper's public PDF URL.
@@ -75,6 +79,7 @@ class Source:
     credential: str = ''
     credential_env: str = ''
     setup_command: str = ''
+    credential_required: bool = False
     open_access: bool = False
 
     def has(self, capability: str) -> bool:
@@ -136,14 +141,16 @@ SOURCES: dict[str, Source] = {
                 credential_env='NCBI_API_KEY', setup_command='ps_ncbi_key'),
         _source('elsevier', 'Elsevier', 'elsevier', [SEARCH, PDF, TEXT, ABSTRACT],
                 identifier_column='elsevier_link', credential='elsevier_api_key',
-                credential_env='ELSEVIER_API_KEY', setup_command='ps_elsevier_key'),
+                credential_env='ELSEVIER_API_KEY', setup_command='ps_elsevier_key',
+                credential_required=True),
         _source('core', 'CORE', 'search', [SEARCH, PDF, ABSTRACT],
                 identifier_column='core_id', credential='core_api_key',
                 credential_env='CORE_API_KEY', setup_command='ps_core_key',
-                open_access=True),
+                credential_required=True, open_access=True),
         _source('unpaywall', 'Unpaywall', 'download', [PDF],
                 credential='unpaywall_email', credential_env='UNPAYWALL_EMAIL',
-                setup_command='ps_unpaywall_email', open_access=True),
+                setup_command='ps_unpaywall_email', credential_required=True,
+                open_access=True),
         _source('arxiv', 'arXiv', 'arxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
                 identifier_column='arxiv_id', open_access=True),
         _source('medrxiv', 'medRxiv', 'medrxiv', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
@@ -287,7 +294,10 @@ def open_access_names() -> frozenset[str]:
     return frozenset(name for name, entry in SOURCES.items() if entry.open_access)
 
 
-def resolve_names(requested: Iterable[str] | None, capability: str) -> list[str]:
+def resolve_names(requested: Iterable[str] | None,
+                  capability: str,
+                  preserve_order: bool = False,
+                  label: str = '') -> list[str]:
     """Lower-case, validate, and expand ``all`` for one capability.
 
     This is the only place a ``--source`` selection is interpreted, so the three
@@ -300,11 +310,21 @@ def resolve_names(requested: Iterable[str] | None, capability: str) -> list[str]
         ``all`` expands to every source with the capability.
     capability : str
         One of :data:`CAPABILITIES`.
+    preserve_order : bool, default=False
+        Whether an explicit selection keeps the order it was written in. A
+        download tries sources in the order asked for, because naming several
+        is a statement of preference; enrichment does not, because its order is
+        a field-precedence rule rather than a choice. An expanded ``all`` always
+        takes the capability's own order.
+    label : str, default=''
+        Word for the selection in a rejection message, when the capability's
+        own name is not what a user typed. ``--source`` on a download selects a
+        PDF source but reads as a download source.
 
     Returns
     -------
     list[str]
-        Source names in this capability's order, without duplicates.
+        Source names, without duplicates.
 
     Raises
     ------
@@ -317,5 +337,8 @@ def resolve_names(requested: Iterable[str] | None, capability: str) -> list[str]
         return list(available)
     unknown = [name for name in asked if name not in available]
     if unknown:
-        raise ValueError(f'{capability} source must be one of: all, {", ".join(available)}')
+        raise ValueError(f'{label or capability} source must be one of: '
+                         f'all, {", ".join(available)}')
+    if preserve_order:
+        return list(dict.fromkeys(asked))
     return [name for name in available if name in set(asked)]

@@ -20,7 +20,7 @@ import re
 import requests
 import sqlite3
 import tempfile
-from collections.abc import Iterable, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
@@ -30,14 +30,14 @@ from urllib.parse import quote
 from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
-from paperscraper import sources
+from paperscraper import sources as registry
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
-DOWNLOAD_SOURCES = {*sources.names(sources.PDF), *sources.names(sources.TEXT),
-                    *sources.names(sources.ABSTRACT)}
+DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT),
+                    *registry.names(registry.ABSTRACT)}
 # Providers that serve a machine-readable full text rather than only a PDF.
-TEXT_SOURCES = set(sources.names(sources.TEXT)) - {'elsevier'}
+TEXT_SOURCES = set(registry.names(registry.TEXT)) - {'elsevier'}
 _Paper: TypeAlias = dict[str, Any]
 
 
@@ -1273,33 +1273,119 @@ def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]
     return False, '; '.join(errors) or 'no abstract source available', ''
 
 
-def _configured_sources(sources: Iterable[str] | None) -> list[str]:
-    """Resolve requested PDF sources, expanding ``all`` to configured providers."""
-    if not sources or 'all' in sources:
-        settings = load_settings()
-        enabled = []
-        if _unpaywall_email(settings):
-            enabled.append('unpaywall')
-        enabled.append('openalex')
-        if settings.get('core_api_key') or os.environ.get('CORE_API_KEY'):
-            enabled.append('core')
-        if settings.get('elsevier_api_key'):
-            enabled.append('elsevier')
-        enabled.append('pubmed')
-        enabled.append('medrxiv')
-        enabled.append('biorxiv')
-        enabled.append('chemrxiv')
-        enabled.append('arxiv')
-        return enabled
-    invalid = set(sources) - DOWNLOAD_SOURCES
-    if invalid:
-        raise ValueError(f'download source must be one of: all, {", ".join(sorted(DOWNLOAD_SOURCES))}')
-    return list(dict.fromkeys(sources))
+def _configured_sources(requested: Iterable[str] | None) -> list[str]:
+    """Resolve requested download sources, dropping ones with no credential.
+
+    An unscoped run skips a source whose credential is not configured, because
+    a request it cannot authenticate is a wasted round trip. An explicitly
+    named source is kept whatever its credential, so the failure says what is
+    missing rather than silently doing nothing.
+
+    Parameters
+    ----------
+    requested : Iterable[str] or None
+        Requested source names, or ``None`` for every configured source.
+
+    Returns
+    -------
+    list[str]
+        Source names in the registry's download order.
+
+    Raises
+    ------
+    ValueError
+        If a requested name is not a download source.
+    """
+    asked = list(requested or [])
+    resolved = registry.resolve_names(asked, registry.PDF, preserve_order=True,
+                                     label='download')
+    if asked and 'all' not in {str(name).strip().lower() for name in asked}:
+        return resolved
+    settings = load_settings()
+    return [name for name in resolved if _source_configured(name, settings)]
+
+
+def _source_configured(name: str, settings: Mapping[str, str]) -> bool:
+    """Report whether a source that needs a credential has one.
+
+    Only a required credential gates a source. OpenAlex and PubMed both answer
+    without a key -- the key buys a larger budget -- so an unscoped run still
+    asks them.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+    settings : Mapping[str, str]
+        Loaded PaperScraper settings.
+
+    Returns
+    -------
+    bool
+        Whether the source can be used without further configuration.
+    """
+    entry = registry.SOURCES[name]
+    if not entry.credential_required:
+        return True
+    return bool(settings.get(entry.credential) or os.environ.get(entry.credential_env))
 
 
 def _elsevier_configured() -> bool:
     """Return whether an Elsevier API key is available for downloads."""
     return bool(load_settings().get('elsevier_api_key'))
+
+
+def _download_elsevier_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Fetch a paper's PDF through the Elsevier article route.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the failure reason when unsuccessful.
+    """
+    return _download_pdf(paper, filepath), 'Elsevier PDF download failed'
+
+
+# One entry per source that can serve a PDF, named rather than bound so that
+# replacing a downloader takes effect. The order a run uses comes from the
+# registry.
+PDF_DOWNLOADERS = {
+    'unpaywall': '_download_unpaywall_pdf',
+    'openalex': '_download_openalex_pdf',
+    'core': '_download_core_pdf',
+    'elsevier': '_download_elsevier_pdf',
+    'pubmed': '_download_pubmed_pdf',
+    'medrxiv': '_download_medrxiv_pdf',
+    'biorxiv': '_download_biorxiv_pdf',
+    'chemrxiv': '_download_chemrxiv_pdf',
+    'arxiv': '_download_arxiv_pdf',
+}
+
+
+def _pdf_downloader(source: str) -> Callable[..., tuple[bool, str]]:
+    """Return the PDF downloader for one source.
+
+    Parameters
+    ----------
+    source : str
+        Registry source name.
+
+    Returns
+    -------
+    Callable[..., tuple[bool, str]]
+        Downloader taking a paper row and a destination path.
+    """
+    return globals()[PDF_DOWNLOADERS[source]]
 
 
 def _download_pdf_from_sources(
@@ -1308,20 +1394,9 @@ def _download_pdf_from_sources(
     sources: Iterable[str],
 ) -> tuple[bool, str, str]:
     """Try configured PDF sources in order and return success/source details."""
-    downloader_by_source = {
-        'unpaywall': _download_unpaywall_pdf,
-        'openalex': _download_openalex_pdf,
-        'core': _download_core_pdf,
-        'elsevier': lambda row, path: (_download_pdf(row, path), 'Elsevier PDF download failed'),
-        'pubmed': _download_pubmed_pdf,
-        'medrxiv': _download_medrxiv_pdf,
-        'biorxiv': _download_biorxiv_pdf,
-        'chemrxiv': _download_chemrxiv_pdf,
-        'arxiv': _download_arxiv_pdf,
-    }
     errors = []
     for source in sources:
-        downloader = downloader_by_source[source]
+        downloader = _pdf_downloader(source)
         try:
             ok, detail = downloader(paper, filepath)
         except Exception as e:
@@ -1652,15 +1727,12 @@ def _download_paper(
             if ok:
                 paper['pdf_path'] = ''
                 paper['pdf_source'] = source_or_error
-                if source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv',
-                                       'medrxiv', 'biorxiv', 'chemrxiv'} and source_url:
+                if source_or_error in registry.open_access_names() and source_url:
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
                 summary['pdfs'] += 1
-                pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core',
-                                                            'arxiv', 'medrxiv', 'biorxiv',
-                                                            'chemrxiv'}
+                pdf_succeeded_from_oa = source_or_error in registry.open_access_names()
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
         except Exception as e:
