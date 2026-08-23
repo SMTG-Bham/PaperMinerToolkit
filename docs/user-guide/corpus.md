@@ -20,6 +20,7 @@ ps_search "Lithium solid electrolyte" papers.db --source pubmed --count 100
 ps_search "Lithium solid electrolyte" papers.db --source arxiv --count 100
 ps_search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
 ps_search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
+ps_search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
@@ -87,6 +88,35 @@ the accession number, which is six digits on bioRxiv and eight on medRxiv, and r
 the one server that can answer for it. bioRxiv postings from before 2018 carry a bare accession
 such as `10.1101/060400` instead, which is recognized too.
 
+chemRxiv is the chemistry preprint archive, and it works differently from the other two. It does
+publish a search endpoint, so a query is answered by the server rather than by reading the archive
+and matching locally. The same `category:`, `from:`, and `to:` terms are accepted, but here they
+are passed to the service as filters:
+
+```bash
+ps_search 'photocatalysis category:Catalysis' papers.db --source chemrxiv
+ps_search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --source chemrxiv
+```
+
+Narrowing a chemRxiv query therefore makes the service do less work rather than saving you a long
+read, and an unscoped query is not the expensive case it is for medRxiv and bioRxiv. Only the first
+10000 matches are reachable for any one query; when a query matches more, PaperScraper prints the
+shortfall, and a `category:` or date scope reaches the rest. Categories are chemRxiv's own list —
+`Catalysis`, `Organic Chemistry`, `Analytical Chemistry`, `Theoretical and Computational
+Chemistry`, and the rest — and a name that matches none of them is reported rather than ignored.
+
+A chemRxiv DOI keeps the version it was issued with, and that suffix is part of the DOI rather than
+decoration on the end of it. `10.26434/chemrxiv.15007737/v1` is a registered DOI while
+`10.26434/chemrxiv.15007737` is not, and for the older dated accessions the reverse holds:
+`10.26434/chemrxiv-2022-w08rh` is registered and `10.26434/chemrxiv-2022-w08rh-v1` is not.
+PaperScraper stores whichever form the archive issued, unchanged, so the DOI in `chemrxiv_doi`
+always resolves. Five suffix shapes are in use across the three platforms chemRxiv has run on, and
+all of them are recognized. A `10.26434` DOI is never mistaken for a medRxiv or bioRxiv one.
+
+chemrxiv.org is fronted by a bot challenge that can refuse a client outright. PaperScraper does not
+try to get around it: a refusal is reported as the reason a search or download failed, and the same
+papers stay reachable through the `openalex` and `crossref` sources.
+
 `--count` is applied to each selected provider. Add `--store-abstract` to retain abstracts returned in search records immediately; otherwise abstracts can be fetched during downloading.
 
 ## Import local PDFs
@@ -128,7 +158,7 @@ Inspect the review CSV before downloading. Crossref provides metadata and DOIs, 
 ## Supplement metadata
 
 Search and import records carry only a handful of bibliographic fields. `ps_enrich` fills in the rest
-from Crossref, OpenAlex, PubMed, arXiv, medRxiv, and bioRxiv:
+from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv:
 
 ```bash
 ps_enrich papers.db
@@ -157,6 +187,12 @@ Crossref and OpenAlex describe the paper better than the preprint record can. Th
 sources rather than one because they are separate archives — a preprint DOI belongs to exactly one
 of them, and asking the other costs a request and returns nothing.
 
+chemRxiv supplies its subject categories under the `chemrxiv_category` scheme and the authors'
+own keywords under `chemrxiv_keyword`, along with the licence and the link to a published version.
+It files a preprint under more than one category where medRxiv and bioRxiv allow exactly one, so a
+chemRxiv paper can carry several category rows, of which the first is flagged primary. It ranks
+last for the same reason the other preprint servers rank low, and it supplies no full text.
+
 Each provider's child rows are replaced independently, so enriching from one source never discards
 another's.
 
@@ -179,14 +215,16 @@ ps_enrich papers.db --source pubmed
 ps_enrich papers.db --source arxiv
 ps_enrich papers.db --source medrxiv
 ps_enrich papers.db --source biorxiv
+ps_enrich papers.db --source chemrxiv
 ```
 
-Papers with no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, or bioRxiv DOI are
-reported as skipped and cost no requests. A row that carries only one of those identifiers — common
-for records found through PubMed, arXiv, medRxiv, or bioRxiv themselves — is resolvable whenever
-the provider that knows it is among the selected sources. Note that none of the three preprint
-servers can be reached from an ordinary DOI: arXiv publishes no DOI search field at all, and a
-published medRxiv or bioRxiv row carries the journal's DOI rather than the preprint's. Each
+Papers with no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, bioRxiv DOI, or
+chemRxiv DOI are reported as skipped and cost no requests. A row that carries only one of those
+identifiers — common for records found through PubMed, arXiv, medRxiv, bioRxiv, or chemRxiv
+themselves — is resolvable whenever the provider that knows it is among the selected sources. Note
+that none of the four preprint servers can be reached from an ordinary DOI: arXiv publishes no DOI
+search field at all, and a published medRxiv, bioRxiv, or chemRxiv row carries the journal's DOI
+rather than the preprint's. Each
 enriches only rows that already carry the identifier it issued.
 To supplement rows as they arrive instead of in a separate pass, add `--enrich` to discovery:
 
@@ -207,11 +245,11 @@ ps_download papers.db --format pdf
 ps_download papers.db --format both
 ```
 
-Abstract retrieval tries OpenAlex, PubMed, medRxiv, bioRxiv, arXiv, CORE, and Elsevier in that
-order; PubMed is attempted for any row carrying a PMID or a DOI, and the preprint servers for any
-row carrying the identifier each issued. PDF retrieval can use Unpaywall, OpenAlex, CORE, Elsevier,
-PubMed Central, medRxiv, bioRxiv, and arXiv, in that order. The three preprint servers are tried
-last because the other sources may hold the publisher's version of record while a preprint server
+Abstract retrieval tries OpenAlex, PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, and Elsevier
+in that order; PubMed is attempted for any row carrying a PMID or a DOI, and the preprint servers
+for any row carrying the identifier each issued. PDF retrieval can use Unpaywall, OpenAlex, CORE,
+Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, and arXiv, in that order. The four preprint
+servers are tried last because the other sources may hold the publisher's version of record while a preprint server
 holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
 
 ```bash
@@ -252,6 +290,12 @@ ps_download papers.db --format text --source biorxiv
 Their PDFs sit behind a bot challenge that occasionally refuses a client outright; when that
 happens the run reports the refusal for that paper and carries on, and the text source is
 unaffected.
+
+chemRxiv is like arXiv rather than like the other two: it serves PDFs and abstracts but publishes
+no machine-readable full text, so it is not a `--format text` source and `--source chemrxiv` is
+rejected for that format. Text for a chemRxiv paper comes from scraping its downloaded PDF. Its
+PDFs sit behind the same bot challenge, which PaperScraper reports rather than works around, so a
+download run on a network the challenge refuses will report those papers and carry on.
 
 By default, abstracts are also attempted while downloading text or PDFs. Disable that with `--no-abstract`.
 

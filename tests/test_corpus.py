@@ -558,6 +558,7 @@ V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
 V6_PAPER_FIELDS = V5_PAPER_FIELDS + ['pmid', 'pmcid']
 V7_PAPER_FIELDS = V6_PAPER_FIELDS + ['arxiv_id']
 V8_PAPER_FIELDS = V7_PAPER_FIELDS + ['medrxiv_doi']
+V9_PAPER_FIELDS = V8_PAPER_FIELDS + ['biorxiv_doi']
 
 
 def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
@@ -570,7 +571,7 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 9
+    assert version == corpus.SCHEMA_VERSION == 10
     assert {'pmid', 'pmcid'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -588,7 +589,7 @@ def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: 
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 9
+    assert version == corpus.SCHEMA_VERSION == 10
     assert 'arxiv_id' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -605,7 +606,7 @@ def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 9
+    assert version == corpus.SCHEMA_VERSION == 10
     assert 'medrxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -622,11 +623,28 @@ def test_corpus_migrates_version_eight_biorxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 9
+    assert version == corpus.SCHEMA_VERSION == 10
     assert 'biorxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
     assert rows[0]['biorxiv_doi'] is None
+
+
+def test_corpus_migrates_version_nine_chemrxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the chemRxiv DOI column to an existing version-nine corpus."""
+    db_path = tmp_path / 'v9.db'
+    write_legacy_corpus(db_path, V9_PAPER_FIELDS, version=9)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert 'chemrxiv_doi' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['chemrxiv_doi'] is None
 
 
 def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
@@ -641,6 +659,10 @@ def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
     assert corpus._fallback_paper_id(
         {'biorxiv_doi': '10.1101/2023.12.01.569634', 'core_id': '2'}
     ) == 'doi:10.1101/2023.12.01.569634'
+    # The version suffix is part of a chemRxiv DOI, so it must survive here too.
+    assert corpus._fallback_paper_id(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1', 'core_id': '2'}
+    ) == 'doi:10.26434/chemrxiv.15007737/v1'
     assert corpus._fallback_paper_id({'core_id': '2'}) == 'core:2'
     assert corpus._fallback_paper_id({'title': 'A paper'}).startswith('paper:')
 
@@ -677,6 +699,16 @@ def test_papers_match_on_a_shared_biorxiv_identifier() -> None:
     existing = {'paper_id': 'doi:10.1101/2023.12.01.569634',
                 'biorxiv_doi': '10.1101/2023.12.01.569634', 'title': 'One'}
     incoming = {'paper_id': 'doi:10.1/x', 'biorxiv_doi': '10.1101/2023.12.01.569634',
+                'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_papers_match_on_a_shared_chemrxiv_identifier() -> None:
+    """Treat rows sharing a chemRxiv DOI as the same publication."""
+    existing = {'paper_id': 'doi:10.26434/chemrxiv.15007737/v1',
+                'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
                 'title': 'Different title'}
 
     assert corpus._papers_match(existing, incoming)

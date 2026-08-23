@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, and bioRxiv, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -19,13 +19,13 @@ import re
 import requests
 from tqdm import tqdm
 
-from paperscraper import arxiv, biorxiv, elsevier, medrxiv, openalex, pubmed
+from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
 from paperscraper.settings import load_settings
 
 SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv',
-                  'all'}
+                  'chemrxiv', 'all'}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
 
 
@@ -524,6 +524,11 @@ def _biorxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return _rxiv_rows(entries)
 
 
+def _chemrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert chemRxiv records into normalized paper rows."""
+    return _rxiv_rows(entries)
+
+
 def _rxiv_search(provider: ModuleType,
                  label: str,
                  query: str,
@@ -706,6 +711,108 @@ def biorxiv_search(query: str, count: int = 200, today: str = '') -> pd.DataFram
     return _rxiv_search(biorxiv, 'bioRxiv', query, count=count, today=today)
 
 
+def chemrxiv_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search chemRxiv records.
+
+    chemRxiv, unlike medRxiv and bioRxiv, publishes a search endpoint, so the
+    query is answered by the server rather than by reading the archive and
+    matching locally. Paging therefore works the way it does for arXiv: pages
+    are requested until ``count`` papers are held, and the cursor advances by
+    what the server returned rather than by what survived deduplication, so a
+    page of repeats still moves it forward.
+
+    The ``category:``, ``from:``, and ``to:`` scope terms are accepted with the
+    same spelling the other preprint sources use, but here they are forwarded
+    as ``categoryIds``, ``searchDateFrom``, and ``searchDateTo`` rather than
+    applied to records after reading them. Narrowing a chemRxiv query makes the
+    server do less work; it is not, as it is for the other two archives, the
+    only way to bound what gets read.
+
+    Each posted version of a chemRxiv preprint carries a DOI of its own, so
+    records are grouped by :func:`paperscraper.chemrxiv.chemrxiv_stem` and
+    reduced to the newest posting. That is done over everything read so far
+    rather than per page, because two versions of one preprint can fall on
+    either side of a page boundary.
+
+    chemRxiv exposes only the first
+    :data:`paperscraper.chemrxiv.MAX_SEARCH_RESULTS` matches for any query, so
+    a larger corpus needs the query split by category or date. The shortfall is
+    printed rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date, or
+        names a category chemRxiv does not file preprints under.
+    RuntimeError
+        If a chemRxiv request cannot be completed.
+    """
+    terms, scope = chemrxiv.parse_query(query)
+    target = max(int(count), 0)
+    if not target:
+        return _chemrxiv_rows([])
+    term = chemrxiv.search_terms(terms)
+    category = scope.get('category', '')
+    category_id = chemrxiv.category_ids([category])[0] if category else ''
+    entries: list[Mapping[str, Any]] = []
+    papers: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    skip = 0
+    reachable = 0
+    reported = False
+    with tqdm(total=target, desc='Searching chemRxiv', colour='yellow') as pbar:
+        while len(papers) < target:
+            payload = chemrxiv.search_page(term=term, skip=skip,
+                                           limit=min(chemrxiv.PAGE_SIZE, target - len(papers)),
+                                           category_id=category_id,
+                                           date_from=scope.get('from', ''),
+                                           date_to=scope.get('to', ''))
+            page = chemrxiv.parse_records(payload)
+            if not reported:
+                total = chemrxiv.total_results(payload)
+                if total > chemrxiv.MAX_SEARCH_RESULTS:
+                    print(f'chemRxiv matched {total} records but exposes only the first '
+                          f'{chemrxiv.MAX_SEARCH_RESULTS}; narrow the query with category:, '
+                          f'from:, or to: terms to reach the rest.')
+                reachable = min(total, chemrxiv.MAX_SEARCH_RESULTS)
+                target = min(target, reachable)
+                pbar.total = target
+                reported = True
+            if not page:
+                break
+            # Advance by what chemRxiv returned, not by what survived
+            # deduplication, so a page of repeats still moves the cursor.
+            skip += len(page)
+            for entry in page:
+                identifier = str(entry.get('paper_id') or entry.get('chemrxiv_doi') or '')
+                if identifier and identifier in seen:
+                    continue
+                if identifier:
+                    seen.add(identifier)
+                entries.append(entry)
+            papers = chemrxiv.latest_versions(entries)
+            pbar.n = min(len(papers), target)
+            pbar.refresh()
+            # Stop once the walk has passed everything chemRxiv reports, so a
+            # run of duplicate pages cannot keep the loop going indefinitely.
+            if skip >= reachable:
+                break
+    return _chemrxiv_rows(papers[:target])
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -747,7 +854,7 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv'}, default='all'
+    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv'}, default='all'
         Provider or provider set to search.
     count : int, default=200
         Maximum number of records requested from each provider.
@@ -770,8 +877,8 @@ def search_for_papers(query: str,
     requests.RequestException
         If the explicitly selected CORE provider fails.
     RuntimeError
-        If the explicitly selected OpenAlex, PubMed, arXiv, medRxiv, or bioRxiv
-        provider fails.
+        If the explicitly selected OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, or
+        chemRxiv provider fails.
     """
     source = source.lower()
     if source not in SEARCH_SOURCES:
@@ -826,6 +933,13 @@ def search_for_papers(query: str,
             if source == 'biorxiv':
                 raise
             print(f'bioRxiv search skipped: {e}')
+    if source in {'chemrxiv', 'all'}:
+        try:
+            frames.append(chemrxiv_search(query, count=count))
+        except Exception as e:
+            if source == 'chemrxiv':
+                raise
+            print(f'chemRxiv search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:

@@ -27,14 +27,14 @@ from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
-from paperscraper import arxiv, biorxiv, elsevier, medrxiv, openalex, pubmed
+from paperscraper import arxiv, biorxiv, chemrxiv, elsevier, medrxiv, openalex, pubmed
 from paperscraper.corpus import (PIPELINE_COLUMNS, add_asset, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
 from paperscraper.settings import load_settings
 
 DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {'unpaywall', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv',
-                    'biorxiv'}
+                    'biorxiv', 'chemrxiv'}
 # Providers that serve a machine-readable full text rather than only a PDF.
 TEXT_SOURCES = {'pubmed', 'medrxiv', 'biorxiv'}
 _Paper: TypeAlias = dict[str, Any]
@@ -883,6 +883,121 @@ def _download_biorxiv_abstract(
     return False, f'no bioRxiv abstract found for {entry.get("biorxiv_doi")}', ''
 
 
+def _chemrxiv_identifier(paper: Mapping[str, Any]) -> str | None:
+    """Resolve a stored chemRxiv DOI for a paper row.
+
+    Only values already held in the corpus are considered, so this never issues
+    a request. chemRxiv does publish a title search, but it is not used here:
+    it costs a request per row and can return a different preprint with a
+    similar title, which would attach the wrong document to the row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a chemRxiv DOI, a chemRxiv paper ID, or a
+        chemRxiv content URL.
+
+    Returns
+    -------
+    str or None
+        chemRxiv DOI as registered, or ``None`` when the row stores none.
+    """
+    return chemrxiv.resolve_chemrxiv_doi(paper) or None
+
+
+def _chemrxiv_record(paper: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str]:
+    """Fetch the newest posted version of a row's chemRxiv preprint.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a chemRxiv DOI.
+
+    Returns
+    -------
+    tuple[Mapping[str, Any] or None, str]
+        Normalized record, or ``None`` and a failure reason.
+    """
+    identifier = _chemrxiv_identifier(paper)
+    if identifier is None:
+        return None, 'missing chemRxiv DOI'
+    try:
+        entry = chemrxiv.fetch_doi(identifier)
+    except RuntimeError as e:
+        return None, str(e)
+    if entry is None:
+        return None, f'no chemRxiv record found for {identifier}'
+    return entry, ''
+
+
+def _download_chemrxiv_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Download a paper's PDF from chemRxiv.
+
+    The location is derived from the DOI, which is what the registry currently
+    records; the record's own asset URL is tried second, because chemRxiv
+    changed hosting platforms and older records still name the previous one.
+
+    chemrxiv.org fronts these files with a bot challenge that can refuse a
+    client outright. A refusal is reported as the failure reason rather than
+    worked around, and the paper stays reachable through the other open-access
+    PDF sources when it happens.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a chemRxiv DOI.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the source URL on success or a failure reason.
+    """
+    entry, error = _chemrxiv_record(paper)
+    if entry is None:
+        return False, error
+    identifier = str(entry.get('chemrxiv_doi') or '')
+    candidates = [chemrxiv.pdf_url(identifier), str(entry.get('asset_url') or '')]
+    errors = []
+    for url in [candidate for candidate in candidates if candidate]:
+        ok, failure = _download_url_to_pdf(url, filepath, headers=chemrxiv.request_headers())
+        if ok:
+            return True, url
+        errors.append(failure)
+    if not errors:
+        return False, 'missing chemRxiv DOI'
+    return False, '; '.join(errors)
+
+
+def _download_chemrxiv_abstract(
+    paper: Mapping[str, Any],
+) -> tuple[bool, str, str]:
+    """Fetch and return a chemRxiv abstract for one paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row carrying a chemRxiv DOI.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and normalized abstract
+        text. The text is empty when retrieval fails.
+    """
+    entry, error = _chemrxiv_record(paper)
+    if entry is None:
+        return False, error, ''
+    abstract = _clean_abstract(entry.get('abstract'))
+    if abstract:
+        return True, 'chemrxiv', abstract
+    return False, f'no chemRxiv abstract found for {entry.get("chemrxiv_doi")}', ''
+
+
 def _arxiv_identifier(paper: Mapping[str, Any]) -> str | None:
     """Resolve a stored arXiv identifier for a paper row.
 
@@ -1134,6 +1249,11 @@ def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]
         if ok:
             return ok, source, abstract
         errors.append(f'biorxiv: {source}')
+    if _chemrxiv_identifier(paper) is not None:
+        ok, source, abstract = _download_chemrxiv_abstract(paper)
+        if ok:
+            return ok, source, abstract
+        errors.append(f'chemrxiv: {source}')
     if _arxiv_identifier(paper) is not None:
         ok, source, abstract = _download_arxiv_abstract(paper)
         if ok:
@@ -1167,6 +1287,7 @@ def _configured_sources(sources: Iterable[str] | None) -> list[str]:
         enabled.append('pubmed')
         enabled.append('medrxiv')
         enabled.append('biorxiv')
+        enabled.append('chemrxiv')
         enabled.append('arxiv')
         return enabled
     invalid = set(sources) - DOWNLOAD_SOURCES
@@ -1194,6 +1315,7 @@ def _download_pdf_from_sources(
         'pubmed': _download_pubmed_pdf,
         'medrxiv': _download_medrxiv_pdf,
         'biorxiv': _download_biorxiv_pdf,
+        'chemrxiv': _download_chemrxiv_pdf,
         'arxiv': _download_arxiv_pdf,
     }
     errors = []
@@ -1530,13 +1652,14 @@ def _download_paper(
                 paper['pdf_path'] = ''
                 paper['pdf_source'] = source_or_error
                 if source_or_error in {'unpaywall', 'openalex', 'core', 'arxiv',
-                                       'medrxiv', 'biorxiv'} and source_url:
+                                       'medrxiv', 'biorxiv', 'chemrxiv'} and source_url:
                     paper['pdf_url'] = source_url
                 _set_status(paper, 'pdf_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, pdf_filepath, role='pdf', source=source_or_error)
                 summary['pdfs'] += 1
                 pdf_succeeded_from_oa = source_or_error in {'unpaywall', 'openalex', 'core',
-                                                            'arxiv', 'medrxiv', 'biorxiv'}
+                                                            'arxiv', 'medrxiv', 'biorxiv',
+                                                            'chemrxiv'}
             else:
                 _set_status(paper, 'pdf_download_status', 'failed', source_or_error)
         except Exception as e:

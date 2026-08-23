@@ -745,6 +745,7 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -774,6 +775,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -803,6 +805,7 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1011,6 +1014,7 @@ def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1175,6 +1179,7 @@ def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
 
     monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1387,6 +1392,7 @@ def test_search_for_papers_skips_failed_medrxiv_for_all_but_raises_for_medrxiv(
         lambda *_, **__: (_ for _ in ()).throw(RuntimeError('medrxiv down')),
     )
     monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1597,6 +1603,7 @@ def test_search_for_papers_skips_failed_biorxiv_for_all_but_raises_for_biorxiv(
         'biorxiv_search',
         lambda *_, **__: (_ for _ in ()).throw(RuntimeError('biorxiv down')),
     )
+    monkeypatch.setattr(search, 'chemrxiv_search', lambda *_, **__: search._chemrxiv_rows([]))
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
@@ -1643,3 +1650,173 @@ def test_pubmed_search_uses_the_real_eutilities_api() -> None:
 
     assert len(rows) <= 1
     assert rows.empty or rows.loc[0, 'sources'] == 'pubmed'
+
+
+def chemrxiv_records(count: int, start: int = 0, version: str = '1',
+                     date: str = '2024-03-01') -> list[dict[str, Any]]:
+    """Return mapped chemRxiv records numbered from an offset."""
+    return [{'paper_id': f'doi:10.26434/chemrxiv.150077{start + index:02d}/v{version}',
+             'doi': f'10.26434/chemrxiv.150077{start + index:02d}/v{version}',
+             'chemrxiv_doi': f'10.26434/chemrxiv.150077{start + index:02d}/v{version}',
+             'chemrxiv_stem': f'10.26434/chemrxiv.150077{start + index:02d}',
+             'title': f'Preprint {start + index} on catalysis',
+             'abstract': f'  Abstract {start + index}\n  wrapped.  ',
+             'publication_date': date, 'version': version,
+             'category': 'Catalysis', 'sources': 'chemrxiv'} for index in range(count)]
+
+
+def stub_chemrxiv_pages(monkeypatch: pytest.MonkeyPatch,
+                        pages: list[list[dict[str, Any]]],
+                        total: int | None = None) -> list[dict[str, Any]]:
+    """Serve prepared chemRxiv result pages and record the requests made."""
+    calls: list[dict[str, Any]] = []
+    by_skip: dict[int, list[dict[str, Any]]] = {}
+    cursor = 0
+    for page in pages:
+        by_skip[cursor] = page
+        cursor += len(page)
+
+    def fake_search_page(term: str = '', skip: int = 0, **kwargs: Any) -> dict[str, Any]:
+        """Record the request and answer with the page prepared for it."""
+        calls.append({'term': term, 'skip': skip, **kwargs})
+        return {'skip': skip}
+
+    monkeypatch.setattr(search.chemrxiv, 'search_page', fake_search_page)
+    monkeypatch.setattr(search.chemrxiv, 'parse_records',
+                        lambda payload: by_skip.get(payload['skip'], []))
+    monkeypatch.setattr(search.chemrxiv, 'total_results',
+                        lambda _: total if total is not None else sum(len(p) for p in pages))
+    return calls
+
+
+def test_chemrxiv_rows_normalize_records_and_clean_abstracts() -> None:
+    """Map chemRxiv records onto paper rows with compacted abstracts."""
+    frame = search._chemrxiv_rows(chemrxiv_records(2))
+
+    assert list(frame.columns) == search.SEARCH_FIELDS
+    assert frame.loc[0, 'chemrxiv_doi'] == '10.26434/chemrxiv.15007700/v1'
+    assert frame.loc[0, 'abstract'] == 'Abstract 0 wrapped.'
+
+
+def test_chemrxiv_search_pages_the_endpoint_and_stops_at_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Request pages until the requested number of papers is held."""
+    calls = stub_chemrxiv_pages(monkeypatch, [chemrxiv_records(5), chemrxiv_records(5, start=5)],
+                                total=10)
+    frame = search.chemrxiv_search('catalysis', count=7)
+
+    assert len(frame) == 7
+    assert [call['skip'] for call in calls] == [0, 5]
+    assert calls[0]['term'] == 'catalysis'
+
+
+def test_chemrxiv_search_advances_the_cursor_past_a_page_of_repeats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the cursor by what the server returned, not by what was kept."""
+    repeated = chemrxiv_records(3)
+    calls = stub_chemrxiv_pages(monkeypatch, [repeated, repeated, chemrxiv_records(3, start=3)],
+                                total=9)
+    frame = search.chemrxiv_search('catalysis', count=6)
+
+    assert [call['skip'] for call in calls] == [0, 3, 6]
+    assert len(frame) == 6
+
+
+def test_chemrxiv_search_collapses_versions_that_fall_on_different_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reduce two postings of one preprint to the newer, across a page break."""
+    stub_chemrxiv_pages(monkeypatch,
+                        [chemrxiv_records(1, version='2', date='2024-05-01'),
+                         chemrxiv_records(1, version='1', date='2024-03-01')],
+                        total=2)
+    frame = search.chemrxiv_search('catalysis', count=5)
+
+    assert len(frame) == 1
+    assert frame.loc[0, 'publication_date'] == '2024-03-01'
+
+
+def test_chemrxiv_search_sends_the_scope_terms_to_the_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forward the scope to the server instead of filtering records locally.
+
+    This is what separates chemRxiv from medRxiv and bioRxiv: it publishes a
+    search endpoint, so a narrowed query costs the server less rather than
+    saving the client a read.
+    """
+    monkeypatch.setattr(search.chemrxiv, 'category_ids', lambda *_, **__: ['cat-catalysis'])
+    calls = stub_chemrxiv_pages(monkeypatch, [chemrxiv_records(2)], total=2)
+    search.chemrxiv_search('photocatalysis category:Catalysis from:2024-01-01 to:2024-12-31',
+                           count=2)
+
+    assert calls[0]['term'] == 'photocatalysis'
+    assert calls[0]['category_id'] == 'cat-catalysis'
+    assert calls[0]['date_from'] == '2024-01-01'
+    assert calls[0]['date_to'] == '2024-12-31'
+    # The archive-walk surface medRxiv and bioRxiv need does not exist here.
+    assert not hasattr(search.chemrxiv, 'matches')
+    assert not hasattr(search.chemrxiv, 'interval_page')
+
+
+def test_chemrxiv_search_reports_the_deep_paging_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Say so when a query matches more than the endpoint will hand back."""
+    monkeypatch.setattr(search.chemrxiv, 'MAX_SEARCH_RESULTS', 4)
+    stub_chemrxiv_pages(monkeypatch, [chemrxiv_records(4)], total=900)
+    frame = search.chemrxiv_search('catalysis', count=50)
+
+    output = capsys.readouterr().out
+    assert 'chemRxiv matched 900 records but exposes only the first 4' in output
+    assert len(frame) == 4
+
+
+def test_chemrxiv_search_returns_no_rows_for_an_empty_result_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answer an unmatched query and a zero count with an empty frame."""
+    stub_chemrxiv_pages(monkeypatch, [[]], total=0)
+    assert search.chemrxiv_search('nothing matches this', count=5).empty
+    assert search.chemrxiv_search('catalysis', count=0).empty
+
+
+def test_chemrxiv_search_rejects_a_scope_date_it_cannot_use() -> None:
+    """Refuse a scope date before spending a request on it."""
+    with pytest.raises(ValueError, match='must be an ISO date'):
+        search.chemrxiv_search('catalysis from:last-tuesday', count=5)
+
+
+def test_search_for_papers_skips_failed_chemrxiv_for_all_but_raises_for_chemrxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Skip a failing chemRxiv provider under all but surface it when selected."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1',
+                                                'dc:title': 'Elsevier paper'}]))
+    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
+    monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
+    monkeypatch.setattr(search, 'pubmed_search', lambda *_, **__: search._pubmed_rows([]))
+    monkeypatch.setattr(search, 'arxiv_search', lambda *_, **__: search._arxiv_rows([]))
+    monkeypatch.setattr(search, 'medrxiv_search', lambda *_, **__: search._medrxiv_rows([]))
+    monkeypatch.setattr(search, 'biorxiv_search', lambda *_, **__: search._biorxiv_rows([]))
+    monkeypatch.setattr(
+        search,
+        'chemrxiv_search',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('chemrxiv down')),
+    )
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    assert 'chemRxiv search skipped: chemrxiv down' in capsys.readouterr().out
+    assert db_path.exists()
+
+    with pytest.raises(RuntimeError, match='chemrxiv down'):
+        search.search_for_papers('query', source='chemrxiv', count=1)

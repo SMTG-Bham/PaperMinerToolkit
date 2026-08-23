@@ -42,6 +42,14 @@ page at a time and a broad query spends most of its run waiting between pages. N
 is what makes either search quick, and it matters most for bioRxiv, whose archive opened in 2013
 and is several times the size of medRxiv's; see [Build a corpus](../user-guide/corpus.md).
 
+chemRxiv needs no credentials and publishes no rate limit either, and PaperScraper paces it at
+one request a second as well. Unlike medRxiv and bioRxiv it does have a search endpoint, so a
+broad query costs pages rather than a walk of the archive, and narrowing one saves the server
+work rather than saving you a long read. chemrxiv.org is fronted by a bot challenge that can
+refuse a client outright; PaperScraper does not try to get around it, and reports the refusal as
+the reason a search or download failed. When that happens the same papers are still reachable
+through the `openalex` and `crossref` sources.
+
 ## Hosted model providers
 
 Save provider keys interactively or export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`:

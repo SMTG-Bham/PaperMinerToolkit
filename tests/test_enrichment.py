@@ -219,9 +219,9 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
     assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv',
-                                                   'medrxiv', 'biorxiv']
+                                                   'medrxiv', 'biorxiv', 'chemrxiv']
     assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv',
-                                                      'medrxiv', 'biorxiv']
+                                                      'medrxiv', 'biorxiv', 'chemrxiv']
     assert enrichment.configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
         enrichment.configured_sources(['scopus'])
@@ -1540,3 +1540,172 @@ def test_enrich_batch_keeps_openalex_subjects_when_only_pubmed_is_requested(
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
 
     assert sources == {'openalex', 'pubmed'}
+
+
+def chemrxiv_entry(published: str = '10.1234/chemrxiv-one') -> dict[str, Any]:
+    """Return a chemRxiv record shaped like chemrxiv.record_to_paper output."""
+    return {
+        'paper_id': f'doi:{published}' if published else 'doi:10.26434/chemrxiv.15007737/v1',
+        'doi': published or '10.26434/chemrxiv.15007737/v1',
+        'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+        'chemrxiv_stem': '10.26434/chemrxiv.15007737',
+        'title': 'chemRxiv title',
+        'journal': '' if published else 'chemRxiv',
+        'publication_date': '2026-08-01',
+        'authors': 'Grace Hopper',
+        'version': '1',
+        'license': 'CC BY 4.0',
+        'category': 'Catalysis',
+        'categories': [{'id': 'cat-catalysis', 'name': 'Catalysis', 'is_primary': True},
+                       {'id': 'cat-organic', 'name': 'Organic Chemistry', 'is_primary': False}],
+        'keywords': ['photocatalysis'],
+        'published_doi': published,
+        'asset_url': 'https://chemrxiv.org/engage/assets/old.pdf',
+    }
+
+
+def test_chemrxiv_candidates_key_rows_by_the_doi_chemrxiv_issued() -> None:
+    """Index candidate rows by their chemRxiv DOI, version suffix included."""
+    by_chemrxiv = enrichment.chemrxiv_candidates([
+        {'paper_id': 'doi:a', 'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'},
+        {'paper_id': 'doi:b', 'doi': '10.1234/journal-only'},
+        {'paper_id': '', 'chemrxiv_doi': '10.26434/chemrxiv-2022-w08rh'},
+    ])
+
+    assert by_chemrxiv == {'10.26434/chemrxiv.15007737/v1': 'doi:a'}
+
+
+def test_chemrxiv_fields_map_the_shared_enrichment_columns() -> None:
+    """Map a chemRxiv record onto the columns enrichment merges."""
+    fields = enrichment.chemrxiv_fields(chemrxiv_entry())
+
+    assert fields['doi'] == '10.1234/chemrxiv-one'
+    assert fields['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v1'
+    assert fields['work_type'] == ''
+    assert fields['is_oa'] == 1
+    assert fields['oa_status'] == 'green'
+    assert fields['license'] == 'CC BY 4.0'
+
+    unpublished = enrichment.chemrxiv_fields(chemrxiv_entry(published=''))
+    assert unpublished['work_type'] == 'preprint'
+    assert unpublished['doi'] == '10.26434/chemrxiv.15007737/v1'
+    assert unpublished['journal'] == 'chemRxiv'
+
+
+def test_chemrxiv_subject_rows_use_schemes_distinct_from_every_provider() -> None:
+    """Emit a row per category plus the keywords, under their own schemes."""
+    rows = enrichment.chemrxiv_subject_rows('doi:10.1234/chemrxiv-one', chemrxiv_entry())
+
+    categories = [row for row in rows if row['scheme'] == 'chemrxiv_category']
+    keywords = [row for row in rows if row['scheme'] == 'chemrxiv_keyword']
+    assert [row['display_name'] for row in categories] == ['Catalysis', 'Organic Chemistry']
+    assert [row['is_primary'] for row in categories] == [1, 0]
+    assert [row['subject_id'] for row in keywords] == ['photocatalysis']
+    assert {row['source'] for row in rows} == {'chemrxiv'}
+    assert enrichment.chemrxiv_subject_rows('doi:x', None) == []
+
+    # Every provider classifies under its own list, so the schemes must stay
+    # disjoint or one would overwrite another on the subjects primary key.
+    schemes = {row['scheme'] for row in
+               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())
+               + enrichment.biorxiv_subject_rows('doi:x', biorxiv_entry())
+               + enrichment.chemrxiv_subject_rows('doi:x', chemrxiv_entry())}
+    assert schemes == {'arxiv_category', 'medrxiv_category', 'biorxiv_category',
+                       'chemrxiv_category', 'chemrxiv_keyword'}
+
+
+def test_merge_fields_ranks_chemrxiv_below_the_other_providers() -> None:
+    """Let chemRxiv fill a column no better-placed provider supplied."""
+    update = enrichment.merge_fields('doi:10.1234/chemrxiv-one', None, None, ['chemrxiv'],
+                                     None, None, None, None, chemrxiv_entry())
+
+    assert update['title'] == 'chemRxiv title'
+    assert update['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v1'
+    assert update['is_oa'] == 1
+    assert update['oa_status'] == 'green'
+    assert update['license'] == 'CC BY 4.0'
+    assert update['enrichment_sources'] == 'chemrxiv'
+
+
+def test_merge_fields_lets_a_better_placed_provider_win_over_chemrxiv() -> None:
+    """Prefer bioRxiv's values but keep the chemRxiv identifier alongside."""
+    update = enrichment.merge_fields('doi:x', None, None, ['biorxiv', 'chemrxiv'],
+                                     None, None, None, biorxiv_entry(published=''),
+                                     chemrxiv_entry(published=''))
+
+    assert update['title'] == 'bioRxiv title'
+    assert update['biorxiv_doi'] == '10.1101/2023.12.01.569634'
+    assert update['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v1'
+    assert update['enrichment_sources'] == 'biorxiv;chemrxiv'
+
+
+def test_enrich_batch_enriches_a_chemrxiv_only_row_and_stores_its_terms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve a row that has only a chemRxiv DOI and store its subject rows."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.26434/chemrxiv.15007737/v1',
+                           'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+                           'title': 'Seeded'}])
+    monkeypatch.setattr(enrichment.chemrxiv, 'fetch_doi',
+                        lambda *_, **__: chemrxiv_entry(published=''))
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['chemrxiv'], '')
+        subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
+        rows = corpus.paper_rows(conn)
+
+    assert summary['unresolved'] == 0
+    assert summary['succeeded'] == 1
+    assert {row['scheme'] for row in subjects} == {'chemrxiv_category', 'chemrxiv_keyword'}
+    # The version suffix is part of the registered DOI and must survive a round trip.
+    assert rows[0]['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v1'
+    assert rows[0]['enrichment_sources'] == 'chemrxiv'
+    assert rows[0]['is_oa'] == 1
+
+
+def test_enrich_batch_does_not_ask_chemrxiv_for_another_archives_doi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spend no chemRxiv request on a bioRxiv row, or the reverse."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1101/2023.12.01.569634',
+                           'biorxiv_doi': '10.1101/2023.12.01.569634', 'title': 'Seeded'}])
+
+    def unreachable(*_: Any, **__: Any) -> None:
+        """Fail the test if chemRxiv is queried for another archive's row."""
+        raise AssertionError('chemRxiv was asked for a DOI it does not hold')
+
+    monkeypatch.setattr(enrichment.chemrxiv, 'fetch_doi', unreachable)
+    monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi',
+                        lambda *_, **__: biorxiv_entry(published=''))
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        summary = enrichment.enrich_batch(conn, candidates, ['biorxiv', 'chemrxiv'], '')
+
+    assert summary['succeeded'] == 1
+
+
+def test_enrich_batch_skips_chemrxiv_for_a_row_carrying_only_a_published_doi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave a journal-only row to the providers that can answer for it."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'doi:10.1234/journal-only',
+                           'doi': '10.1234/journal-only', 'title': 'Seeded'}])
+
+    def unreachable(*_: Any, **__: Any) -> None:
+        """Fail the test if chemRxiv is queried for a published DOI."""
+        raise AssertionError('chemRxiv was asked for a published DOI')
+
+    monkeypatch.setattr(enrichment.chemrxiv, 'fetch_doi', unreachable)
+
+    with open_corpus(db_path) as conn:
+        candidates = corpus.enrichment_candidates(conn)
+        enrichment.enrich_batch(conn, candidates, ['chemrxiv'], '')

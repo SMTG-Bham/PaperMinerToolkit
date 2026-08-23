@@ -492,7 +492,8 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     )
 
     assert download._configured_sources(['all']) == ['unpaywall', 'openalex', 'core', 'elsevier',
-                                                     'pubmed', 'medrxiv', 'biorxiv', 'arxiv']
+                                                     'pubmed', 'medrxiv', 'biorxiv', 'chemrxiv',
+                                                     'arxiv']
     assert download._configured_sources(['core', 'core', 'unpaywall']) == ['core', 'unpaywall']
     with pytest.raises(ValueError, match='download source must be one of'):
         download._configured_sources(['bad'])
@@ -501,7 +502,7 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
     monkeypatch.delenv('CORE_API_KEY', raising=False)
     assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'medrxiv', 'biorxiv',
-                                                     'arxiv']
+                                                     'chemrxiv', 'arxiv']
 
 
 def test_download_pdf_from_sources_handles_existing_success_and_failures(
@@ -2324,3 +2325,189 @@ def test_download_papers_allows_text_without_elsevier_when_pubmed_is_selected(
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'succeeded'
     assert papers[0]['text_source'] == 'pubmed'
+
+
+def chemrxiv_entry(**overrides: Any) -> dict[str, Any]:
+    """Return a mapped chemRxiv record for the download helpers."""
+    entry = {
+        'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+        'version': '1',
+        'abstract': '  A catalysis\n  abstract. ',
+        'asset_url': 'https://chemrxiv.org/engage/assets/old.pdf',
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_chemrxiv_identifier_reads_stored_values_without_a_request() -> None:
+    """Recover the chemRxiv DOI from the row, keeping its version suffix."""
+    assert download._chemrxiv_identifier(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'}) == '10.26434/chemrxiv.15007737/v1'
+    assert download._chemrxiv_identifier(
+        {'paper_id': 'doi:10.26434/chemrxiv-2024-bxxhh-v4'}) == '10.26434/chemrxiv-2024-bxxhh-v4'
+    assert download._chemrxiv_identifier({'doi': '10.1101/2023.12.01.569634'}) is None
+    assert download._chemrxiv_identifier({'doi': '10.1234/journal'}) is None
+
+
+def test_download_chemrxiv_pdf_asks_for_the_location_the_doi_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Prefer the DOI-derived location over the record's stale asset URL."""
+    requested = []
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+
+    def fake_download(url: str, filepath: Any, headers: Any = None) -> tuple[bool, str]:
+        """Record the URL requested and report success."""
+        requested.append(url)
+        return True, ''
+
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download)
+    ok, source = download._download_chemrxiv_pdf(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'}, tmp_path / 'paper.pdf')
+
+    assert ok
+    assert source == 'https://chemrxiv.org/doi/pdf/10.26434/chemrxiv.15007737/v1'
+    assert requested == ['https://chemrxiv.org/doi/pdf/10.26434/chemrxiv.15007737/v1']
+
+
+def test_download_chemrxiv_pdf_falls_back_to_the_recorded_asset_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Try the record's own asset location when the DOI path does not serve."""
+    requested = []
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+
+    def fake_download(url: str, filepath: Any, headers: Any = None) -> tuple[bool, str]:
+        """Fail the DOI-derived location and accept the asset location."""
+        requested.append(url)
+        return (False, '404 from doi path') if '/doi/pdf/' in url else (True, '')
+
+    monkeypatch.setattr(download, '_download_url_to_pdf', fake_download)
+    ok, source = download._download_chemrxiv_pdf(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'}, tmp_path / 'paper.pdf')
+
+    assert ok
+    assert source == 'https://chemrxiv.org/engage/assets/old.pdf'
+    assert len(requested) == 2
+
+
+def test_download_chemrxiv_pdf_reports_a_refused_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Report a bot-challenge refusal as the failure reason.
+
+    chemrxiv.org can refuse a client outright. PaperScraper does not work
+    around that, so the refusal has to reach the caller as the reason.
+    """
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+    monkeypatch.setattr(download, '_download_url_to_pdf',
+                        lambda *_, **__: (False, '403 from chemrxiv.org'))
+    ok, error = download._download_chemrxiv_pdf(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'}, tmp_path / 'paper.pdf')
+
+    assert not ok
+    assert '403 from chemrxiv.org' in error
+
+
+def test_download_chemrxiv_helpers_report_a_failed_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Turn a missing identifier, an absent record, and an error into reasons."""
+    ok, error = download._download_chemrxiv_pdf({'doi': '10.1234/journal'}, tmp_path / 'p.pdf')
+    assert (ok, error) == (False, 'missing chemRxiv DOI')
+
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: None)
+    ok, error = download._download_chemrxiv_abstract(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'})[:2]
+    assert not ok
+    assert 'no chemRxiv record found' in error
+
+    def refuse(*_: Any, **__: Any) -> None:
+        """Fail the lookup the way a refused request does."""
+        raise RuntimeError('chemRxiv refused the request with 403')
+
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', refuse)
+    ok, error = download._download_chemrxiv_abstract(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'})[:2]
+    assert not ok
+    assert '403' in error
+
+
+def test_download_chemrxiv_abstract_uses_the_stored_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the compacted abstract chemRxiv holds for the row."""
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+    ok, source, abstract = download._download_chemrxiv_abstract(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'})
+
+    assert (ok, source) == (True, 'chemrxiv')
+    assert abstract == 'A catalysis abstract.'
+
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi',
+                        lambda *_, **__: chemrxiv_entry(abstract=''))
+    ok, error, abstract = download._download_chemrxiv_abstract(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'})
+    assert not ok
+    assert 'no chemRxiv abstract found' in error
+
+
+def test_download_abstract_tries_chemrxiv_between_biorxiv_and_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall through to chemRxiv once bioRxiv has declined, before reaching arXiv."""
+    calls = []
+
+    def record(name: str, ok: bool) -> object:
+        """Build a fake abstract lookup that records that it ran."""
+        def lookup(paper: Mapping[str, Any]) -> tuple[bool, str, str]:
+            """Record the provider and return the prepared outcome."""
+            calls.append(name)
+            return (True, name, f'From {name}.') if ok else (False, f'no {name} abstract', '')
+        return lookup
+
+    monkeypatch.setattr(download, '_download_openalex_abstract', record('openalex', False))
+    monkeypatch.setattr(download, '_download_pubmed_abstract', record('pubmed', False))
+    monkeypatch.setattr(download, '_download_medrxiv_abstract', record('medrxiv', False))
+    monkeypatch.setattr(download, '_download_biorxiv_abstract', record('biorxiv', False))
+    monkeypatch.setattr(download, '_download_chemrxiv_abstract', record('chemrxiv', True))
+    monkeypatch.setattr(download, '_download_arxiv_abstract', record('arxiv', True))
+    monkeypatch.setattr(download, '_download_core_abstract', record('core', False))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
+
+    result = download._download_abstract(
+        {'doi': '10.1234/x', 'biorxiv_doi': '10.1101/2023.12.01.569634',
+         'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+         'arxiv_id': '2301.12345', 'core_id': '5'})
+
+    assert result == (True, 'chemrxiv', 'From chemrxiv.')
+    assert calls == ['openalex', 'pubmed', 'biorxiv', 'chemrxiv']
+
+
+def test_download_pdf_from_sources_can_select_chemrxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Route a PDF download through chemRxiv when it is the chosen source."""
+    monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+    monkeypatch.setattr(download, '_download_url_to_pdf', lambda *_, **__: (True, ''))
+    ok, source, url = download._download_pdf_from_sources(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'}, tmp_path / 'p.pdf', ['chemrxiv'])
+
+    assert (ok, source) == (True, 'chemrxiv')
+    assert url == 'https://chemrxiv.org/doi/pdf/10.26434/chemrxiv.15007737/v1'
+
+
+def test_chemrxiv_is_not_a_full_text_source() -> None:
+    """Confirm chemRxiv is offered for PDFs and abstracts but not for text.
+
+    chemRxiv publishes no machine-readable full text, so naming it in the text
+    sources would promise a document that cannot be fetched.
+    """
+    assert 'chemrxiv' in download.DOWNLOAD_SOURCES
+    assert 'chemrxiv' not in download.TEXT_SOURCES
+    assert not hasattr(download, '_download_chemrxiv_text')

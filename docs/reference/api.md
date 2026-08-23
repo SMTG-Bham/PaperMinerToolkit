@@ -24,6 +24,7 @@ modules/pubmed
 modules/arxiv
 modules/medrxiv
 modules/biorxiv
+modules/chemrxiv
 modules/enrichment
 modules/elsevier
 modules/metadata

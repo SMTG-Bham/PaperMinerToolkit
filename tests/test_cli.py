@@ -744,7 +744,7 @@ def test_enrich_reports_the_run_summary(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert '8 enriched, 1 partial, 2 not found' in result.output
     assert 'Stored 40 author records, 20 subject records, and 100 references.' in result.output
     assert ('3 papers have no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, '
-            'or bioRxiv DOI' in result.output)
+            'bioRxiv DOI, or chemRxiv DOI' in result.output)
 
 
 def test_enrich_wraps_worker_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
