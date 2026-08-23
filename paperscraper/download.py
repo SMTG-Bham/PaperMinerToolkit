@@ -37,7 +37,7 @@ DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
 DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT),
                     *registry.names(registry.ABSTRACT)}
 # Providers that serve a machine-readable full text rather than only a PDF.
-TEXT_SOURCES = set(registry.names(registry.TEXT)) - {'elsevier'}
+TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
 
 
@@ -1223,53 +1223,123 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
     return False, last_error, ''
 
 
-def _download_abstract(paper: MutableMapping[str, Any]) -> tuple[bool, str, str]:
-    """Fetch abstract text from available metadata providers.
+ABSTRACT_DOWNLOADERS = {
+    'openalex': ('_openalex_identifier', '_download_openalex_abstract'),
+    'pubmed': ('_pubmed_abstract_reachable', '_download_pubmed_abstract'),
+    'medrxiv': ('_medrxiv_identifier', '_download_medrxiv_abstract'),
+    'biorxiv': ('_biorxiv_identifier', '_download_biorxiv_abstract'),
+    'chemrxiv': ('_chemrxiv_identifier', '_download_chemrxiv_abstract'),
+    'arxiv': ('_arxiv_identifier', '_download_arxiv_abstract'),
+    'core': ('_core_abstract_reachable', '_download_core_abstract'),
+    'elsevier': ('_elsevier_abstract_reachable', '_download_elsevier_abstract'),
+}
+
+
+def _reachable(answer: object) -> bool:
+    """Read an identifier helper's answer as a yes or a no.
+
+    Parameters
+    ----------
+    answer : object
+        Either a bool from a reachability predicate, or an identifier -- or
+        ``None`` -- from one of the ``_<source>_identifier`` helpers.
+
+    Returns
+    -------
+    bool
+        Whether the source can be asked about this paper.
+    """
+    return answer is not False and answer is not None
+
+
+def _pubmed_abstract_reachable(paper: Mapping[str, Any]) -> bool:
+    """Report whether PubMed can be asked for this paper's abstract.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    bool
+        Whether the row carries a PubMed identifier or a DOI to resolve one
+        from.
+    """
+    return _pubmed_identifier(paper) is not None or _has_value(paper.get('doi'))
+
+
+def _core_abstract_reachable(paper: Mapping[str, Any]) -> bool:
+    """Report whether CORE can be asked for this paper's abstract.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    bool
+        Whether the row carries a CORE identifier.
+    """
+    return _has_value(paper.get('core_id'))
+
+
+def _elsevier_abstract_reachable(paper: Mapping[str, Any]) -> bool:
+    """Report whether Elsevier can be asked for this paper's abstract.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row. Unused; Elsevier is reachable for any row once a key
+        is configured, because the lookup goes by DOI.
+
+    Returns
+    -------
+    bool
+        Whether an Elsevier API key is configured.
+    """
+    return _elsevier_configured()
+
+
+def _download_abstract(paper: MutableMapping[str, Any],
+                       sources: Iterable[str] | None = None) -> tuple[bool, str, str]:
+    """Fetch abstract text from the requested metadata providers.
+
+    Sources are tried in the registry's abstract order, skipping any the row
+    cannot reach and any the caller did not ask for. Until now the caller's
+    ``--source`` selection was ignored here entirely, so a run scoped to one
+    provider still queried all eight.
 
     A PubMed identifier resolved from a DOI is recorded on ``paper`` so the
     corpus keeps it after the caller upserts the row.
+
+    Parameters
+    ----------
+    paper : MutableMapping[str, Any]
+        Corpus paper row.
+    sources : Iterable[str] or None, optional
+        Resolved provider names for this run. Defaults to every source that
+        serves abstracts.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or joined failure reasons, and the abstract
+        text.
     """
+    requested = set(sources) if sources is not None else set(registry.names(registry.ABSTRACT))
     errors = []
-    if _openalex_identifier(paper) is not None:
-        ok, source, abstract = _download_openalex_abstract(paper)
+    for name in registry.names(registry.ABSTRACT):
+        if name not in requested:
+            continue
+        reachable, downloader = ABSTRACT_DOWNLOADERS[name]
+        if not _reachable(globals()[reachable](paper)):
+            continue
+        ok, source, abstract = globals()[downloader](paper)
         if ok:
             return ok, source, abstract
-        errors.append(f'openalex: {source}')
-    if _pubmed_identifier(paper) is not None or _has_value(paper.get('doi')):
-        ok, source, abstract = _download_pubmed_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'pubmed: {source}')
-    if _medrxiv_identifier(paper) is not None:
-        ok, source, abstract = _download_medrxiv_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'medrxiv: {source}')
-    if _biorxiv_identifier(paper) is not None:
-        ok, source, abstract = _download_biorxiv_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'biorxiv: {source}')
-    if _chemrxiv_identifier(paper) is not None:
-        ok, source, abstract = _download_chemrxiv_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'chemrxiv: {source}')
-    if _arxiv_identifier(paper) is not None:
-        ok, source, abstract = _download_arxiv_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'arxiv: {source}')
-    if _has_value(paper.get('core_id')):
-        ok, source, abstract = _download_core_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'core: {source}')
-    if _elsevier_configured():
-        ok, source, abstract = _download_elsevier_abstract(paper)
-        if ok:
-            return ok, source, abstract
-        errors.append(f'elsevier: {source}')
+        errors.append(f'{name}: {source}')
     return False, '; '.join(errors) or 'no abstract source available', ''
 
 
@@ -1407,13 +1477,45 @@ def _download_pdf_from_sources(
     return False, '; '.join(errors), ''
 
 
+TEXT_DOWNLOADERS = {
+    'elsevier': ('_should_try_elsevier_text', '_download_elsevier_text'),
+    'pubmed': ('_should_try_pmc_text', '_download_pmc_text'),
+    'medrxiv': ('_should_try_medrxiv_text', '_download_medrxiv_text'),
+    'biorxiv': ('_should_try_biorxiv_text', '_download_biorxiv_text'),
+}
+
+
+def _download_elsevier_text(paper: Mapping[str, Any],
+                            filepath: str | PathLike[str]) -> tuple[bool, str]:
+    """Fetch a paper's full text through the Elsevier article route.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the downloaded text.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the failure reason when unsuccessful.
+    """
+    if os.path.isfile(filepath) or _download_text(paper, filepath):
+        return True, ''
+    return False, 'Elsevier text download failed'
+
+
 def _download_text_from_sources(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
     sources: Iterable[str],
-    elsevier_text_available: bool,
 ) -> tuple[bool, str, str]:
-    """Try each configured full-text source in order and report the outcome.
+    """Try each requested full-text source in order and report the outcome.
+
+    Elsevier is one of these sources rather than a separate flag threaded
+    through three call sites, so ``--source elsevier --format text`` means what
+    it says and ``--source pubmed`` no longer also tries Elsevier.
 
     Parameters
     ----------
@@ -1423,8 +1525,6 @@ def _download_text_from_sources(
         Destination path for the downloaded text.
     sources : Iterable[str]
         Resolved provider names for this run.
-    elsevier_text_available : bool
-        Whether an Elsevier API key is configured.
 
     Returns
     -------
@@ -1432,38 +1532,21 @@ def _download_text_from_sources(
         Success flag, provider name or joined failure reasons, and an empty
         string reserved for a source URL.
     """
+    requested = set(sources)
     errors = []
-    if elsevier_text_available and _should_try_elsevier_text(paper):
+    for name in registry.names(registry.TEXT):
+        if name not in requested:
+            continue
+        predicate, downloader = TEXT_DOWNLOADERS[name]
+        if not globals()[predicate](paper):
+            continue
         try:
-            if os.path.isfile(filepath) or _download_text(paper, filepath):
-                return True, 'elsevier', ''
-            errors.append('elsevier: Elsevier text download failed')
-        except Exception as e:
-            errors.append(f'elsevier: {e}')
-    if 'pubmed' in sources and _should_try_pmc_text(paper):
-        try:
-            ok, detail = _download_pmc_text(paper, filepath)
+            ok, detail = globals()[downloader](paper, filepath)
             if ok:
-                return True, 'pubmed', ''
-            errors.append(f'pubmed: {detail}')
+                return True, name, ''
+            errors.append(f'{name}: {detail}')
         except Exception as e:
-            errors.append(f'pubmed: {e}')
-    if 'medrxiv' in sources and _should_try_medrxiv_text(paper):
-        try:
-            ok, detail = _download_medrxiv_text(paper, filepath)
-            if ok:
-                return True, 'medrxiv', ''
-            errors.append(f'medrxiv: {detail}')
-        except Exception as e:
-            errors.append(f'medrxiv: {e}')
-    if 'biorxiv' in sources and _should_try_biorxiv_text(paper):
-        try:
-            ok, detail = _download_biorxiv_text(paper, filepath)
-            if ok:
-                return True, 'biorxiv', ''
-            errors.append(f'biorxiv: {detail}')
-        except Exception as e:
-            errors.append(f'biorxiv: {e}')
+            errors.append(f'{name}: {e}')
     return False, '; '.join(errors) or 'no full-text source available', ''
 
 
@@ -1569,11 +1652,9 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     sources = _configured_sources(sources or ['all'])
-    elsevier_text_available = _elsevier_configured()
     with connect(db_path) as conn:
         papers = paper_rows(conn)
-        if (download_format == 'text' and not elsevier_text_available
-                and not TEXT_SOURCES.intersection(sources)):
+        if download_format == 'text' and not TEXT_SOURCES.intersection(sources):
             missing_text = force or any(
                 get_asset_metadata(conn, paper['paper_id'], 'text') is None
                 for paper in papers
@@ -1611,7 +1692,6 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                                                     download_dir,
                                                     download_format,
                                                     sources,
-                                                    elsevier_text_available,
                                                     download_abstract=download_abstract,
                                                     force=force)
                     for key, value in paper_summary.items():
@@ -1636,7 +1716,6 @@ def _download_paper(
     download_dir: str | PathLike[str],
     download_format: str,
     sources: Iterable[str],
-    elsevier_text_available: bool,
     download_abstract: bool = True,
     force: bool = False,
 ) -> dict[str, int]:
@@ -1656,11 +1735,10 @@ def _download_paper(
     }
     text_requested = download_format in {'text', 'both'}
     pdf_requested = download_format in {'pdf', 'both'}
-    text_available = (
-        (elsevier_text_available and _should_try_elsevier_text(paper))
-        or ('pubmed' in sources and _should_try_pmc_text(paper))
-        or ('medrxiv' in sources and _should_try_medrxiv_text(paper))
-        or ('biorxiv' in sources and _should_try_biorxiv_text(paper))
+    requested = set(sources)
+    text_available = any(
+        name in requested and globals()[TEXT_DOWNLOADERS[name][0]](paper)
+        for name in registry.names(registry.TEXT)
     )
     text_attempt_needed = (
         text_requested
@@ -1679,7 +1757,7 @@ def _download_paper(
         else:
             abstract_filepath = os.path.join(download_dir, f'{filename}-abstract.txt')
             try:
-                ok, source_or_error, abstract = _download_abstract(paper)
+                ok, source_or_error, abstract = _download_abstract(paper, sources)
                 if not ok:
                     _set_status(paper, 'abstract_download_status', 'failed', source_or_error)
                     abstract = ''
@@ -1702,7 +1780,7 @@ def _download_paper(
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
         try:
             ok, text_source_or_error, _ = _download_text_from_sources(
-                paper, text_filepath, sources, elsevier_text_available)
+                paper, text_filepath, sources)
             if ok:
                 paper['text_path'] = ''
                 paper['text_source'] = text_source_or_error
@@ -1743,7 +1821,7 @@ def _download_paper(
         and download_format == 'pdf'
         and not text_attempt_needed
         and existing_assets['text'] is None
-        and elsevier_text_available
+        and 'elsevier' in requested
         and _should_try_elsevier_text(paper)
     ):
         text_filepath = os.path.join(download_dir, f'{filename}.txt')

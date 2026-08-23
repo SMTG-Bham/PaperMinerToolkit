@@ -562,7 +562,7 @@ def test_download_papers_accepts_medrxiv_as_a_full_text_source(
                             'medrxiv_doi': '10.1101/2024.03.01.24303596'}])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     monkeypatch.setattr(download, '_download_medrxiv_text', fake_medrxiv_text)
-    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+    monkeypatch.setattr(download, '_download_abstract', lambda *_, **__: (False, 'no abstract', ''))
 
     download.download_papers(str(db_path), download_format='text', sources=['medrxiv'])
 
@@ -583,10 +583,10 @@ def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
 ) -> None:
     """Reach the text sources for a row only medRxiv can supply text for."""
     attempts = []
-    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+    monkeypatch.setattr(download, '_download_abstract', lambda *_, **__: (False, 'no abstract', ''))
 
-    def fake_text_sources(paper: Mapping[str, Any], filepath: object, sources: object,
-                          elsevier: object) -> tuple[bool, str, str]:
+    def fake_text_sources(paper: Mapping[str, Any], filepath: object,
+                          sources: object) -> tuple[bool, str, str]:
         """Record the attempt and write the text a real provider would."""
         attempts.append(dict(paper))
         with open(filepath, 'w', encoding='utf-8') as out_file:
@@ -600,7 +600,7 @@ def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
     with download.connect(db_path) as conn:
         paper = {'paper_id': 'doi:10.1101/2024.03.01.24303596',
                  'medrxiv_doi': '10.1101/2024.03.01.24303596'}
-        summary = download._download_paper(conn, paper, tmp_path, 'text', ['medrxiv'], False,
+        summary = download._download_paper(conn, paper, tmp_path, 'text', ['medrxiv'],
                                            download_abstract=False)
 
     assert len(attempts) == 1
@@ -611,8 +611,69 @@ def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
     attempts.clear()
     with download.connect(db_path) as conn:
         download._download_paper(conn, {'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x'},
-                                 tmp_path, 'text', ['medrxiv'], False, download_abstract=False)
+                                 tmp_path, 'text', ['medrxiv'], download_abstract=False)
     assert attempts == []
+
+
+def test_download_abstract_honours_the_requested_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ask only the providers the caller selected.
+
+    The source selection reached PDF and full-text retrieval but never got as
+    far as _download_abstract, so a run scoped to one provider still queried
+    all eight in a fixed order.
+    """
+    asked = []
+
+    def record(name: str) -> object:
+        """Return a downloader that records the attempt and fails.
+
+        Parameters
+        ----------
+        name : str
+            Source the downloader stands in for.
+
+        Returns
+        -------
+        object
+            Downloader recording its call.
+        """
+        def downloader(_: Mapping[str, Any]) -> tuple[bool, str, str]:
+            """Record one attempt and report no abstract.
+
+            Parameters
+            ----------
+            _ : Mapping[str, Any]
+                Corpus paper row, unused.
+
+            Returns
+            -------
+            tuple[bool, str, str]
+                Always a failure, so the loop moves on.
+            """
+            asked.append(name)
+            return False, 'nothing here', ''
+        return downloader
+
+    for name, (_, downloader) in download.ABSTRACT_DOWNLOADERS.items():
+        monkeypatch.setattr(download, downloader, record(name))
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+
+    paper = {'doi': '10.1234/x', 'arxiv_id': '2301.01234', 'core_id': '7',
+             'medrxiv_doi': '10.1101/2024.03.01.24303596'}
+
+    download._download_abstract(dict(paper), ['arxiv'])
+    assert asked == ['arxiv']
+
+    asked.clear()
+    download._download_abstract(dict(paper), ['medrxiv', 'core'])
+    assert asked == ['medrxiv', 'core']
+
+    # No selection still means every reachable source, in registry order.
+    asked.clear()
+    download._download_abstract(dict(paper))
+    assert asked == ['openalex', 'pubmed', 'medrxiv', 'arxiv', 'core', 'elsevier']
 
 
 def test_download_papers_validates_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -663,7 +724,7 @@ def test_download_papers_updates_text_and_pdf_statuses(
         'doi': '10.1234/example',
         'elsevier_link': 'has full-text link',
     }])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
@@ -787,10 +848,10 @@ def test_download_papers_downloads_abstract_by_default(
 
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{'paper_id': 'paper:abstract'}])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(download, '_download_abstract', lambda paper: (True, 'core', 'abstract text'))
+    monkeypatch.setattr(download, '_download_abstract', lambda paper, sources=None: (True, 'core', 'abstract text'))
 
     download.download_papers(str(db_path), download_format='text')
 
@@ -812,12 +873,11 @@ def test_download_papers_supports_abstract_only(
     """Abstract-only downloads must not attempt text or PDF retrieval."""
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{'paper_id': 'paper:abstract-only'}])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     monkeypatch.setattr(
         download,
-        '_download_abstract',
-        lambda paper: (True, 'openalex', 'Only the abstract should be downloaded.'),
+        '_download_abstract', lambda paper, sources=None: (True, 'openalex', 'Only the abstract should be downloaded.'),
     )
     monkeypatch.setattr(
         download,
@@ -875,13 +935,12 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
             mime_type='text/plain',
             source='search',
         )
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(
         download,
-        '_download_abstract',
-        lambda paper: (_ for _ in ()).throw(AssertionError('abstract should not be downloaded twice')),
+        '_download_abstract', lambda paper, sources=None: (_ for _ in ()).throw(AssertionError('abstract should not be downloaded twice')),
     )
 
     download.download_papers(str(db_path), download_format='text')
@@ -933,13 +992,12 @@ def test_download_papers_skips_every_requested_existing_content_type(
         corpus.add_asset(conn, paper, b'%PDF stored', role='pdf', kind='pdf',
                          mime_type='application/pdf', source='openalex')
 
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(
         download,
-        '_download_abstract',
-        lambda *_: (_ for _ in ()).throw(AssertionError('abstract provider called')),
+        '_download_abstract', lambda *_, **__: (_ for _ in ()).throw(AssertionError('abstract provider called')),
     )
     monkeypatch.setattr(
         download,
@@ -976,7 +1034,7 @@ def test_download_papers_existing_text_needs_no_elsevier_key(
         corpus.add_asset(conn, paper, 'stored text', role='text', kind='text',
                          mime_type='text/plain', source='elsevier')
 
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
 
     download.download_papers(
@@ -1042,13 +1100,12 @@ def test_download_papers_force_redownloads_existing_content(
             out_file.write(b'%PDF new')
         return True, 'openalex', 'https://example.org/new.pdf'
 
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(
         download,
-        '_download_abstract',
-        lambda *_: calls.append('abstract') or (True, 'openalex', 'new abstract'),
+        '_download_abstract', lambda *_, **__: calls.append('abstract') or (True, 'openalex', 'new abstract'),
     )
     monkeypatch.setattr(download, '_download_text', fake_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_pdf)
@@ -1060,7 +1117,7 @@ def test_download_papers_force_redownloads_existing_content(
         text_asset = corpus.get_asset(conn, 'paper:refresh', 'text')
         pdf_asset = corpus.get_asset(conn, 'paper:refresh', 'pdf')
     output = capsys.readouterr().out
-    assert calls == ['abstract', 'text', ('pdf', ['openalex'])]
+    assert calls == ['abstract', 'text', ('pdf', ['openalex', 'elsevier'])]
     assert abstract_asset['content'] == b'new abstract'
     assert text_asset['content'] == b'new text'
     assert pdf_asset['content'] == b'%PDF new'
@@ -1274,7 +1331,7 @@ def test_download_papers_records_text_and_pdf_failures(
         'doi': '10.1234/example',
         'elsevier_link': 'has full-text link',
     }])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(download, '_download_text', lambda *_: False)
@@ -1318,7 +1375,7 @@ def test_download_papers_records_initial_text_download_exception(
         'doi': '10.1234/text-error',
         'elsevier_link': 'has full-text link',
     }])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: [])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
     monkeypatch.setattr(download, '_download_text', lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')))
@@ -1359,7 +1416,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
         {'paper_id': 'paper:pdf-error', 'doi': '10.1234/pdf-error'},
         {'paper_id': 'paper:oa-text', 'doi': '10.1234/oa-text', 'elsevier_link': 'has full-text link'},
     ])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['core'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
@@ -1422,7 +1479,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
         'doi': '10.1234/oa-text',
         'elsevier_link': 'has full-text link',
     }])
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['core'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
@@ -1803,11 +1860,11 @@ def test_download_text_from_sources_falls_through_pubmed_to_medrxiv(
 
     row = {'medrxiv_doi': '10.1101/2024.03.01.24303596'}
     assert download._download_text_from_sources(
-        row, tmp_path / 'out.txt', ['pubmed', 'medrxiv'], False) == (True, 'medrxiv', '')
+        row, tmp_path / 'out.txt', ['pubmed', 'medrxiv']) == (True, 'medrxiv', '')
 
     # A row with no medRxiv DOI never reaches the provider at all.
     ok, reason, _ = download._download_text_from_sources(
-        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['pubmed', 'medrxiv'], False)
+        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['pubmed', 'medrxiv'])
     assert ok is False
     assert reason == 'pubmed: missing PMC ID'
 
@@ -1822,7 +1879,7 @@ def test_download_text_from_sources_reports_a_failed_medrxiv_attempt(
                         lambda *_: (False, 'no medRxiv full text for 10.1101/x'))
 
     ok, reason, _ = download._download_text_from_sources(
-        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, tmp_path / 'out.txt', ['medrxiv'], False)
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, tmp_path / 'out.txt', ['medrxiv'])
 
     assert ok is False
     assert reason == 'medrxiv: no medRxiv full text for 10.1101/x'
@@ -2041,11 +2098,11 @@ def test_download_text_from_sources_falls_through_medrxiv_to_biorxiv(
 
     row = {'biorxiv_doi': '10.1101/2023.12.01.569634'}
     assert download._download_text_from_sources(
-        row, tmp_path / 'out.txt', ['medrxiv', 'biorxiv'], False) == (True, 'biorxiv', '')
+        row, tmp_path / 'out.txt', ['medrxiv', 'biorxiv']) == (True, 'biorxiv', '')
 
     # A row with no bioRxiv DOI never reaches the provider at all.
     ok, reason, _ = download._download_text_from_sources(
-        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['medrxiv', 'biorxiv'], False)
+        {'doi': '10.1234/x'}, tmp_path / 'out.txt', ['medrxiv', 'biorxiv'])
     assert ok is False
     assert reason == 'no full-text source available'
 
@@ -2060,7 +2117,7 @@ def test_download_text_from_sources_reports_a_failed_biorxiv_attempt(
                         lambda *_: (False, 'no bioRxiv full text for 10.1101/x'))
 
     ok, reason, _ = download._download_text_from_sources(
-        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, tmp_path / 'out.txt', ['biorxiv'], False)
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, tmp_path / 'out.txt', ['biorxiv'])
 
     assert ok is False
     assert reason == 'biorxiv: no bioRxiv full text for 10.1101/x'
@@ -2094,7 +2151,7 @@ def test_download_papers_accepts_biorxiv_as_a_full_text_source(
                             'biorxiv_doi': '10.1101/2023.12.01.569634'}])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     monkeypatch.setattr(download, '_download_biorxiv_text', fake_biorxiv_text)
-    monkeypatch.setattr(download, '_download_abstract', lambda _: (False, 'no abstract', ''))
+    monkeypatch.setattr(download, '_download_abstract', lambda *_, **__: (False, 'no abstract', ''))
 
     download.download_papers(str(db_path), download_format='text', sources=['biorxiv'])
 
@@ -2297,14 +2354,20 @@ def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
 
     filepath = tmp_path / 'paper.txt'
     assert download._download_text_from_sources(
-        {'pmid': '1'}, filepath, ['pubmed'], True) == (True, 'pubmed', '')
+        {'pmid': '1'}, filepath, ['elsevier', 'pubmed']) == (True, 'pubmed', '')
 
     monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (False, 'not open access'))
-    ok, detail, _ = download._download_text_from_sources({'pmid': '1'}, filepath, ['pubmed'], True)
+    ok, detail, _ = download._download_text_from_sources(
+        {'pmid': '1'}, filepath, ['elsevier', 'pubmed'])
     assert ok is False
     assert detail == 'elsevier: elsevier down; pubmed: not open access'
 
-    assert download._download_text_from_sources({}, filepath, [], False) == (
+    # Elsevier used to be tried whatever the selection said, because it was
+    # gated on a key rather than named as a source.
+    ok, detail, _ = download._download_text_from_sources({'pmid': '1'}, filepath, ['pubmed'])
+    assert detail == 'pubmed: not open access'
+
+    assert download._download_text_from_sources({}, filepath, []) == (
         False, 'no full-text source available', '')
 
 
