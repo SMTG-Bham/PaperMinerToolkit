@@ -491,8 +491,9 @@ def entry_to_paper(entry: ET.Element) -> _ArxivRecord:
     -------
     _ArxivRecord
         Normalized paper metadata plus the ``abstract``, ``categories``,
-        ``primary_category``, ``journal_ref``, ``comment``, and ``version``
-        extras that the corpus schema does not store directly.
+        ``category``, ``primary_category``, ``published_doi``, ``journal_ref``,
+        ``comment``, and ``version`` extras that the corpus schema does not
+        store directly.
     """
     raw_id = _element_text(entry.find(f'{{{ATOM_NS}}}id'))
     arxiv_id = normalize_arxiv_id(raw_id)
@@ -519,7 +520,9 @@ def entry_to_paper(entry: ET.Element) -> _ArxivRecord:
         'metadata_status': 'retrieved',
         'abstract': _element_text(entry.find(f'{{{ATOM_NS}}}summary')),
         'categories': categories,
+        'category': next((term['name'] for term in categories if term['is_primary']), ''),
         'primary_category': next((term['id'] for term in categories if term['is_primary']), ''),
+        'published_doi': doi,
         'journal_ref': journal_ref,
         'comment': _element_text(entry.find(f'{{{ARXIV_NS}}}comment')),
         'version': arxiv_version(raw_id),

@@ -417,7 +417,10 @@ def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        Normalized paper metadata.
+        Normalized paper metadata plus the ``abstract`` extra that the corpus
+        schema does not store directly. The abstract is empty unless the work
+        was fetched with ``abstract_inverted_index``, which
+        :data:`WORK_SELECT_FIELDS` deliberately omits.
     """
     doi = clean_doi(work.get('doi')) if work.get('doi') else ''
     identifier = work_id(work)
@@ -444,6 +447,7 @@ def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
         'sources': 'openalex',
         'pdf_url': (work.get('best_oa_location') or {}).get('pdf_url') or '',
         'metadata_status': 'retrieved',
+        'abstract': reconstruct_abstract(work.get('abstract_inverted_index')),
     }
 
 

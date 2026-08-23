@@ -710,6 +710,7 @@ def record_to_paper(record: Mapping[str, Any]) -> _ChemrxivRecord:
         'abstract': provider.clean_text(record.get('abstract')),
         'categories': categories,
         'category': categories[0]['name'] if categories else '',
+        'primary_category': categories[0]['id'] if categories else '',
         'keywords': _keywords(record),
         'license': license_name,
         'version': provider.clean_text(record.get('version')) or chemrxiv_version(chemrxiv_doi),

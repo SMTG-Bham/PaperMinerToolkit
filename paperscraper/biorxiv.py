@@ -331,8 +331,9 @@ def record_to_paper(record: Mapping[str, Any]) -> _BiorxivRecord:
     -------
     dict[str, Any]
         Normalized paper metadata plus the ``abstract``, ``categories``,
-        ``category``, ``license``, ``version``, ``published_doi``, and
-        ``jatsxml`` extras that the corpus schema does not store directly.
+        ``category``, ``primary_category``, ``license``, ``version``,
+        ``published_doi``, and ``jatsxml`` extras that the corpus schema does
+        not store directly.
     """
     return _rxiv.record_to_paper(SERVER_CONFIG, record)
 

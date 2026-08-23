@@ -298,6 +298,7 @@ def arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     dict[str, Any]
         Enrichment fields contributed by arXiv.
     """
+    published = clean_doi(entry.get('published_doi')) if entry.get('published_doi') else ''
     return {
         'doi': clean_doi(entry.get('doi')) if entry.get('doi') else '',
         'title': _text(entry.get('title')),
@@ -305,7 +306,7 @@ def arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
         'publication_date': _text(entry.get('publication_date')),
         'authors': _text(entry.get('authors')),
         'arxiv_id': arxiv.normalize_arxiv_id(entry.get('arxiv_id')),
-        'work_type': 'preprint',
+        'work_type': '' if published else 'preprint',
         'is_oa': 1,
         'oa_status': 'green',
     }

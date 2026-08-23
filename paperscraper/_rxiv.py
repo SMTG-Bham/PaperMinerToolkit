@@ -523,8 +523,9 @@ def record_to_paper(server: RxivServer, record: Mapping[str, Any]) -> RxivRecord
     -------
     dict[str, Any]
         Normalized paper metadata plus the ``abstract``, ``categories``,
-        ``category``, ``license``, ``version``, ``published_doi``, and
-        ``jatsxml`` extras that the corpus schema does not store directly.
+        ``category``, ``primary_category``, ``license``, ``version``,
+        ``published_doi``, and ``jatsxml`` extras that the corpus schema does
+        not store directly.
     """
     preprint_doi = normalize_doi(server, record.get('doi'))
     published = clean_doi(provider.clean_text(record.get('published')))
@@ -545,6 +546,7 @@ def record_to_paper(server: RxivServer, record: Mapping[str, Any]) -> RxivRecord
         'abstract': provider.clean_text(record.get('abstract')),
         'categories': categories,
         'category': categories[0]['name'] if categories else '',
+        'primary_category': categories[0]['id'] if categories else '',
         'license': provider.clean_text(record.get('license')),
         'version': version,
         'published_doi': published,
