@@ -23,6 +23,7 @@ modules/crossref
 modules/openalex
 modules/pubmed
 modules/arxiv
+modules/rxiv
 modules/medrxiv
 modules/biorxiv
 modules/chemrxiv

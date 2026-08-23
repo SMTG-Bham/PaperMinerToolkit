@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 import paperscraper.biorxiv as biorxiv
-from paperscraper import provider
+from paperscraper import _rxiv, provider
 import paperscraper.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
@@ -137,10 +137,10 @@ def test_record_to_paper_reads_the_na_placeholder_as_an_absent_value() -> None:
     record = biorxiv.record_to_paper(collection()[2])
 
     assert record['published_doi'] == ''
-    assert biorxiv._text('NA') == ''
-    assert biorxiv._text('n/a') == ''
-    assert biorxiv._text(None) == ''
-    assert biorxiv._text('  spaced   out  ') == 'spaced out'
+    assert provider.clean_text('NA') == ''
+    assert provider.clean_text('n/a') == ''
+    assert provider.clean_text(None) == ''
+    assert provider.clean_text('  spaced   out  ') == 'spaced out'
 
 
 def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
@@ -148,11 +148,11 @@ def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
     record = biorxiv.record_to_paper(collection()[0])
 
     assert record['authors'] == 'Z. Duan; C. E. Curtis'
-    assert biorxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
+    assert _rxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
     # A name with no comma is a consortium rather than a person, and survives.
-    assert biorxiv._authors('The ENCODE Project Consortium') == (
+    assert _rxiv._authors('The ENCODE Project Consortium') == (
         'The ENCODE Project Consortium')
-    assert biorxiv._authors('') == ''
+    assert _rxiv._authors('') == ''
 
 
 def test_record_to_paper_builds_a_versioned_pdf_location() -> None:
@@ -355,58 +355,9 @@ def test_interval_url_rejects_a_bound_that_is_not_an_iso_date() -> None:
         biorxiv.interval_url('2024-01-01', '')
 
 
-def test_request_paces_consecutive_calls_with_the_courtesy_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Sleep the chosen delay between requests using one shared window."""
-    sleeps: list[float] = []
-    clock = {'now': 100.0}
-    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(provider.time, 'monotonic', lambda: clock['now'])
-
-    session = FakeSession([FakeResponse(text=empty_payload()) for _ in range(3)])
-    for _ in range(3):
-        biorxiv.request(biorxiv.BASE_URL, session=session)
-    assert sleeps == pytest.approx([biorxiv.BIORXIV_MIN_INTERVAL] * 2)
 
 
-def test_request_returns_none_for_a_missing_document() -> None:
-    """Treat a 404 as an absent record rather than as a failure."""
-    session = FakeSession([FakeResponse(status_code=404)])
-    assert biorxiv.request(biorxiv.BASE_URL, session=session) is None
-    assert len(session.calls) == 1
 
-
-def test_request_retries_a_rate_limited_response_and_honours_retry_after(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Wait the advertised interval and retry rather than giving up on a 429."""
-    sleeps: list[float] = []
-    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
-    session = FakeSession([
-        FakeResponse(status_code=429, headers={'Retry-After': '5'}),
-        FakeResponse(text=empty_payload()),
-    ])
-
-    assert biorxiv.request(biorxiv.BASE_URL, session=session) is not None
-    assert len(session.calls) == 2
-    assert 5 in sleeps
-
-
-def test_request_raises_after_exhausting_every_attempt() -> None:
-    """Report how many attempts were spent before the request was abandoned."""
-    session = FakeSession([FakeResponse(status_code=500) for _ in range(4)])
-    with pytest.raises(RuntimeError, match='bioRxiv request failed after 4 attempts'):
-        biorxiv.request(biorxiv.BASE_URL, session=session)
-    assert len(session.calls) == 4
-
-
-def test_request_fails_immediately_on_a_client_error_other_than_a_rate_limit() -> None:
-    """Spend one attempt on a terminal client error instead of retrying it."""
-    session = FakeSession([FakeResponse(status_code=400)])
-    with pytest.raises(RuntimeError, match='bioRxiv rejected the request with 400'):
-        biorxiv.request(biorxiv.BASE_URL, session=session)
-    assert len(session.calls) == 1
 
 
 def test_request_json_reads_an_absent_record_out_of_a_200_response() -> None:

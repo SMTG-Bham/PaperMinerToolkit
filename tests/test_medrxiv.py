@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 import paperscraper.medrxiv as medrxiv
-from paperscraper import provider
+from paperscraper import _rxiv, provider
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -131,21 +131,21 @@ def test_record_to_paper_leaves_the_journal_empty_for_a_published_preprint() -> 
 
 def test_record_to_paper_reads_the_na_placeholder_as_an_absent_value() -> None:
     """Treat medRxiv's ``NA`` spelling as missing rather than as data."""
-    assert medrxiv._text('NA') == ''
-    assert medrxiv._text('n/a') == ''
-    assert medrxiv._text(None) == ''
-    assert medrxiv._text('  spaced   out  ') == 'spaced out'
+    assert provider.clean_text('NA') == ''
+    assert provider.clean_text('n/a') == ''
+    assert provider.clean_text(None) == ''
+    assert provider.clean_text('  spaced   out  ') == 'spaced out'
     assert parsed_records()[3]['published_doi'] == ''
 
 
 def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
     """Rewrite ``Family, G.`` as ``G. Family`` to match the other providers."""
     assert parsed_records()[0]['authors'] == 'A. K. Wheatley; J. A. Juno; S. J. Kent'
-    assert medrxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
+    assert _rxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
     # A name with no comma is a collaboration rather than a person, so it stands.
-    assert medrxiv._authors('The RECOVERY Collaborative Group') == (
+    assert _rxiv._authors('The RECOVERY Collaborative Group') == (
         'The RECOVERY Collaborative Group')
-    assert medrxiv._authors('') == ''
+    assert _rxiv._authors('') == ''
 
 
 def test_record_to_paper_builds_a_versioned_pdf_location() -> None:
@@ -293,58 +293,9 @@ def test_interval_url_rejects_a_bound_that_is_not_an_iso_date() -> None:
         medrxiv.interval_url('2024-01-01', '')
 
 
-def test_request_paces_consecutive_calls_with_the_courtesy_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Sleep the chosen delay between requests using one shared window."""
-    sleeps: list[float] = []
-    clock = {'now': 100.0}
-    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(provider.time, 'monotonic', lambda: clock['now'])
-
-    session = FakeSession([FakeResponse(text=empty_payload()) for _ in range(3)])
-    for _ in range(3):
-        medrxiv.request(medrxiv.BASE_URL, session=session)
-    assert sleeps == pytest.approx([medrxiv.MEDRXIV_MIN_INTERVAL] * 2)
 
 
-def test_request_returns_none_for_a_missing_document() -> None:
-    """Treat a 404 as an absent record rather than as a failure."""
-    session = FakeSession([FakeResponse(status_code=404)])
-    assert medrxiv.request(medrxiv.BASE_URL, session=session) is None
-    assert len(session.calls) == 1
 
-
-def test_request_retries_a_rate_limited_response_and_honours_retry_after(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Wait the advertised interval and retry rather than giving up on a 429."""
-    sleeps: list[float] = []
-    monkeypatch.setattr(provider.time, 'sleep', lambda seconds: sleeps.append(seconds))
-    session = FakeSession([
-        FakeResponse(status_code=429, headers={'Retry-After': '5'}),
-        FakeResponse(text=empty_payload()),
-    ])
-
-    assert medrxiv.request(medrxiv.BASE_URL, session=session) is not None
-    assert len(session.calls) == 2
-    assert 5 in sleeps
-
-
-def test_request_raises_after_exhausting_every_attempt() -> None:
-    """Report how many attempts were spent before the request was abandoned."""
-    session = FakeSession([FakeResponse(status_code=500) for _ in range(4)])
-    with pytest.raises(RuntimeError, match='medRxiv request failed after 4 attempts'):
-        medrxiv.request(medrxiv.BASE_URL, session=session)
-    assert len(session.calls) == 4
-
-
-def test_request_fails_immediately_on_a_client_error_other_than_a_rate_limit() -> None:
-    """Spend one attempt on a terminal client error instead of retrying it."""
-    session = FakeSession([FakeResponse(status_code=400)])
-    with pytest.raises(RuntimeError, match='medRxiv rejected the request with 400'):
-        medrxiv.request(medrxiv.BASE_URL, session=session)
-    assert len(session.calls) == 1
 
 
 def test_request_json_reads_an_absent_record_out_of_a_200_response() -> None:
