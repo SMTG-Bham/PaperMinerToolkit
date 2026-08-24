@@ -25,6 +25,20 @@ def test_each_capability_order_covers_exactly_its_sources(capability: str) -> No
     assert len(ordered) == len(set(ordered))
 
 
+@pytest.mark.parametrize('capability', sources.CAPABILITIES)
+def test_each_declared_capability_resolves_to_a_handler(capability: str) -> None:
+    """Make the registry the executable source of pipeline dispatch."""
+    for name in sources.names(capability):
+        assert callable(sources.resolve_handler(name, capability))
+
+
+@pytest.mark.parametrize('capability', [sources.TEXT, sources.ABSTRACT])
+def test_asset_reachability_predicates_resolve_from_the_registry(capability: str) -> None:
+    """Keep per-row source gating beside the corresponding asset handler."""
+    for name in sources.names(capability):
+        assert callable(sources.resolve_reachability(name, capability))
+
+
 def test_every_source_declares_at_least_one_capability() -> None:
     """Reject a registry entry nothing can ever use."""
     for name, entry in sources.SOURCES.items():
@@ -71,6 +85,9 @@ def test_resolve_names_rejects_a_source_that_lacks_the_capability() -> None:
         sources.resolve_names(['unpaywall'], sources.ENRICH)
     with pytest.raises(ValueError, match='text source must be one of'):
         sources.resolve_names(['arxiv'], sources.TEXT)
+
+    with pytest.raises(ValueError, match='does not implement search'):
+        sources.resolve_handler('crossref', sources.SEARCH)
 
 
 def test_names_rejects_a_capability_that_does_not_exist() -> None:

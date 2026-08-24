@@ -626,7 +626,8 @@ def test_download_abstract_honours_the_requested_sources(
             return False, 'nothing here', ''
         return downloader
 
-    for name, (_, downloader) in download.ABSTRACT_DOWNLOADERS.items():
+    for name in download.registry.names(download.registry.ABSTRACT):
+        downloader = download.registry.SOURCES[name].abstract_handler.rsplit(':', 1)[1]
         monkeypatch.setattr(download, downloader, record(name))
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
 

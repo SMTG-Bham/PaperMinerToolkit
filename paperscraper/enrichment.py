@@ -1,4 +1,4 @@
-"""Supplement corpus paper metadata with Crossref, OpenAlex, PubMed, arXiv, medRxiv, and bioRxiv records.
+"""Supplement corpus metadata from bibliographic and preprint providers.
 
 Discovery and download populate only a handful of bibliographic fields. This
 module fills in the rest: publisher, work type, volume/issue/pages, ISSNs and
@@ -34,7 +34,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, TypeAlias
@@ -43,7 +44,7 @@ from tqdm import tqdm
 
 from paperscraper import arxiv
 from paperscraper import provider
-from paperscraper import sources
+from paperscraper import sources as registry
 from paperscraper import biorxiv
 from paperscraper import chemrxiv
 from paperscraper import crossref as crossref_client
@@ -60,7 +61,7 @@ from paperscraper.corpus import (connect,
                                  write_enrichment)
 from paperscraper.metadata import clean_doi, crossref_fields as crossref_metadata_fields
 
-ENRICHMENT_SOURCES = sources.names(sources.ENRICH)
+ENRICHMENT_SOURCES = registry.names(registry.ENRICH)
 MAX_BATCH_SIZE = 100
 _Record: TypeAlias = dict[str, Any]
 _Fields: TypeAlias = dict[str, Any]
@@ -84,12 +85,7 @@ def configured_sources(sources: Sequence[str] | None) -> list[str]:
     ValueError
         If a requested provider is not supported.
     """
-    if not sources or 'all' in sources:
-        return list(ENRICHMENT_SOURCES)
-    invalid = set(sources) - set(ENRICHMENT_SOURCES)
-    if invalid:
-        raise ValueError(f'enrichment source must be one of: all, {", ".join(ENRICHMENT_SOURCES)}')
-    return [source for source in ENRICHMENT_SOURCES if source in sources]
+    return registry.resolve_names(sources, registry.ENRICH, label='enrichment')
 
 
 def _short_openalex_id(value: object) -> str:
@@ -885,6 +881,8 @@ CROSSREF_PREFERRED = ('publisher', 'work_type', 'volume', 'issue', 'pages', 'iss
 OPENALEX_ONLY = ('openalex_id', 'issn_l', 'is_oa', 'oa_status', 'license', 'cited_by_count')
 FILL_COLUMNS = ('doi', 'title', 'journal', 'publication_date', 'authors', 'pmid', 'pmcid',
                 'arxiv_id', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi')
+PRESERVED_ON_PROVIDER_ERROR = (CROSSREF_PREFERRED + OPENALEX_ONLY
+                               + ('referenced_works_count', 'is_retracted'))
 
 
 def merge_fields(paper_id: str,
@@ -895,7 +893,8 @@ def merge_fields(paper_id: str,
                  arxiv_entry: Mapping[str, Any] | None = None,
                  medrxiv_entry: Mapping[str, Any] | None = None,
                  biorxiv_entry: Mapping[str, Any] | None = None,
-                 chemrxiv_entry: Mapping[str, Any] | None = None) -> _Record:
+                 chemrxiv_entry: Mapping[str, Any] | None = None,
+                 provider_errors: Mapping[str, str] | None = None) -> _Record:
     """Apply the provider precedence rules and build one paper's update.
 
     Parameters
@@ -918,6 +917,9 @@ def merge_fields(paper_id: str,
         bioRxiv record mapping, or ``None`` when bioRxiv had no record.
     chemrxiv_entry : Mapping[str, Any] or None, optional
         chemRxiv record mapping, or ``None`` when chemRxiv had no record.
+    provider_errors : Mapping[str, str] or None, optional
+        Failures from providers that were applicable to this paper. These make
+        an otherwise empty result ``failed`` rather than ``not_found``.
 
     Returns
     -------
@@ -971,7 +973,10 @@ def merge_fields(paper_id: str,
                                            ('biorxiv', biorxiv_entry),
                                            ('chemrxiv', chemrxiv_entry))
              if record is not None]
-    if not found:
+    provider_errors = dict(provider_errors or {})
+    if not found and provider_errors:
+        status = 'failed'
+    elif not found:
         status = 'not_found'
     elif len(found) == len(requested):
         status = 'succeeded'
@@ -979,16 +984,32 @@ def merge_fields(paper_id: str,
         status = 'partial'
 
     now = utc_now()
+    provenance = _provenance(crossref, openalex_work, pubmed_article, arxiv_entry,
+                             medrxiv_entry, biorxiv_entry, chemrxiv_entry)
+    if provider_errors:
+        provenance['provider_errors'] = provider_errors
     update.update({
         'paper_id': paper_id,
         'enrichment_sources': ';'.join(found),
-        'enrichment_json': _provenance(crossref, openalex_work, pubmed_article, arxiv_entry,
-                                       medrxiv_entry, biorxiv_entry, chemrxiv_entry),
+        'enrichment_json': provenance,
         'enriched_at': now if found else '',
         'enrichment_status': status,
         'updated_at': now,
     })
     return update
+
+
+def _preserve_stored_values(update: _Record, stored: Mapping[str, Any]) -> None:
+    """Keep non-empty enrichment values when a partial refresh cannot replace them.
+
+    A zero is a valid fresh value, but during a provider failure it is also the
+    default produced for missing counts and flags. Keeping the previous non-zero
+    value until every requested provider completes avoids turning an outage into
+    an apparent metadata change.
+    """
+    for column in PRESERVED_ON_PROVIDER_ERROR:
+        if update.get(column) in ('', None, 0) and stored[column] not in ('', None, 0):
+            update[column] = stored[column]
 
 
 def _position_label(index: int, total: int, authorship: Mapping[str, Any] | None) -> str:
@@ -1232,88 +1253,139 @@ def reference_rows(paper_id: str,
     return rows
 
 
-def _fetch(sources: Sequence[str],
-           dois: Sequence[str],
-           identifiers: Sequence[str],
-           email: str,
-           api_key: str | None,
-           openalex_session: provider.HTTPClient | None,
-           crossref_session: provider.HTTPClient | None,
-           pace: float,
-           pmids: Sequence[str] = (),
-           pubmed_session: provider.HTTPClient | None = None,
-           pubmed_api_key: str | None = None,
-           arxiv_ids: Sequence[str] = (),
-           arxiv_session: provider.HTTPClient | None = None,
-           medrxiv_dois: Sequence[str] = (),
-           medrxiv_session: provider.HTTPClient | None = None,
-           biorxiv_dois: Sequence[str] = (),
-           biorxiv_session: provider.HTTPClient | None = None,
-           chemrxiv_dois: Sequence[str] = (),
-           chemrxiv_session: provider.HTTPClient | None = None) -> tuple[dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record],
-                                                                          dict[str, _Record]]:
-    """Fetch one batch from each requested provider."""
-    crossref_works: dict[str, _Record] = {}
-    openalex_by_doi: dict[str, _Record] = {}
-    openalex_by_id: dict[str, _Record] = {}
-    pubmed_by_pmid: dict[str, _Record] = {}
-    arxiv_by_id: dict[str, _Record] = {}
-    medrxiv_by_doi: dict[str, _Record] = {}
-    biorxiv_by_doi: dict[str, _Record] = {}
-    chemrxiv_by_doi: dict[str, _Record] = {}
-    if 'crossref' in sources and dois:
-        crossref_works = crossref_client.works_by_doi(
-            dois, email=email, session=crossref_session, pace=pace)
-    if 'openalex' in sources:
-        if dois:
-            openalex_by_doi = openalex.works_batch(
-                dois, api_key=api_key, session=openalex_session, mailto=email)
-        if identifiers:
-            openalex_by_id = openalex.works_batch(
-                identifiers, filter_name='ids.openalex', api_key=api_key,
-                session=openalex_session, mailto=email)
-    if 'pubmed' in sources and pmids:
-        for chunk in provider.chunked(list(pmids), pubmed.EFETCH_BATCH_SIZE):
-            articles = pubmed.parse_articles(pubmed.efetch_ids(
-                chunk, api_key=pubmed_api_key, email=email, session=pubmed_session))
-            for article in articles:
-                pmid = pubmed.normalize_pmid(article.get('pmid'))
-                if pmid:
-                    pubmed_by_pmid[pmid] = article
-    if 'arxiv' in sources and arxiv_ids:
-        for chunk in provider.chunked(list(arxiv_ids), arxiv.ID_BATCH_SIZE):
-            for entry in arxiv.parse_entries(arxiv.fetch_ids(chunk, session=arxiv_session)):
-                identifier = arxiv.normalize_arxiv_id(entry.get('arxiv_id'))
-                if identifier:
-                    arxiv_by_id[identifier] = entry
-    if 'medrxiv' in sources and medrxiv_dois:
-        # medRxiv answers one DOI per request, so this is a loop rather than a
-        # batched fetch; there is no multi-identifier route to use instead.
-        for identifier in medrxiv_dois:
-            entry = medrxiv.fetch_doi(identifier, session=medrxiv_session)
-            if entry is not None:
-                medrxiv_by_doi[identifier] = entry
-    if 'biorxiv' in sources and biorxiv_dois:
-        # bioRxiv shares medRxiv's API and so its one-DOI-per-request limit.
-        for identifier in biorxiv_dois:
-            entry = biorxiv.fetch_doi(identifier, session=biorxiv_session)
-            if entry is not None:
-                biorxiv_by_doi[identifier] = entry
-    if 'chemrxiv' in sources and chemrxiv_dois:
-        # chemRxiv answers one DOI per request too; its search endpoint takes a
-        # phrase rather than a list of identifiers, so there is no batch route.
-        for identifier in chemrxiv_dois:
-            entry = chemrxiv.fetch_doi(identifier, session=chemrxiv_session)
-            if entry is not None:
-                chemrxiv_by_doi[identifier] = entry
-    return (crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid, arxiv_by_id,
-            medrxiv_by_doi, biorxiv_by_doi, chemrxiv_by_doi)
+@dataclass(frozen=True)
+class _FetchContext:
+    """Inputs shared by the registry-backed enrichment fetch handlers."""
+
+    dois: Sequence[str]
+    identifiers: Sequence[str]
+    email: str
+    api_key: str | None
+    openalex_session: provider.HTTPClient | None
+    crossref_session: provider.HTTPClient | None
+    pace: float
+    pmids: Sequence[str] = ()
+    pubmed_session: provider.HTTPClient | None = None
+    pubmed_api_key: str | None = None
+    arxiv_ids: Sequence[str] = ()
+    arxiv_session: provider.HTTPClient | None = None
+    medrxiv_dois: Sequence[str] = ()
+    medrxiv_session: provider.HTTPClient | None = None
+    biorxiv_dois: Sequence[str] = ()
+    biorxiv_session: provider.HTTPClient | None = None
+    chemrxiv_dois: Sequence[str] = ()
+    chemrxiv_session: provider.HTTPClient | None = None
+
+
+@dataclass
+class _FetchResult:
+    """Records and provider failures produced while enriching one batch."""
+
+    crossref_works: dict[str, _Record] = field(default_factory=dict)
+    openalex_by_doi: dict[str, _Record] = field(default_factory=dict)
+    openalex_by_id: dict[str, _Record] = field(default_factory=dict)
+    pubmed_by_pmid: dict[str, _Record] = field(default_factory=dict)
+    arxiv_by_id: dict[str, _Record] = field(default_factory=dict)
+    medrxiv_by_doi: dict[str, _Record] = field(default_factory=dict)
+    biorxiv_by_doi: dict[str, _Record] = field(default_factory=dict)
+    chemrxiv_by_doi: dict[str, _Record] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+def _fetch_crossref(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch Crossref records for one enrichment batch."""
+    if not context.dois:
+        return {}
+    return {'crossref_works': crossref_client.works_by_doi(
+        context.dois, email=context.email, session=context.crossref_session,
+        pace=context.pace)}
+
+
+def _fetch_openalex(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch OpenAlex records for one enrichment batch."""
+    records: dict[str, dict[str, _Record]] = {}
+    if context.dois:
+        records['openalex_by_doi'] = openalex.works_batch(
+            context.dois, api_key=context.api_key, session=context.openalex_session,
+            mailto=context.email)
+    if context.identifiers:
+        records['openalex_by_id'] = openalex.works_batch(
+            context.identifiers, filter_name='ids.openalex', api_key=context.api_key,
+            session=context.openalex_session, mailto=context.email)
+    return records
+
+
+def _fetch_pubmed(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch PubMed records for one enrichment batch."""
+    records: dict[str, _Record] = {}
+    for chunk in provider.chunked(list(context.pmids), pubmed.EFETCH_BATCH_SIZE):
+        articles = pubmed.parse_articles(pubmed.efetch_ids(
+            chunk, api_key=context.pubmed_api_key, email=context.email,
+            session=context.pubmed_session))
+        for article in articles:
+            pmid = pubmed.normalize_pmid(article.get('pmid'))
+            if pmid:
+                records[pmid] = article
+    return {'pubmed_by_pmid': records} if records else {}
+
+
+def _fetch_arxiv(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch arXiv records for one enrichment batch."""
+    records: dict[str, _Record] = {}
+    for chunk in provider.chunked(list(context.arxiv_ids), arxiv.ID_BATCH_SIZE):
+        for entry in arxiv.parse_entries(arxiv.fetch_ids(chunk, session=context.arxiv_session)):
+            identifier = arxiv.normalize_arxiv_id(entry.get('arxiv_id'))
+            if identifier:
+                records[identifier] = entry
+    return {'arxiv_by_id': records} if records else {}
+
+
+def _fetch_rxiv(identifiers: Sequence[str],
+                 fetcher: Callable[..., Mapping[str, Any] | None],
+                 session: provider.HTTPClient | None,
+                 bucket: str) -> dict[str, dict[str, _Record]]:
+    """Fetch DOI-addressed preprint records for one enrichment batch."""
+    records: dict[str, _Record] = {}
+    for identifier in identifiers:
+        entry = fetcher(identifier, session=session)
+        if entry is not None:
+            records[identifier] = entry
+    return {bucket: records} if records else {}
+
+
+def _fetch_medrxiv(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch medRxiv records for one enrichment batch."""
+    return _fetch_rxiv(context.medrxiv_dois, medrxiv.fetch_doi,
+                       context.medrxiv_session, 'medrxiv_by_doi')
+
+
+def _fetch_biorxiv(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch bioRxiv records for one enrichment batch."""
+    return _fetch_rxiv(context.biorxiv_dois, biorxiv.fetch_doi,
+                       context.biorxiv_session, 'biorxiv_by_doi')
+
+
+def _fetch_chemrxiv(context: _FetchContext) -> dict[str, dict[str, _Record]]:
+    """Fetch chemRxiv records for one enrichment batch."""
+    return _fetch_rxiv(context.chemrxiv_dois, chemrxiv.fetch_doi,
+                       context.chemrxiv_session, 'chemrxiv_by_doi')
+
+
+def _fetch(source_names: Sequence[str], context: _FetchContext) -> _FetchResult:
+    """Fetch one batch, isolating failures when several providers were selected."""
+    result = _FetchResult()
+    for name in source_names:
+        try:
+            fetched = registry.resolve_handler(name, registry.ENRICH)(context)
+        except Exception as error:
+            if len(source_names) == 1:
+                raise
+            result.errors[name] = str(error)
+            print(f'{registry.SOURCES[name].label} enrichment skipped: {error}')
+            continue
+        for bucket, records in fetched.items():
+            getattr(result, bucket).update(records)
+    return result
 
 
 def enrich_batch(conn: sqlite3.Connection,
@@ -1383,6 +1455,7 @@ def enrich_batch(conn: sqlite3.Connection,
     by_medrxiv = medrxiv_candidates(candidates) if 'medrxiv' in sources else {}
     by_biorxiv = biorxiv_candidates(candidates) if 'biorxiv' in sources else {}
     by_chemrxiv = chemrxiv_candidates(candidates) if 'chemrxiv' in sources else {}
+    openalex_papers = set(by_openalex.values())
     pubmed_papers = set(by_pmid.values())
     arxiv_papers = set(by_arxiv.values())
     medrxiv_papers = set(by_medrxiv.values())
@@ -1402,32 +1475,33 @@ def enrich_batch(conn: sqlite3.Connection,
     if not by_doi and not by_openalex and not identifier_only:
         return summary
 
-    (crossref_works, openalex_by_doi, openalex_by_id, pubmed_by_pmid, arxiv_by_id,
-     medrxiv_by_doi, biorxiv_by_doi, chemrxiv_by_doi) = _fetch(
-        sources, list(by_doi), list(by_openalex), email, api_key,
-        openalex_session, crossref_session, pace,
+    fetched = _fetch(sources, _FetchContext(
+        dois=list(by_doi), identifiers=list(by_openalex), email=email, api_key=api_key,
+        openalex_session=openalex_session, crossref_session=crossref_session, pace=pace,
         pmids=list(by_pmid), pubmed_session=pubmed_session, pubmed_api_key=pubmed_api_key,
         arxiv_ids=list(by_arxiv), arxiv_session=arxiv_session,
         medrxiv_dois=list(by_medrxiv), medrxiv_session=medrxiv_session,
         biorxiv_dois=list(by_biorxiv), biorxiv_session=biorxiv_session,
-        chemrxiv_dois=list(by_chemrxiv), chemrxiv_session=chemrxiv_session)
-    pubmed_by_paper = {paper_id: pubmed_by_pmid[pmid]
-                       for pmid, paper_id in by_pmid.items() if pmid in pubmed_by_pmid}
-    arxiv_by_paper = {paper_id: arxiv_by_id[identifier]
-                      for identifier, paper_id in by_arxiv.items() if identifier in arxiv_by_id}
-    medrxiv_by_paper = {paper_id: medrxiv_by_doi[identifier]
+        chemrxiv_dois=list(by_chemrxiv), chemrxiv_session=chemrxiv_session))
+    pubmed_by_paper = {paper_id: fetched.pubmed_by_pmid[pmid]
+                       for pmid, paper_id in by_pmid.items() if pmid in fetched.pubmed_by_pmid}
+    arxiv_by_paper = {paper_id: fetched.arxiv_by_id[identifier]
+                      for identifier, paper_id in by_arxiv.items()
+                      if identifier in fetched.arxiv_by_id}
+    medrxiv_by_paper = {paper_id: fetched.medrxiv_by_doi[identifier]
                         for identifier, paper_id in by_medrxiv.items()
-                        if identifier in medrxiv_by_doi}
-    biorxiv_by_paper = {paper_id: biorxiv_by_doi[identifier]
+                        if identifier in fetched.medrxiv_by_doi}
+    biorxiv_by_paper = {paper_id: fetched.biorxiv_by_doi[identifier]
                         for identifier, paper_id in by_biorxiv.items()
-                        if identifier in biorxiv_by_doi}
-    chemrxiv_by_paper = {paper_id: chemrxiv_by_doi[identifier]
+                        if identifier in fetched.biorxiv_by_doi}
+    chemrxiv_by_paper = {paper_id: fetched.chemrxiv_by_doi[identifier]
                          for identifier, paper_id in by_chemrxiv.items()
-                         if identifier in chemrxiv_by_doi}
+                         if identifier in fetched.chemrxiv_by_doi}
 
-    targets = [(paper_id, crossref_works.get(key), openalex_by_doi.get(key), True)
+    targets = [(paper_id, fetched.crossref_works.get(key),
+                fetched.openalex_by_doi.get(key), True)
                for key, paper_id in by_doi.items()]
-    targets += [(paper_id, None, openalex_by_id.get(key), False)
+    targets += [(paper_id, None, fetched.openalex_by_id.get(key), False)
                 for key, paper_id in by_openalex.items()]
     targets += [(paper_id, None, None, False) for paper_id in identifier_only]
 
@@ -1440,18 +1514,26 @@ def enrich_batch(conn: sqlite3.Connection,
         chemrxiv_entry = chemrxiv_by_paper.get(paper_id)
         requested = [source for source in sources
                      if (source == 'crossref' and keyed_by_doi)
-                     or source == 'openalex'
+                     or (source == 'openalex'
+                         and (keyed_by_doi or paper_id in openalex_papers))
                      or (source == 'pubmed' and paper_id in pubmed_papers)
                      or (source == 'arxiv' and paper_id in arxiv_papers)
                      or (source == 'medrxiv' and paper_id in medrxiv_papers)
                      or (source == 'biorxiv' and paper_id in biorxiv_papers)
                      or (source == 'chemrxiv' and paper_id in chemrxiv_papers)]
+        errors = {source: fetched.errors[source]
+                  for source in requested if source in fetched.errors}
         update = merge_fields(paper_id, crossref_work, openalex_work, requested,
                               pubmed_article, arxiv_entry, medrxiv_entry, biorxiv_entry,
-                              chemrxiv_entry)
+                              chemrxiv_entry, provider_errors=errors)
+        if errors:
+            stored = conn.execute(
+                'SELECT * FROM papers WHERE paper_id = ?', (paper_id,)).fetchone()
+            if stored is not None:
+                _preserve_stored_values(update, stored)
         updates.append(update)
         summary[update['enrichment_status']] += 1
-        if update['enrichment_status'] == 'not_found':
+        if update['enrichment_status'] in {'failed', 'not_found'}:
             continue
         authors.extend(author_rows(paper_id, crossref_work, openalex_work))
         subjects.extend(subject_rows(paper_id, openalex_work))
@@ -1465,7 +1547,11 @@ def enrich_batch(conn: sqlite3.Connection,
 
     for update in updates:
         update['enrichment_json'] = _json_text(update['enrichment_json'])
-    write_enrichment(conn, updates, authors, subjects, reference_records, sources=sources)
+    # A provider outage is not evidence that its previously stored child rows
+    # disappeared. Replace rows only for providers that completed this batch.
+    completed_sources = [source for source in sources if source not in fetched.errors]
+    write_enrichment(conn, updates, authors, subjects, reference_records,
+                     sources=completed_sources)
     summary['authors'] += len(authors)
     summary['subjects'] += len(subjects)
     summary['references'] += len(reference_records)

@@ -1163,18 +1163,6 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
     return False, last_error, ''
 
 
-ABSTRACT_DOWNLOADERS = {
-    'openalex': ('_openalex_identifier', '_download_openalex_abstract'),
-    'pubmed': ('_pubmed_abstract_reachable', '_download_pubmed_abstract'),
-    'medrxiv': ('_medrxiv_identifier', '_download_medrxiv_abstract'),
-    'biorxiv': ('_biorxiv_identifier', '_download_biorxiv_abstract'),
-    'chemrxiv': ('_chemrxiv_identifier', '_download_chemrxiv_abstract'),
-    'arxiv': ('_arxiv_identifier', '_download_arxiv_abstract'),
-    'core': ('_core_abstract_reachable', '_download_core_abstract'),
-    'elsevier': ('_elsevier_abstract_reachable', '_download_elsevier_abstract'),
-}
-
-
 def _reachable(answer: object) -> bool:
     """Read an identifier helper's answer as a yes or a no.
 
@@ -1190,6 +1178,12 @@ def _reachable(answer: object) -> bool:
         Whether the source can be asked about this paper.
     """
     return answer is not False and answer is not None
+
+
+def _source_reachable(name: str, capability: str, paper: Mapping[str, Any]) -> bool:
+    """Report whether a registered source can be asked for one paper asset."""
+    predicate = registry.resolve_reachability(name, capability)
+    return predicate is None or _reachable(predicate(paper))
 
 
 def _pubmed_abstract_reachable(paper: Mapping[str, Any]) -> bool:
@@ -1273,10 +1267,10 @@ def _download_abstract(paper: MutableMapping[str, Any],
     for name in registry.names(registry.ABSTRACT):
         if name not in requested:
             continue
-        reachable, downloader = ABSTRACT_DOWNLOADERS[name]
-        if not _reachable(globals()[reachable](paper)):
+        if not _source_reachable(name, registry.ABSTRACT, paper):
             continue
-        ok, source, abstract = globals()[downloader](paper)
+        downloader = registry.resolve_handler(name, registry.ABSTRACT)
+        ok, source, abstract = downloader(paper)
         if ok:
             return ok, source, abstract
         errors.append(f'{name}: {source}')
@@ -1366,22 +1360,6 @@ def _download_elsevier_pdf(
     return _download_pdf(paper, filepath), 'Elsevier PDF download failed'
 
 
-# One entry per source that can serve a PDF, named rather than bound so that
-# replacing a downloader takes effect. The order a run uses comes from the
-# registry.
-PDF_DOWNLOADERS = {
-    'unpaywall': '_download_unpaywall_pdf',
-    'openalex': '_download_openalex_pdf',
-    'core': '_download_core_pdf',
-    'elsevier': '_download_elsevier_pdf',
-    'pubmed': '_download_pubmed_pdf',
-    'medrxiv': '_download_medrxiv_pdf',
-    'biorxiv': '_download_biorxiv_pdf',
-    'chemrxiv': '_download_chemrxiv_pdf',
-    'arxiv': '_download_arxiv_pdf',
-}
-
-
 def _pdf_downloader(source: str) -> Callable[..., tuple[bool, str]]:
     """Return the PDF downloader for one source.
 
@@ -1395,7 +1373,7 @@ def _pdf_downloader(source: str) -> Callable[..., tuple[bool, str]]:
     Callable[..., tuple[bool, str]]
         Downloader taking a paper row and a destination path.
     """
-    return globals()[PDF_DOWNLOADERS[source]]
+    return registry.resolve_handler(source, registry.PDF)
 
 
 def _download_pdf_from_sources(
@@ -1415,14 +1393,6 @@ def _download_pdf_from_sources(
             return True, source, detail
         errors.append(f'{source}: {detail}')
     return False, '; '.join(errors), ''
-
-
-TEXT_DOWNLOADERS = {
-    'elsevier': ('_should_try_elsevier_text', '_download_elsevier_text'),
-    'pubmed': ('_should_try_pmc_text', '_download_pmc_text'),
-    'medrxiv': ('_should_try_medrxiv_text', '_download_medrxiv_text'),
-    'biorxiv': ('_should_try_biorxiv_text', '_download_biorxiv_text'),
-}
 
 
 def _download_elsevier_text(paper: Mapping[str, Any],
@@ -1477,11 +1447,11 @@ def _download_text_from_sources(
     for name in registry.names(registry.TEXT):
         if name not in requested:
             continue
-        predicate, downloader = TEXT_DOWNLOADERS[name]
-        if not globals()[predicate](paper):
+        if not _source_reachable(name, registry.TEXT, paper):
             continue
         try:
-            ok, detail = globals()[downloader](paper, filepath)
+            downloader = registry.resolve_handler(name, registry.TEXT)
+            ok, detail = downloader(paper, filepath)
             if ok:
                 return True, name, ''
             errors.append(f'{name}: {detail}')
@@ -1677,7 +1647,7 @@ def _download_paper(
     pdf_requested = download_format in {'pdf', 'both'}
     requested = set(sources)
     text_available = any(
-        name in requested and globals()[TEXT_DOWNLOADERS[name][0]](paper)
+        name in requested and _source_reachable(name, registry.TEXT, paper)
         for name in registry.names(registry.TEXT)
     )
     text_attempt_needed = (

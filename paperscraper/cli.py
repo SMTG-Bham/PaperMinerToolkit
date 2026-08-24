@@ -86,7 +86,7 @@ def _format_bytes(size: int) -> str:
 @click.option('--enrich', 'enrich_metadata',
               is_flag=True,
               default=False,
-              help='Supplement newly stored papers with Crossref and OpenAlex metadata.')
+              help='Supplement newly stored papers with all enrichment providers.')
 def paper_search(query: str, db_path: str, source: str, count: int,
                  store_abstract: bool, enrich_metadata: bool) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
@@ -120,7 +120,7 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
 @click.option('--enrich', 'enrich_metadata',
               is_flag=True,
               default=False,
-              help='Supplement imported works with Crossref and OpenAlex metadata.')
+              help='Supplement imported works with all enrichment providers.')
 def import_author(db_path: str,
                   email: str | None,
                   orcid: str | None,
@@ -236,7 +236,7 @@ def enrich(db_path: str,
            references: bool,
            resolve_references: bool,
            email: str | None) -> None:
-    """Supplement corpus metadata with Crossref and OpenAlex records."""
+    """Supplement corpus metadata with the selected provider records."""
     try:
         summary = enrich_corpus(
             db_path,

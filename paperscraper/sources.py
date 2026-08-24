@@ -14,6 +14,11 @@ module it belongs to is stored as a dotted path and imported only when asked
 for, so importing the registry costs nothing and cannot cycle back through
 :mod:`paperscraper.settings`, which several source modules import.
 
+The registry also owns the operation targets used by search, enrichment, and
+asset download. Those callables are resolved at use time, so the orchestration
+modules do not maintain parallel dispatch dictionaries and replacing a handler
+for testing still takes effect immediately.
+
 Order is data here, not statement order. Each capability keeps its own sequence,
 because they genuinely differ and each was chosen: a search puts arXiv last so a
 published record wins over its preprint, while a PDF download puts arXiv last
@@ -29,6 +34,7 @@ import importlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from types import ModuleType
+from typing import Any, Callable
 
 SEARCH = 'search'
 ENRICH = 'enrich'
@@ -69,6 +75,20 @@ class Source:
     open_access : bool, default=False
         Whether a PDF from this source is openly licensed. A closed-access
         download is not re-advertised as the paper's public PDF URL.
+    search_handler : str, default=''
+        Dotted ``module:function`` target implementing search.
+    enrich_handler : str, default=''
+        Dotted target implementing enrichment fetches.
+    pdf_handler : str, default=''
+        Dotted target implementing PDF download.
+    text_handler : str, default=''
+        Dotted target implementing machine-readable full-text download.
+    text_reachable : str, default=''
+        Dotted predicate deciding whether full text can be requested for a row.
+    abstract_handler : str, default=''
+        Dotted target implementing abstract download.
+    abstract_reachable : str, default=''
+        Dotted predicate deciding whether an abstract can be requested for a row.
     """
 
     name: str
@@ -81,6 +101,13 @@ class Source:
     setup_command: str = ''
     credential_required: bool = False
     open_access: bool = False
+    search_handler: str = ''
+    enrich_handler: str = ''
+    pdf_handler: str = ''
+    text_handler: str = ''
+    text_reachable: str = ''
+    abstract_handler: str = ''
+    abstract_reachable: str = ''
 
     def has(self, capability: str) -> bool:
         """Report whether this source offers one capability.
@@ -96,6 +123,31 @@ class Source:
             Whether the source can be used that way.
         """
         return capability in self.capabilities
+
+    def handler(self, capability: str) -> str:
+        """Return the operation target implementing one capability.
+
+        Parameters
+        ----------
+        capability : str
+            One of :data:`CAPABILITIES`.
+
+        Returns
+        -------
+        str
+            Dotted ``module:function`` target, or an empty string when the
+            source does not implement the capability.
+        """
+        attribute = {
+            SEARCH: 'search_handler',
+            ENRICH: 'enrich_handler',
+            PDF: 'pdf_handler',
+            TEXT: 'text_handler',
+            ABSTRACT: 'abstract_handler',
+        }.get(capability)
+        if attribute is None:
+            raise ValueError(f'capability must be one of: {", ".join(CAPABILITIES)}')
+        return str(getattr(self, attribute))
 
 
 def _source(name: str,
@@ -131,34 +183,82 @@ SOURCES: dict[str, Source] = {
     entry.name: entry for entry in (
         _source('crossref', 'Crossref', 'crossref', [ENRICH],
                 credential='crossref_email', credential_env='CROSSREF_EMAIL',
-                setup_command='ps_crossref_email'),
+                setup_command='ps_crossref_email',
+                enrich_handler='paperscraper.enrichment:_fetch_crossref'),
         _source('openalex', 'OpenAlex', 'openalex', [SEARCH, ENRICH, PDF, ABSTRACT],
                 identifier_column='openalex_id', credential='openalex_api_key',
                 credential_env='OPENALEX_API_KEY', setup_command='ps_openalex_key',
-                open_access=True),
+                open_access=True,
+                search_handler='paperscraper.search:openalex_search',
+                enrich_handler='paperscraper.enrichment:_fetch_openalex',
+                pdf_handler='paperscraper.download:_download_openalex_pdf',
+                abstract_handler='paperscraper.download:_download_openalex_abstract',
+                abstract_reachable='paperscraper.download:_openalex_identifier'),
         _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='pmid', credential='ncbi_api_key',
-                credential_env='NCBI_API_KEY', setup_command='ps_ncbi_key'),
+                credential_env='NCBI_API_KEY', setup_command='ps_ncbi_key',
+                search_handler='paperscraper.search:pubmed_search',
+                enrich_handler='paperscraper.enrichment:_fetch_pubmed',
+                pdf_handler='paperscraper.download:_download_pubmed_pdf',
+                text_handler='paperscraper.download:_download_pmc_text',
+                text_reachable='paperscraper.download:_should_try_pmc_text',
+                abstract_handler='paperscraper.download:_download_pubmed_abstract',
+                abstract_reachable='paperscraper.download:_pubmed_abstract_reachable'),
         _source('elsevier', 'Elsevier', 'elsevier', [SEARCH, PDF, TEXT, ABSTRACT],
                 identifier_column='elsevier_link', credential='elsevier_api_key',
                 credential_env='ELSEVIER_API_KEY', setup_command='ps_elsevier_key',
-                credential_required=True),
+                credential_required=True,
+                search_handler='paperscraper.search:_elsevier_search',
+                pdf_handler='paperscraper.download:_download_elsevier_pdf',
+                text_handler='paperscraper.download:_download_elsevier_text',
+                text_reachable='paperscraper.download:_should_try_elsevier_text',
+                abstract_handler='paperscraper.download:_download_elsevier_abstract',
+                abstract_reachable='paperscraper.download:_elsevier_abstract_reachable'),
         _source('core', 'CORE', 'core', [SEARCH, PDF, ABSTRACT],
                 identifier_column='core_id', credential='core_api_key',
                 credential_env='CORE_API_KEY', setup_command='ps_core_key',
-                credential_required=True, open_access=True),
+                credential_required=True, open_access=True,
+                search_handler='paperscraper.search:core_search',
+                pdf_handler='paperscraper.download:_download_core_pdf',
+                abstract_handler='paperscraper.download:_download_core_abstract',
+                abstract_reachable='paperscraper.download:_core_abstract_reachable'),
         _source('unpaywall', 'Unpaywall', 'unpaywall', [PDF],
                 credential='unpaywall_email', credential_env='UNPAYWALL_EMAIL',
                 setup_command='ps_unpaywall_email', credential_required=True,
-                open_access=True),
+                open_access=True,
+                pdf_handler='paperscraper.download:_download_unpaywall_pdf'),
         _source('arxiv', 'arXiv', 'arxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
-                identifier_column='arxiv_id', open_access=True),
+                identifier_column='arxiv_id', open_access=True,
+                search_handler='paperscraper.search:arxiv_search',
+                enrich_handler='paperscraper.enrichment:_fetch_arxiv',
+                pdf_handler='paperscraper.download:_download_arxiv_pdf',
+                abstract_handler='paperscraper.download:_download_arxiv_abstract',
+                abstract_reachable='paperscraper.download:_arxiv_identifier'),
         _source('medrxiv', 'medRxiv', 'medrxiv', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
-                identifier_column='medrxiv_doi', open_access=True),
+                identifier_column='medrxiv_doi', open_access=True,
+                search_handler='paperscraper.search:medrxiv_search',
+                enrich_handler='paperscraper.enrichment:_fetch_medrxiv',
+                pdf_handler='paperscraper.download:_download_medrxiv_pdf',
+                text_handler='paperscraper.download:_download_medrxiv_text',
+                text_reachable='paperscraper.download:_should_try_medrxiv_text',
+                abstract_handler='paperscraper.download:_download_medrxiv_abstract',
+                abstract_reachable='paperscraper.download:_medrxiv_identifier'),
         _source('biorxiv', 'bioRxiv', 'biorxiv', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
-                identifier_column='biorxiv_doi', open_access=True),
+                identifier_column='biorxiv_doi', open_access=True,
+                search_handler='paperscraper.search:biorxiv_search',
+                enrich_handler='paperscraper.enrichment:_fetch_biorxiv',
+                pdf_handler='paperscraper.download:_download_biorxiv_pdf',
+                text_handler='paperscraper.download:_download_biorxiv_text',
+                text_reachable='paperscraper.download:_should_try_biorxiv_text',
+                abstract_handler='paperscraper.download:_download_biorxiv_abstract',
+                abstract_reachable='paperscraper.download:_biorxiv_identifier'),
         _source('chemrxiv', 'chemRxiv', 'chemrxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
-                identifier_column='chemrxiv_doi', open_access=True),
+                identifier_column='chemrxiv_doi', open_access=True,
+                search_handler='paperscraper.search:chemrxiv_search',
+                enrich_handler='paperscraper.enrichment:_fetch_chemrxiv',
+                pdf_handler='paperscraper.download:_download_chemrxiv_pdf',
+                abstract_handler='paperscraper.download:_download_chemrxiv_abstract',
+                abstract_reachable='paperscraper.download:_chemrxiv_identifier'),
     )
 }
 
@@ -212,6 +312,83 @@ def resolve(name: str) -> ModuleType:
     if name not in _MODULES:
         _MODULES[name] = importlib.import_module(SOURCES[name].module)
     return _MODULES[name]
+
+
+def resolve_handler(name: str, capability: str) -> Callable[..., Any]:
+    """Resolve the callable implementing a source capability.
+
+    The target is looked up on every call after importing its module. This keeps
+    imports lazy at the registry boundary while allowing tests and applications
+    to replace a handler dynamically.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+    capability : str
+        One of :data:`CAPABILITIES`.
+
+    Returns
+    -------
+    Callable[..., Any]
+        Operation callable registered for the source.
+
+    Raises
+    ------
+    KeyError
+        If no source goes by ``name``.
+    ValueError
+        If the source does not implement the capability or its target is malformed.
+    TypeError
+        If the registered target is not callable.
+    """
+    target = SOURCES[name].handler(capability)
+    if not target:
+        raise ValueError(f'{name} does not implement {capability}')
+    module_name, separator, attribute = target.partition(':')
+    if not separator or not module_name or not attribute:
+        raise ValueError(f'invalid {capability} handler for {name}: {target!r}')
+    handler = getattr(importlib.import_module(module_name), attribute)
+    if not callable(handler):
+        raise TypeError(f'{target} is not callable')
+    return handler
+
+
+def resolve_reachability(name: str, capability: str) -> Callable[..., Any] | None:
+    """Resolve an optional per-row reachability predicate.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+    capability : {'abstract', 'text'}
+        Capability whose predicate is requested.
+
+    Returns
+    -------
+    callable or None
+        Registered predicate, or ``None`` when no predicate is required.
+
+    Raises
+    ------
+    ValueError
+        If the capability is not abstract or text, or the target is malformed.
+    """
+    if capability == TEXT:
+        target = SOURCES[name].text_reachable
+    elif capability == ABSTRACT:
+        target = SOURCES[name].abstract_reachable
+    else:
+        raise ValueError('reachability is defined only for text and abstract capabilities')
+    if not target:
+        return None
+    module_name, separator, attribute = target.partition(':')
+    if not separator or not module_name or not attribute:
+        raise ValueError(f'invalid {capability} reachability predicate for {name}: {target!r}')
+    predicate = getattr(importlib.import_module(module_name), attribute)
+    if not callable(predicate):
+        raise TypeError(f'{target} is not callable')
+    return predicate
 
 
 def names(capability: str) -> tuple[str, ...]:

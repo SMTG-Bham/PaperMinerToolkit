@@ -763,26 +763,12 @@ def _elsevier_search(query: str, count: int = 200) -> pd.DataFrame:
     return _elsevier_rows(document_search(query, count=count))
 
 
-# One entry per searchable source, keyed by registry name. The order a run
-# actually uses comes from the registry, not from this mapping.
-SEARCH_BY_SOURCE = {
-    'elsevier': '_elsevier_search',
-    'core': 'core_search',
-    'openalex': 'openalex_search',
-    'pubmed': 'pubmed_search',
-    'arxiv': 'arxiv_search',
-    'medrxiv': 'medrxiv_search',
-    'biorxiv': 'biorxiv_search',
-    'chemrxiv': 'chemrxiv_search',
-}
-
-
 def source_search(name: str) -> Callable[..., pd.DataFrame]:
     """Return the search function for one source.
 
-    The function is looked up by name at call time rather than bound into
-    :data:`SEARCH_BY_SOURCE`, so that replacing a module-level search function
-    -- which is how the tests stand a provider in -- actually takes effect.
+    The registry resolves the function by name at call time, so replacing a
+    module-level search function -- which is how tests stand a provider in --
+    takes effect without maintaining a second dispatch table here.
 
     Parameters
     ----------
@@ -794,7 +780,7 @@ def source_search(name: str) -> Callable[..., pd.DataFrame]:
     Callable[..., pandas.DataFrame]
         Function answering a query for that source.
     """
-    return globals()[SEARCH_BY_SOURCE[name]]
+    return sources.resolve_handler(name, sources.SEARCH)
 
 
 def _store_search_abstracts(

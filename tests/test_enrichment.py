@@ -376,6 +376,20 @@ def test_merge_reports_not_found_when_no_provider_has_the_work() -> None:
     assert merged['enriched_at'] == ''
 
 
+def test_merge_records_provider_failures_separately_from_not_found() -> None:
+    """Distinguish an unavailable provider from a successful empty lookup."""
+    failed = enrichment.merge_fields(
+        'p', None, None, ['crossref'], provider_errors={'crossref': 'service unavailable'})
+    partial = enrichment.merge_fields(
+        'p', None, openalex_work(), ['crossref', 'openalex'],
+        provider_errors={'crossref': 'service unavailable'})
+
+    assert failed['enrichment_status'] == 'failed'
+    assert failed['enrichment_json']['provider_errors'] == {'crossref': 'service unavailable'}
+    assert partial['enrichment_status'] == 'partial'
+    assert partial['enrichment_json']['provider_errors'] == {'crossref': 'service unavailable'}
+
+
 def test_author_rows_emit_one_row_per_affiliation() -> None:
     """Emit a row per author and affiliation so institutions stay joinable."""
     rows = enrichment.author_rows('p', crossref_work(), openalex_work())
@@ -487,6 +501,7 @@ def enrich(db_path: Path, crossref_messages: Iterable[dict[str, Any]],
     """
     crossref_session = FakeCrossrefSession(crossref_messages)
     openalex_session = FakeOpenAlexSession(FakeResponse(payload) for payload in openalex_payloads)
+    kwargs.setdefault('sources', ['crossref', 'openalex'])
     summary = enrichment.enrich_corpus(
         db_path,
         email='me@example.com',
@@ -686,8 +701,8 @@ def test_enrich_corpus_resumes_after_a_limit(tmp_path: Path) -> None:
     assert statuses == ['partial', 'partial', 'partial']
 
 
-def test_enrich_corpus_commits_progress_before_a_budget_error(tmp_path: Path) -> None:
-    """Keep the first batch's work when a later batch exhausts the budget."""
+def test_enrich_corpus_isolates_a_provider_budget_error(tmp_path: Path) -> None:
+    """Keep other providers working when one exhausts its budget."""
     db_path = tmp_path / 'corpus.db'
     seed_corpus(db_path, [{'doi': f'10.1234/paper{index}', 'sources': 'seed'} for index in range(2)])
 
@@ -695,15 +710,16 @@ def test_enrich_corpus_commits_progress_before_a_budget_error(tmp_path: Path) ->
     openalex_session = FakeOpenAlexSession([FakeResponse({'results': []}),
                                             FakeResponse({}, status_code=429)])
 
-    with pytest.raises(RuntimeError, match='credit budget'):
-        enrichment.enrich_corpus(db_path, email='me@example.com', api_key='', pace=0,
-                                 batch_size=1, crossref_session=crossref_session,
-                                 openalex_session=openalex_session)
+    summary = enrichment.enrich_corpus(
+        db_path, sources=['crossref', 'openalex'], email='me@example.com', api_key='', pace=0,
+        batch_size=1, crossref_session=crossref_session, openalex_session=openalex_session)
 
     with open_corpus(db_path) as conn:
         statuses = [row['enrichment_status'] for row in corpus.paper_rows(conn)]
 
-    assert statuses == ['partial', 'pending']
+    assert statuses == ['partial', 'failed']
+    assert summary['partial'] == 1
+    assert summary['failed'] == 1
 
 
 def test_enrich_corpus_matches_doi_less_papers_by_openalex_identifier(tmp_path: Path) -> None:
@@ -1073,6 +1089,93 @@ def test_enrich_batch_resolves_rows_only_pubmed_or_arxiv_can_reach(
 
     assert summary['succeeded'] == 2
     assert summary['unresolved'] == 1
+
+
+def test_enrich_batch_does_not_count_unreachable_openalex_as_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mark a DOI-less arXiv record successful when OpenAlex was never queried."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [
+        {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'arXiv only'},
+    ])
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: [arxiv_entry(doi='')])
+
+    def unreachable(*_: object, **__: object) -> None:
+        """Fail if OpenAlex is queried without a DOI or OpenAlex identifier."""
+        raise AssertionError('OpenAlex is not reachable for this row')
+
+    monkeypatch.setattr(enrichment.openalex, 'works_batch', unreachable)
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_batch(
+            conn, corpus.enrichment_candidates(conn), ['openalex', 'arxiv'], '')
+        row = corpus.paper_rows(conn)[0]
+
+    assert summary['succeeded'] == 1
+    assert summary['partial'] == 0
+    assert row['enrichment_status'] == 'succeeded'
+
+
+def test_enrich_batch_raises_when_the_only_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep fail-fast behavior for an explicitly selected single provider."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'doi': '10.1234/example', 'sources': 'seed'}])
+    monkeypatch.setattr(
+        enrichment.openalex,
+        'works_batch',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('OpenAlex unavailable')),
+    )
+
+    with open_corpus(db_path) as conn, pytest.raises(RuntimeError, match='OpenAlex unavailable'):
+        enrichment.enrich_batch(
+            conn, corpus.enrichment_candidates(conn), ['openalex'], '')
+
+
+def test_enrich_batch_preserves_child_rows_from_a_failed_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not treat an outage as evidence that stored provider data vanished."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'doi': '10.1234/example', 'sources': 'seed'}])
+    monkeypatch.setattr(
+        enrichment.openalex,
+        'works_batch',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('OpenAlex unavailable')),
+    )
+
+    with open_corpus(db_path) as conn:
+        paper_id = corpus.paper_rows(conn)[0]['paper_id']
+        corpus.write_enrichment(
+            conn,
+            [{**{field: '' for field in corpus.enrichment_update_fields()},
+              'paper_id': paper_id, 'openalex_id': 'W123', 'cited_by_count': 42,
+              'is_oa': 1, 'oa_status': 'gold', 'enrichment_status': 'pending',
+              'updated_at': ''}],
+            subjects=[{'paper_id': paper_id, 'scheme': 'topic', 'subject_id': 'T1',
+                       'display_name': 'Stored topic', 'source': 'openalex'}],
+            sources=['openalex'],
+        )
+        summary = enrichment.enrich_batch(
+            conn, corpus.enrichment_candidates(conn), ['crossref', 'openalex'],
+            'me@example.com',
+            crossref_session=FakeCrossrefSession([{'items': [crossref_work()]}]), pace=0)
+        subjects = conn.execute(
+            'SELECT source, display_name FROM paper_subjects').fetchall()
+        paper = corpus.paper_rows(conn)[0]
+
+    assert summary['partial'] == 1
+    assert [(row['source'], row['display_name']) for row in subjects] == [
+        ('openalex', 'Stored topic')]
+    assert paper['openalex_id'] == 'W123'
+    assert paper['cited_by_count'] == 42
+    assert paper['is_oa'] == 1
+    assert paper['oa_status'] == 'gold'
 
 
 def test_enrich_batch_keeps_other_provider_subjects_when_only_arxiv_is_requested(
