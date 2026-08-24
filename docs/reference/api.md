@@ -17,10 +17,21 @@ modules/cli
 :maxdepth: 1
 
 modules/corpus
+modules/provider
+modules/sources
 modules/search
 modules/crossref
 modules/openalex
+modules/pubmed
+modules/arxiv
+modules/rxiv
+modules/medrxiv
+modules/biorxiv
+modules/chemrxiv
+modules/enrichment
 modules/elsevier
+modules/core
+modules/unpaywall
 modules/metadata
 modules/imports
 modules/download

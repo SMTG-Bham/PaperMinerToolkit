@@ -7,14 +7,87 @@ statistics without touching the command-line workflow.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import paperscraper.corpus as corpus
+
+
+V4_PAPER_FIELDS = [
+    'paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources',
+    'core_id', 'pdf_url', 'pdf_source', 'text_source', 'abstract_source', 'elsevier_link',
+    'metadata_status', 'abstract_download_status', 'text_download_status',
+    'pdf_download_status', 'text_scrape_status', 'abstract_scrape_status',
+    'image_scrape_status', 'store_status', 'text_path', 'pdf_path', 'image_dir',
+    'num_images', 'num_text_materials', 'num_abstract_materials', 'num_image_materials',
+    'num_text_chunks', 'num_abstract_chunks', 'last_error',
+]
+V1_PAPER_FIELDS = [
+    field for field in V4_PAPER_FIELDS
+    if field not in {'num_text_chunks', 'num_abstract_chunks'}
+]
+
+
+@contextlib.contextmanager
+def open_corpus(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a corpus connection that is committed and then closed.
+
+    Parameters
+    ----------
+    db_path : pathlib.Path
+        Corpus database to open.
+
+    Yields
+    ------
+    sqlite3.Connection
+        Open corpus connection.
+    """
+    conn = corpus.connect(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def write_legacy_corpus(db_path: Path, fields: list[str], version: int) -> None:
+    """Create a corpus database frozen at an earlier schema version.
+
+    Parameters
+    ----------
+    db_path : pathlib.Path
+        Destination database path.
+    fields : list[str]
+        Paper columns the legacy schema declared, including ``paper_id``.
+    version : int
+        Schema version stamped on the legacy database.
+    """
+    legacy_columns = ',\n'.join(
+        f'{field} {corpus._paper_column_type(field)}'
+        for field in fields
+        if field != 'paper_id'
+    )
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.executescript(
+            f"""
+            PRAGMA user_version = {version};
+            CREATE TABLE papers (
+                paper_id TEXT PRIMARY KEY,
+                {legacy_columns},
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO papers (paper_id, title, metadata_json, created_at, updated_at)
+            VALUES ('legacy:1', 'Legacy paper', '{{}}', '2026-01-01', '2026-01-01');
+            """
+        )
 
 
 def sample_paper(paper_id: str = 'demo:1') -> dict[str, Any]:
@@ -83,33 +156,9 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
 def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: Path) -> None:
     """Add nullable chunk-count columns to an existing version-one corpus."""
     db_path = tmp_path / 'legacy.db'
-    legacy_fields = [
-        field
-        for field in corpus.PAPER_FIELDS
-        if field not in {'num_text_chunks', 'num_abstract_chunks'}
-    ]
-    legacy_columns = ',\n'.join(
-        f'{field} {corpus._paper_column_type(field)}'
-        for field in legacy_fields
-        if field != 'paper_id'
-    )
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            f"""
-            PRAGMA user_version = 1;
-            CREATE TABLE papers (
-                paper_id TEXT PRIMARY KEY,
-                {legacy_columns},
-                metadata_json TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            INSERT INTO papers (paper_id, title, metadata_json, created_at, updated_at)
-            VALUES ('legacy:1', 'Legacy paper', '{{}}', '2026-01-01', '2026-01-01');
-            """
-        )
+    write_legacy_corpus(db_path, V1_PAPER_FIELDS, version=1)
 
-    with corpus.connect(db_path) as conn:
+    with open_corpus(db_path) as conn:
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
@@ -118,7 +167,7 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: 
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
 
-    assert version == 4
+    assert version == corpus.SCHEMA_VERSION
     assert {'num_text_chunks', 'num_abstract_chunks'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -131,11 +180,100 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: 
     } <= tables
 
 
+def test_corpus_migrates_version_four_enrichment_columns_without_losing_rows(tmp_path: Path) -> None:
+    """Add every enrichment column to an existing version-four corpus."""
+    db_path = tmp_path / 'v4.db'
+    write_legacy_corpus(db_path, V4_PAPER_FIELDS, version=4)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION
+    assert set(corpus.ENRICHMENT_COLUMNS) <= columns
+    assert 'enrichment_status' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['enrichment_status'] == 'pending'
+    assert rows[0]['publisher'] is None
+    assert rows[0]['cited_by_count'] is None
+
+
+def test_migrated_corpus_accepts_writes(tmp_path: Path) -> None:
+    """Write to a migrated version-four corpus without a missing-column error."""
+    db_path = tmp_path / 'v4.db'
+    write_legacy_corpus(db_path, V4_PAPER_FIELDS, version=4)
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_paper(conn, sample_paper())
+        rows = corpus.paper_rows(conn)
+
+    assert len(rows) == 2
+    assert {row['paper_id'] for row in rows} == {'legacy:1', 'demo:1'}
+
+
+def test_migrated_corpus_creates_the_enrichment_index(tmp_path: Path) -> None:
+    """Create the enrichment status index after the migration adds its column."""
+    db_path = tmp_path / 'v4.db'
+    write_legacy_corpus(db_path, V4_PAPER_FIELDS, version=4)
+
+    with open_corpus(db_path) as conn:
+        indexes = {
+            row['name']
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+        }
+
+    assert 'idx_papers_enrichment' in indexes
+
+
+def test_corpus_migration_is_idempotent(tmp_path: Path) -> None:
+    """Reopen a migrated corpus without altering its columns again."""
+    db_path = tmp_path / 'v4.db'
+    write_legacy_corpus(db_path, V4_PAPER_FIELDS, version=4)
+
+    with open_corpus(db_path) as conn:
+        first = [row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()]
+    with open_corpus(db_path) as conn:
+        second = [row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()]
+
+    assert first == second
+
+
+def test_enrichment_columns_are_absent_from_paper_fields() -> None:
+    """Keep enrichment columns outside the normalized paper field set."""
+    assert not set(corpus.ENRICHMENT_COLUMNS) & set(corpus.PAPER_FIELDS)
+    assert 'enrichment_status' in corpus.PIPELINE_COLUMNS
+    assert set(corpus.ENRICHMENT_COLUMNS) <= set(corpus._expected_paper_columns())
+
+
+def test_upsert_paper_does_not_clear_enrichment_columns(tmp_path: Path) -> None:
+    """Preserve enrichment values through every ordinary corpus write path."""
+    db_path = tmp_path / 'corpus.db'
+    with open_corpus(db_path) as conn:
+        corpus.upsert_paper(conn, sample_paper())
+        conn.execute(
+            "UPDATE papers SET publisher = 'Demo Press', cited_by_count = 7 WHERE paper_id = 'demo:1'"
+        )
+        conn.commit()
+
+        stored = corpus.paper_rows(conn)[0]
+        stored['pdf_download_status'] = 'succeeded'
+        corpus.upsert_paper(conn, stored)
+        corpus.upsert_papers(conn, [{'doi': '10.1000/demo:1', 'title': 'Other', 'sources': 'core'}])
+        corpus.upsert_paper(conn, corpus.normalize_paper({'doi': '10.1000/demo:1'}))
+
+        refreshed = corpus.paper_rows(conn)[0]
+
+    assert refreshed['publisher'] == 'Demo Press'
+    assert refreshed['cited_by_count'] == 7
+
+
 def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path: Path) -> None:
     """Test uncompressed blob storage and missing asset lookup."""
     pdf = b'%PDF-1.4\n% dummy pdf\n'
 
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with open_corpus(tmp_path / 'corpus.db') as conn:
         corpus.add_asset(
             conn,
             sample_paper('demo:pdf'),
@@ -157,7 +295,7 @@ def test_corpus_supports_uncompressed_blobs_and_missing_assets(tmp_path: Path) -
 
 def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path) -> None:
     """Load the latest asset per paper and role without returning unrelated roles."""
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with open_corpus(tmp_path / 'corpus.db') as conn:
         paper = sample_paper('demo:assets')
         corpus.add_asset(conn, paper, 'older abstract', role='abstract', kind='text', mime_type='text/plain')
         corpus.add_asset(
@@ -179,7 +317,7 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path
 
 def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path: Path) -> None:
     """Test corpus compression validation."""
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with open_corpus(tmp_path / 'corpus.db') as conn:
         with pytest.raises(ValueError, match='compression must be one of'):
             corpus.store_blob(conn, b'data', kind='text', mime_type='text/plain', compression='brotli')
     with pytest.raises(ValueError, match='Unsupported blob compression'):
@@ -199,7 +337,7 @@ def test_corpus_serializes_metadata_and_prepares_path_or_iterable_content(tmp_pa
 
 def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path: Path) -> None:
     """Test corpus paper upserts and duplicate merging."""
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with open_corpus(tmp_path / 'papers.db') as conn:
         paper_id = corpus.upsert_paper(conn, {
             'paper_id': 'elsevier:1',
             'doi': '10.1000/demo',
@@ -229,7 +367,7 @@ def test_corpus_merges_duplicate_papers_and_preserves_existing_values(tmp_path: 
 
 def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path: Path) -> None:
     """Test fallback paper IDs and title/year duplicate matching."""
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with open_corpus(tmp_path / 'papers.db') as conn:
         added, updated = corpus.upsert_papers(conn, [{
             'title': 'Lithium Solid Electrolyte',
             'publication_date': '2026-03-01',
@@ -249,3 +387,432 @@ def test_corpus_builds_fallback_ids_and_matches_by_title_year(tmp_path: Path) ->
     assert rows[0]['paper_id'].startswith('paper:')
     assert rows[0]['journal'] == 'Matched Journal'
     assert rows[0]['num_images'] == 3
+
+
+def enrichment_update(paper_id: str, **values: Any) -> dict[str, Any]:
+    """Build a complete enrichment update mapping with empty defaults.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the update applies to.
+    **values : Any
+        Enrichment fields overriding the empty defaults.
+
+    Returns
+    -------
+    dict[str, Any]
+        Mapping covering every enrichment update parameter.
+    """
+    update = {field: '' for field in corpus.enrichment_update_fields()}
+    update['paper_id'] = paper_id
+    update['enrichment_status'] = 'succeeded'
+    update['updated_at'] = corpus.utc_now()
+    update.update(values)
+    return update
+
+
+def test_enrichment_candidates_paginates_by_rowid(tmp_path: Path) -> None:
+    """Page pending enrichment candidates by rowid without repeating rows."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        for index in range(3):
+            corpus.upsert_paper(conn, sample_paper(f'demo:{index}'))
+
+        first = corpus.enrichment_candidates(conn, limit=2)
+        second = corpus.enrichment_candidates(conn, after_rowid=first[-1]['rowid'], limit=2)
+
+    assert [row['paper_id'] for row in first] == ['demo:0', 'demo:1']
+    assert [row['paper_id'] for row in second] == ['demo:2']
+
+
+def test_enrichment_candidates_ignore_succeeded_rows_by_default(tmp_path: Path) -> None:
+    """Skip already enriched papers unless their status is requested."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.write_enrichment(conn, [enrichment_update('demo:1', enriched_at='2026-01-01T00:00:00+00:00')])
+
+        pending = corpus.enrichment_candidates(conn)
+        forced = corpus.enrichment_candidates(conn, statuses=('pending', 'succeeded'))
+        stale = corpus.enrichment_candidates(conn, refreshed_before='2026-06-01T00:00:00+00:00')
+
+    assert pending == []
+    assert [row['paper_id'] for row in forced] == ['demo:1']
+    assert [row['paper_id'] for row in stale] == ['demo:1']
+
+
+def test_write_enrichment_fills_only_empty_core_columns(tmp_path: Path) -> None:
+    """Fill empty core columns while leaving populated ones untouched."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'demo:1', 'title': 'Curated title'})
+        corpus.write_enrichment(conn, [enrichment_update(
+            'demo:1', title='Provider title', journal='Provider journal',
+            publisher='Demo Press', cited_by_count=42, is_oa=1,
+        )])
+        row = corpus.paper_rows(conn)[0]
+
+    assert row['title'] == 'Curated title'
+    assert row['journal'] == 'Provider journal'
+    assert row['publisher'] == 'Demo Press'
+    assert row['cited_by_count'] == 42
+    assert row['enrichment_status'] == 'succeeded'
+
+
+def test_write_enrichment_replaces_rather_than_duplicates_child_rows(tmp_path: Path) -> None:
+    """Replace a paper's child rows on every enrichment write."""
+    author = {'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+              'display_name': 'A. Author', 'orcid': '0000-0002-1825-0097', 'source': 'openalex'}
+    subject = {'paper_id': 'demo:1', 'scheme': 'topic', 'subject_id': 'T1',
+               'display_name': 'Batteries', 'score': 0.9, 'is_primary': 1, 'source': 'openalex'}
+    reference = {'paper_id': 'demo:1', 'source': 'crossref', 'reference_rank': 0,
+                 'referenced_doi': '10.1000/ref'}
+
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.write_enrichment(conn, [enrichment_update('demo:1')],
+                                authors=[author], subjects=[subject], references=[reference])
+        corpus.write_enrichment(conn, [enrichment_update('demo:1')],
+                                authors=[author], subjects=[subject], references=[reference])
+
+        authors = corpus.paper_authors(conn, 'demo:1')
+        subjects = corpus.paper_subjects(conn, 'demo:1', scheme='topic')
+        references = corpus.paper_references(conn, 'demo:1', source='crossref')
+
+    assert len(authors) == 1
+    assert authors[0]['orcid'] == '0000-0002-1825-0097'
+    assert authors[0]['position_label'] == ''
+    assert [subject['score'] for subject in subjects] == [0.9]
+    assert [reference['referenced_doi'] for reference in references] == ['10.1000/ref']
+
+
+def test_write_enrichment_rolls_back_a_failed_batch(tmp_path: Path) -> None:
+    """Leave the corpus unchanged when a child insert fails mid-batch."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        with pytest.raises(sqlite3.IntegrityError):
+            corpus.write_enrichment(
+                conn,
+                [enrichment_update('demo:1', publisher='Demo Press')],
+                authors=[{'paper_id': 'missing:1', 'author_position': 0,
+                          'affiliation_rank': 0, 'source': 'openalex'}],
+            )
+        row = corpus.paper_rows(conn)[0]
+
+    assert row['publisher'] is None
+    assert row['enrichment_status'] == 'pending'
+
+
+def test_child_rows_cascade_when_a_paper_is_deleted(tmp_path: Path) -> None:
+    """Remove enrichment child rows when their paper is deleted."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.write_enrichment(
+            conn,
+            [enrichment_update('demo:1')],
+            authors=[{'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+                      'display_name': 'A. Author', 'source': 'openalex'}],
+        )
+        conn.execute("DELETE FROM papers WHERE paper_id = 'demo:1'")
+        conn.commit()
+
+        assert corpus.paper_authors(conn, 'demo:1') == []
+
+
+def test_set_enrichment_status_rejects_unknown_values(tmp_path: Path) -> None:
+    """Store a supported enrichment status and reject anything else."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        assert corpus.set_enrichment_status(conn, ['demo:1'], 'unresolved') == 1
+        assert corpus.paper_rows(conn)[0]['enrichment_status'] == 'unresolved'
+        with pytest.raises(ValueError):
+            corpus.set_enrichment_status(conn, ['demo:1'], 'nonsense')
+
+
+def test_enrichment_stats_reports_status_and_child_counts(tmp_path: Path) -> None:
+    """Report per-status paper counts alongside stored enrichment rows."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.upsert_paper(conn, sample_paper('demo:2'))
+        corpus.write_enrichment(
+            conn,
+            [enrichment_update('demo:1', is_oa=1, is_retracted=1)],
+            authors=[{'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+                      'orcid': '0000-0002-1825-0097', 'source': 'openalex'}],
+            subjects=[{'paper_id': 'demo:1', 'scheme': 'sdg', 'subject_id': '7',
+                       'source': 'openalex'}],
+            references=[{'paper_id': 'demo:1', 'source': 'openalex', 'reference_rank': 0,
+                         'referenced_openalex_id': 'W1'}],
+        )
+        stats = corpus.enrichment_stats(conn)
+
+    assert stats['papers_succeeded'] == 1
+    assert stats['papers_pending'] == 1
+    assert stats['papers_open_access'] == 1
+    assert stats['papers_retracted'] == 1
+    assert stats['author_records'] == 1
+    assert stats['authors_with_orcid'] == 1
+    assert stats['subject_records'] == 1
+    assert stats['reference_records'] == 1
+
+
+V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
+V6_PAPER_FIELDS = V5_PAPER_FIELDS + ['pmid', 'pmcid']
+V7_PAPER_FIELDS = V6_PAPER_FIELDS + ['arxiv_id']
+V8_PAPER_FIELDS = V7_PAPER_FIELDS + ['medrxiv_doi']
+V9_PAPER_FIELDS = V8_PAPER_FIELDS + ['biorxiv_doi']
+
+
+def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
+    """Add the PubMed identifier columns to an existing version-five corpus."""
+    db_path = tmp_path / 'v5.db'
+    write_legacy_corpus(db_path, V5_PAPER_FIELDS, version=5)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert {'pmid', 'pmcid'} <= columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['pmid'] is None
+    assert rows[0]['pmcid'] is None
+
+
+def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the arXiv identifier column to an existing version-six corpus."""
+    db_path = tmp_path / 'v6.db'
+    write_legacy_corpus(db_path, V6_PAPER_FIELDS, version=6)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert 'arxiv_id' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['arxiv_id'] is None
+
+
+def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the medRxiv DOI column to an existing version-seven corpus."""
+    db_path = tmp_path / 'v7.db'
+    write_legacy_corpus(db_path, V7_PAPER_FIELDS, version=7)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert 'medrxiv_doi' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['medrxiv_doi'] is None
+
+
+def test_corpus_migrates_version_eight_biorxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the bioRxiv DOI column to an existing version-eight corpus."""
+    db_path = tmp_path / 'v8.db'
+    write_legacy_corpus(db_path, V8_PAPER_FIELDS, version=8)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert 'biorxiv_doi' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['biorxiv_doi'] is None
+
+
+def test_corpus_migrates_version_nine_chemrxiv_column_without_losing_rows(tmp_path: Path) -> None:
+    """Add the chemRxiv DOI column to an existing version-nine corpus."""
+    db_path = tmp_path / 'v9.db'
+    write_legacy_corpus(db_path, V9_PAPER_FIELDS, version=9)
+
+    with open_corpus(db_path) as conn:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
+        rows = corpus.paper_rows(conn)
+
+    assert version == corpus.SCHEMA_VERSION == 10
+    assert 'chemrxiv_doi' in columns
+    assert len(rows) == 1
+    assert rows[0]['title'] == 'Legacy paper'
+    assert rows[0]['chemrxiv_doi'] is None
+
+
+def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
+    """Choose the most portable identifier available for a paper without one."""
+    assert corpus._fallback_paper_id({'doi': '10.1/x', 'pmid': '1', 'core_id': '2'}) == 'doi:10.1/x'
+    assert corpus._fallback_paper_id({'pmid': '31234567', 'core_id': '2'}) == 'pmid:31234567'
+    assert corpus._fallback_paper_id(
+        {'arxiv_id': '2301.12345', 'core_id': '2'}) == 'arxiv:2301.12345'
+    assert corpus._fallback_paper_id(
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596', 'core_id': '2'}
+    ) == 'doi:10.1101/2024.03.01.24303596'
+    assert corpus._fallback_paper_id(
+        {'biorxiv_doi': '10.1101/2023.12.01.569634', 'core_id': '2'}
+    ) == 'doi:10.1101/2023.12.01.569634'
+    # The version suffix is part of a chemRxiv DOI, so it must survive here too.
+    assert corpus._fallback_paper_id(
+        {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1', 'core_id': '2'}
+    ) == 'doi:10.26434/chemrxiv.15007737/v1'
+    assert corpus._fallback_paper_id({'core_id': '2'}) == 'core:2'
+    assert corpus._fallback_paper_id({'title': 'A paper'}).startswith('paper:')
+
+
+def test_papers_match_on_a_shared_pubmed_identifier() -> None:
+    """Treat rows sharing a PubMed identifier as the same publication."""
+    existing = {'paper_id': 'pmid:31234567', 'pmid': '31234567', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'pmid': '31234567', 'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+    assert corpus._papers_match({'pmcid': 'PMC1', 'paper_id': 'a'}, {'pmcid': 'PMC1', 'paper_id': 'b'})
+
+
+def test_papers_match_on_a_shared_arxiv_identifier() -> None:
+    """Treat rows sharing an arXiv identifier as the same publication."""
+    existing = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'arxiv_id': '2301.12345', 'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_papers_match_on_a_shared_medrxiv_identifier() -> None:
+    """Treat rows sharing a medRxiv DOI as the same publication."""
+    existing = {'paper_id': 'doi:10.1101/2024.03.01.24303596',
+                'medrxiv_doi': '10.1101/2024.03.01.24303596', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'medrxiv_doi': '10.1101/2024.03.01.24303596',
+                'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_papers_match_on_a_shared_biorxiv_identifier() -> None:
+    """Treat rows sharing a bioRxiv DOI as the same publication."""
+    existing = {'paper_id': 'doi:10.1101/2023.12.01.569634',
+                'biorxiv_doi': '10.1101/2023.12.01.569634', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'biorxiv_doi': '10.1101/2023.12.01.569634',
+                'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_papers_match_on_a_shared_chemrxiv_identifier() -> None:
+    """Treat rows sharing a chemRxiv DOI as the same publication."""
+    existing = {'paper_id': 'doi:10.26434/chemrxiv.15007737/v1',
+                'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1', 'title': 'One'}
+    incoming = {'paper_id': 'doi:10.1/x', 'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+                'title': 'Different title'}
+
+    assert corpus._papers_match(existing, incoming)
+
+
+def test_upsert_merges_an_arxiv_preprint_into_a_matching_doi_row(tmp_path: Path) -> None:
+    """Fold a preprint carrying a deposited DOI into the published row."""
+    db_path = tmp_path / 'papers.db'
+    published = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                 'journal': 'Phys. Rev. B', 'publication_date': '2024-02-01',
+                 'sources': 'openalex'}
+    preprint = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                'arxiv_id': '2301.12345', 'publication_date': '2023-01-30',
+                'pdf_url': 'https://arxiv.org/pdf/2301.12345', 'sources': 'arxiv'}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [published])
+        added, updated = corpus.upsert_papers(conn, [preprint])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (0, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'doi:10.1/x'
+    assert rows[0]['arxiv_id'] == '2301.12345'
+    assert rows[0]['sources'] == 'openalex;arxiv'
+    # The published journal and date win; the preprint only fills what was empty.
+    assert rows[0]['journal'] == 'Phys. Rev. B'
+    assert rows[0]['publication_date'] == '2024-02-01'
+
+
+def test_upsert_keeps_a_preprint_separate_when_its_year_differs(tmp_path: Path) -> None:
+    """Record the accepted limit: a DOI-less preprint posted in an earlier year.
+
+    Without a deposited DOI the only remaining rule is title and year, so a
+    preprint that crossed a calendar boundary before publication is stored as
+    its own row. This is asserted so the behaviour stays a known trade-off
+    rather than becoming an unnoticed regression.
+    """
+    db_path = tmp_path / 'papers.db'
+    published = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x', 'title': 'Garnet conductivity',
+                 'publication_date': '2024-02-01', 'sources': 'openalex'}
+    preprint = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345',
+                'title': 'Garnet conductivity', 'publication_date': '2023-01-30',
+                'sources': 'arxiv'}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [published])
+        added, updated = corpus.upsert_papers(conn, [preprint])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (1, 0)
+    assert len(rows) == 2
+    assert not corpus._papers_match({'pmid': '1', 'paper_id': 'a'}, {'pmid': '2', 'paper_id': 'b'})
+
+
+def test_upsert_merges_a_pubmed_row_into_a_matching_doi_row(tmp_path: Path) -> None:
+    """Merge a PubMed record into an existing row rather than duplicating it."""
+    db_path = tmp_path / 'papers.db'
+    with open_corpus(db_path) as conn:
+        corpus.upsert_papers(conn, [{'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x',
+                                     'sources': 'openalex', 'title': 'Shared paper'}])
+        added, updated = corpus.upsert_papers(conn, [
+            {'paper_id': 'pmid:31234567', 'doi': '10.1234/x', 'pmid': '31234567',
+             'pmcid': 'PMC9876543', 'sources': 'pubmed', 'title': 'Shared paper'}])
+        rows = corpus.paper_rows(conn)
+
+    assert (added, updated) == (0, 1)
+    assert len(rows) == 1
+    assert rows[0]['paper_id'] == 'doi:10.1234/x'
+    assert rows[0]['pmid'] == '31234567'
+    assert rows[0]['pmcid'] == 'PMC9876543'
+    assert 'pubmed' in rows[0]['sources']
+
+
+def test_write_enrichment_scopes_child_deletes_to_the_queried_sources(tmp_path: Path) -> None:
+    """Replace only the queried provider's child rows and keep the others."""
+    db_path = tmp_path / 'papers.db'
+
+    def update(paper_id: str) -> dict[str, Any]:
+        """Return a minimal enrichment update for one paper."""
+        fields = {field: '' for field in corpus.enrichment_update_fields()}
+        fields.update({'paper_id': paper_id, 'enrichment_status': 'succeeded', 'updated_at': ''})
+        return fields
+
+    def subject(paper_id: str, scheme: str, subject_id: str, source: str) -> dict[str, Any]:
+        """Return a minimal paper_subjects row."""
+        return {'paper_id': paper_id, 'scheme': scheme, 'subject_id': subject_id,
+                'display_name': subject_id, 'source': source}
+
+    with open_corpus(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/x', 'doi': '10.1/x'})
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'topic', 'T1', 'openalex')],
+                                sources=['openalex'])
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'mesh', 'D1', 'pubmed')],
+                                sources=['pubmed'])
+        scoped = {(row['scheme'], row['source'])
+                  for row in conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()}
+
+        corpus.write_enrichment(conn, [update('doi:10.1/x')],
+                                subjects=[subject('doi:10.1/x', 'topic', 'T2', 'openalex')])
+        unscoped = {(row['scheme'], row['source'])
+                    for row in conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()}
+
+    assert scoped == {('topic', 'openalex'), ('mesh', 'pubmed')}
+    assert unscoped == {('topic', 'openalex')}

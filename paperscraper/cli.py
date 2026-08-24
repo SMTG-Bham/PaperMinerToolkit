@@ -9,11 +9,13 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import click
-from paperscraper.corpus import connect, corpus_stats
+from paperscraper import sources
+from paperscraper.corpus import connect, corpus_stats, enrichment_stats
 from paperscraper.crossref import import_author_works
 from paperscraper.search import search_for_papers
 from paperscraper.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperscraper.download import download_papers
+from paperscraper.enrichment import enrich_corpus
 from paperscraper.filtering import (apply_regex_filter,
                                     apply_topic_filter,
                                     filter_overview,
@@ -35,11 +37,24 @@ from paperscraper.settings import (get_model_profile,
                                    set_model_profile,
                                    update_anthropic_key,
                                    update_core_key,
+                                   update_crossref_email,
                                    update_elsevier_key,
+                                   update_ncbi_email,
+                                   update_ncbi_key,
                                    update_openai_key,
                                    update_openalex_key,
                                    update_unpaywall_email)
 from paperscraper.utilities import reset, status
+
+# A download may fetch a PDF, full text, or an abstract, so its choices are
+# the union of the three, kept in PDF order because that is the one a caller
+# most often means.
+DOWNLOAD_CHOICES = [
+    'all',
+    *dict.fromkeys((*sources.names(sources.PDF),
+                    *sources.names(sources.TEXT),
+                    *sources.names(sources.ABSTRACT))),
+]
 
 
 def _format_bytes(size: int) -> str:
@@ -55,7 +70,7 @@ def _format_bytes(size: int) -> str:
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
-              type=click.Choice(['all', 'elsevier', 'core', 'openalex']),
+              type=click.Choice(sources.choices(sources.SEARCH)),
               default='all',
               show_default=True,
               help='Search source to use.')
@@ -68,10 +83,15 @@ def _format_bytes(size: int) -> str:
               is_flag=True,
               default=False,
               help='Store abstracts returned by search providers as corpus assets.')
-
-def paper_search(query: str, db_path: str, source: str, count: int, store_abstract: bool) -> None:
+@click.option('--enrich', 'enrich_metadata',
+              is_flag=True,
+              default=False,
+              help='Supplement newly stored papers with all enrichment providers.')
+def paper_search(query: str, db_path: str, source: str, count: int,
+                 store_abstract: bool, enrich_metadata: bool) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
-    search_for_papers(query, db_path, source=source, count=count, store_abstract=store_abstract)
+    search_for_papers(query, db_path, source=source, count=count,
+                      store_abstract=store_abstract, enrich=enrich_metadata)
 
 
 @click.command()
@@ -88,20 +108,27 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path())
-@click.option('--email', required=True, help='Contact email sent with Crossref polite-pool requests.')
+@click.option('--email', default=None,
+              help='Contact email sent with Crossref requests. '
+                   'Defaults to the stored crossref_email setting.')
 @click.option('--orcid', default=None, help='Exact ORCID identifier for the author.')
 @click.option('--author', 'author_name', default=None, help='Author name fallback when no ORCID is available.')
 @click.option('--affiliation', default=None, help='Require this affiliation on the matching author record.')
 @click.option('--max-results', default=500, type=click.IntRange(min=1), show_default=True)
 @click.option('--review-csv', default='author_works.csv', type=click.Path(), show_default=True,
               help='CSV summary written for manual review.')
+@click.option('--enrich', 'enrich_metadata',
+              is_flag=True,
+              default=False,
+              help='Supplement imported works with all enrichment providers.')
 def import_author(db_path: str,
-                  email: str,
+                  email: str | None,
                   orcid: str | None,
                   author_name: str | None,
                   affiliation: str | None,
                   max_results: int,
-                  review_csv: str) -> None:
+                  review_csv: str,
+                  enrich_metadata: bool) -> None:
     """Import one author's DOI-bearing Crossref works into a corpus."""
     if bool(orcid) == bool(author_name):
         raise click.UsageError('Provide exactly one of --orcid or --author.')
@@ -114,6 +141,7 @@ def import_author(db_path: str,
             affiliation=affiliation,
             max_results=max_results,
             review_csv=review_csv,
+            enrich=enrich_metadata,
         )
     except (RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
@@ -121,6 +149,8 @@ def import_author(db_path: str,
         f'Crossref found {summary["found"]} matching works: '
         f'{summary["added"]} added and {summary["updated"]} updated in {db_path}.'
     )
+    if enrich_metadata:
+        click.echo(f'Enriched {summary["enriched"]} imported works.')
     click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
@@ -132,10 +162,11 @@ def import_author(db_path: str,
               show_default=True)
 @click.option('--source', 'sources',
               multiple=True,
-              type=click.Choice(['all', 'unpaywall', 'core', 'elsevier', 'openalex']),
+              type=click.Choice(DOWNLOAD_CHOICES),
               default=('all',),
               show_default=True,
-              help='PDF source to use. Repeat to choose more than one.')
+              help='Content source to use for PDFs and PubMed Central full text. '
+                   'Repeat to choose more than one.')
 @click.option('--abstract/--no-abstract',
               'download_abstract',
               default=True,
@@ -162,10 +193,89 @@ def download(
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--source', 'sources',
+              multiple=True,
+              type=click.Choice(sources.choices(sources.ENRICH)),
+              default=('all',),
+              show_default=True,
+              help='Metadata source to use. Repeat to choose more than one.')
+@click.option('--batch-size',
+              default=100,
+              type=click.IntRange(1, 100),
+              show_default=True,
+              help='Papers looked up per provider request.')
+@click.option('--limit',
+              default=None,
+              type=click.IntRange(min=1),
+              help='Stop after enriching this many papers.')
+@click.option('--force', is_flag=True, default=False,
+              help='Re-enrich papers whose enrichment already succeeded.')
+@click.option('--retry-failed', is_flag=True, default=False,
+              help='Retry papers whose previous enrichment failed.')
+@click.option('--refresh-after',
+              default=0,
+              type=click.IntRange(min=0),
+              show_default=True,
+              help='Re-enrich papers enriched more than this many days ago. 0 disables refreshing.')
+@click.option('--references/--no-references',
+              default=True,
+              show_default=True,
+              help='Store reference lists returned by the selected sources.')
+@click.option('--resolve-references', is_flag=True, default=False,
+              help='Link stored reference DOIs to papers already in the corpus.')
+@click.option('--email',
+              default=None,
+              help='Contact email for Crossref. Defaults to the stored crossref_email setting.')
+def enrich(db_path: str,
+           sources: tuple[str, ...],
+           batch_size: int,
+           limit: int | None,
+           force: bool,
+           retry_failed: bool,
+           refresh_after: int,
+           references: bool,
+           resolve_references: bool,
+           email: str | None) -> None:
+    """Supplement corpus metadata with the selected provider records."""
+    try:
+        summary = enrich_corpus(
+            db_path,
+            sources=list(sources),
+            batch_size=batch_size,
+            limit=limit,
+            force=force,
+            retry_failed=retry_failed,
+            refresh_after=refresh_after,
+            references=references,
+            resolve_references=resolve_references,
+            email=email,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f'Enrichment complete: {summary["succeeded"]} enriched, '
+        f'{summary["partial"]} partial, {summary["not_found"]} not found.'
+    )
+    click.echo(
+        f'Stored {summary["authors"]} author records, {summary["subjects"]} subject records, '
+        f'and {summary["references"]} references.'
+    )
+    if summary['unresolved']:
+        click.echo(
+            f'{summary["unresolved"]} papers have no DOI, OpenAlex identifier, PMID, '
+            f'arXiv identifier, medRxiv DOI, bioRxiv DOI, or chemRxiv DOI and were '
+            f'skipped.',
+            err=True,
+        )
+
+
+@click.command()
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def corpus_status(db_path: str) -> None:
     """Print storage statistics for the paper corpus."""
     with connect(db_path) as conn:
         stats = corpus_stats(conn)
+        enrichment = enrichment_stats(conn)
     click.echo(f'Corpus: {db_path}')
     click.echo(f'Papers: {stats["papers"]}')
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
@@ -177,6 +287,13 @@ def corpus_status(db_path: str) -> None:
     click.echo(f'Original size: {_format_bytes(stats["original_size"])}')
     click.echo(f'Stored size: {_format_bytes(stats["stored_size"])}')
     click.echo(f'Storage saved: {stats["savings_fraction"]:.1%}')
+    click.echo(f'Papers enriched: {enrichment["papers_succeeded"]}')
+    click.echo(f'Papers open access: {enrichment["papers_open_access"]}')
+    click.echo(f'Papers retracted: {enrichment["papers_retracted"]}')
+    click.echo(f'Author records: {enrichment["author_records"]} '
+               f'({enrichment["authors_with_orcid"]} with ORCID)')
+    click.echo(f'Subject records: {enrichment["subject_records"]}')
+    click.echo(f'Reference records: {enrichment["reference_records"]}')
 
 
 def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
@@ -764,9 +881,24 @@ def update_unpaywall_api_email() -> None:
     update_unpaywall_email()
 
 
+def update_crossref_api_email() -> None:
+    """Prompt for and save a Crossref contact email address."""
+    update_crossref_email()
+
+
 def update_openalex_api_key() -> None:
     """Prompt for and save an OpenAlex API key."""
     update_openalex_key()
+
+
+def update_ncbi_api_key() -> None:
+    """Prompt for and save an NCBI E-utilities API key."""
+    update_ncbi_key()
+
+
+def update_ncbi_api_email() -> None:
+    """Prompt for and save an NCBI E-utilities contact email address."""
+    update_ncbi_email()
 
 
 def update_openai_api_key() -> None:

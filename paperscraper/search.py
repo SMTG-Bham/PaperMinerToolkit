@@ -1,4 +1,4 @@
-"""Search Elsevier/Scopus, CORE, and OpenAlex, then merge results into the paper corpus.
+"""Search Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, then merge results into the paper corpus.
 
 The functions here translate provider-specific API responses into PaperScraper's
 small public paper schema and append or update rows without duplicating papers
@@ -7,30 +7,24 @@ that appear in multiple sources.
 
 from __future__ import annotations
 
+import datetime
 import html
-import os
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from types import ModuleType
 from typing import Any
 import pandas as pd
 import re
-import requests
 from tqdm import tqdm
 
-from paperscraper import elsevier, openalex
+from paperscraper import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
+                          openalex, pubmed)
+from paperscraper.enrichment import enrich_papers
 from paperscraper.corpus import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
-from paperscraper.settings import load_settings
+from paperscraper import sources
 
-SEARCH_SOURCES = {'elsevier', 'core', 'openalex', 'all'}
+SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
-
-
-def _elsevier_api_key() -> str:
-    """Return the configured Elsevier API key."""
-    api_key = load_settings().get('elsevier_api_key')
-    if not api_key:
-        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
-    return api_key
 
 
 def _recast_elsevier_records(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -76,34 +70,31 @@ def document_search(query: str,
     ------
     ValueError
         If no Elsevier API key is configured.
-    requests.RequestException
-        If an Elsevier request fails.
+    RuntimeError
+        If an Elsevier request cannot be completed.
     """
-    api_key = _elsevier_api_key()
+    api_key = elsevier.configured_api_key()
     max_results = max(int(count), 1)
     page_size = min(max_results, 200)
     index = index.lower()
     url = elsevier.search_url(index, query, page_size, search_fields)
-    api_response = elsevier.get_json(api_key, url)
-    tot_num_res = int(api_response['search-results']['opensearch:totalResults'])
+    api_response = elsevier.request_json(url, api_key) or {}
+    tot_num_res = elsevier.total_results(api_response)
     target_results = min(tot_num_res, max_results)
     print('Document search is retrieving', target_results, 'of', tot_num_res, 'results.')
     if tot_num_res == 0:
         return pd.DataFrame()
-    results = api_response['search-results'].get('entry', [])
+    results = elsevier.parse_records(api_response)
     if get_all:
         with tqdm(total=target_results, desc='Searching Scopus', colour='blue') as pbar:
             pbar.update(min(len(results), target_results))
             upper_limit_reached = False
             while (len(results) < target_results) and not upper_limit_reached:
-                next_url = None
-                for e in api_response['search-results']['link']:
-                    if e['@ref'] == 'next':
-                        next_url = e['@href']
+                next_url = elsevier.next_page_url(api_response)
                 if not next_url:
                     break
-                api_response = elsevier.get_json(api_key, next_url)
-                next_results = api_response['search-results'].get('entry', [])
+                api_response = elsevier.request_json(next_url, api_key) or {}
+                next_results = elsevier.parse_records(api_response)
                 remaining = target_results - len(results)
                 results += next_results[:remaining]
                 if len(results) >= 5000 and index != 'scopus':
@@ -178,85 +169,33 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
-def _core_api_key() -> str | None:
-    """Return the configured CORE API key, if one is available."""
-    settings = load_settings()
-    return settings.get('core_api_key') or os.environ.get('CORE_API_KEY')
-
-
-def _core_headers() -> dict[str, str]:
-    """Build request headers for CORE API calls."""
-    api_key = _core_api_key()
-    headers = {'User-Agent': 'PaperScraper/0.0.1'}
-    if api_key:
-        headers['Authorization'] = f'Bearer {api_key}'
-    return headers
-
-
-def _core_download_url(work: Mapping[str, Any]) -> str:
-    """Return the best CORE PDF download URL for a work record."""
-    download_url = work.get('downloadUrl') or work.get('download_url')
-    if download_url:
-        return download_url
-    core_id = work.get('id')
-    if core_id:
-        return f'https://api.core.ac.uk/v3/works/{core_id}/download'
-    return ''
-
-
-def _core_authors(work: Mapping[str, Any]) -> str:
-    """Format CORE author data as a semicolon-separated author string."""
-    authors = work.get('authors') or []
-    names = []
-    for author in authors:
-        if isinstance(author, dict):
-            names.append(author.get('name') or author.get('fullName') or '')
-        else:
-            names.append(str(author))
-    return '; '.join(name for name in names if name)
-
-
-def _core_journal(work: Mapping[str, Any]) -> object:
-    """Extract a journal or publisher name from a CORE work record."""
-    journal = work.get('journal') or work.get('publisher') or ''
-    if isinstance(journal, dict):
-        return journal.get('title') or journal.get('name') or ''
-    return journal
-
-
-def _core_date(work: Mapping[str, Any]) -> object:
-    """Extract the best available publication date/year from a CORE work record."""
-    return work.get('publishedDate') or work.get('published_date') or work.get('yearPublished') or work.get(
-        'year') or ''
-
-
 def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
-    """Convert CORE work records into normalized paper rows."""
+    """Convert CORE work records into normalized paper rows.
+
+    Parameters
+    ----------
+    works : Iterable[Mapping[str, Any]]
+        CORE work records.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows.
+    """
     rows = []
     for work in works:
-        core_id = work.get('id') or ''
-        doi = _first(work.get('doi') or work.get('DOI'))
-        identifier = f'core:{core_id}' if core_id else (f'doi:{doi}' if doi else '')
-        row = {
-            'paper_id': identifier,
-            'doi': doi,
-            'title': _first(work.get('title')),
-            'journal': _core_journal(work),
-            'publication_date': _core_date(work),
-            'authors': _core_authors(work),
-            'sources': 'core',
-            'core_id': core_id,
-            'pdf_url': _core_download_url(work),
-            'metadata_status': 'retrieved',
-        }
-        normalized = normalize_paper(row)
-        normalized['abstract'] = _abstract_from_search_record(work)
+        record = core.work_to_paper(work)
+        normalized = normalize_paper(record)
+        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
         rows.append(normalized)
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
 def core_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search CORE works.
+
+    CORE pages by offset and reports a total, so the walk stops at whichever
+    comes first: the caller's count, the reported total, or a short page.
 
     Parameters
     ----------
@@ -272,29 +211,26 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
 
     Raises
     ------
-    requests.RequestException
-        If a CORE request fails.
+    RuntimeError
+        If a CORE request cannot be completed.
     """
-    url = 'https://api.core.ac.uk/v3/search/works'
-    limit = min(max(int(count), 1), 100)
+    api_key = core.configured_api_key()
+    works: list[Mapping[str, Any]] = []
     offset = 0
-    works = []
     with tqdm(total=count, desc='Searching CORE', colour='cyan') as pbar:
         while len(works) < count:
-            params = {'q': query, 'limit': min(limit, count - len(works)), 'offset': offset}
-            response = requests.get(url, headers=_core_headers(), params=params, timeout=60)
-            response.raise_for_status()
-            payload = response.json()
-            results = payload.get('results') or payload.get('data') or []
+            payload = core.search_page(query, limit=min(core.PAGE_SIZE, count - len(works)),
+                                       offset=offset, api_key=api_key)
+            results = core.parse_records(payload)
             if not results:
                 break
             works.extend(results)
             offset += len(results)
             pbar.update(len(results))
-            total_hits = payload.get('totalHits') or payload.get('total') or payload.get('count')
-            if total_hits is not None and offset >= int(total_hits):
+            total = core.total_results(payload)
+            if total and offset >= total:
                 break
-            if len(results) < params['limit']:
+            if len(results) < min(core.PAGE_SIZE, count - len(works) + len(results)):
                 break
     return _core_rows(works)
 
@@ -350,6 +286,503 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     return _openalex_rows(works)
 
 
+def _pubmed_rows(articles: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert PubMed article records into normalized paper rows."""
+    rows = []
+    for article in articles:
+        normalized = normalize_paper(article)
+        normalized['abstract'] = _clean_search_abstract(article.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search PubMed records.
+
+    PubMed exposes only the first 10000 matches for any query, so a larger
+    corpus needs the query split by date range. The shortfall is printed rather
+    than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    RuntimeError
+        If a PubMed request cannot be completed.
+    """
+    api_key = pubmed.configured_api_key()
+    email = pubmed.configured_email()
+    webenv, query_key, total = pubmed.esearch_history(query, api_key=api_key, email=email)
+    reachable = min(total, pubmed.MAX_SEARCH_RESULTS)
+    target = min(max(int(count), 0), reachable)
+    if total > pubmed.MAX_SEARCH_RESULTS:
+        print(f'PubMed matched {total} records but exposes only the first '
+              f'{pubmed.MAX_SEARCH_RESULTS}; narrow the query by date to reach the rest.')
+    if not target or not webenv or not query_key:
+        return _pubmed_rows([])
+    articles = []
+    with tqdm(total=target, desc='Searching PubMed', colour='magenta') as pbar:
+        while len(articles) < target:
+            page = pubmed.parse_articles(pubmed.efetch_history(
+                webenv,
+                query_key,
+                retstart=len(articles),
+                retmax=min(pubmed.EFETCH_BATCH_SIZE, target - len(articles)),
+                api_key=api_key,
+                email=email,
+            ))
+            if not page:
+                break
+            articles.extend(page)
+            pbar.update(len(page))
+    return _pubmed_rows(articles[:target])
+
+
+def _arxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert arXiv entry records into normalized paper rows."""
+    rows = []
+    for entry in entries:
+        normalized = normalize_paper(entry)
+        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search arXiv records.
+
+    A plain phrase is translated into arXiv's fielded query language by
+    :func:`paperscraper.arxiv.query_expression`; a native arXiv expression is
+    used as written. Results are ordered by submission date rather than by
+    relevance so that paging is stable, because relevance ordering can shift
+    between the requests that make up one page walk. Entries are deduplicated
+    by identifier for the same reason: arXiv repeats records across page
+    boundaries often enough to inflate a naive count.
+
+    arXiv exposes only the first 30000 matches for any query, so a larger
+    corpus needs the query split by category or date. The shortfall is printed
+    rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search expression, either a plain phrase or a native arXiv query.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    RuntimeError
+        If an arXiv request cannot be completed.
+    """
+    expression = arxiv.query_expression(query)
+    target = max(int(count), 0)
+    if not expression or not target:
+        return _arxiv_rows([])
+    entries: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    offset = 0
+    reachable = 0
+    reported = False
+    with tqdm(total=target, desc='Searching arXiv', colour='yellow') as pbar:
+        while len(entries) < target:
+            root = arxiv.search_page(expression, start=offset,
+                                     max_results=min(arxiv.PAGE_SIZE, target - len(entries)))
+            page = arxiv.parse_entries(root)
+            if not reported:
+                total = arxiv.total_results(root)
+                if total > arxiv.MAX_SEARCH_RESULTS:
+                    print(f'arXiv matched {total} records but exposes only the first '
+                          f'{arxiv.MAX_SEARCH_RESULTS}; narrow the query by category or date '
+                          f'to reach the rest.')
+                reachable = min(total, arxiv.MAX_SEARCH_RESULTS)
+                target = min(target, reachable)
+                pbar.total = target
+                reported = True
+            if not page:
+                break
+            # Advance by what arXiv returned, not by what survived deduplication,
+            # so a page of repeats still moves the cursor forward.
+            offset += len(page)
+            for entry in page:
+                identifier = str(entry.get('arxiv_id') or entry.get('paper_id') or '')
+                if identifier and identifier in seen:
+                    continue
+                if identifier:
+                    seen.add(identifier)
+                entries.append(entry)
+                pbar.update(1)
+                if len(entries) >= target:
+                    break
+            # Stop once the walk has passed everything arXiv reports, so a run
+            # of duplicate pages cannot keep the loop going indefinitely.
+            if offset >= reachable:
+                break
+    return _arxiv_rows(entries[:target])
+
+
+def _rxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert preprint-server records into normalized paper rows."""
+    rows = []
+    for entry in entries:
+        normalized = normalize_paper(entry)
+        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
+def _medrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert medRxiv records into normalized paper rows."""
+    return _rxiv_rows(entries)
+
+
+def _biorxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert bioRxiv records into normalized paper rows."""
+    return _rxiv_rows(entries)
+
+
+def _chemrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Convert chemRxiv records into normalized paper rows."""
+    return _rxiv_rows(entries)
+
+
+def _rxiv_search(provider: ModuleType,
+                 label: str,
+                 query: str,
+                 count: int = 200,
+                 today: str = '') -> pd.DataFrame:
+    """Answer a query by walking a preprint server's posting archive.
+
+    medRxiv and bioRxiv are one service answering under two names, with the
+    same endpoints, paging rules, record shape, and absence of a search route,
+    so one walk serves both and is parameterized by the provider module rather
+    than written twice. Everything server-specific -- the hosts, the page
+    widths, the archive start, and the scan limit -- is read off ``provider``.
+
+    Parameters
+    ----------
+    provider : types.ModuleType
+        :mod:`paperscraper.medrxiv` or :mod:`paperscraper.biorxiv`.
+    label : str
+        Server name as it should appear in progress and summary messages.
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+    today : str, default=''
+        Interval end used when the query names none, as ``YYYY-MM-DD``.
+        Defaults to the current UTC date.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date.
+    RuntimeError
+        If a request to the server cannot be completed.
+    """
+    terms, scope = provider.parse_query(query)
+    target = max(int(count), 0)
+    if not target:
+        return _rxiv_rows([])
+    category = scope.get('category', '')
+    start = scope.get('from', provider.CORPUS_START)
+    end = scope.get('to') or today or datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d')
+    first = provider.interval_page(start, end, category=category)
+    total = provider.total_results(first)
+    step = provider.page_size(first, provider.endpoint(category)[1])
+    if not total:
+        return _rxiv_rows([])
+    print(f'{label} has no search endpoint, so PaperScraper is reading the {total} postings '
+          f'between {start} and {end}'
+          f'{f" filed under {category}" if category else ""}, newest first, and matching them '
+          f'locally. Add category:, from:, or to: terms to the query to read fewer.')
+    matched: list[Mapping[str, Any]] = []
+    papers: list[Mapping[str, Any]] = []
+    scanned = 0
+    unread = 0
+    with tqdm(total=target, desc=f'Searching {label}', colour='yellow') as pbar:
+        for cursor in provider.page_cursors(total, step):
+            # The first page was already fetched to learn the record count, so
+            # it is reused rather than requested again when the walk reaches it.
+            payload = first if cursor == 0 else provider.interval_page(
+                start, end, cursor=cursor, category=category)
+            page = provider.parse_records(payload)
+            if not page:
+                continue
+            scanned += len(page)
+            # Pages run oldest first with no way to reverse them at the API, so
+            # each one is reversed as it arrives to keep the walk newest first.
+            matched.extend(entry for entry in reversed(page) if provider.matches(entry, terms))
+            # Versions of one preprint are separate records that can fall on
+            # different pages, so papers are collapsed against everything
+            # matched so far rather than within a page.
+            papers = provider.latest_versions(matched)
+            pbar.n = min(len(papers), target)
+            pbar.refresh()
+            if len(papers) >= target:
+                break
+            if scanned >= provider.MAX_SCAN_RECORDS:
+                # Cursors count records, so the cursor of the page that tripped
+                # the limit is exactly how many older postings go unread.
+                unread = cursor
+                break
+    print(f'{label} matched {len(papers)} papers in {scanned} postings read.')
+    if unread:
+        print(f'{unread} older postings in {start} to {end} were left unread after the '
+              f'{provider.MAX_SCAN_RECORDS}-posting scan limit; narrow the query with '
+              f'category:, from:, or to: terms to reach them.')
+    return _rxiv_rows(papers[:target])
+
+
+def medrxiv_search(query: str, count: int = 200, today: str = '') -> pd.DataFrame:
+    """Search medRxiv records.
+
+    medRxiv publishes no search endpoint, so the query is answered by walking
+    the posting archive and matching each record locally. The walk runs newest
+    first and stops as soon as ``count`` papers match, which keeps an ordinary
+    query cheap; a term that matches nothing recent is what makes it expensive,
+    so the size of the archive being scanned is printed before the walk starts
+    rather than discovered as a hang.
+
+    The query string carries its own scope, because narrowing the walk is the
+    only way to bound it: ``category:``, ``from:``, and ``to:`` restrict the
+    archive that is read, and everything else is a match term. Terms are
+    combined with ``AND`` over each record's title, abstract, authors, and
+    category.
+
+    One search reads at most :data:`paperscraper.medrxiv.MAX_SCAN_RECORDS`
+    postings. That bound is what keeps ``--source all`` usable: a query aimed
+    at another provider's subject matter matches nothing here, and without a
+    stop it would read the entire archive before reporting nothing found. The
+    shortfall is printed rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+    today : str, default=''
+        Interval end used when the query names none, as ``YYYY-MM-DD``.
+        Defaults to the current UTC date.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date.
+    RuntimeError
+        If a medRxiv request cannot be completed.
+    """
+    return _rxiv_search(medrxiv, 'medRxiv', query, count=count, today=today)
+
+
+def biorxiv_search(query: str, count: int = 200, today: str = '') -> pd.DataFrame:
+    """Search bioRxiv records.
+
+    bioRxiv answers a query exactly as medRxiv does, by the same archive walk
+    over the same endpoints, so :func:`medrxiv_search` describes the mechanism
+    and the ``category:``, ``from:``, and ``to:`` scope terms in full.
+
+    What differs is scale. bioRxiv has been accepting preprints since November
+    2013 and holds several times what medRxiv does, so an unscoped walk is
+    correspondingly longer and the
+    :data:`paperscraper.biorxiv.MAX_SCAN_RECORDS` limit is correspondingly
+    likelier to be what ends it. Naming a category or a date range is the
+    difference between a search of a subject and a read of the archive.
+
+    Parameters
+    ----------
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+    today : str, default=''
+        Interval end used when the query names none, as ``YYYY-MM-DD``.
+        Defaults to the current UTC date.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date.
+    RuntimeError
+        If a bioRxiv request cannot be completed.
+    """
+    return _rxiv_search(biorxiv, 'bioRxiv', query, count=count, today=today)
+
+
+def chemrxiv_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search chemRxiv records.
+
+    chemRxiv, unlike medRxiv and bioRxiv, publishes a search endpoint, so the
+    query is answered by the server rather than by reading the archive and
+    matching locally. Paging therefore works the way it does for arXiv: pages
+    are requested until ``count`` papers are held, and the cursor advances by
+    what the server returned rather than by what survived deduplication, so a
+    page of repeats still moves it forward.
+
+    The ``category:``, ``from:``, and ``to:`` scope terms are accepted with the
+    same spelling the other preprint sources use, but here they are forwarded
+    as ``categoryIds``, ``searchDateFrom``, and ``searchDateTo`` rather than
+    applied to records after reading them. Narrowing a chemRxiv query makes the
+    server do less work; it is not, as it is for the other two archives, the
+    only way to bound what gets read.
+
+    Each posted version of a chemRxiv preprint carries a DOI of its own, so
+    records are grouped by :func:`paperscraper.chemrxiv.chemrxiv_stem` and
+    reduced to the newest posting. That is done over everything read so far
+    rather than per page, because two versions of one preprint can fall on
+    either side of a page boundary.
+
+    chemRxiv exposes only the first
+    :data:`paperscraper.chemrxiv.MAX_SEARCH_RESULTS` matches for any query, so
+    a larger corpus needs the query split by category or date. The shortfall is
+    printed rather than passed over silently.
+
+    Parameters
+    ----------
+    query : str
+        Search phrase, optionally carrying ``category:``, ``from:``, or ``to:``
+        scope terms.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+
+    Raises
+    ------
+    ValueError
+        If a scope term in ``query`` is not an ISO ``YYYY-MM-DD`` date, or
+        names a category chemRxiv does not file preprints under.
+    RuntimeError
+        If a chemRxiv request cannot be completed.
+    """
+    terms, scope = chemrxiv.parse_query(query)
+    target = max(int(count), 0)
+    if not target:
+        return _chemrxiv_rows([])
+    term = chemrxiv.search_terms(terms)
+    category = scope.get('category', '')
+    category_id = chemrxiv.category_ids([category])[0] if category else ''
+    entries: list[Mapping[str, Any]] = []
+    papers: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    skip = 0
+    reachable = 0
+    reported = False
+    with tqdm(total=target, desc='Searching chemRxiv', colour='yellow') as pbar:
+        while len(papers) < target:
+            payload = chemrxiv.search_page(term=term, skip=skip,
+                                           limit=min(chemrxiv.PAGE_SIZE, target - len(papers)),
+                                           category_id=category_id,
+                                           date_from=scope.get('from', ''),
+                                           date_to=scope.get('to', ''))
+            page = chemrxiv.parse_records(payload)
+            if not reported:
+                total = chemrxiv.total_results(payload)
+                if total > chemrxiv.MAX_SEARCH_RESULTS:
+                    print(f'chemRxiv matched {total} records but exposes only the first '
+                          f'{chemrxiv.MAX_SEARCH_RESULTS}; narrow the query with category:, '
+                          f'from:, or to: terms to reach the rest.')
+                reachable = min(total, chemrxiv.MAX_SEARCH_RESULTS)
+                target = min(target, reachable)
+                pbar.total = target
+                reported = True
+            if not page:
+                break
+            # Advance by what chemRxiv returned, not by what survived
+            # deduplication, so a page of repeats still moves the cursor.
+            skip += len(page)
+            for entry in page:
+                identifier = str(entry.get('paper_id') or entry.get('chemrxiv_doi') or '')
+                if identifier and identifier in seen:
+                    continue
+                if identifier:
+                    seen.add(identifier)
+                entries.append(entry)
+            papers = chemrxiv.latest_versions(entries)
+            pbar.n = min(len(papers), target)
+            pbar.refresh()
+            # Stop once the walk has passed everything chemRxiv reports, so a
+            # run of duplicate pages cannot keep the loop going indefinitely.
+            if skip >= reachable:
+                break
+    return _chemrxiv_rows(papers[:target])
+
+
+def _elsevier_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search Elsevier and map its records onto normalized paper rows.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+    count : int, default=200
+        Maximum number of records to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized paper rows capped at ``count`` records.
+    """
+    return _elsevier_rows(document_search(query, count=count))
+
+
+def source_search(name: str) -> Callable[..., pd.DataFrame]:
+    """Return the search function for one source.
+
+    The registry resolves the function by name at call time, so replacing a
+    module-level search function -- which is how tests stand a provider in --
+    takes effect without maintaining a second dispatch table here.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+
+    Returns
+    -------
+    Callable[..., pandas.DataFrame]
+        Function answering a query for that source.
+    """
+    return sources.resolve_handler(name, sources.SEARCH)
+
+
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
@@ -381,7 +814,8 @@ def search_for_papers(query: str,
                       db_path: str = 'papers.db',
                       source: str = 'all',
                       count: int = 200,
-                      store_abstract: bool = False) -> None:
+                      store_abstract: bool = False,
+                      enrich: bool = False) -> None:
     """Search providers and merge results into a corpus.
 
     Parameters
@@ -390,12 +824,15 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex'}, default='all'
+    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv'}, default='all'
         Provider or provider set to search.
     count : int, default=200
         Maximum number of records requested from each provider.
     store_abstract : bool, default=False
         Whether to store search-result abstracts as corpus assets.
+    enrich : bool, default=False
+        Whether to supplement stored rows with metadata from the configured
+        enrichment providers.
 
     Returns
     -------
@@ -407,36 +844,20 @@ def search_for_papers(query: str,
     ValueError
         If ``source`` is unsupported or required provider configuration is
         missing.
-    requests.RequestException
-        If the explicitly selected CORE provider fails.
-    RuntimeError
-        If the explicitly selected OpenAlex provider fails.
+    Exception
+        Whatever the provider raised, when exactly one source was selected. A
+        run over several sources reports a failing one and carries on with the
+        rest, because a partial corpus is more useful than none.
     """
-    source = source.lower()
-    if source not in SEARCH_SOURCES:
-        raise ValueError(f'source must be one of: {", ".join(sorted(SEARCH_SOURCES))}')
+    requested = sources.resolve_names([source], sources.SEARCH)
     frames = []
-    if source in {'elsevier', 'all'}:
+    for name in requested:
         try:
-            frames.append(_elsevier_rows(document_search(query, count=count)))
+            frames.append(source_search(name)(query, count=count))
         except Exception as e:
-            if source == 'elsevier':
+            if len(requested) == 1:
                 raise
-            print(f'Elsevier search skipped: {e}')
-    if source in {'core', 'all'}:
-        try:
-            frames.append(core_search(query, count=count))
-        except requests.RequestException as e:
-            if source == 'core':
-                raise
-            print(f'CORE search skipped: {e}')
-    if source in {'openalex', 'all'}:
-        try:
-            frames.append(openalex_search(query, count=count))
-        except Exception as e:
-            if source == 'openalex':
-                raise
-            print(f'OpenAlex search skipped: {e}')
+            print(f'{sources.SOURCES[name].label} search skipped: {e}')
 
     new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
     if new_papers.empty:
@@ -446,6 +867,11 @@ def search_for_papers(query: str,
         records = new_papers.to_dict('records')
         added, updated = upsert_papers(conn, records)
         abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
+        enrichment_summary = enrich_papers(conn, records) if enrich else {}
     print(f'Document search found {added} new results and updated {updated} existing rows.')
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')
+    if enrich:
+        print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers '
+              f'({enrichment_summary.get("partial", 0)} partial, '
+              f'{enrichment_summary.get("not_found", 0)} not found).')

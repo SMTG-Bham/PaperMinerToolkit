@@ -3,52 +3,31 @@
 from __future__ import annotations
 
 import re
-import time
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Any, TypeAlias
+from urllib.parse import quote
 
 import pandas as pd
 import requests
 
 from paperscraper.corpus import connect, find_paper, upsert_paper, upsert_papers
+from paperscraper import provider
+from paperscraper.metadata import clean_doi
+from paperscraper.settings import load_settings
 
 
 CROSSREF_WORKS_URL = 'https://api.crossref.org/v1/works'
+CROSSREF_SINGLE_WORK_URL = 'https://api.crossref.org/works'
+CROSSREF_MIN_INTERVAL = 0.34
+MAX_FILTER_VALUES = 100
+BATCHABLE_DOI_PATTERN = re.compile(r'^10\.\d{4,9}/[^\s,]+$')
 ORCID_PATTERN = re.compile(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', re.IGNORECASE)
 REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources']
 _CrossrefRecord: TypeAlias = dict[str, Any]
-
-
-class _CrossrefResponseLike(Protocol):
-    """HTTP response surface used by Crossref requests."""
-
-    headers: Mapping[str, str]
-
-    def raise_for_status(self) -> None:
-        """Raise when the response has an unsuccessful status."""
-        ...
-
-    def json(self) -> _CrossrefRecord:
-        """Decode the response JSON object."""
-        ...
-
-
-class _CrossrefSessionLike(Protocol):
-    """HTTP session surface accepted for dependency injection."""
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: Mapping[str, str | int],
-        headers: Mapping[str, str],
-        timeout: float,
-    ) -> _CrossrefResponseLike:
-        """Issue an HTTP GET request."""
-        ...
+LIMITER = provider.RateLimiter(CROSSREF_MIN_INTERVAL)
 
 
 def normalize_orcid(value: str | None) -> str:
@@ -231,26 +210,32 @@ def work_matches_author(
 
 
 def _request_page(
-    session: _CrossrefSessionLike,
+    session: provider.HTTPClient,
     params: dict[str, str | int],
     email: str,
+    url: str = CROSSREF_WORKS_URL,
     timeout: float = 60,
     attempts: int = 4,
+    pace: float | None = None,
 ) -> _CrossrefRecord:
     """Request one Crossref page with bounded retries.
 
     Parameters
     ----------
-    session : _CrossrefSessionLike
+    session : provider.HTTPClient
         HTTP session used for the request.
     params : dict[str, str or int]
         Crossref query parameters.
     email : str
         Contact email included in the user agent.
+    url : str, optional
+        Crossref endpoint to request.
     timeout : float, optional
         Request timeout in seconds.
     attempts : int, optional
         Maximum number of request attempts.
+    pace : float or None, optional
+        Pacing override for this request, in seconds.
 
     Returns
     -------
@@ -262,24 +247,176 @@ def _request_page(
     RuntimeError
         If every request attempt fails or returns an invalid payload.
     """
-    headers = {'User-Agent': f'PaperScraper/0.0.1 (mailto:{email})'}
-    last_error = None
-    for attempt in range(attempts):
+    response = provider.request(url, label='Crossref', limiter=LIMITER, params=params,
+                                headers=provider.default_headers(email), session=session,
+                                timeout=timeout, attempts=attempts, missing_ok=False,
+                                interval=pace,
+                                error_types=(*provider.RETRY_ERRORS, KeyError))
+    if response is None:
+        raise RuntimeError(f'Crossref request failed after {attempts} attempts: 404')
+    return response.json()['message']
+
+
+def configured_email(settings: Mapping[str, str] | None = None) -> str:
+    """Return the configured Crossref contact email.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping to inspect instead of loading the stored settings.
+
+    Returns
+    -------
+    str
+        Configured contact email, or an empty string when none is stored.
+    """
+    settings = settings if settings is not None else load_settings()
+    return str(settings.get('crossref_email') or '')
+
+
+def resolve_email(email: str | None = None) -> str:
+    """Resolve the Crossref contact email, preferring an explicit value.
+
+    Parameters
+    ----------
+    email : str or None, optional
+        Contact email supplied by the caller.
+
+    Returns
+    -------
+    str
+        Resolved contact email.
+
+    Raises
+    ------
+    ValueError
+        If no valid contact email is available.
+    """
+    resolved = str(email or '').strip() or configured_email()
+    if not resolved or '@' not in resolved:
+        raise ValueError(
+            'A contact email is required for Crossref requests. '
+            'Run ps_crossref_email, set CROSSREF_EMAIL, or pass --email.'
+        )
+    return resolved
+
+
+def work_by_doi(doi: str,
+                email: str | None = None,
+                session: provider.HTTPClient | None = None,
+                timeout: float = 60) -> _CrossrefRecord | None:
+    """Look up one Crossref work through the single-work route.
+
+    Parameters
+    ----------
+    doi : str
+        DOI to look up.
+    email : str or None, optional
+        Contact email for Crossref requests.
+    session : provider.HTTPClient or None, optional
+        HTTP session used for the request.
+    timeout : float, default=60
+        Request timeout in seconds.
+
+    Returns
+    -------
+    _CrossrefRecord or None
+        Crossref work record, or ``None`` when Crossref does not know the DOI.
+
+    Raises
+    ------
+    ValueError
+        If no contact email is available.
+    RuntimeError
+        If the Crossref request exhausts its retries.
+    """
+    doi = clean_doi(doi)
+    if not doi:
+        return None
+    email = resolve_email(email)
+    session = session or requests.Session()
+    url = f'{CROSSREF_SINGLE_WORK_URL}/{quote(doi, safe="")}'
+    try:
+        return _request_page(session, {'mailto': email}, email, url=url)
+    except RuntimeError:
+        return None
+
+
+def works_by_doi(dois: Sequence[str],
+                 email: str | None = None,
+                 session: provider.HTTPClient | None = None,
+                 batch_size: int = MAX_FILTER_VALUES,
+                 pace: float = CROSSREF_MIN_INTERVAL) -> dict[str, _CrossrefRecord]:
+    """Look up Crossref works in paced DOI batches.
+
+    Crossref treats repeated ``doi`` filters as alternatives, returns matches
+    in an arbitrary order, and omits DOIs it does not know, so results are
+    keyed by cleaned DOI rather than zipped onto the request order. No
+    ``select`` is sent because ``language`` is returned by default but is not a
+    selectable field. DOIs containing a comma are requested individually
+    because the comma separates Crossref filter terms.
+
+    Parameters
+    ----------
+    dois : Sequence[str]
+        DOIs to look up.
+    email : str or None, optional
+        Contact email for Crossref requests.
+    session : provider.HTTPClient or None, optional
+        HTTP session used for the requests.
+    batch_size : int, default=100
+        DOIs requested per Crossref page.
+    pace : float, default=0.34
+        Seconds to wait between consecutive Crossref requests.
+
+    Returns
+    -------
+    dict[str, _CrossrefRecord]
+        Crossref work records keyed by cleaned DOI.
+
+    Raises
+    ------
+    ValueError
+        If ``batch_size`` is invalid or no contact email is available.
+    RuntimeError
+        If a Crossref request exhausts its retries.
+    """
+    if batch_size < 1 or batch_size > MAX_FILTER_VALUES:
+        raise ValueError(f'batch_size must be between 1 and {MAX_FILTER_VALUES}.')
+    email = resolve_email(email)
+    session = session or requests.Session()
+    wanted = list(dict.fromkeys(clean_doi(doi) for doi in dois if clean_doi(doi)))
+    batched = [doi for doi in wanted if BATCHABLE_DOI_PATTERN.match(doi)]
+    individual = [doi for doi in wanted if not BATCHABLE_DOI_PATTERN.match(doi)]
+
+    works = {}
+    for start in range(0, len(batched), batch_size):
+        chunk = batched[start:start + batch_size]
         try:
-            response = session.get(CROSSREF_WORKS_URL, params=params, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            return response.json()['message']
-        except (requests.RequestException, KeyError, ValueError) as error:
-            last_error = error
-            if attempt + 1 == attempts:
-                break
-            retry_after = getattr(getattr(error, 'response', None), 'headers', {}).get('Retry-After')
-            try:
-                delay = min(max(float(retry_after), 0), 60) if retry_after else 2 ** attempt
-            except (TypeError, ValueError):
-                delay = 2 ** attempt
-            time.sleep(delay)
-    raise RuntimeError(f'Crossref request failed after {attempts} attempts: {last_error}') from last_error
+            message = _request_page(
+                session,
+                {
+                    'filter': ','.join(f'doi:{doi}' for doi in chunk),
+                    'rows': len(chunk),
+                    'mailto': email,
+                },
+                email,
+                pace=pace,
+            )
+        except RuntimeError:
+            # Crossref rejects an entire filter when one value is unusable, so
+            # fall back to single-work lookups rather than losing the chunk.
+            individual.extend(chunk)
+            continue
+        for work in message.get('items') or []:
+            key = clean_doi(work.get('DOI'))
+            if key:
+                works[key] = work
+    for doi in individual:
+        work = work_by_doi(doi, email=email, session=session)
+        if work:
+            works[clean_doi(work.get('DOI')) or doi] = work
+    return works
 
 
 def author_works(orcid: str | None = None,
@@ -288,7 +425,7 @@ def author_works(orcid: str | None = None,
                  email: str | None = None,
                  max_results: int | None = 500,
                  page_size: int = 200,
-                 session: _CrossrefSessionLike | None = None) -> list[_CrossrefRecord]:
+                 session: provider.HTTPClient | None = None) -> list[_CrossrefRecord]:
     """Retrieve DOI-bearing works for one author.
 
     Parameters
@@ -305,7 +442,7 @@ def author_works(orcid: str | None = None,
         Maximum accepted works, or ``None`` for no explicit limit.
     page_size : int, optional
         Number of records requested per Crossref page.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session, primarily for connection reuse or testing.
 
     Returns
@@ -323,7 +460,8 @@ def author_works(orcid: str | None = None,
     if bool(orcid) == bool(author_name):
         raise ValueError('Provide exactly one of orcid or author_name.')
     if not email or '@' not in email:
-        raise ValueError('A contact email is required for Crossref polite-pool requests.')
+        raise ValueError('A contact email is required for Crossref polite-pool requests. '
+                         'Run ps_crossref_email, set CROSSREF_EMAIL, or pass --email.')
     if max_results is not None and max_results < 1:
         raise ValueError('max_results must be a positive integer or None.')
     if page_size < 1 or page_size > 1000:
@@ -434,21 +572,23 @@ def crossref_work_to_paper(work: _CrossrefRecord) -> dict[str, Any]:
 
 
 def import_author_works(db_path: str | PathLike[str],
-                        email: str,
+                        email: str | None = None,
                         orcid: str | None = None,
                         author_name: str | None = None,
                         affiliation: str | None = None,
                         max_results: int | None = 500,
                         review_csv: str | PathLike[str] | None = None,
-                        session: _CrossrefSessionLike | None = None) -> dict[str, int]:
+                        session: provider.HTTPClient | None = None,
+                        enrich: bool = False) -> dict[str, int]:
     """Discover and import an author's Crossref works.
 
     Parameters
     ----------
     db_path : str or os.PathLike[str]
         Destination corpus database.
-    email : str
-        Contact email for Crossref requests.
+    email : str or None, optional
+        Contact email for Crossref requests. Defaults to the stored
+        ``crossref_email`` setting.
     orcid : str, optional
         ORCID identifier for exact author discovery.
     author_name : str, optional
@@ -459,13 +599,16 @@ def import_author_works(db_path: str | PathLike[str],
         Maximum number of works to import.
     review_csv : str, os.PathLike[str], or None, optional
         CSV path for a human-readable import review.
-    session : _CrossrefSessionLike or None, optional
+    session : provider.HTTPClient or None, optional
         HTTP session used for discovery.
+    enrich : bool, default=False
+        Whether to supplement imported works with Crossref and OpenAlex
+        metadata.
 
     Returns
     -------
     dict[str, int]
-        Counts of found, added, and updated papers.
+        Counts of found, added, updated, and enriched papers.
 
     Raises
     ------
@@ -476,6 +619,7 @@ def import_author_works(db_path: str | PathLike[str],
         If a Crossref request exhausts its retries or the corpus schema is
         newer than this package supports.
     """
+    email = resolve_email(email)
     works = author_works(
         orcid=orcid,
         author_name=author_name,
@@ -497,4 +641,9 @@ def import_author_works(db_path: str | PathLike[str],
                 continue
             matched['metadata'] = paper['metadata']
             upsert_paper(conn, matched)
-    return {'found': len(papers), 'added': added, 'updated': updated}
+        enriched = 0
+        if enrich:
+            from paperscraper.enrichment import enrich_papers
+
+            enriched = enrich_papers(conn, papers, email=email)['succeeded']
+    return {'found': len(papers), 'added': added, 'updated': updated, 'enriched': enriched}

@@ -83,3 +83,23 @@ def test_status_prints_pipeline_progress_summary(
     assert 'Failed PDF downloads: 1' in output
     assert 'Text material rows extracted: 5' in output
     assert 'Image material rows extracted: 5' in output
+
+
+def test_status_reports_enriched_papers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Count enriched papers in the pipeline progress summary."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper-1'})
+        corpus.write_enrichment(conn, [{
+            **{field: '' for field in corpus.enrichment_update_fields()},
+            'paper_id': 'paper-1',
+            'enrichment_status': 'succeeded',
+            'updated_at': corpus.utc_now(),
+        }])
+
+    utilities.status(str(db_path))
+
+    assert 'Metadata enriched: 1' in capsys.readouterr().out

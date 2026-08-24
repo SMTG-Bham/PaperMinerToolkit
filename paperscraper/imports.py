@@ -9,8 +9,15 @@ from __future__ import annotations
 
 from os import PathLike
 from pathlib import Path
+from typing import Any
 
-from paperscraper.corpus import add_asset, connect, find_paper, normalize_paper, upsert_papers
+from paperscraper.corpus import (PAPER_FIELDS,
+                                 add_asset,
+                                 connect,
+                                 find_paper,
+                                 normalize_paper,
+                                 upsert_papers)
+from paperscraper.enrichment import enrich_from_crossref_message
 from paperscraper.metadata import metadata_from_pdf
 
 
@@ -65,17 +72,34 @@ def import_pdfs(
             'num_image_materials': 0,
             'last_error': metadata_error,
         }
-        row.update({key: value for key, value in metadata.items() if value})
+        row.update({key: value for key, value in metadata.items()
+                    if value and key in PAPER_FIELDS})
         row['_pdf_path'] = pdf_path
+        row['_crossref_message'] = metadata.get('crossref_message') or {}
         rows.append(row)
     if not rows:
         raise RuntimeError(f'No PDF files found in {papers_dir}.')
 
-    paper_rows = [normalize_paper({key: value for key, value in row.items() if key != '_pdf_path'}) for row in rows]
+    def paper_fields(row: dict[str, Any]) -> dict[str, Any]:
+        """Strip the import-only keys from an assembled row.
+
+        Parameters
+        ----------
+        row : dict[str, Any]
+            Assembled import row.
+
+        Returns
+        -------
+        dict[str, Any]
+            Row containing corpus fields only.
+        """
+        return {key: value for key, value in row.items() if not key.startswith('_')}
+
+    paper_rows = [normalize_paper(paper_fields(row)) for row in rows]
     with connect(db_path) as conn:
         added, updated = upsert_papers(conn, paper_rows)
         for row in rows:
-            paper = {key: value for key, value in row.items() if key != '_pdf_path'}
+            paper = paper_fields(row)
             matched = find_paper(conn, paper) or paper
             add_asset(
                 conn,
@@ -87,6 +111,8 @@ def import_pdfs(
                 source='external',
                 original_filename=row['_pdf_path'].name,
             )
+            if row['_crossref_message']:
+                enrich_from_crossref_message(conn, str(matched['paper_id']), row['_crossref_message'])
     enriched = sum(1 for row in paper_rows if row['metadata_status'] == 'enriched')
     doi_found = sum(1 for row in paper_rows if row['doi'])
     print(

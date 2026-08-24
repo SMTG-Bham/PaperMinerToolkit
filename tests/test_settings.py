@@ -24,6 +24,9 @@ API_ENV_KEYS = [
     'CORE_API_KEY',
     'UNPAYWALL_EMAIL',
     'OPENALEX_API_KEY',
+    'CROSSREF_EMAIL',
+    'NCBI_API_KEY',
+    'NCBI_EMAIL',
 ]
 
 MODEL_ENV_KEYS = [
@@ -164,6 +167,9 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'core_api_key': 'file-core',
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
+        'crossref_email': 'file-crossref@example.com',
+        'ncbi_api_key': 'file-ncbi',
+        'ncbi_email': 'file-ncbi@example.com',
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
@@ -171,6 +177,9 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
+    monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
+    monkeypatch.setenv('NCBI_API_KEY', 'env-ncbi')
+    monkeypatch.setenv('NCBI_EMAIL', 'env-ncbi@example.com')
 
     loaded = settings.load_settings()
 
@@ -180,6 +189,9 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['core_api_key'] == 'env-core'
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
+    assert loaded['crossref_email'] == 'env-crossref@example.com'
+    assert loaded['ncbi_api_key'] == 'env-ncbi'
+    assert loaded['ncbi_email'] == 'env-ncbi@example.com'
 
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,32 +367,25 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, mon
     assert settings.load_settings()['core_api_key'] == 'core-key'
 
 
-def test_check_elsevier_api_key_returns_true_for_valid_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Accept an Elsevier key when the validation request succeeds."""
-    calls = {}
+def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validate a key through the Elsevier module rather than inline here.
 
-    def fake_get_json(api_key: str, url: str) -> dict[str, bool]:
-        """Record Elsevier request arguments and return a response."""
-        calls['api_key'] = api_key
-        calls['url'] = url
-        return {'ok': True}
+    settings used to import paperscraper.elsevier at module level for this one
+    function, which was the single edge stopping the Elsevier client from
+    importing settings the way every other source module does.
+    """
+    import paperscraper.elsevier as elsevier
 
-    monkeypatch.setattr(settings.elsevier, 'get_json', fake_get_json)
-
+    calls = []
+    monkeypatch.setattr(elsevier, 'check_api_key',
+                        lambda key, **_: calls.append(key) or True)
     assert settings.check_elsevier_api_key('placeholder-elsevier-key') is True
-    assert calls['api_key'] == 'placeholder-elsevier-key'
-    assert 'content/search/scopus' in calls['url']
+    assert calls == ['placeholder-elsevier-key']
 
-
-def test_check_elsevier_api_key_returns_false_for_invalid_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject an Elsevier key when the validation request fails."""
-    monkeypatch.setattr(
-        settings.elsevier,
-        'get_json',
-        lambda *_, **__: (_ for _ in ()).throw(settings.requests.HTTPError('invalid key')),
-    )
-
-    assert settings.check_elsevier_api_key('placeholder-elsevier-key') is False
+    monkeypatch.setattr(elsevier, 'check_api_key', lambda *_, **__: False)
+    assert settings.check_elsevier_api_key('bad-key') is False
 
 
 def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -419,6 +424,27 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
     monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
     with pytest.raises(ValueError):
         settings.update_unpaywall_email()
+
+
+def test_update_crossref_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Save a valid Crossref email and reject an invalid one."""
+    settings.save_settings({'crossref_email': 'old@example.com'})
+    monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
+    settings.update_crossref_email()
+    output = capsys.readouterr().out
+    assert 'Current Crossref email: old@example.com' in output
+    assert settings.load_settings()['crossref_email'] == 'person@example.com'
+
+    monkeypatch.setattr('builtins.input', lambda _: 'not-an-email')
+    with pytest.raises(ValueError):
+        settings.update_crossref_email()
+
+
+def test_load_settings_reads_crossref_email_from_the_settings_file(isolated_settings_file: Path) -> None:
+    """Read a stored Crossref email through the settings-file whitelist."""
+    isolated_settings_file.write_text(json.dumps({'crossref_email': 'file@example.com'}))
+
+    assert settings.load_settings()['crossref_email'] == 'file@example.com'
 
 
 def test_update_openalex_key_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

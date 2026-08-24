@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from click.testing import CliRunner
@@ -18,17 +18,18 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract: calls.update({
+        lambda query, path, source, count, store_abstract, enrich: calls.update({
             'query': query,
             'db_path': path,
             'source': source,
             'count': count,
             'store_abstract': store_abstract,
+            'enrich': enrich,
         }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.db', '--source', 'core',
-                                                   '--count', '10', '--store-abstract'])
+                                                   '--count', '10', '--store-abstract', '--enrich'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -37,6 +38,7 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
         'source': 'core',
         'count': 10,
         'store_abstract': True,
+        'enrich': True,
     }
 
 
@@ -139,7 +141,7 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'openalex'])
@@ -549,18 +551,25 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
+    monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
     monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
+    monkeypatch.setattr(cli, 'update_ncbi_key', lambda: calls.append('ncbi-key'))
+    monkeypatch.setattr(cli, 'update_ncbi_email', lambda: calls.append('ncbi-email'))
     monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
     monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
     cli.update_unpaywall_api_email()
+    cli.update_crossref_api_email()
     cli.update_openalex_api_key()
+    cli.update_ncbi_api_key()
+    cli.update_ncbi_api_email()
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'openalex', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'unpaywall', 'crossref', 'openalex',
+                     'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -686,3 +695,201 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
         ('reset', str(db_path)),
         ('status', str(db_path)),
     ]
+
+
+def test_enrich_passes_sources_batch_size_and_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Forward every ps_enrich option to the enrichment worker."""
+    calls = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_enrich_corpus(path: str, **kwargs: Any) -> dict[str, int]:
+        """Record the enrichment request and report an empty run."""
+        calls.update({'db_path': path, **kwargs})
+        return {'succeeded': 0, 'partial': 0, 'not_found': 0, 'unresolved': 0,
+                'authors': 0, 'subjects': 0, 'references': 0}
+
+    monkeypatch.setattr(cli, 'enrich_corpus', fake_enrich_corpus)
+
+    result = CliRunner().invoke(cli.enrich, [
+        str(db_path), '--source', 'crossref', '--batch-size', '25', '--limit', '10',
+        '--force', '--retry-failed', '--refresh-after', '30', '--no-references',
+        '--resolve-references', '--email', 'me@example.com',
+    ])
+
+    assert result.exit_code == 0
+    assert calls['sources'] == ['crossref']
+    assert calls['batch_size'] == 25
+    assert calls['limit'] == 10
+    assert calls['force'] is True
+    assert calls['retry_failed'] is True
+    assert calls['refresh_after'] == 30
+    assert calls['references'] is False
+    assert calls['resolve_references'] is True
+    assert calls['email'] == 'me@example.com'
+
+
+def test_enrich_reports_the_run_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Print enrichment counts and warn about skipped papers on stderr."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    monkeypatch.setattr(cli, 'enrich_corpus', lambda *_, **__: {
+        'succeeded': 8, 'partial': 1, 'not_found': 2, 'unresolved': 3,
+        'authors': 40, 'subjects': 20, 'references': 100,
+    })
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path)])
+
+    assert result.exit_code == 0
+    assert '8 enriched, 1 partial, 2 not found' in result.output
+    assert 'Stored 40 author records, 20 subject records, and 100 references.' in result.output
+    assert ('3 papers have no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, '
+            'bioRxiv DOI, or chemRxiv DOI' in result.output)
+
+
+def test_enrich_wraps_worker_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Convert provider and validation failures into a CLI error."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def failing(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail as an exhausted provider budget would."""
+        raise RuntimeError('OpenAlex daily credit budget is exhausted.')
+
+    monkeypatch.setattr(cli, 'enrich_corpus', failing)
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path)])
+
+    assert result.exit_code == 1
+    assert 'credit budget is exhausted' in result.output
+
+
+def test_import_author_accepts_a_missing_email_and_forwards_enrich(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the stored setting supply the email and forward the enrich flag."""
+    calls = {}
+    monkeypatch.setattr(cli, 'import_author_works', lambda db_path, **kwargs: calls.update(
+        {'db_path': db_path, **kwargs}) or {'found': 1, 'added': 1, 'updated': 0, 'enriched': 1})
+
+    result = CliRunner().invoke(cli.import_author, ['papers.db', '--orcid',
+                                                    '0000-0002-1825-0097', '--enrich'])
+
+    assert result.exit_code == 0
+    assert calls['email'] is None
+    assert calls['enrich'] is True
+    assert 'Enriched 1 imported works.' in result.output
+
+
+def test_corpus_status_prints_enrichment_counts(tmp_path: Path) -> None:
+    """Report enrichment progress alongside the storage statistics."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'demo:1', 'title': 'Demo'})
+        corpus.write_enrichment(
+            conn,
+            [{**{field: '' for field in corpus.enrichment_update_fields()},
+              'paper_id': 'demo:1', 'enrichment_status': 'succeeded',
+              'is_oa': 1, 'updated_at': corpus.utc_now()}],
+            authors=[{'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+                      'orcid': '0000-0002-1825-0097', 'source': 'openalex'}],
+        )
+
+    result = CliRunner().invoke(cli.corpus_status, [str(db_path)])
+
+    assert result.exit_code == 0
+    assert 'Papers enriched: 1' in result.output
+    assert 'Papers open access: 1' in result.output
+    assert 'Author records: 1 (1 with ORCID)' in result.output
+
+
+def test_search_download_and_enrich_source_choices_accept_arxiv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accept arXiv as a search, download, and enrichment source."""
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'arxiv'
+
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    download_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+            {'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['arxiv']
+
+    enrich_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'enrich_corpus',
+        lambda path, **kwargs: enrich_calls.update({'sources': kwargs.get('sources')}) or {
+            key: 0 for key in ('succeeded', 'partial', 'not_found', 'unresolved',
+                               'failed', 'authors', 'subjects', 'references', 'batches')},
+    )
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path), '--source', 'arxiv'])
+
+    assert result.exit_code == 0
+    assert enrich_calls['sources'] == ['arxiv']
+
+
+def test_search_download_and_enrich_source_choices_accept_pubmed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accept PubMed as a search, download, and enrichment source."""
+    search_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'search_for_papers',
+        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+    )
+
+    result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert search_calls['source'] == 'pubmed'
+
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    download_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'download_papers',
+        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+            {'sources': sources}),
+    )
+
+    result = CliRunner().invoke(cli.download, [str(db_path), '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert download_calls['sources'] == ['pubmed']
+
+    enrich_calls = {}
+    monkeypatch.setattr(
+        cli,
+        'enrich_corpus',
+        lambda path, **kwargs: enrich_calls.update({'sources': kwargs.get('sources')}) or {
+            key: 0 for key in ('succeeded', 'partial', 'not_found', 'unresolved',
+                               'failed', 'authors', 'subjects', 'references', 'batches')},
+    )
+
+    result = CliRunner().invoke(cli.enrich, [str(db_path), '--source', 'pubmed'])
+
+    assert result.exit_code == 0
+    assert enrich_calls['sources'] == ['pubmed']

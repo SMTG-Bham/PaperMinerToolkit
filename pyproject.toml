@@ -75,6 +75,7 @@ ps_topics_store = "paperscraper.cli:topics_store"
 ps_topics_models = "paperscraper.cli:topics_models"
 ps_import_pdfs = "paperscraper.cli:import_pdf_folder"
 ps_import_author = "paperscraper.cli:import_author"
+ps_enrich = "paperscraper.cli:enrich"
 ps_scrape = "paperscraper.cli:scrape"
 ps_filter_regex = "paperscraper.cli:filter_regex"
 ps_filter_topic = "paperscraper.cli:filter_topic"
@@ -84,7 +85,10 @@ ps_store = "paperscraper.cli:store"
 ps_elsevier_key = "paperscraper.cli:update_elsevier_api_key"
 ps_core_key = "paperscraper.cli:update_core_api_key"
 ps_unpaywall_email = "paperscraper.cli:update_unpaywall_api_email"
+ps_crossref_email = "paperscraper.cli:update_crossref_api_email"
 ps_openalex_key = "paperscraper.cli:update_openalex_api_key"
+ps_ncbi_key = "paperscraper.cli:update_ncbi_api_key"
+ps_ncbi_email = "paperscraper.cli:update_ncbi_api_email"
 ps_openai_key = "paperscraper.cli:update_openai_api_key"
 ps_anthropic_key = "paperscraper.cli:update_anthropic_api_key"
 ps_model_config = "paperscraper.cli:model_config"
@@ -93,7 +97,7 @@ ps_reset = "paperscraper.cli:reset_scraper"
 ps_status = "paperscraper.cli:scraper_status"
 
 [tool.setuptools.dynamic]
-version = { attr = "paperscraper.__version__" }
+version = { attr = "paperscraper._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -114,7 +118,7 @@ addopts = [
 ]
 
 [tool.ruff.lint]
-select = ["D"]
+select = ["D", "F"]
 extend-select = ["ANN", "D212"]
 # Dynamic provider payloads and test doubles legitimately require Any.
 ignore = ["ANN401"]
