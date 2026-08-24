@@ -22,9 +22,9 @@
 #   export PAPERMINER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
 #   export PAPERMINER_MODEL_CAPABILITIES=text
 #   export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
-#   ps_scrape papers.db polymer --mode text --output scraped_polymer.csv
+#   pm_scrape papers.db polymer --mode text --output scraped_polymer.csv
 #
-# The input limit must stay at least 11000 below PS_MAX_MODEL_LEN: PaperMiner
+# The input limit must stay at least 11000 below PM_MAX_MODEL_LEN: PaperMiner
 # always asks for a 10000-token completion and vLLM counts prompt + completion
 # against --max-model-len. See scrape_gaudi.sbatch for the full explanation.
 
@@ -53,28 +53,28 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 # thinking model would spend PaperMiner's hardcoded 10000-token completion
 # budget on reasoning before writing any JSON. 30.5B parameters at bf16 is ~61 GB
 # of weights, ~15 GB per card across four.
-PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+PM_MODEL="${PM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
 
 # Must equal the number of cards in the -G header above. ASU's own multi-card
 # example is -G 8 -c 18 with --tensor-parallel-size 8: the core count does not
 # scale with the cards, only -G and this do.
-PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
+PM_TENSOR_PARALLEL_SIZE="${PM_TENSOR_PARALLEL_SIZE:-4}"
 
 # ASU's own Gaudi examples serve at --max-model-len 8192, which is unusable here:
 # a single 10000-token completion does not fit inside it, so every request would
 # 400. Hence 32768, paid for with the memory knobs below.
-PS_MAX_MODEL_LEN="${PS_MAX_MODEL_LEN:-32768}"
+PM_MAX_MODEL_LEN="${PM_MAX_MODEL_LEN:-32768}"
 
 # Gaudi-specific launch flags, taken from https://docs.rc.asu.edu/vllm/. None of
 # them are vLLM defaults and all three matter on HPU: 128 is the block size the
 # Gaudi backend is tuned for, and holding utilisation and concurrent sequences
 # down leaves device memory free for HPU graph capture during warmup. Lower
-# PS_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
-PS_BLOCK_SIZE="${PS_BLOCK_SIZE:-128}"
-PS_GPU_MEMORY_UTILIZATION="${PS_GPU_MEMORY_UTILIZATION:-0.80}"
-PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
+# PM_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
+PM_BLOCK_SIZE="${PM_BLOCK_SIZE:-128}"
+PM_GPU_MEMORY_UTILIZATION="${PM_GPU_MEMORY_UTILIZATION:-0.80}"
+PM_MAX_NUM_SEQS="${PM_MAX_NUM_SEQS:-16}"
 
-PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"
+PM_VLLM_ENV="${PM_VLLM_ENV:-gaudi-pytorch-vllm}"
 # Beside the scripts, not in $HOME, so one directory holds everything this
 # example produces. /home and /scratch are both shared across Sol, so a client
 # job on another node reads it either way. Set ENDPOINT_FILE to move it.
@@ -97,7 +97,7 @@ export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "working directory: $PWD"
-echo "model=$PS_MODEL tp=$PS_TENSOR_PARALLEL_SIZE max_model_len=$PS_MAX_MODEL_LEN"
+echo "model=$PM_MODEL tp=$PM_TENSOR_PARALLEL_SIZE max_model_len=$PM_MAX_MODEL_LEN"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
 # vLLM shards across exactly --tensor-parallel-size devices, so a mismatch with
@@ -106,11 +106,11 @@ hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 # as the scheduler granted it; hl-smi is not consulted, because on a shared node
 # it can report cards this job was not given.
 if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "$SLURM_GPUS_ON_NODE" =~ ^[0-9]+$ ]] \
-   && (( PS_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
-  echo "ERROR: PS_TENSOR_PARALLEL_SIZE ($PS_TENSOR_PARALLEL_SIZE) does not match the" >&2
+   && (( PM_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
+  echo "ERROR: PM_TENSOR_PARALLEL_SIZE ($PM_TENSOR_PARALLEL_SIZE) does not match the" >&2
   echo "       $SLURM_GPUS_ON_NODE card(s) this job was allocated." >&2
   echo "       Change the -G line in this script, or set both at submit time:" >&2
-  echo "         sbatch -G $PS_TENSOR_PARALLEL_SIZE serve_gaudi.sbatch" >&2
+  echo "         sbatch -G $PM_TENSOR_PARALLEL_SIZE serve_gaudi.sbatch" >&2
   exit 1
 fi
 
@@ -118,7 +118,7 @@ fi
 # would abort the job under `set -u`. Relax it around them only.
 set +u
 module load mamba/latest
-source activate "$PS_VLLM_ENV"
+source activate "$PM_VLLM_ENV"
 set -u
 
 # PYTHONNOUSERSITE covers ~/.local, but PYTHONPATH or a stray .pth file shadows
@@ -177,11 +177,11 @@ echo "=== Endpoint written to $ENDPOINT_FILE: $(cat "$ENDPOINT_FILE") ==="
 trap 'rm -f "$ENDPOINT_FILE"' EXIT
 
 exec python -m vllm.entrypoints.openai.api_server \
-  --model "$PS_MODEL" \
+  --model "$PM_MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
-  --tensor-parallel-size "$PS_TENSOR_PARALLEL_SIZE" \
-  --max-model-len "$PS_MAX_MODEL_LEN" \
-  --block-size "$PS_BLOCK_SIZE" \
-  --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \
-  --max-num-seqs "$PS_MAX_NUM_SEQS"
+  --tensor-parallel-size "$PM_TENSOR_PARALLEL_SIZE" \
+  --max-model-len "$PM_MAX_MODEL_LEN" \
+  --block-size "$PM_BLOCK_SIZE" \
+  --gpu-memory-utilization "$PM_GPU_MEMORY_UTILIZATION" \
+  --max-num-seqs "$PM_MAX_NUM_SEQS"

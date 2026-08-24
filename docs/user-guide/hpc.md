@@ -31,7 +31,7 @@ cd examples/sol_gaudi
 sbatch install.sbatch
 ```
 
-The supplied workflow defaults to biodegradable polymers. Override `PS_RECIPE`, the query, model, context size, and scheduler resources for other projects.
+The supplied workflow defaults to biodegradable polymers. Override `PM_RECIPE`, the query, model, context size, and scheduler resources for other projects.
 
 ## Context and memory sizing
 

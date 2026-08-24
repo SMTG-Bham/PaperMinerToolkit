@@ -688,8 +688,8 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
     monkeypatch.setattr(cli, 'status', lambda path: calls.append(('status', path)))
 
     runner = CliRunner()
-    assert runner.invoke(cli.reset_scraper, [str(db_path)]).exit_code == 0
-    assert runner.invoke(cli.scraper_status, [str(db_path)]).exit_code == 0
+    assert runner.invoke(cli.reset_miner, [str(db_path)]).exit_code == 0
+    assert runner.invoke(cli.miner_status, [str(db_path)]).exit_code == 0
 
     assert calls == [
         ('reset', str(db_path)),

@@ -9,7 +9,7 @@ A recipe controls four related parts of the workflow:
 3. Domain-specific extraction and reconciliation rules.
 4. Column aliases and optional unit conversion during storage.
 
-Use the same recipe for `ps_scrape` and `ps_store`. Mixing recipes can produce incompatible columns, aliases, and units.
+Use the same recipe for `pm_scrape` and `pm_store`. Mixing recipes can produce incompatible columns, aliases, and units.
 
 ## Complete example
 
@@ -66,8 +66,8 @@ The following recipe extracts one record per electrochemical cycling experiment.
 Save a custom recipe as a standalone JSON file and pass its path in place of a bundled recipe name:
 
 ```bash
-ps_scrape papers.db ./cycling_recipe.json --mode text
-ps_store papers.db temp_scraped_materials.csv cycling_results.csv ./cycling_recipe.json --assume-yes
+pm_scrape papers.db ./cycling_recipe.json --mode text
+pm_store papers.db temp_scraped_materials.csv cycling_results.csv ./cycling_recipe.json --assume-yes
 ```
 
 A standalone file may contain the recipe object directly, as above, or exactly one named recipe:
@@ -129,10 +129,10 @@ Each field can define:
 : Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one.
 
 `aliases`
-: Optional alternative headings accepted by `ps_store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
+: Optional alternative headings accepted by `pm_store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
 
 `unit`
-: Optional target unit used by `ps_store`. It does not silently rewrite the extraction prompt. During storage, supported non-missing values can be converted to the configured unit and the final column receives the unit suffix.
+: Optional target unit used by `pm_store`. It does not silently rewrite the extraction prompt. During storage, supported non-missing values can be converted to the configured unit and the final column receives the unit suffix.
 
 For example, a field that must always contain a JSON list should say so explicitly and show a list-valued example:
 
@@ -456,7 +456,7 @@ The accompanying user message contains both record sets as JSON:
 <details>
 <summary><strong>Unit-conversion prompt during storage</strong></summary>
 
-When `ps_store` converts the `Capacity` field to its recipe unit of `mAh g^-1`, it sends this system prompt:
+When `pm_store` converts the `Capacity` field to its recipe unit of `mAh g^-1`, it sends this system prompt:
 
 ```text
 Convert the following values of Capacity to mAh g^-1. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Only put values in square brackets if multiple values are provided on the line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None". Do not return the value as an addition. If text is given and cannot be meaningfully converted, return the same text. Convert "RT" or "Room temperature" to the equivalent of 298.15K. Do not use quotation marks. Make sure that there are as many output values as input.

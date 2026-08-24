@@ -37,7 +37,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 QUERY="${1:-biodegradable polymer OECD 301 biodegradation}"
 DB="${2:-papers.db}"
 
-# Every paper the sources will give us. ps_search has no "unlimited" flag: each
+# Every paper the sources will give us. pm_search has no "unlimited" flag: each
 # backend loops until it has COUNT records or the provider runs out, so a number
 # larger than any real result set is how you ask for everything. Scopus stops at
 # its own total, CORE and OpenAlex stop when a short page comes back.
@@ -46,7 +46,7 @@ DB="${2:-papers.db}"
 # OpenAlex with the same number and merges the results on DOI, so the corpus
 # ends up somewhere between the largest single source and the sum of all three.
 COUNT="${3:-1000000}"
-PS_ENV="${PS_ENV:-paperminer}"
+PM_ENV="${PM_ENV:-paperminer}"
 
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 
@@ -54,7 +54,7 @@ export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 # would abort the run under `set -u`. Relax it around them only.
 set +u
 module load mamba/latest
-source activate "$PS_ENV"
+source activate "$PM_ENV"
 set -u
 
 missing=()
@@ -76,13 +76,13 @@ if [[ -z "${OPENALEX_API_KEY:-}" ]]; then
 fi
 
 echo "=== Searching: $QUERY ==="
-ps_search "$QUERY" "$DB" --source all --count "$COUNT"
+pm_search "$QUERY" "$DB" --source all --count "$COUNT"
 
 echo "=== Downloading ==="
-ps_download "$DB" --format both --source all
+pm_download "$DB" --format both --source all
 
 echo "=== Corpus ==="
-ps_corpus_stats "$DB"
+pm_corpus_stats "$DB"
 
 # $DB is absolute when fetch_corpus.sbatch resolved it against the submit
 # directory, and relative when it came straight off the command line.
@@ -94,7 +94,7 @@ esac
 echo
 echo "Corpus ready at $DB_DISPLAY. Now submit the scrape from $PWD"
 echo "(it defaults to the polymer recipe):"
-echo "  sbatch --export=ALL,PS_DB=$DB scrape_gaudi.sbatch"
+echo "  sbatch --export=ALL,PM_DB=$DB scrape_gaudi.sbatch"
 echo
 echo "Start with one paper to check the pipeline end to end:"
-echo "  sbatch --export=ALL,PS_DB=$DB,PS_COUNT=1 scrape_gaudi.sbatch"
+echo "  sbatch --export=ALL,PM_DB=$DB,PM_COUNT=1 scrape_gaudi.sbatch"

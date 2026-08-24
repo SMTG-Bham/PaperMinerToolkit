@@ -19,8 +19,8 @@ A recipe defines what one output record represents, the extraction instructions,
 Pass a bundled name or an external JSON path:
 
 ```bash
-ps_scrape papers.db sse --mode text
-ps_scrape papers.db ./my_recipe.json --mode text
+pm_scrape papers.db sse --mode text
+pm_scrape papers.db ./my_recipe.json --mode text
 ```
 
 Store each recipe in its own final CSV. Existing output columns participate in alias matching, so unrelated recipe schemas should not share a file.
@@ -30,19 +30,19 @@ Store each recipe in its own final CSV. Existing output columns participate in a
 Text only:
 
 ```bash
-ps_scrape papers.db sse --mode text
+pm_scrape papers.db sse --mode text
 ```
 
 Images only:
 
 ```bash
-ps_scrape papers.db sse --mode images
+pm_scrape papers.db sse --mode images
 ```
 
 Combined text and images:
 
 ```bash
-ps_scrape papers.db sse \
+pm_scrape papers.db sse \
   --mode text-images \
   --image-context paper-text
 ```
@@ -57,20 +57,20 @@ PaperMiner reserves space for prompts and output before sending source content. 
 Records extracted from separate chunks are not reconciled automatically. A material spanning chunk boundaries may be duplicated or incomplete. Increase the configured input limit only when the serving model genuinely supports it.
 :::
 
-The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` means the input fit one request; larger values indicate splitting. Inspect aggregate counts with `ps_corpus_stats`.
+The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` means the input fit one request; larger values indicate splitting. Inspect aggregate counts with `pm_corpus_stats`.
 
 ## Reruns and temporary files
 
 Successful stages are skipped by default. Force a deliberate rescrape:
 
 ```bash
-ps_scrape papers.db sse --mode text --force
+pm_scrape papers.db sse --mode text --force
 ```
 
 Choose the intermediate output and remove extracted images after successful analysis when scratch space matters:
 
 ```bash
-ps_scrape papers.db sse \
+pm_scrape papers.db sse \
   --mode images \
   --output scraped_materials.csv \
   --delete-images-after
@@ -79,7 +79,7 @@ ps_scrape papers.db sse \
 ## Aggregate and store results
 
 ```bash
-ps_store \
+pm_store \
   papers.db \
   temp_scraped_materials.csv \
   materials.csv \

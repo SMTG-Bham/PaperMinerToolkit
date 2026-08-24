@@ -1483,7 +1483,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
 def test_download_unpaywall_pdf_uses_real_api(tmp_path: Path) -> None:
     """Download Unpaywall PDF uses real API."""
     assert download._unpaywall_email(), (
-        'Set unpaywall_email in ~/.config/.pscraperrc.json or UNPAYWALL_EMAIL before running network tests.'
+        'Set unpaywall_email in ~/.config/.paperminerrc.json or UNPAYWALL_EMAIL before running network tests.'
     )
     pdf_path = tmp_path / 'unpaywall.pdf'
 
@@ -1521,7 +1521,7 @@ def test_download_openalex_pdf_uses_real_api(tmp_path: Path) -> None:
 def test_download_core_pdf_uses_real_api_when_configured(tmp_path: Path) -> None:
     """Download CORE PDF uses real API when configured."""
     assert download._core_headers().get('Authorization'), (
-        'Set core_api_key in ~/.config/.pscraperrc.json or CORE_API_KEY before running network tests.'
+        'Set core_api_key in ~/.config/.paperminerrc.json or CORE_API_KEY before running network tests.'
     )
     from paperminer.search import core_search
 
@@ -1541,7 +1541,7 @@ def test_download_core_pdf_uses_real_api_when_configured(tmp_path: Path) -> None
 def test_download_elsevier_pdf_uses_real_api_when_entitled(tmp_path: Path) -> None:
     """Download Elsevier PDF uses real API when entitled."""
     assert download.load_settings().get('elsevier_api_key'), (
-        'Set elsevier_api_key in ~/.config/.pscraperrc.json or ELSEVIER_API_KEY before running network tests.'
+        'Set elsevier_api_key in ~/.config/.paperminerrc.json or ELSEVIER_API_KEY before running network tests.'
     )
     pdf_path = tmp_path / 'elsevier.pdf'
     paper = {

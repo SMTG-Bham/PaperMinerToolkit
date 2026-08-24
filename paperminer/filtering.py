@@ -1170,7 +1170,7 @@ def apply_topic_filter(
         if current_fingerprint != model['prediction_corpus_fingerprint']:
             raise ValueError(
                 f'Topic scores for {definition["model"]!r} are stale; '
-                'run ps_topics_store again before applying this filter.'
+                'run pm_topics_store again before applying this filter.'
             )
         existing = conn.execute(
             'SELECT * FROM corpus_filters WHERE name = ?', (definition['name'],)
@@ -1381,7 +1381,7 @@ def current_filter_statuses(conn: sqlite3.Connection) -> dict[str, _FilterStatus
     stale = [model_id for model_id, is_stale in stale_models.items() if is_stale]
     if stale:
         raise ValueError(
-            'Active topic filters use stale scores; run ps_topics_store again for: '
+            'Active topic filters use stale scores; run pm_topics_store again for: '
             + ', '.join(stale)
         )
     return {

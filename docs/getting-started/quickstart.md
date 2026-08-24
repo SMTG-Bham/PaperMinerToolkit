@@ -5,8 +5,8 @@ This example searches for a small corpus, downloads abstracts, scrapes one recip
 ## 1. Search
 
 ```bash
-ps_search "lithium solid electrolyte" papers.db --source openalex --count 25
-ps_corpus_stats papers.db
+pm_search "lithium solid electrolyte" papers.db --source openalex --count 25
+pm_corpus_stats papers.db
 ```
 
 ## 2. Download content
@@ -14,19 +14,19 @@ ps_corpus_stats papers.db
 Start with abstracts for a cheap smoke test:
 
 ```bash
-ps_download papers.db --format abstract
+pm_download papers.db --format abstract
 ```
 
 For full extraction, request text and PDFs. Already stored content is skipped:
 
 ```bash
-ps_download papers.db --format both
+pm_download papers.db --format both
 ```
 
 ## 3. Scrape a recipe
 
 ```bash
-ps_scrape papers.db sse --mode text --output temp_scraped_materials.csv
+pm_scrape papers.db sse --mode text --output temp_scraped_materials.csv
 ```
 
 The recipe may be a bundled name such as `sse`, `polymer`, `polymer_db`, or `band_gap_validation`, or a path to your own JSON recipe.
@@ -34,14 +34,14 @@ The recipe may be a bundled name such as `sse`, `polymer`, `polymer_db`, or `ban
 ## 4. Store the results
 
 ```bash
-ps_store \
+pm_store \
   papers.db \
   temp_scraped_materials.csv \
   materials.csv \
   sse \
   --assume-yes
 
-ps_status papers.db
+pm_status papers.db
 ```
 
 Use the same recipe for scraping and storage so fields and unit conversions agree. Continue with {doc}`../user-guide/corpus`, {doc}`../user-guide/filtering`, and {doc}`../user-guide/scraping` for production workflows.

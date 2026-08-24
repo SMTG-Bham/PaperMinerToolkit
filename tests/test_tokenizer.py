@@ -150,7 +150,7 @@ def test_anthropic_token_count_uses_real_count_tokens_api() -> None:
     model_config = live_anthropic_config()
 
     assert model_config.api_key, (
-        'Set anthropic_api_key in ~/.config/.pscraperrc.json or ANTHROPIC_API_KEY before running network tests.'
+        'Set anthropic_api_key in ~/.config/.paperminerrc.json or ANTHROPIC_API_KEY before running network tests.'
     )
     assert model_config.name, (
         'Configure an Anthropic model profile or set PAPERMINER_ANTHROPIC_TEST_MODEL before running network tests.'

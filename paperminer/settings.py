@@ -15,7 +15,7 @@ import requests
 from copy import deepcopy
 from typing import Any, Literal
 
-SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.pscraperrc.json')
+SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.config', '.paperminerrc.json')
 DEFAULT_MODEL = 'gpt-5.4-mini'
 DEFAULT_TEMPERATURE = 0
 DEFAULT_TOP_P = 1

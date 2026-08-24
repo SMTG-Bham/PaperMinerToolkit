@@ -136,7 +136,7 @@ def _budget_error(response: provider.ResponseLike) -> str:
     except (TypeError, ValueError):
         wait = ''
     return ('OpenAlex daily credit budget is exhausted.'
-            f'{wait} Configure an API key with ps_openalex_key or OPENALEX_API_KEY '
+            f'{wait} Configure an API key with pm_openalex_key or OPENALEX_API_KEY '
             'to raise the budget.')
 
 

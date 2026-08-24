@@ -1,6 +1,6 @@
 """Command-line entry points for PaperMiner workflows.
 
-This module maps installed ``ps_*`` commands to the underlying search, import,
+This module maps installed ``pm_*`` commands to the underlying search, import,
 download, scrape, store, configuration, and maintenance functions.
 """
 
@@ -341,7 +341,7 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
     if overview.get('stale_topic_filters'):
         click.echo(
             'Stale topic filters: ' + ', '.join(overview['stale_topic_filters'])
-            + '. Run ps_topics_store again before scraping.'
+            + '. Run pm_topics_store again before scraping.'
         )
 
 
@@ -587,7 +587,7 @@ def topics_compare(db_path: str,
         click.echo(f'Warning: {message}', err=True)
     click.echo(f'Trained {summary["models_trained"]} comparison models in {summary["output_dir"]}.')
     click.echo(f'Comparison metrics: {summary["comparison_csv"]}')
-    click.echo('Inspect each model with ps_topics_show before choosing one.')
+    click.echo('Inspect each model with pm_topics_show before choosing one.')
 
 
 @click.command()
@@ -966,13 +966,13 @@ def model_status() -> None:
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def reset_scraper(db_path: str) -> None:
+def reset_miner(db_path: str) -> None:
     """Reset pipeline statuses in the paper corpus."""
     reset(db_path)
 
 
 @click.command()
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def scraper_status(db_path: str) -> None:
+def miner_status(db_path: str) -> None:
     """Print pipeline progress for the paper corpus."""
     status(db_path)

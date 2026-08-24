@@ -9,8 +9,8 @@
 #
 #   cd examples/sol_gaudi
 #   sbatch fetch_corpus.sbatch
-#   sbatch --export=ALL,PS_COUNT=500 fetch_corpus.sbatch   # bound it
-#   sbatch --export=ALL,PS_QUERY="polymer biodegradation OECD 310",PS_DB=bio.db \
+#   sbatch --export=ALL,PM_COUNT=500 fetch_corpus.sbatch   # bound it
+#   sbatch --export=ALL,PM_QUERY="polymer biodegradation OECD 310",PM_DB=bio.db \
 #          fetch_corpus.sbatch
 #
 # The log (ps-fetch-<jobid>.log) and the corpus land beside the scripts, where
@@ -39,11 +39,11 @@
 #
 # htc caps wall time at 4 hours but runs without interruption.
 #
-# Mind that against the unbounded PS_COUNT below. Search is cheap and re-running
-# it is nearly free, because ps_search upserts on DOI. Download is not: ps_download
+# Mind that against the unbounded PM_COUNT below. Search is cheap and re-running
+# it is nearly free, because pm_search upserts on DOI. Download is not: pm_download
 # walks every row in the corpus and has no skip for assets it already has, so a
 # job killed at the wall clock re-downloads from the start on the next submit.
-# If the corpus is big enough for that to bite, either bound PS_COUNT so the job
+# If the corpus is big enough for that to bite, either bound PM_COUNT so the job
 # finishes inside four hours, or move to a partition that allows longer:
 #
 #   #SBATCH -p general
@@ -51,40 +51,40 @@
 
 set -euo pipefail
 
-PS_QUERY="${PS_QUERY:-biodegradable polymer OECD 301 biodegradation}"
-PS_DB="${PS_DB:-papers.db}"
+PM_QUERY="${PM_QUERY:-biodegradable polymer OECD 301 biodegradation}"
+PM_DB="${PM_DB:-papers.db}"
 # Every paper the sources will give us, per source. See fetch_corpus.sh for what
 # the number means; set it to something small while testing a new query.
-PS_COUNT="${PS_COUNT:-1000000}"
-PS_SECRETS="${PS_SECRETS:-$HOME/.paperminer_env}"
+PM_COUNT="${PM_COUNT:-1000000}"
+PM_SECRETS="${PM_SECRETS:-$HOME/.paperminer_env}"
 
 # Run from wherever the job was submitted — normally examples/sol_gaudi — so the
 # corpus lands beside the scripts rather than in the scheduler's spool directory.
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 # fetch_corpus.sh anchors a relative database to its own directory. Resolve
-# PS_DB here so this job's working directory wins even if PS_FETCH points at a
+# PM_DB here so this job's working directory wins even if PM_FETCH points at a
 # copy of the script kept somewhere else.
-[[ "$PS_DB" == /* ]] || PS_DB="$PWD/$PS_DB"
+[[ "$PM_DB" == /* ]] || PM_DB="$PWD/$PM_DB"
 
-PS_FETCH="${PS_FETCH:-./fetch_corpus.sh}"
-if [[ ! -f "$PS_FETCH" ]]; then
-  echo "ERROR: $PS_FETCH not found. Submit from examples/sol_gaudi, where" >&2
-  echo "       fetch_corpus.sh lives, or set PS_FETCH to its path." >&2
+PM_FETCH="${PM_FETCH:-./fetch_corpus.sh}"
+if [[ ! -f "$PM_FETCH" ]]; then
+  echo "ERROR: $PM_FETCH not found. Submit from examples/sol_gaudi, where" >&2
+  echo "       fetch_corpus.sh lives, or set PM_FETCH to its path." >&2
   exit 1
 fi
 
-if [[ -f "$PS_SECRETS" ]]; then
-  echo "=== Sourcing credentials from $PS_SECRETS ==="
+if [[ -f "$PM_SECRETS" ]]; then
+  echo "=== Sourcing credentials from $PM_SECRETS ==="
   set +u
-  source "$PS_SECRETS"
+  source "$PM_SECRETS"
   set -u
 else
-  echo "NOTE: no $PS_SECRETS found; relying on whatever the job inherited."
+  echo "NOTE: no $PM_SECRETS found; relying on whatever the job inherited."
 fi
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
-echo "query=$PS_QUERY db=$PS_DB count=$PS_COUNT"
+echo "query=$PM_QUERY db=$PM_DB count=$PM_COUNT"
 
 # bash rather than direct execution, so a missing exec bit is not fatal.
-exec bash "$PS_FETCH" "$PS_QUERY" "$PS_DB" "$PS_COUNT"
+exec bash "$PM_FETCH" "$PM_QUERY" "$PM_DB" "$PM_COUNT"

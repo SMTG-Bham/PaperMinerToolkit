@@ -1,18 +1,18 @@
 # Credentials and model configuration
 
-PaperMiner keeps search/download credentials separate from the text and vision model profiles. Secrets can be supplied through environment variables, which is best for batch jobs, or saved interactively with the `ps_*_key` commands.
+PaperMiner keeps search/download credentials separate from the text and vision model profiles. Secrets can be supplied through environment variables, which is best for batch jobs, or saved interactively with the `pm_*_key` commands.
 
 ## Search and download services
 
 | Service | Environment variable | Interactive command | Used for |
 | --- | --- | --- | --- |
-| Elsevier | `ELSEVIER_API_KEY` | `ps_elsevier_key` | Scopus search, full text, and eligible PDFs |
-| CORE | `CORE_API_KEY` | `ps_core_key` | Search, abstracts, and PDFs |
-| OpenAlex | `OPENALEX_API_KEY` | `ps_openalex_key` | Higher API budget for search, abstracts, and OA locations |
-| Unpaywall | `UNPAYWALL_EMAIL` | `ps_unpaywall_email` | Open-access PDF discovery |
-| Crossref | `CROSSREF_EMAIL` | `ps_crossref_email` | Author imports and metadata enrichment |
-| NCBI | `NCBI_API_KEY` | `ps_ncbi_key` | Higher PubMed and PMC request rate |
-| NCBI | `NCBI_EMAIL` | `ps_ncbi_email` | Contact address sent to PubMed and PMC |
+| Elsevier | `ELSEVIER_API_KEY` | `pm_elsevier_key` | Scopus search, full text, and eligible PDFs |
+| CORE | `CORE_API_KEY` | `pm_core_key` | Search, abstracts, and PDFs |
+| OpenAlex | `OPENALEX_API_KEY` | `pm_openalex_key` | Higher API budget for search, abstracts, and OA locations |
+| Unpaywall | `UNPAYWALL_EMAIL` | `pm_unpaywall_email` | Open-access PDF discovery |
+| Crossref | `CROSSREF_EMAIL` | `pm_crossref_email` | Author imports and metadata enrichment |
+| NCBI | `NCBI_API_KEY` | `pm_ncbi_key` | Higher PubMed and PMC request rate |
+| NCBI | `NCBI_EMAIL` | `pm_ncbi_email` | Contact address sent to PubMed and PMC |
 
 OpenAlex works without a key, but authenticated use has a substantially larger credit budget. The
 OpenAlex `mailto` parameter identifies your client but no longer affects throughput, so
@@ -55,16 +55,16 @@ through the `openalex` and `crossref` sources.
 Save provider keys interactively or export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`:
 
 ```bash
-ps_openai_key
-ps_anthropic_key
+pm_openai_key
+pm_anthropic_key
 ```
 
 Configure text and vision independently:
 
 ```bash
-ps_model_config text --provider openai --model YOUR_TEXT_MODEL
-ps_model_config vision --provider openai --model YOUR_VISION_MODEL
-ps_model_status
+pm_model_config text --provider openai --model YOUR_TEXT_MODEL
+pm_model_config vision --provider openai --model YOUR_VISION_MODEL
+pm_model_status
 ```
 
 Use model identifiers available to your provider account. PaperMiner infers ordinary capabilities from the provider and model name; `--capability` is an override for unusual or locally served models.
@@ -74,12 +74,12 @@ Use model identifiers available to your provider account. PaperMiner infers ordi
 Point both profiles at the local endpoint when a model supports text and images:
 
 ```bash
-ps_model_config text \
+pm_model_config text \
   --provider local \
   --model Qwen/Qwen3-VL-30B-A3B-Instruct \
   --base-url http://127.0.0.1:8000/v1
 
-ps_model_config vision \
+pm_model_config vision \
   --provider local \
   --model Qwen/Qwen3-VL-30B-A3B-Instruct \
   --base-url http://127.0.0.1:8000/v1

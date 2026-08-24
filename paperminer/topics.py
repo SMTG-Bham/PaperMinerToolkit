@@ -2244,7 +2244,7 @@ def plot_topic_trends(
     except ImportError as error:
         raise RuntimeError(
             'Plotting topic trends requires matplotlib. Install PaperMiner dependencies '
-            'and rerun ps_topics_trends with --plot.'
+            'and rerun pm_topics_trends with --plot.'
         ) from error
 
     trends_path = Path(trends_path)

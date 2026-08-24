@@ -50,7 +50,7 @@ MODEL_ENV_KEYS = [
 @pytest.fixture
 def isolated_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point settings reads/writes at a temporary config file and clear env overrides."""
-    settings_path = tmp_path / 'pscraperrc.json'
+    settings_path = tmp_path / 'paperminerrc.json'
     monkeypatch.setattr(settings, 'SETTINGS_FILE', str(settings_path))
     for key in API_ENV_KEYS + MODEL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -494,7 +494,7 @@ def test_check_openai_api_key_validates_configured_key() -> None:
     loaded = settings.load_settings()
     api_key = loaded.get('openai_api_key')
 
-    assert api_key, 'Set openai_api_key in ~/.config/.pscraperrc.json or OPENAI_API_KEY before running network tests.'
+    assert api_key, 'Set openai_api_key in ~/.config/.paperminerrc.json or OPENAI_API_KEY before running network tests.'
     assert settings.check_openai_api_key(api_key) is True
 
 
@@ -504,5 +504,5 @@ def test_check_elsevier_api_key_validates_configured_key() -> None:
     loaded = settings.load_settings()
     api_key = loaded.get('elsevier_api_key')
 
-    assert api_key, 'Set elsevier_api_key in ~/.config/.pscraperrc.json or ELSEVIER_API_KEY before running network tests.'
+    assert api_key, 'Set elsevier_api_key in ~/.config/.paperminerrc.json or ELSEVIER_API_KEY before running network tests.'
     assert settings.check_elsevier_api_key(api_key) is True

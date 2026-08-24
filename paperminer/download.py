@@ -1,6 +1,6 @@
 """Download paper text and PDFs from configured open-access and publisher sources.
 
-This module powers ``ps_download``. It can fetch Elsevier, PubMed Central
+This module powers ``pm_download``. It can fetch Elsevier, PubMed Central
 open-access, medRxiv, and bioRxiv full text, try PDFs from Unpaywall, OpenAlex,
 CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, and arXiv, and update
 per-paper download status in the SQLite paper corpus after each row. arXiv
@@ -1572,7 +1572,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
             if missing_text:
                 raise ValueError(
                     'Text download requires an Elsevier API key, the pubmed source, or a '
-                    'preprint-server source. Run ps_elsevier_key first, pass --source pubmed '
+                    'preprint-server source. Run pm_elsevier_key first, pass --source pubmed '
                     'for PubMed Central open-access full text, or pass --source medrxiv or '
                     '--source biorxiv for preprint JATS full text.'
                 )
