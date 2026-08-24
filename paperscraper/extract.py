@@ -1,8 +1,8 @@
 """Build extraction prompts, call models, parse JSON, and convert units.
 
-This module turns paper text or images into structured material records using a
-recipe schema. It also reconciles text/image results and normalizes extracted
-units before records are stored.
+This module turns paper text or images into structured recipe-defined records.
+It also reconciles text/image results and normalizes extracted units before
+records are stored.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def _base_extraction_prompt(recipe: Mapping[str, Any], source: str, source_rules
     Parameters
     ----------
     recipe : Mapping[str, Any]
-        Extraction recipe defining the material type and fields.
+        Extraction recipe defining the record type and fields.
     source : str
         Human-readable source description for the prompt.
     source_rules : str
@@ -106,16 +106,24 @@ def _base_extraction_prompt(recipe: Mapping[str, Any], source: str, source_rules
     str
         Complete model system prompt.
     """
-    material_type = recipe['material type']
+    definition = recipe['record definition']
+    subject = definition['subject']
+    singular = definition['singular']
+    plural = definition['plural']
+    unit = definition['unit']
     additional_prompts = recipe.get('additional prompts', '')
-    return f'''You extract structured {material_type} materials data from a scientific {source}.
+    return f'''You extract structured records about {subject} from a scientific {source}.
+
+Record definition:
+- Each output object represents {unit}.
+- The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
 
 Extraction rules:
 - Use only information supported by the provided {source}. Do not infer missing values from general domain knowledge.
-- Prefer explicit reported values over derived or assumed values. Preserve conditions such as temperature, pressure, composition, measurement method, and units when they are part of the reported value.
-- If multiple distinct {material_type} materials, doped variants, compositions, or experimental entries are reported, return one record per distinct entry. Do not duplicate records for repeated mentions of the same entry.
+- Prefer explicit reported values over derived or assumed values. Preserve relevant conditions, methods, units, qualifiers, and uncertainties when they are part of the reported value.
+- If multiple distinct {plural} are reported, return one record per {singular} according to the record definition. Do not duplicate records for repeated mentions of the same {singular}.
 - If a field is not supported by the provided {source}, set that field to "None".
-- Use lists only when multiple values are reported for the same field in the same record.
+- Use lists only when multiple values are reported for the same field in the same record, unless the field or additional recipe instructions explicitly require a list.
 - Keep values concise but complete enough to preserve scientific meaning.
 {source_rules}
 
@@ -126,7 +134,7 @@ Additional recipe instructions:
 {additional_prompts}
 
 Output contract:
-- Return a JSON array of objects. Return [] if no relevant material data is present.
+- Return a JSON array of objects. Return [] if no relevant {plural} are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
 
@@ -148,7 +156,7 @@ def build_text_extraction_prompt(recipe: Mapping[str, Any]) -> str:
         Text extraction system prompt.
     """
     source_rules = '''- Treat abstracts, captions, tables, experimental sections, results, and supporting text as valid evidence.
-- Do not use references, citations, or background discussion as evidence for the paper's own reported measurements unless the text clearly states the value belongs to this work.'''
+- Do not use references, citations, or background discussion as evidence for the paper's own results or observations unless the text clearly states the information belongs to this work.'''
     return _base_extraction_prompt(recipe, 'paper text', source_rules)
 
 
@@ -171,7 +179,7 @@ def build_image_extraction_prompt(recipe: Mapping[str, Any], with_context: bool 
     source_rules = f'''{context_rule}
 - Actively inspect figures and tables in the image for the requested properties, including captions, table headers, table rows, plot axes, legends, labels, annotations, and inset text.
 - For plots, report values only when they can be read from labels, annotations, tables, or clearly interpretable plotted data.
-- If several images are supplied together, combine evidence across them only when they clearly describe the same material or experiment.
+- If several images are supplied together, combine evidence across them only when they clearly describe the same record subject or observation.
 - If the supplied image or images are decorative, unreadable, or irrelevant to the schema, return [].'''
     return _base_extraction_prompt(recipe, 'paper image', source_rules)
 
@@ -327,7 +335,7 @@ def scrape_text(
     recipe: Mapping[str, Any],
     model_config: ModelConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract structured material records from paper text.
+    """Extract structured recipe-defined records from paper text.
 
     Parameters
     ----------
@@ -341,7 +349,7 @@ def scrape_text(
     Returns
     -------
     list[dict[str, Any]]
-        Extracted material records.
+        Extracted records.
     """
     prompt = build_scrape_prompt(recipe, source='text')
     messages = [
@@ -359,7 +367,7 @@ def scrape_images(
     context: str | None = None,
     compression_config: CompressionConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract structured material records from paper images.
+    """Extract structured recipe-defined records from paper images.
 
     Parameters
     ----------
@@ -377,7 +385,7 @@ def scrape_images(
     Returns
     -------
     list[dict[str, Any]]
-        Extracted material records.
+        Extracted records.
     """
     config = model_config or ModelConfig.from_profile('vision')
     prompt = build_scrape_prompt(recipe, source='image', with_context=context is not None)
@@ -396,7 +404,7 @@ def combine_material_records(
     recipe: Mapping[str, Any],
     model_config: ModelConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Reconcile text-derived and image-derived material records.
+    """Reconcile text-derived and image-derived recipe records.
 
     Parameters
     ----------
@@ -412,24 +420,42 @@ def combine_material_records(
     Returns
     -------
     list[dict[str, Any]]
-        Reconciled material records.
+        Reconciled records.
     """
-    prompt = f'''You reconcile structured materials data extracted from the same paper.
+    definition = recipe['record definition']
+    subject = definition['subject']
+    singular = definition['singular']
+    plural = definition['plural']
+    unit = definition['unit']
+    identity_fields = definition['identity fields']
+    additional_prompts = recipe.get('additional prompts', '')
+    identity_description = ', '.join(f'"{field}"' for field in identity_fields)
+    if not identity_description:
+        identity_description = 'No primary identity fields are configured; use the full record context.'
 
-The text extractor and image extractor may describe the same material, composition, sample, or experiment. Compare both sets and merge records that refer to the same material or clearly corresponding experimental entry.
+    prompt = f'''You reconcile two sets of structured records about {subject} extracted from the same paper.
+
+Each output object represents {unit}. The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
+Compare the text-derived and image-derived records and merge only records that refer to the same {singular}.
+
+Primary identity fields:
+{identity_description}
 
 Rules:
 - Use the recipe schema keys exactly. Do not add extra keys.
-- Match records first by exact material name, formula, composition, stoichiometry, dopant, substitution level, composite/additive identity, and sample label when available.
-- Treat records as the same material only when their composition and experimental context are compatible. If one record is generic and another is specific, keep the specific record and copy generic fields only when they clearly apply.
-- Do not merge entries when compositions differ, dopant levels differ, one is a parent phase and the other is a doped/substituted phase, or one is a neat material and the other is a composite/additive mixture.
-- Do not merge entries only because they share a property value, measurement type, figure/table, or broad material class.
+- Use compatible values in the primary identity fields as the strongest evidence that two records describe the same {singular}. Also consider the full record context and the configured record unit.
+- If one record has a more specific identity than another, merge them only when the less-specific record clearly applies to that same {singular}.
+- Keep records separate when their identity fields or defining context conflict.
+- Do not merge records only because they share a reported value, method, source location, or broad category.
 - Prefer explicit non-None values over None.
-- If text and image records provide complementary properties for the same material, combine them into one record.
+- If text and image records provide complementary fields for the same {singular}, combine them into one record.
 - If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
-- Keep genuinely distinct materials, doped variants, compositions, samples, or experimental entries as separate records.
+- Keep genuinely distinct {plural} as separate records according to the configured record unit.
 - Do not invent values. If neither source supports a field, use "None".
 - Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
+
+Additional recipe instructions:
+{additional_prompts}
 
 Schema. Use these keys exactly and do not add extra keys:
 {_field_schema(recipe)}
@@ -453,7 +479,7 @@ def scrape_pdf(
     recipe: Mapping[str, Any],
     model_config: ModelConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract material records from a PDF file.
+    """Extract recipe-defined records from a PDF file.
 
     Parameters
     ----------
@@ -467,7 +493,7 @@ def scrape_pdf(
     Returns
     -------
     list[dict[str, Any]]
-        Extracted material records.
+        Extracted records.
     """
     from paperscraper.documents import read_pdf_text
 

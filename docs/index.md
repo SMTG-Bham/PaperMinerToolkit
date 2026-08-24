@@ -1,6 +1,6 @@
 # Build literature datasets with PaperScraper
 
-<p class="hero-tagline">Build scientific-paper corpora and extract structured materials data with configurable language and vision models.</p>
+<p class="hero-tagline">Build scientific-paper corpora and extract structured, recipe-defined data with configurable language and vision models.</p>
 
 PaperScraper searches Crossref, Elsevier/Scopus, CORE, and OpenAlex; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
 

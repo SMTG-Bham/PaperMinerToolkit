@@ -1,6 +1,6 @@
-# Recipes and scraping
+# Scraping and storing records
 
-A recipe defines the material type, extraction instructions, output fields, examples, aliases, and unit conversions. Use exactly the same recipe for scraping and storage.
+A recipe defines what one output record represents, the extraction instructions, output fields, examples, aliases, and unit conversions. See {doc}`recipes` for the complete recipe format and an explanation of how PaperScraper constructs prompts. Use exactly the same recipe for scraping and storage.
 
 ## Bundled recipes
 
