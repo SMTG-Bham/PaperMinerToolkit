@@ -1,6 +1,6 @@
-paperscraper.filtering
+paperminer.filtering
 ========================================
 
-.. automodule:: paperscraper.filtering
+.. automodule:: paperminer.filtering
    :members:
    :show-inheritance:

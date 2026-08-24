@@ -8,14 +8,20 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperscraper.compression import CompressionConfig
-import paperscraper.extract as extract
+from paperminer.compression import CompressionConfig
+import paperminer.extract as extract
 
 
 def sample_recipe() -> dict[str, Any]:
     """Return a minimal extraction recipe for tests."""
     return {
-        'material type': 'solid electrolyte',
+        'record definition': {
+            'subject': 'solid electrolytes',
+            'singular': 'material',
+            'plural': 'materials',
+            'unit': 'a distinct solid-electrolyte composition or sample',
+            'identity fields': ['Name'],
+        },
         'additional prompts': 'Capture only room-temperature measurements.',
         'search fields': {
             'Name': {
@@ -55,6 +61,34 @@ def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> No
     assert 'supplied paper text as context' in contextual_image_prompt
     assert extract.build_scrape_prompt(recipe, source='text') == text_prompt
     assert extract.build_scrape_prompt(recipe, source='image') == image_prompt
+
+
+def test_non_material_recipe_controls_prompt_terminology_and_granularity() -> None:
+    """Test that general prompts contain only recipe-supplied domain terminology."""
+    recipe = {
+        'record definition': {
+            'subject': 'electrochemical cycling experiments',
+            'singular': 'experiment',
+            'plural': 'experiments',
+            'unit': 'a distinct cell and cycling protocol',
+            'identity fields': ['Cell identifier', 'Protocol'],
+        },
+        'additional prompts': 'Keep each temperature series together.',
+        'search fields': {
+            'Cell identifier': {'prompt': 'Reported cell label.', 'example': 'Cell A'},
+            'Protocol': {'prompt': 'Reported cycling protocol.', 'example': 'C/10'},
+        },
+    }
+
+    prompt = extract.build_text_extraction_prompt(recipe)
+
+    assert 'records about electrochemical cycling experiments' in prompt
+    assert 'Each output object represents a distinct cell and cycling protocol.' in prompt
+    assert 'multiple distinct experiments' in prompt
+    assert 'one record per experiment' in prompt
+    assert 'no relevant experiments' in prompt
+    assert 'Keep each temperature series together.' in prompt
+    assert 'material' not in prompt.lower()
 
 
 def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,7 +209,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_compression'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
 
-    import paperscraper.documents as documents
+    import paperminer.documents as documents
 
     monkeypatch.setattr(documents, 'read_pdf_text', lambda filepath: f'text from {filepath}')
     assert extract.scrape_pdf('paper.pdf', recipe) == [{'Name': 'LLZO'}]
@@ -210,8 +244,40 @@ def test_combine_material_records_sends_both_record_sets_for_reconciliation(monk
         'image_extracted_records': [{'Conductivity': '1e-3 S cm^-1'}],
     }
     assert '"Name": The material name or formula.' in calls['messages'][0]['content']
+    assert 'Primary identity fields:\n"Name"' in calls['messages'][0]['content']
+    assert 'Capture only room-temperature measurements.' in calls['messages'][0]['content']
     assert calls['model_config'] == {'provider': 'test'}
     assert output == [{'Name': 'merged', 'Conductivity': '1e-3 S cm^-1'}]
+
+
+def test_non_material_reconciliation_uses_recipe_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that reconciliation is generic and uses configured identity fields."""
+    calls = {}
+    recipe = {
+        'record definition': {
+            'subject': 'cycling experiments',
+            'singular': 'experiment',
+            'plural': 'experiments',
+            'unit': 'a distinct cell and protocol',
+            'identity fields': ['Cell', 'Protocol'],
+        },
+        'search fields': {
+            'Cell': {'prompt': 'Cell label.', 'example': 'A'},
+            'Protocol': {'prompt': 'Cycling protocol.', 'example': 'C/10'},
+        },
+    }
+
+    def fake_query_model(messages: list[dict[str, str]], model_config: object = None) -> str:
+        """Capture the generic reconciliation prompt and return no records."""
+        calls['system'] = messages[0]['content']
+        return '[]'
+
+    monkeypatch.setattr(extract, 'query_model', fake_query_model)
+    assert extract.combine_material_records([], [], recipe) == []
+
+    assert 'Primary identity fields:\n"Cell", "Protocol"' in calls['system']
+    assert 'same experiment' in calls['system']
+    assert 'material' not in calls['system'].lower()
 
 
 def test_convert_units_preserves_missing_values_and_queries_only_real_values(monkeypatch: pytest.MonkeyPatch) -> None:

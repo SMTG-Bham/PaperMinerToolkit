@@ -1,6 +1,6 @@
-paperscraper.compression
+paperminer.compression
 ========================================
 
-.. automodule:: paperscraper.compression
+.. automodule:: paperminer.compression
    :members:
    :show-inheritance:

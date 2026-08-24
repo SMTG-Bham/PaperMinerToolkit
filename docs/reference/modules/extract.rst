@@ -1,6 +1,6 @@
-paperscraper.extract
+paperminer.extract
 ========================================
 
-.. automodule:: paperscraper.extract
+.. automodule:: paperminer.extract
    :members:
    :show-inheritance:

@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "paperscraper"
+name = "paperminer"
 dynamic = ["version"]
 description = "A package for extracting structured information from scientific papers with configurable language and vision models."
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -62,45 +62,49 @@ Repository = "https://github.com/SMTG-Bham/PaperScraper"
 Issues = "https://github.com/SMTG-Bham/PaperScraper/issues"
 
 [project.scripts]
-ps_search = "paperscraper.cli:paper_search"
-ps_download = "paperscraper.cli:download"
-ps_corpus_stats = "paperscraper.cli:corpus_status"
-ps_topics_train = "paperscraper.cli:topics_train"
-ps_topics_compare = "paperscraper.cli:topics_compare"
-ps_topics_show = "paperscraper.cli:topics_show"
-ps_topics_name = "paperscraper.cli:topics_name"
-ps_topics_predict = "paperscraper.cli:topics_predict"
-ps_topics_trends = "paperscraper.cli:topics_trends"
-ps_topics_store = "paperscraper.cli:topics_store"
-ps_topics_models = "paperscraper.cli:topics_models"
-ps_import_pdfs = "paperscraper.cli:import_pdf_folder"
-ps_import_author = "paperscraper.cli:import_author"
-ps_scrape = "paperscraper.cli:scrape"
-ps_filter_regex = "paperscraper.cli:filter_regex"
-ps_filter_topic = "paperscraper.cli:filter_topic"
-ps_filter_status = "paperscraper.cli:filter_status"
-ps_filter_reset = "paperscraper.cli:filter_reset"
-ps_store = "paperscraper.cli:store"
-ps_elsevier_key = "paperscraper.cli:update_elsevier_api_key"
-ps_core_key = "paperscraper.cli:update_core_api_key"
-ps_unpaywall_email = "paperscraper.cli:update_unpaywall_api_email"
-ps_openalex_key = "paperscraper.cli:update_openalex_api_key"
-ps_openai_key = "paperscraper.cli:update_openai_api_key"
-ps_anthropic_key = "paperscraper.cli:update_anthropic_api_key"
-ps_model_config = "paperscraper.cli:model_config"
-ps_model_status = "paperscraper.cli:model_status"
-ps_reset = "paperscraper.cli:reset_scraper"
-ps_status = "paperscraper.cli:scraper_status"
+pm_search = "paperminer.cli:paper_search"
+pm_download = "paperminer.cli:download"
+pm_corpus_stats = "paperminer.cli:corpus_status"
+pm_topics_train = "paperminer.cli:topics_train"
+pm_topics_compare = "paperminer.cli:topics_compare"
+pm_topics_show = "paperminer.cli:topics_show"
+pm_topics_name = "paperminer.cli:topics_name"
+pm_topics_predict = "paperminer.cli:topics_predict"
+pm_topics_trends = "paperminer.cli:topics_trends"
+pm_topics_store = "paperminer.cli:topics_store"
+pm_topics_models = "paperminer.cli:topics_models"
+pm_import_pdfs = "paperminer.cli:import_pdf_folder"
+pm_import_author = "paperminer.cli:import_author"
+pm_enrich = "paperminer.cli:enrich"
+pm_scrape = "paperminer.cli:scrape"
+pm_filter_regex = "paperminer.cli:filter_regex"
+pm_filter_topic = "paperminer.cli:filter_topic"
+pm_filter_status = "paperminer.cli:filter_status"
+pm_filter_reset = "paperminer.cli:filter_reset"
+pm_store = "paperminer.cli:store"
+pm_elsevier_key = "paperminer.cli:update_elsevier_api_key"
+pm_core_key = "paperminer.cli:update_core_api_key"
+pm_unpaywall_email = "paperminer.cli:update_unpaywall_api_email"
+pm_crossref_email = "paperminer.cli:update_crossref_api_email"
+pm_openalex_key = "paperminer.cli:update_openalex_api_key"
+pm_ncbi_key = "paperminer.cli:update_ncbi_api_key"
+pm_ncbi_email = "paperminer.cli:update_ncbi_api_email"
+pm_openai_key = "paperminer.cli:update_openai_api_key"
+pm_anthropic_key = "paperminer.cli:update_anthropic_api_key"
+pm_model_config = "paperminer.cli:model_config"
+pm_model_status = "paperminer.cli:model_status"
+pm_reset = "paperminer.cli:reset_miner"
+pm_status = "paperminer.cli:miner_status"
 
 [tool.setuptools.dynamic]
-version = { attr = "paperscraper.__version__" }
+version = { attr = "paperminer._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["paperscraper*"]
+include = ["paperminer*"]
 
 [tool.setuptools.package-data]
-"paperscraper" = ["resources/*.json"]
+"paperminer" = ["resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -114,7 +118,7 @@ addopts = [
 ]
 
 [tool.ruff.lint]
-select = ["D"]
+select = ["D", "F"]
 extend-select = ["ANN", "D212"]
 # Dynamic provider payloads and test doubles legitimately require Any.
 ignore = ["ANN401"]
@@ -123,7 +127,7 @@ ignore = ["ANN401"]
 convention = "numpy"
 
 [tool.coverage.run]
-source = ["paperscraper"]
+source = ["paperminer"]
 
 [tool.coverage.report]
 show_missing = true

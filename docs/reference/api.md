@@ -1,13 +1,13 @@
 # Python modules
 
-Each public PaperScraper module has its own API page. Private members beginning with `_` are intentionally omitted.
+Each public PaperMiner module has its own API page. Private members beginning with `_` are intentionally omitted.
 
 ## Package and command line
 
 ```{toctree}
 :maxdepth: 1
 
-modules/paperscraper
+modules/paperminer
 modules/cli
 ```
 
@@ -17,10 +17,21 @@ modules/cli
 :maxdepth: 1
 
 modules/corpus
+modules/provider
+modules/sources
 modules/search
 modules/crossref
 modules/openalex
+modules/pubmed
+modules/arxiv
+modules/rxiv
+modules/medrxiv
+modules/biorxiv
+modules/chemrxiv
+modules/enrichment
 modules/elsevier
+modules/core
+modules/unpaywall
 modules/metadata
 modules/imports
 modules/download

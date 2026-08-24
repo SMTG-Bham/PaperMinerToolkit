@@ -1,6 +1,6 @@
-paperscraper.imports
+paperminer.imports
 ========================================
 
-.. automodule:: paperscraper.imports
+.. automodule:: paperminer.imports
    :members:
    :show-inheritance:

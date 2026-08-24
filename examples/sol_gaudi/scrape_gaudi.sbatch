@@ -2,8 +2,8 @@
 # Scrape biodegradable polymer data with a local vLLM server on four Gaudi 2 cards.
 #
 # The job starts vLLM from ASU Research Computing's shared gaudi-pytorch-vllm
-# environment, waits for it to serve, then runs ps_scrape from our own
-# paperscraper environment against 127.0.0.1. Both live in the same job, so
+# environment, waits for it to serve, then runs pm_scrape from our own
+# paperminer environment against 127.0.0.1. Both live in the same job, so
 # nothing is left running and no cross-node networking is involved.
 #
 # Submit from this directory, where fetch_corpus.sh left papers.db:
@@ -11,12 +11,12 @@
 #   cd examples/sol_gaudi
 #   sbatch scrape_gaudi.sbatch
 #
-# The log (ps-gaudi-<jobid>.log) and the CSVs land here too. Point PS_DB at an
+# The log (ps-gaudi-<jobid>.log) and the CSVs land here too. Point PM_DB at an
 # absolute path if the corpus lives somewhere else.
 #
 # Every setting below can be overridden at submit time, for example:
 #
-#   sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=5 scrape_gaudi.sbatch
+#   sbatch --export=ALL,PM_RECIPE=polymer_db,PM_COUNT=5 scrape_gaudi.sbatch
 
 #SBATCH --job-name=ps-scrape-gaudi
 #SBATCH -p gaudi
@@ -35,7 +35,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 # --- Knobs ------------------------------------------------------------------
-# PS_MODEL must be the exact Hugging Face repo id. PaperScraper loads the
+# PM_MODEL must be the exact Hugging Face repo id. PaperMiner loads the
 # matching tokenizer by that name for chunk sizing, so a mismatch silently
 # degrades to a character estimate.
 #
@@ -48,25 +48,25 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 #
 # 30.5B parameters at bf16 is ~61 GB of weights, ~15 GB per card across four,
 # leaving the rest of each 96 GB card for KV cache and HPU graph capture.
-PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+PM_MODEL="${PM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
 
 # Must equal the number of cards in the -G header above. ASU's own multi-card
 # example is -G 8 -c 18 with --tensor-parallel-size 8, so the core count does
 # not scale with the cards - only -G and this do. If the four-card queue is
 # slow, drop to one card and a smaller model at submit time:
 #
-#   sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-7B-Instruct \
+#   sbatch -G 1 --export=ALL,PM_TENSOR_PARALLEL_SIZE=1,PM_MODEL=Qwen/Qwen2.5-7B-Instruct \
 #          scrape_gaudi.sbatch
-PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
+PM_TENSOR_PARALLEL_SIZE="${PM_TENSOR_PARALLEL_SIZE:-4}"
 
 # These two are NOT equal, and that is deliberate.
 #
-# paperscraper/extract.py hardcodes max_output_tokens=10000 on every request,
+# paperminer/extract.py hardcodes max_output_tokens=10000 on every request,
 # which OpenAICompatibleChatClient passes through as max_tokens. vLLM rejects a
 # request when prompt_tokens + max_tokens exceeds --max-model-len. So the input
 # budget must leave room for that fixed 10000-token completion:
 #
-#     PS_MAX_MODEL_LEN >= PS_INPUT_TOKEN_LIMIT + 11000
+#     PM_MAX_MODEL_LEN >= PM_INPUT_TOKEN_LIMIT + 11000
 #
 # Set them equal and every single request comes back HTTP 400.
 #
@@ -74,30 +74,30 @@ PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
 # a single 10000-token completion does not fit inside it, so every request would
 # 400 before the prompt is even counted. Hence 32768, paid for with the memory
 # knobs below.
-PS_MAX_MODEL_LEN="${PS_MAX_MODEL_LEN:-32768}"
-PS_INPUT_TOKEN_LIMIT="${PS_INPUT_TOKEN_LIMIT:-20000}"
-PS_OUTPUT_RESERVE="${PS_OUTPUT_RESERVE:-11000}"
+PM_MAX_MODEL_LEN="${PM_MAX_MODEL_LEN:-32768}"
+PM_INPUT_TOKEN_LIMIT="${PM_INPUT_TOKEN_LIMIT:-20000}"
+PM_OUTPUT_RESERVE="${PM_OUTPUT_RESERVE:-11000}"
 
 # Gaudi-specific launch flags, taken from https://docs.rc.asu.edu/vllm/. None of
 # them are vLLM defaults and all three matter on HPU: 128 is the block size the
 # Gaudi backend is tuned for, and holding utilisation and concurrent sequences
 # down leaves device memory free for HPU graph capture during warmup. Lower
-# PS_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
-PS_BLOCK_SIZE="${PS_BLOCK_SIZE:-128}"
-PS_GPU_MEMORY_UTILIZATION="${PS_GPU_MEMORY_UTILIZATION:-0.80}"
-PS_MAX_NUM_SEQS="${PS_MAX_NUM_SEQS:-16}"
+# PM_GPU_MEMORY_UTILIZATION first if warmup dies on an allocation failure.
+PM_BLOCK_SIZE="${PM_BLOCK_SIZE:-128}"
+PM_GPU_MEMORY_UTILIZATION="${PM_GPU_MEMORY_UTILIZATION:-0.80}"
+PM_MAX_NUM_SEQS="${PM_MAX_NUM_SEQS:-16}"
 
-PS_DB="${PS_DB:-papers.db}"
-PS_MODE="${PS_MODE:-text}"
+PM_DB="${PM_DB:-papers.db}"
+PM_MODE="${PM_MODE:-text}"
 # Empty means every paper in the corpus, which is the intended setting: the
 # scrape is resumable, so a run that hits the wall clock is continued simply by
 # submitting again, and finished papers are skipped in seconds.
 #
-# Do not set PS_COUNT to resume a partial run. --count slices the *ordered
+# Do not set PM_COUNT to resume a partial run. --count slices the *ordered
 # corpus*, not the unfinished part of it, so a second job with --count 50 would
 # re-select the same first 50 papers, find them already succeeded, and do no new
-# work. It is for testing a pipeline (PS_COUNT=1), not for pacing a long run.
-PS_COUNT="${PS_COUNT:-}"
+# work. It is for testing a pipeline (PM_COUNT=1), not for pacing a long run.
+PM_COUNT="${PM_COUNT:-}"
 
 # polymer: 36 fields, including the 8 biodegradation ones (test standard,
 #   medium, extent, duration, mechanism, organisms, certification). ~450 output
@@ -108,16 +108,16 @@ PS_COUNT="${PS_COUNT:-}"
 #   acid/base/hydrolytic/enzymatic degradation curves. ~1100 tokens per record,
 #   so a paper truncates after roughly 9 records. Use it when you need the whole
 #   schema and the papers report few samples each.
-PS_RECIPE="${PS_RECIPE:-polymer}"
+PM_RECIPE="${PM_RECIPE:-polymer}"
 
-# One materials file per recipe. ps_store reuses an existing output file's
+# One materials file per recipe. pm_store reuses an existing output file's
 # columns for matching, so two recipes must never share one CSV.
-PS_IN_CSV="${PS_IN_CSV:-scraped_${PS_RECIPE}.csv}"
-PS_OUT_CSV="${PS_OUT_CSV:-materials_${PS_RECIPE}.csv}"
-PS_ENV="${PS_ENV:-paperscraper}"    # our env, created per examples/sol_gaudi/README.md
-PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
-PS_RUN_STORE="${PS_RUN_STORE:-1}"   # ps_store also calls the model, so do it while the server is up
-PS_STARTUP_TIMEOUT="${PS_STARTUP_TIMEOUT:-3600}"
+PM_IN_CSV="${PM_IN_CSV:-scraped_${PM_RECIPE}.csv}"
+PM_OUT_CSV="${PM_OUT_CSV:-materials_${PM_RECIPE}.csv}"
+PM_ENV="${PM_ENV:-paperminer}"    # our env, created per examples/sol_gaudi/README.md
+PM_VLLM_ENV="${PM_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
+PM_RUN_STORE="${PM_RUN_STORE:-1}"   # pm_store also calls the model, so do it while the server is up
+PM_STARTUP_TIMEOUT="${PM_STARTUP_TIMEOUT:-3600}"
 
 # --- Gaudi and cache environment -------------------------------------------
 # Conda environments, unlike venvs, keep ~/.local/lib/pythonX.Y/site-packages on
@@ -141,23 +141,23 @@ export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
 echo "working directory: $PWD"
-echo "model=$PS_MODEL tp=$PS_TENSOR_PARALLEL_SIZE max_model_len=$PS_MAX_MODEL_LEN mode=$PS_MODE recipe=$PS_RECIPE"
-echo "block_size=$PS_BLOCK_SIZE gpu_mem_util=$PS_GPU_MEMORY_UTILIZATION max_num_seqs=$PS_MAX_NUM_SEQS"
+echo "model=$PM_MODEL tp=$PM_TENSOR_PARALLEL_SIZE max_model_len=$PM_MAX_MODEL_LEN mode=$PM_MODE recipe=$PM_RECIPE"
+echo "block_size=$PM_BLOCK_SIZE gpu_mem_util=$PM_GPU_MEMORY_UTILIZATION max_num_seqs=$PM_MAX_NUM_SEQS"
 hl-smi || echo "WARNING: hl-smi unavailable - are we really on a Gaudi node?"
 
-if [[ ! -f "$PS_DB" ]]; then
-  echo "ERROR: $PS_DB not found in $PWD." >&2
+if [[ ! -f "$PM_DB" ]]; then
+  echo "ERROR: $PM_DB not found in $PWD." >&2
   echo "       Build the corpus first, from examples/sol_gaudi:" >&2
   echo "         ./fetch_corpus.sh          # or: sbatch fetch_corpus.sbatch" >&2
-  echo "       Or set PS_DB to the path of an existing corpus." >&2
+  echo "       Or set PM_DB to the path of an existing corpus." >&2
   exit 1
 fi
 
 # Fail here rather than after a 30-minute model load.
-if (( PS_MAX_MODEL_LEN < PS_INPUT_TOKEN_LIMIT + PS_OUTPUT_RESERVE )); then
-  echo "ERROR: PS_MAX_MODEL_LEN ($PS_MAX_MODEL_LEN) must be at least" >&2
-  echo "       PS_INPUT_TOKEN_LIMIT ($PS_INPUT_TOKEN_LIMIT) + $PS_OUTPUT_RESERVE." >&2
-  echo "       PaperScraper always requests a 10000-token completion, and vLLM counts" >&2
+if (( PM_MAX_MODEL_LEN < PM_INPUT_TOKEN_LIMIT + PM_OUTPUT_RESERVE )); then
+  echo "ERROR: PM_MAX_MODEL_LEN ($PM_MAX_MODEL_LEN) must be at least" >&2
+  echo "       PM_INPUT_TOKEN_LIMIT ($PM_INPUT_TOKEN_LIMIT) + $PM_OUTPUT_RESERVE." >&2
+  echo "       PaperMiner always requests a 10000-token completion, and vLLM counts" >&2
   echo "       prompt + completion against --max-model-len. Every request would 400." >&2
   exit 1
 fi
@@ -169,11 +169,11 @@ fi
 # allocation as the scheduler granted it; hl-smi is not consulted, because on a
 # shared node it can report cards this job was not given.
 if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "$SLURM_GPUS_ON_NODE" =~ ^[0-9]+$ ]] \
-   && (( PS_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
-  echo "ERROR: PS_TENSOR_PARALLEL_SIZE ($PS_TENSOR_PARALLEL_SIZE) does not match the" >&2
+   && (( PM_TENSOR_PARALLEL_SIZE != SLURM_GPUS_ON_NODE )); then
+  echo "ERROR: PM_TENSOR_PARALLEL_SIZE ($PM_TENSOR_PARALLEL_SIZE) does not match the" >&2
   echo "       $SLURM_GPUS_ON_NODE card(s) this job was allocated." >&2
   echo "       Change the -G line in this script, or set both at submit time:" >&2
-  echo "         sbatch -G $PS_TENSOR_PARALLEL_SIZE scrape_gaudi.sbatch" >&2
+  echo "         sbatch -G $PM_TENSOR_PARALLEL_SIZE scrape_gaudi.sbatch" >&2
   exit 1
 fi
 
@@ -199,7 +199,7 @@ BASE_URL="http://127.0.0.1:${PORT}/v1"
 # and the traceback that follows blames torchvision rather than the cause.
 echo "=== Checking the vLLM environment ==="
 (
-  activate_env "$PS_VLLM_ENV"
+  activate_env "$PM_VLLM_ENV"
   python -u - <<'PY'
 import importlib.metadata as metadata
 import importlib.util
@@ -247,16 +247,16 @@ PY
 # The subshell is load-bearing: activating our env later in the parent shell
 # would otherwise clobber the interpreter the server is running under.
 (
-  activate_env "$PS_VLLM_ENV"
+  activate_env "$PM_VLLM_ENV"
   exec python -m vllm.entrypoints.openai.api_server \
-    --model "$PS_MODEL" \
+    --model "$PM_MODEL" \
     --host 127.0.0.1 \
     --port "$PORT" \
-    --tensor-parallel-size "$PS_TENSOR_PARALLEL_SIZE" \
-    --max-model-len "$PS_MAX_MODEL_LEN" \
-    --block-size "$PS_BLOCK_SIZE" \
-    --gpu-memory-utilization "$PS_GPU_MEMORY_UTILIZATION" \
-    --max-num-seqs "$PS_MAX_NUM_SEQS"
+    --tensor-parallel-size "$PM_TENSOR_PARALLEL_SIZE" \
+    --max-model-len "$PM_MAX_MODEL_LEN" \
+    --block-size "$PM_BLOCK_SIZE" \
+    --gpu-memory-utilization "$PM_GPU_MEMORY_UTILIZATION" \
+    --max-num-seqs "$PM_MAX_NUM_SEQS"
 ) &
 VLLM_PID=$!
 
@@ -268,57 +268,57 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Wait for readiness -----------------------------------------------------
-echo "=== Waiting for vLLM on port $PORT (timeout ${PS_STARTUP_TIMEOUT}s) ==="
-deadline=$(( SECONDS + PS_STARTUP_TIMEOUT ))
+echo "=== Waiting for vLLM on port $PORT (timeout ${PM_STARTUP_TIMEOUT}s) ==="
+deadline=$(( SECONDS + PM_STARTUP_TIMEOUT ))
 until curl -sf "${BASE_URL}/models" >/dev/null 2>&1; do
   if ! kill -0 "$VLLM_PID" 2>/dev/null; then
     echo "ERROR: vLLM exited during startup. Check the log above for the model load failure." >&2
     exit 1
   fi
   if (( SECONDS > deadline )); then
-    echo "ERROR: vLLM did not become ready within ${PS_STARTUP_TIMEOUT}s." >&2
-    echo "First load compiles HPU graphs and can be slow; raise PS_STARTUP_TIMEOUT or set VLLM_SKIP_WARMUP=true." >&2
+    echo "ERROR: vLLM did not become ready within ${PM_STARTUP_TIMEOUT}s." >&2
+    echo "First load compiles HPU graphs and can be slow; raise PM_STARTUP_TIMEOUT or set VLLM_SKIP_WARMUP=true." >&2
     exit 1
   fi
   sleep 10
 done
 echo "=== vLLM ready ==="
 
-# --- Run PaperScraper -------------------------------------------------------
-activate_env "$PS_ENV"
+# --- Run PaperMiner -------------------------------------------------------
+activate_env "$PM_ENV"
 
 # Configure the text profile through environment overrides rather than
-# ps_model_config. ps_model_config persists to ~/.config/.pscraperrc.json,
+# pm_model_config. pm_model_config persists to ~/.config/.paperminerrc.json,
 # which concurrent jobs would race over; these variables are job-local.
-export PAPERSCRAPER_MODEL_PROVIDER=local
-export PAPERSCRAPER_MODEL_NAME="$PS_MODEL"
-export PAPERSCRAPER_MODEL_BASE_URL="$BASE_URL"
-export PAPERSCRAPER_MODEL_CAPABILITIES=text
-export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT="$PS_INPUT_TOKEN_LIMIT"
+export PAPERMINER_MODEL_PROVIDER=local
+export PAPERMINER_MODEL_NAME="$PM_MODEL"
+export PAPERMINER_MODEL_BASE_URL="$BASE_URL"
+export PAPERMINER_MODEL_CAPABILITIES=text
+export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT="$PM_INPUT_TOKEN_LIMIT"
 
-ps_model_status
+pm_model_status
 
-scrape_args=(--mode "$PS_MODE" --output "$PS_IN_CSV")
-[[ -n "$PS_COUNT" ]] && scrape_args+=(--count "$PS_COUNT")
+scrape_args=(--mode "$PM_MODE" --output "$PM_IN_CSV")
+[[ -n "$PM_COUNT" ]] && scrape_args+=(--count "$PM_COUNT")
 
 echo "=== Scraping ==="
-ps_scrape "$PS_DB" "$PS_RECIPE" "${scrape_args[@]}"
+pm_scrape "$PM_DB" "$PM_RECIPE" "${scrape_args[@]}"
 
-if [[ "$PS_RUN_STORE" == "1" ]]; then
-  # ps_store runs LLM-driven unit conversion, so it needs the server too.
-  # --assume-yes is required: without it ps_store waits on an interactive
+if [[ "$PM_RUN_STORE" == "1" ]]; then
+  # pm_store runs LLM-driven unit conversion, so it needs the server too.
+  # --assume-yes is required: without it pm_store waits on an interactive
   # confirmation and the job would sit idle until it hits the walltime.
   echo "=== Storing ==="
-  ps_store "$PS_DB" "$PS_IN_CSV" "$PS_OUT_CSV" "$PS_RECIPE" --assume-yes
+  pm_store "$PM_DB" "$PM_IN_CSV" "$PM_OUT_CSV" "$PM_RECIPE" --assume-yes
 fi
 
-ps_status "$PS_DB"
+pm_status "$PM_DB"
 
-# ps_scrape catches per-paper exceptions, records them on the row, and carries
+# pm_scrape catches per-paper exceptions, records them on the row, and carries
 # on, so a completely broken run still exits 0 and reports "0 material rows".
 # Surface the recorded errors explicitly or they go unnoticed.
 echo "=== Recorded per-paper errors ==="
-python - "$PS_DB" <<'PY'
+python - "$PM_DB" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 rows = con.execute(
@@ -337,7 +337,7 @@ PY
 # allocation, so the normal end state is "partly done". Say so explicitly, and
 # print the command that continues it.
 echo "=== Remaining work ==="
-python - "$PS_DB" "$PS_MODE" <<'PY'
+python - "$PM_DB" "$PM_MODE" <<'PY'
 import sqlite3
 import sys
 
@@ -364,7 +364,7 @@ if remaining:
     print()
     print(f'{remaining} papers still to scrape. The scrape is resumable and skips')
     print('what already succeeded, so continue it by submitting the same job again:')
-    print(f'  sbatch --export=ALL,PS_DB={db_path} scrape_gaudi.sbatch')
+    print(f'  sbatch --export=ALL,PM_DB={db_path} scrape_gaudi.sbatch')
 else:
     print()
     print('Corpus fully scraped.')

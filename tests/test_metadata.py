@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.metadata.
+"""Unit tests for paperminer.metadata.
 
 This module tests DOI cleanup and extraction from text, embedded PDF metadata,
 PDF page text fallback, Crossref date formatting, and Crossref metadata
@@ -12,7 +12,9 @@ from typing import Any
 
 import pytest
 
-import paperscraper.metadata as metadata
+import paperminer.corpus as corpus
+import paperminer.crossref as crossref
+import paperminer.metadata as metadata
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'
@@ -189,18 +191,60 @@ def test_get_crossref_metadata_normalizes_text_fields(monkeypatch: pytest.Monkey
                     'container-title': ['Advanced Energy Materials'],
                     'type': 'journal-article',
                     'publisher': 'Publisher\u2019s Name',
+                    'volume': '14',
+                    'issue': '7',
+                    'page': '54-58',
+                    'language': 'en',
+                    'issn-type': [
+                        {'value': '1614-6840', 'type': 'electronic'},
+                        {'value': '1614-6832', 'type': 'print'},
+                    ],
                 }
             }
 
-    monkeypatch.setattr(metadata.requests, 'get', lambda *_, **__: FakeResponse())
+    monkeypatch.setattr(crossref, 'work_by_doi',
+                        lambda *_, **__: FakeResponse().json()['message'])
 
-    crossref_metadata = metadata.get_crossref_metadata('10.1234/example')
+    crossref_metadata = metadata.get_crossref_metadata('10.1234/example', email='me@example.com')
 
     assert crossref_metadata['doi'] == '10.1234/example'
     assert crossref_metadata['publication_date'] == '2024-02-03'
     assert crossref_metadata['title'] == 'Disorder-Driven Na+ Transport'
     assert crossref_metadata['journal'] == 'Advanced Energy Materials'
-    assert crossref_metadata['crossref_publisher'] == "Publisher's Name"
+    assert crossref_metadata['publisher'] == "Publisher's Name"
+    assert crossref_metadata['work_type'] == 'journal-article'
+    assert crossref_metadata['volume'] == '14'
+    assert crossref_metadata['issue'] == '7'
+    assert crossref_metadata['pages'] == '54-58'
+    assert crossref_metadata['language'] == 'en'
+    assert crossref_metadata['issn'] == '1614-6832;1614-6840'
+    assert crossref_metadata['crossref_message']['DOI'] == '10.1234/example'
+
+
+def test_get_crossref_metadata_returns_only_known_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return corpus columns and the raw payload, and nothing else."""
+
+    class FakeResponse:
+        """Provide a minimal Crossref metadata response."""
+
+        def raise_for_status(self) -> None:
+            """Accept the fake response status."""
+            return None
+
+        def json(self) -> dict[str, Any]:
+            """Return a minimal Crossref message."""
+            return {'message': {'DOI': '10.1234/example'}}
+
+    monkeypatch.setattr(crossref, 'work_by_doi',
+                        lambda *_, **__: FakeResponse().json()['message'])
+
+    keys = set(metadata.get_crossref_metadata('10.1234/example', email='me@example.com'))
+
+    known = set(corpus.PAPER_FIELDS) | set(corpus.ENRICHMENT_COLUMNS) | {'crossref_message'}
+    assert keys <= known
+    assert 'crossref_type' not in keys
+    assert 'crossref_publisher' not in keys
+
 
 
 def test_metadata_from_pdf_handles_missing_doi(monkeypatch: pytest.MonkeyPatch) -> None:

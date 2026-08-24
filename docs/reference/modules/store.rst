@@ -1,6 +1,6 @@
-paperscraper.store
+paperminer.store
 ========================================
 
-.. automodule:: paperscraper.store
+.. automodule:: paperminer.store
    :members:
    :show-inheritance:

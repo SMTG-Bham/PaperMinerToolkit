@@ -10,15 +10,21 @@ from typing import Any, Self
 import pandas as pd
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.scrape as scrape
-from paperscraper.compression import CompressionConfig
+import paperminer.corpus as corpus
+import paperminer.scrape as scrape
+from paperminer.compression import CompressionConfig
 
 
 def sample_recipe() -> dict[str, Any]:
     """Return a minimal recipe for scrape unit tests."""
     return {
-        'material type': 'solid electrolyte',
+        'record definition': {
+            'subject': 'solid electrolytes',
+            'singular': 'material',
+            'plural': 'materials',
+            'unit': 'a distinct solid-electrolyte composition or sample',
+            'identity fields': ['Name'],
+        },
         'search fields': {
             'Name': {'prompt': 'Material name.', 'example': 'LLZO'},
             'Conductivity': {'prompt': 'Conductivity.', 'example': '1e-3 S cm^-1'},

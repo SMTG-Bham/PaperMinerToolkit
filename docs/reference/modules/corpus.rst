@@ -1,6 +1,6 @@
-paperscraper.corpus
+paperminer.corpus
 ========================================
 
-.. automodule:: paperscraper.corpus
+.. automodule:: paperminer.corpus
    :members:
    :show-inheritance:

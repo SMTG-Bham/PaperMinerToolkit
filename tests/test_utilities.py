@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.utilities.
+"""Unit tests for paperminer.utilities.
 
 This module tests the small SQLite corpus maintenance helpers used by the
 command-line interface to reset pipeline state and print progress.
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.utilities as utilities
-from paperscraper.corpus import PIPELINE_COLUMNS
+import paperminer.corpus as corpus
+import paperminer.utilities as utilities
+from paperminer.corpus import PIPELINE_COLUMNS
 
 
 def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path: Path) -> None:
@@ -76,10 +76,30 @@ def test_status_prints_pipeline_progress_summary(
     utilities.status(str(db_path))
 
     output = capsys.readouterr().out
-    assert 'PaperScraper Progress Summary' in output
+    assert 'PaperMiner Progress Summary' in output
     assert 'Total papers: 2' in output
     assert 'Metadata retrieved: 2' in output
     assert 'Text downloaded: 1' in output
     assert 'Failed PDF downloads: 1' in output
     assert 'Text material rows extracted: 5' in output
     assert 'Image material rows extracted: 5' in output
+
+
+def test_status_reports_enriched_papers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Count enriched papers in the pipeline progress summary."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper-1'})
+        corpus.write_enrichment(conn, [{
+            **{field: '' for field in corpus.enrichment_update_fields()},
+            'paper_id': 'paper-1',
+            'enrichment_status': 'succeeded',
+            'updated_at': corpus.utc_now(),
+        }])
+
+    utilities.status(str(db_path))
+
+    assert 'Metadata enriched: 1' in capsys.readouterr().out

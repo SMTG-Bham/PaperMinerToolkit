@@ -1,6 +1,6 @@
 # Installation
 
-PaperScraper requires Python 3.11 or newer. Create an isolated environment before installing it.
+PaperMiner requires Python 3.11 or newer. Create an isolated environment before installing it.
 
 ## Development installation
 
@@ -35,22 +35,22 @@ python -m pip install --no-deps -e .
 make -C docs html
 ```
 
-Sphinx mocks runtime-only scientific and model libraries while reading docstrings. Use the normal editable installation when running PaperScraper itself.
+Sphinx mocks runtime-only scientific and model libraries while reading docstrings. Use the normal editable installation when running PaperMiner itself.
 
 ## Verify the installation
 
 Every command should be available after installation:
 
 ```bash
-ps_status --help
-ps_search --help
-ps_scrape --help
-ps_topics_train --help
+pm_status --help
+pm_search --help
+pm_scrape --help
+pm_topics_train --help
 ```
 
 ## HPC environments
 
-Install PaperScraper in a login or build job rather than repeatedly installing it in compute jobs. Local vLLM deployments may need accelerator-specific PyTorch and vLLM builds, so install PaperScraper without dependency resolution when those packages are already managed by the cluster environment:
+Install PaperMiner in a login or build job rather than repeatedly installing it in compute jobs. Local vLLM deployments may need accelerator-specific PyTorch and vLLM builds, so install PaperMiner without dependency resolution when those packages are already managed by the cluster environment:
 
 ```bash
 python -m pip install -e . --no-deps

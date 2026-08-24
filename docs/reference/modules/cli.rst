@@ -1,6 +1,6 @@
-paperscraper.cli
+paperminer.cli
 ========================================
 
-.. automodule:: paperscraper.cli
+.. automodule:: paperminer.cli
    :members:
    :show-inheritance:

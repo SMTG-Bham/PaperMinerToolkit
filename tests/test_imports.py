@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.imports.
+"""Unit tests for paperminer.imports.
 
 This module tests importing local PDF files into the paper corpus, including
 folder validation, empty-folder handling, metadata mapping, and merging imported
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.imports as imports
+import paperminer.corpus as corpus
+import paperminer.imports as imports
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'
@@ -130,3 +130,80 @@ def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(
     assert asset['content'] == pdf_path.read_bytes()
     assert '0 added' in output
     assert '1 matched existing rows' in output
+
+
+def test_import_pdfs_writes_publisher_and_work_type_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Store the Crossref fields the importer used to fetch and discard."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    shutil.copy(FIXTURE_PDF, papers_dir / FIXTURE_PDF.name)
+    db_path = tmp_path / 'papers.db'
+    message = {
+        'DOI': FIXTURE_DOI,
+        'publisher': 'Wiley',
+        'type': 'journal-article',
+        'volume': '14',
+        'issue': '7',
+        'page': '2470977',
+        'language': 'en',
+        'issn-type': [{'value': '1614-6832', 'type': 'print'}],
+        'author': [{'given': 'Jane A.', 'family': 'Smith',
+                    'ORCID': 'https://orcid.org/0000-0002-1825-0097'}],
+        'reference': [{'key': 'ref1', 'DOI': '10.1234/cited'}],
+    }
+    monkeypatch.setattr(
+        imports,
+        'metadata_from_pdf',
+        lambda path, use_crossref: ({
+            'doi': FIXTURE_DOI,
+            'title': 'Disorder-Driven Fast Na Transport',
+            'publisher': 'Wiley',
+            'work_type': 'journal-article',
+            'crossref_message': message,
+        }, 'enriched', ''),
+    )
+
+    imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
+
+    with corpus.connect(db_path) as conn:
+        row = corpus.paper_rows(conn)[0]
+        authors = corpus.paper_authors(conn, row['paper_id'])
+        references = corpus.paper_references(conn, row['paper_id'])
+
+    assert row['publisher'] == 'Wiley'
+    assert row['work_type'] == 'journal-article'
+    assert row['volume'] == '14'
+    assert row['issue'] == '7'
+    assert row['pages'] == '2470977'
+    assert row['issn'] == '1614-6832'
+    assert row['language'] == 'en'
+    assert row['enrichment_sources'] == 'crossref'
+    assert authors[0]['orcid'] == '0000-0002-1825-0097'
+    assert references[0]['referenced_doi'] == '10.1234/cited'
+
+
+def test_import_pdfs_keeps_the_raw_message_out_of_the_paper_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never leak the raw Crossref payload into a corpus paper column."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    shutil.copy(FIXTURE_PDF, papers_dir / FIXTURE_PDF.name)
+    db_path = tmp_path / 'papers.db'
+    monkeypatch.setattr(
+        imports,
+        'metadata_from_pdf',
+        lambda path, use_crossref: ({'doi': FIXTURE_DOI,
+                                     'crossref_message': {'DOI': FIXTURE_DOI}}, 'enriched', ''),
+    )
+
+    imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
+
+    with corpus.connect(db_path) as conn:
+        row = corpus.paper_rows(conn)[0]
+
+    assert 'crossref_message' not in row
