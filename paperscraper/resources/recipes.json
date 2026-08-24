@@ -1,7 +1,17 @@
 {
     "sse": {
-        "material type": "lithium-conducting solid electrolyte",
-        "additional prompts": "Do not scrape ion conductors that transport anything other than lithium. Always fill the 'Name' field using the reported name, formula, sample label, or composition; if the paper only reports a formula, use that formula as the name. If the paper is talking about a result from a previous paper, don't report that result.",
+        "record definition": {
+            "subject": "lithium-conducting solid electrolytes",
+            "singular": "material",
+            "plural": "materials",
+            "unit": "a distinct material, doped variant, composition, sample, or experimental entry",
+            "identity fields": [
+                "Name",
+                "Chemical formula",
+                "Dopants"
+            ]
+        },
+        "additional prompts": "Do not scrape ion conductors that transport anything other than lithium. Always fill the 'Name' field using the reported name, formula, sample label, or composition; if the paper only reports a formula, use that formula as the name. If the paper is talking about a result from a previous paper, don't report that result. Preserve composition alongside relevant measurement conditions. Treat records as the same material only when their composition and experimental context are compatible. Match records using the reported name, formula, composition, stoichiometry, dopant, substitution level, composite or additive identity, and sample label when available. Keep records separate when compositions or dopant levels differ, when one is a parent phase and another is doped or substituted, or when one is a neat material and another is a composite or additive mixture. Do not merge records merely because they share a property value, measurement type, figure or table, or broad material class.",
         "search fields": {
             "Name": {
                 "prompt": "Name of electrolyte",
@@ -231,7 +241,17 @@
         }
     },
     "polymer": {
-        "material type": "polymer",
+        "record definition": {
+            "subject": "polymers and their reported properties",
+            "singular": "polymer sample or degradation experiment",
+            "plural": "polymer samples or degradation experiments",
+            "unit": "a distinct polymer sample or distinct degradation experiment",
+            "identity fields": [
+                "Name",
+                "Copolymer type and composition",
+                "Additives fillers and blends"
+            ]
+        },
         "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nBiodegradation rules:\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\n- Keep reported test conditions with the test they belong to. If the paper reports several degradation tests for the same material in different media, return one record per test.\n- Report percentage biodegradation, mass loss, and molecular weight loss in their own fields. Do not copy the same number into more than one of them.",
         "search fields": {
             "Name": {
@@ -633,7 +653,17 @@
         }
     },
     "polymer_db": {
-        "material type": "polymer",
+        "record definition": {
+            "subject": "polymers and their reported properties",
+            "singular": "polymer sample or degradation experiment",
+            "plural": "polymer samples or degradation experiments",
+            "unit": "a distinct polymer sample or distinct degradation or biodegradation experiment",
+            "identity fields": [
+                "Name",
+                "Monomer ratios",
+                "Additives fillers and blends"
+            ]
+        },
         "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the same polymer is put through several separate degradation or biodegradation tests, return one record per test.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', 'Monomer CAS numbers', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Do not derive a CAS Registry Number from a chemical name. Report a CAS number only when the paper prints it.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nControlled vocabulary rules:\n- Several fields list the values this database expects, such as 'Backbone linkage', 'Architecture', 'Microstructure', 'Ionic character', and 'Inoculum source'. Use the listed value when the paper clearly describes it, even if the paper uses a synonym.\n- If the paper describes something outside the listed values, report the paper wording instead of forcing it into the list. Do not choose a listed value just because it is listed.\nMeasurement rules:\n- Keep each measured value with the method and conditions it belongs to. For molar mass, record the eluent, column, and detector in the GPC method field rather than splitting the mass across several records.\n- For degradation experiments reported as a curve, report the individual time points and their values in the matching field, for example as a molar mass or percentage at each time.\n- Report percentage biodegradation, mass loss, and molar mass loss in their own fields. Do not copy the same number into more than one of them.\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\nReported-only rules. These apply to the 'Structural confidence', 'Klimisch score', and 'GLP compliance' fields:\n- These are curation values. Report them only when the paper states them outright.\n- Never assign, estimate, or infer them yourself. Your own confidence in an answer is not evidence, and a study being well conducted is not a stated Klimisch score or a stated GLP declaration.",
         "search fields": {
             "Name": {
@@ -1547,7 +1577,15 @@
         }
     },
     "band_gap_validation": {
-        "material type": "band-gap material",
+        "record definition": {
+            "subject": "materials with reported electronic band gaps",
+            "singular": "material",
+            "plural": "materials",
+            "unit": "a distinct material, sample, composition, phase, or structure",
+            "identity fields": [
+                "Material system"
+            ]
+        },
         "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Put all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, figures, captions, and supporting information.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
         "search fields": {
             "Material system": {

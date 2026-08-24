@@ -1,8 +1,8 @@
 """Load and validate extraction recipes.
 
-Recipes describe the material type, target fields, examples, aliases, and unit
-expectations used by scraping and storage. This module validates recipe shape
-and maps extracted columns back to canonical output columns.
+Recipes define the records to extract, target fields, examples, aliases, and
+unit expectations used by scraping and storage. This module validates recipe
+shape and maps extracted columns back to canonical output columns.
 """
 
 from __future__ import annotations
@@ -41,11 +41,36 @@ def _validate_recipe(recipe: object, source: str) -> _Recipe:
     """
     if not isinstance(recipe, dict):
         raise ValueError(f'Recipe in {source} must be a JSON object.')
-    missing = [key for key in ['material type', 'search fields'] if key not in recipe]
+    missing = [key for key in ['record definition', 'search fields'] if key not in recipe]
     if missing:
         raise ValueError(f'Recipe in {source} is missing required key(s): {", ".join(missing)}.')
     if not isinstance(recipe['search fields'], dict) or not recipe['search fields']:
         raise ValueError(f'Recipe in {source} must define one or more search fields.')
+
+    definition = recipe['record definition']
+    if not isinstance(definition, dict):
+        raise ValueError(f'Recipe in {source} must define "record definition" as a JSON object.')
+    definition_keys = ['subject', 'singular', 'plural', 'unit', 'identity fields']
+    missing_definition = [key for key in definition_keys if key not in definition]
+    if missing_definition:
+        raise ValueError(
+            f'Recipe in {source} record definition is missing required key(s): '
+            f'{", ".join(missing_definition)}.'
+        )
+    for key in ['subject', 'singular', 'plural', 'unit']:
+        if not isinstance(definition[key], str) or not definition[key].strip():
+            raise ValueError(f'Recipe in {source} record definition "{key}" must be a non-empty string.')
+    identity_fields = definition['identity fields']
+    if not isinstance(identity_fields, list) or any(
+        not isinstance(field, str) or not field.strip() for field in identity_fields
+    ):
+        raise ValueError(f'Recipe in {source} record definition "identity fields" must be a list of strings.')
+    unknown_identity_fields = [field for field in identity_fields if field not in recipe['search fields']]
+    if unknown_identity_fields:
+        raise ValueError(
+            f'Recipe in {source} record definition references unknown identity field(s): '
+            f'{", ".join(unknown_identity_fields)}.'
+        )
     recipe.setdefault('additional prompts', '')
     return recipe
 
@@ -77,7 +102,7 @@ def _load_recipe_file(path: Path) -> _Recipe:
     except json.JSONDecodeError as e:
         raise ValueError(f'Recipe file {path} is not valid JSON: {e}') from e
 
-    if isinstance(data, dict) and 'material type' in data and 'search fields' in data:
+    if isinstance(data, dict) and 'record definition' in data and 'search fields' in data:
         return _validate_recipe(data, str(path))
     if isinstance(data, dict) and len(data) == 1:
         recipe_name, recipe = next(iter(data.items()))
