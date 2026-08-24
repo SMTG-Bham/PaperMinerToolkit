@@ -9,10 +9,10 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-import paperscraper.biorxiv as biorxiv
-import paperscraper.chemrxiv as chemrxiv
-from paperscraper import provider
-import paperscraper.medrxiv as medrxiv
+import paperminer.biorxiv as biorxiv
+import paperminer.chemrxiv as chemrxiv
+from paperminer import provider
+import paperminer.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -110,7 +110,7 @@ def test_normalize_chemrxiv_doi_preserves_the_version_the_registry_issued() -> N
     ``10.26434/chemrxiv.8011268.v1`` resolves while the bare form only
     redirects. Normalizing the version away would strand most of the archive,
     so this test exists to stop that being reintroduced for consistency with
-    :mod:`paperscraper.biorxiv`.
+    :mod:`paperminer.biorxiv`.
     """
     for doi in ['10.26434/chemrxiv.15007737/v1', '10.26434/chemrxiv.8011268.v1',
                 '10.26434/chemrxiv-2025-0dxhw/v4']:
@@ -376,7 +376,7 @@ def test_request_reports_the_bot_challenge_and_does_not_retry_it() -> None:
 
     A refusal is not retried, because repeating a refused request only spends
     more of them, and it is named explicitly so it cannot be mistaken for a bad
-    query. PaperScraper does not attempt to defeat the challenge.
+    query. PaperMiner does not attempt to defeat the challenge.
     """
     session = FakeSession([FakeResponse('<!DOCTYPE html>', status_code=403)])
 
@@ -542,7 +542,7 @@ def test_parse_query_rejects_a_bound_that_is_not_an_iso_date() -> None:
 def test_the_module_publishes_no_archive_walk_or_full_text_surface() -> None:
     """Confirm chemRxiv answers by search rather than by an archive walk.
 
-    The absent names are the ones :func:`paperscraper.search._rxiv_search`
+    The absent names are the ones :func:`paperminer.search._rxiv_search`
     requires. chemRxiv has a search endpoint and no machine-readable full text,
     so implementing them would mean reading the archive to answer a query the
     server already answers, and promising a text source that does not exist.
@@ -638,7 +638,7 @@ def test_the_live_registry_still_issues_the_doi_shapes_the_module_reads() -> Non
     version suffix is registered rather than decorative.
     """
     url = ('https://api.crossref.org/works?filter=prefix:10.26434&rows=200&select=DOI'
-           '&mailto=paperscraper@example.com')
+           '&mailto=paperminer@example.com')
     with urlopen(Request(url, headers={'User-Agent': provider.USER_AGENT}), timeout=60) as handle:
         dois = [item['DOI'] for item in json.load(handle)['message']['items']]
     assert len(dois) > 100

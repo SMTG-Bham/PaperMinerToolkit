@@ -1,6 +1,6 @@
-paperscraper.unpaywall
+paperminer.unpaywall
 ========================================
 
-.. automodule:: paperscraper.unpaywall
+.. automodule:: paperminer.unpaywall
    :members:
    :show-inheritance:

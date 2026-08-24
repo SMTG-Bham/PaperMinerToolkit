@@ -1,10 +1,10 @@
-"""Session-wide fixtures for the PaperScraper test suite."""
+"""Session-wide fixtures for the PaperMiner test suite."""
 
 from __future__ import annotations
 
 import pytest
 
-from paperscraper import chemrxiv, provider
+from paperminer import chemrxiv, provider
 
 
 @pytest.fixture(autouse=True)

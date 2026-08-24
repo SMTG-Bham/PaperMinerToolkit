@@ -1,6 +1,6 @@
-paperscraper.search
+paperminer.search
 ========================================
 
-.. automodule:: paperscraper.search
+.. automodule:: paperminer.search
    :members:
    :show-inheritance:

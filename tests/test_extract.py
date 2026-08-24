@@ -8,8 +8,8 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperscraper.compression import CompressionConfig
-import paperscraper.extract as extract
+from paperminer.compression import CompressionConfig
+import paperminer.extract as extract
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -209,7 +209,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_compression'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
 
-    import paperscraper.documents as documents
+    import paperminer.documents as documents
 
     monkeypatch.setattr(documents, 'read_pdf_text', lambda filepath: f'text from {filepath}')
     assert extract.scrape_pdf('paper.pdf', recipe) == [{'Name': 'LLZO'}]

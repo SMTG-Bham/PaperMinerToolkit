@@ -1,6 +1,6 @@
-paperscraper.medrxiv
+paperminer.medrxiv
 ========================================
 
-.. automodule:: paperscraper.medrxiv
+.. automodule:: paperminer.medrxiv
    :members:
    :show-inheritance:

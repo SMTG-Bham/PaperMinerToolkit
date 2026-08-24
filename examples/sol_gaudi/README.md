@@ -1,26 +1,26 @@
 # Running on ASU Sol's Intel Gaudi nodes
 
-This guide gets PaperScraper running against a local vLLM server on Sol's Gaudi 2
+This guide gets PaperMiner running against a local vLLM server on Sol's Gaudi 2
 accelerators. It replaces the general
 [`qwen_vllm_workflow.ipynb`](../../docs/examples/qwen_vllm_workflow.ipynb),
 which assumes a CUDA workstation.
 
 The worked example is biodegradable polymers: the scripts default to the
 `polymer` recipe and an OECD 301 search query. Everything here applies to any
-recipe — override `PS_RECIPE` and the query if you are after something else.
+recipe — override `PM_RECIPE` and the query if you are after something else.
 
-The important thing to understand first: **PaperScraper does no accelerator work
+The important thing to understand first: **PaperMiner does no accelerator work
 of its own.** It is an HTTP client that speaks the OpenAI chat API. The Gaudi
 cards are used only by a separate vLLM server process. So this is not a code
 port — it is two environments and an sbatch script.
 
 Those two environments cannot be merged. The vLLM Gaudi stack is built on Python
-3.10; PaperScraper requires 3.11 or newer. They talk over `localhost` instead.
+3.10; PaperMiner requires 3.11 or newer. They talk over `localhost` instead.
 
 | Environment | Owner | Python | Contents |
 | --- | --- | --- | --- |
 | `gaudi-pytorch-vllm` | ASU Research Computing (shared) | 3.10 | vLLM + Habana PyTorch |
-| `paperscraper` | you | 3.14 | PaperScraper and its dependencies |
+| `paperminer` | you | 3.14 | PaperMiner and its dependencies |
 
 > **Never `pip install` into `gaudi-pytorch-vllm`.** It is shared by everyone on
 > Sol, and pip would happily replace Habana's patched PyTorch with a stock wheel,
@@ -82,12 +82,12 @@ interactive -c 4 -t 0-2
 
 That is shorthand for `salloc -c 1 -p htc -q public -t 0-4` with your overrides.
 
-## 2. Create the PaperScraper environment
+## 2. Create the PaperMiner environment
 
 ```bash
 module load mamba/latest
 mamba env create -f build_tools/environment.yml
-source activate paperscraper
+source activate paperminer
 ```
 
 [`build_tools/environment.yml`](../../build_tools/environment.yml) supplies only the interpreter;
@@ -95,15 +95,15 @@ every dependency comes from `pyproject.toml`. Use `source activate`, never
 `mamba activate` — the latter writes cruft into your shell configuration.
 
 `install.sbatch` does this for you, and **rebuilds from scratch by default**: if
-`$PS_ENV` already exists it is removed and recreated, so every run gives the same
-environment regardless of what the last one left behind. Pass `PS_FORCE=0` to
+`$PM_ENV` already exists it is removed and recreated, so every run gives the same
+environment regardless of what the last one left behind. Pass `PM_FORCE=0` to
 reuse an existing environment instead:
 
 ```bash
-sbatch --export=ALL,PS_FORCE=0 install.sbatch
+sbatch --export=ALL,PM_FORCE=0 install.sbatch
 ```
 
-It only ever touches `$PS_ENV` — no other environment on the account — and
+It only ever touches `$PM_ENV` — no other environment on the account — and
 refuses outright if that name resolves to a prefix you do not own, which is what
 keeps a typo away from ASU's shared environments.
 
@@ -115,14 +115,14 @@ module or an apptainer image, and — verbatim — "Do not use `uv`, `conda`, or
 PyTorch-mismatch entry under Troubleshooting is exactly what it exists to
 prevent. What follows stays inside it: the environment comes from the `mamba`
 module, torch and vLLM are only ever the shared `gaudi-pytorch-vllm` copies, and
-`pip` installs nothing but PaperScraper and its pure-Python dependencies into an
+`pip` installs nothing but PaperMiner and its pure-Python dependencies into an
 environment of our own — never the shared one, never `~/.local`. If your group
 reads the rule more strictly than that, build a `.sif` and run the scraper from
-it instead; nothing in PaperScraper needs the host environment.
+it instead; nothing in PaperMiner needs the host environment.
 
 `pyproject.toml` depends on `headroom-ai[image,ml]`, whose `ml` extra requires
 `torch`. Left alone, pip resolves that to the CUDA build and pulls several GB of
-`nvidia-*` wheels and `triton` that are useless on a Gaudi node. PaperScraper only
+`nvidia-*` wheels and `triton` that are useless on a Gaudi node. PaperMiner only
 touches torch indirectly, through a lazy `transformers` import used for token
 counting, so the CPU build satisfies it completely.
 
@@ -146,16 +146,16 @@ carry a `+cpu` suffix.
 
 `install.sbatch` checks all of this and fails the job if any of it is wrong: a
 torch build without `+cpu`, any surviving `nvidia-*` or `triton` package, a
-missing `ps_*` console script, or a failing test. It neither reads nor writes
+missing `pm_*` console script, or a failing test. It neither reads nor writes
 `~/.local` (`PYTHONNOUSERSITE=1`, `PIP_USER=0`), since a wheel landing there
 shadows both this environment and the shared Gaudi one — see Troubleshooting. It
-also pre-caches the tokenizer for `PS_MODEL`, so the Gaudi job does not need the
-network for the chunk-sizing lookup. Pass `PS_PREFETCH_WEIGHTS=1` to download
+also pre-caches the tokenizer for `PM_MODEL`, so the Gaudi job does not need the
+network for the chunk-sizing lookup. Pass `PM_PREFETCH_WEIGHTS=1` to download
 the model weights too, which keeps tens of GB of transfer out of your four-hour
 accelerator allocation:
 
 ```bash
-sbatch --export=ALL,PS_PREFETCH_WEIGHTS=1 install.sbatch
+sbatch --export=ALL,PM_PREFETCH_WEIGHTS=1 install.sbatch
 ```
 
 ## 4. Point caches at scratch
@@ -168,7 +168,7 @@ export HF_HOME="/scratch/$USER/hf"
 export PIP_CACHE_DIR="/scratch/$USER/pip"
 ```
 
-This matters on both sides. vLLM downloads the weights, and PaperScraper loads
+This matters on both sides. vLLM downloads the weights, and PaperMiner loads
 the *tokenizer* for the same model name to size its text chunks — sharing one
 `HF_HOME` means the second lookup is a cache hit rather than a re-download.
 
@@ -184,8 +184,8 @@ export UNPAYWALL_EMAIL="you@asu.edu"
 export OPENALEX_API_KEY="..."
 ```
 
-The interactive `ps_elsevier_key`, `ps_core_key`, `ps_unpaywall_email`, and
-`ps_openalex_key` commands store these in `~/.config/.pscraperrc.json` if you
+The interactive `pm_elsevier_key`, `pm_core_key`, `pm_unpaywall_email`, and
+`pm_openalex_key` commands store these in `~/.config/.paperminerrc.json` if you
 prefer.
 
 OpenAlex is the one source that still answers without a key, but it meters
@@ -220,47 +220,47 @@ sources will return**. Two things to know about it:
 - It is **per source, not in total.** `--source all` asks Scopus, CORE and
   OpenAlex for that many each, then merges on DOI, so the corpus lands between
   the largest single source and the sum of the three.
-- There is no "unlimited" flag in `ps_search`. Each backend loops until it has
+- There is no "unlimited" flag in `pm_search`. Each backend loops until it has
   the requested number or the provider runs out, so the default is simply a
   number larger than any real result set. Scopus stops at its own total, CORE
   and OpenAlex stop when a short page comes back.
 
 Bound it with a number while you are testing a new query — a broad term can
-return tens of thousands of papers, and `ps_download` then fetches all of them.
+return tens of thousands of papers, and `pm_download` then fetches all of them.
 
 For a corpus large enough that you do not want to sit in an interactive session
 waiting on rate limits, submit it instead:
 
 ```bash
 sbatch fetch_corpus.sbatch
-sbatch --export=ALL,PS_COUNT=500 fetch_corpus.sbatch
+sbatch --export=ALL,PM_COUNT=500 fetch_corpus.sbatch
 ```
 
 That runs on `htc` with no accelerator requested, since neither stage calls the
 model. `htc` caps wall time at four hours but runs uninterrupted. Submit it from
 this directory so `papers.db` lands beside the scripts rather than in the
-scheduler's spool directory — a relative `PS_DB` is resolved against the
+scheduler's spool directory — a relative `PM_DB` is resolved against the
 directory you submitted from, and `fetch_corpus.sh` anchors one to its own
 directory, so both routes agree on where the corpus lives.
 
-**The four-hour cap and an unbounded `PS_COUNT` interact badly on a large
+**The four-hour cap and an unbounded `PM_COUNT` interact badly on a large
 corpus**, and the two halves of the job behave differently if it is killed:
 
-- `ps_search` upserts on DOI, so re-running it costs little and adds nothing
+- `pm_search` upserts on DOI, so re-running it costs little and adds nothing
   twice.
-- `ps_download` walks every row in the corpus and has **no skip for assets it
+- `pm_download` walks every row in the corpus and has **no skip for assets it
   already holds** — only abstracts short-circuit. A job that dies at the wall
   clock re-downloads everything on the next submit.
 
-So either bound `PS_COUNT` so the fetch finishes inside four hours, or switch the
+So either bound `PM_COUNT` so the fetch finishes inside four hours, or switch the
 header to `-p general -t 1-00:00:00`, which the `public` QOS allows up to a week.
 
 A batch job does not reliably inherit your shell environment, so put the
 credentials in a file only you can read and the script will source it:
 
 ```bash
-printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperscraper_env
-chmod 600 ~/.paperscraper_env
+printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperminer_env
+chmod 600 ~/.paperminer_env
 ```
 
 ## 7. Submit the scrape
@@ -274,7 +274,7 @@ left it and writes the CSVs and its log alongside.
 
 [`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) requests four Gaudi cards, starts
 vLLM from the shared environment in a background subshell, waits for
-`/v1/models` to answer, then runs `ps_scrape` and `ps_store` from your
+`/v1/models` to answer, then runs `pm_scrape` and `pm_store` from your
 environment against `127.0.0.1`. The server is killed on exit.
 
 Four cards because of the model. The default is
@@ -288,31 +288,31 @@ have to agree; the scripts refuse to start if they do not.
 If the four-card queue is slow, one card and the older model still work:
 
 ```bash
-sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-7B-Instruct scrape_gaudi.sbatch
+sbatch -G 1 --export=ALL,PM_TENSOR_PARALLEL_SIZE=1,PM_MODEL=Qwen/Qwen2.5-7B-Instruct scrape_gaudi.sbatch
 ```
 
 Override anything at submit time:
 
 ```bash
-sbatch --export=ALL,PS_RECIPE=polymer_db,PS_COUNT=1 scrape_gaudi.sbatch
+sbatch --export=ALL,PM_RECIPE=polymer_db,PM_COUNT=1 scrape_gaudi.sbatch
 ```
 
 Watch it with `tail -f ps-gaudi-<jobid>.log`.
 
-**Start with `PS_COUNT=1`.** A single paper exercises prompt construction, the
+**Start with `PM_COUNT=1`.** A single paper exercises prompt construction, the
 chat call, and JSON parsing end to end, and fails in about a minute instead of
 four hours.
 
 ### Scraping the whole corpus
 
-`PS_COUNT` is empty by default, which means every paper in `papers.db`. A corpus
+`PM_COUNT` is empty by default, which means every paper in `papers.db`. A corpus
 worth building is normally bigger than one four-hour Gaudi allocation, so expect
 the job to be killed part-way through. That is fine, and it is the intended way
 to run this:
 
 - Every paper's outcome is committed to `papers.db` as it happens, so a job that
   hits the wall clock loses only the paper in flight.
-- `ps_scrape` skips any stage already marked `succeeded`, so re-submitting the
+- `pm_scrape` skips any stage already marked `succeeded`, so re-submitting the
   same job continues where the last one stopped. Finished papers cost
   milliseconds each.
 - The job now ends with a **Remaining work** section: how many papers are done,
@@ -323,13 +323,13 @@ to run this:
 sbatch scrape_gaudi.sbatch   # repeat until nothing remains
 ```
 
-**Do not use `PS_COUNT` to pace a long run.** `--count` slices the *ordered
-corpus*, not the unfinished part of it, so a second job with `PS_COUNT=50` would
+**Do not use `PM_COUNT` to pace a long run.** `--count` slices the *ordered
+corpus*, not the unfinished part of it, so a second job with `PM_COUNT=50` would
 re-select the same first 50 papers, find them already succeeded, and do no new
-work. Use it for testing (`PS_COUNT=1`), never for resuming.
+work. Use it for testing (`PM_COUNT=1`), never for resuming.
 
-The one thing to watch is the CSV: `ps_scrape --output` appends across runs, and
-`ps_store` matches against the existing columns, so keep one file per recipe and
+The one thing to watch is the CSV: `pm_scrape --output` appends across runs, and
+`pm_store` matches against the existing columns, so keep one file per recipe and
 let successive jobs grow it.
 
 ### Choosing a recipe
@@ -343,7 +343,7 @@ else they drag along, and that difference is a token budget question.
 | Degradation-related | 8 | 15 |
 | Output tokens per record | ~450 | ~1100 |
 | Records before truncation | ~22 | ~9 |
-| Unit conversions in `ps_store` | 12 | 30 |
+| Unit conversions in `pm_store` | 12 | 30 |
 
 `polymer` covers the test standard, medium, extent, duration, mechanism,
 degrading organisms, and certification — enough to reproduce something like
@@ -357,35 +357,35 @@ series truncates mid-JSON and loses the tail. Prefer it for papers with few
 samples and deep characterisation.
 
 Each recipe writes its own files — `materials_polymer.csv`,
-`materials_polymer_db.csv` — because `ps_store` reuses an existing output file's
+`materials_polymer_db.csv` — because `pm_store` reuses an existing output file's
 columns for matching, so two recipes sharing one CSV will not work.
 
-Note that `ps_store`'s unit conversions are per unit-bearing column, not per row:
+Note that `pm_store`'s unit conversions are per unit-bearing column, not per row:
 `polymer_db` costs 30 model round trips even for a single scraped record.
 
-The script configures the model through `PAPERSCRAPER_MODEL_*` environment
-variables rather than `ps_model_config`, because `ps_model_config` persists to
-`~/.config/.pscraperrc.json` and concurrent jobs would race over it.
+The script configures the model through `PAPERMINER_MODEL_*` environment
+variables rather than `pm_model_config`, because `pm_model_config` persists to
+`~/.config/.paperminerrc.json` and concurrent jobs would race over it.
 
 ### Checking the server by hand
 
 If a run misbehaves, get an interactive Gaudi session, start the server, and
-separate server problems from client problems before involving PaperScraper:
+separate server problems from client problems before involving PaperMiner:
 
 ```bash
 curl -s "http://127.0.0.1:$PORT/v1/models"
 ```
 
 The returned `data[0].id` must be exactly the Hugging Face repo id — that string
-is what PaperScraper uses to load its tokenizer.
+is what PaperMiner uses to load its tokenizer.
 
-Then send the completion budget PaperScraper actually uses. This is the single
+Then send the completion budget PaperMiner actually uses. This is the single
 most useful check, because it is the one that catches the context-sizing mistake:
 
 ```bash
 curl -s "http://127.0.0.1:$PORT/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$PS_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":10000}"
+  -d "{\"model\":\"$PM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":10000}"
 ```
 
 A 400 here means `--max-model-len` is too small, and every scrape request would
@@ -396,18 +396,18 @@ have failed the same way — silently, one paper at a time.
 The default is four cards, a 30B-A3B text model, 32k context. Move one rung at a
 time, confirming each works before the next.
 
-1. **Text, 1 card** — `Qwen/Qwen2.5-7B-Instruct` at `PS_TENSOR_PARALLEL_SIZE=1`.
+1. **Text, 1 card** — `Qwen/Qwen2.5-7B-Instruct` at `PM_TENSOR_PARALLEL_SIZE=1`.
    The cheapest thing to get queued, and the right rung for a first end-to-end
-   test with `PS_COUNT=1`.
+   test with `PM_COUNT=1`.
 2. **Text, 4 cards** — the default, `Qwen/Qwen3-30B-A3B-Instruct-2507`.
-3. **Text, 8 cards** — the same model at `-G 8` and `PS_TENSOR_PARALLEL_SIZE=8`,
+3. **Text, 8 cards** — the same model at `-G 8` and `PM_TENSOR_PARALLEL_SIZE=8`,
    which Intel also validated. More KV headroom rather than a bigger model, so
-   spend it on `PS_MAX_MODEL_LEN` and `PS_MAX_NUM_SEQS`, not on the weights.
+   spend it on `PM_MAX_MODEL_LEN` and `PM_MAX_NUM_SEQS`, not on the weights.
 4. **Vision** — see below.
 
 ### Choosing a model
 
-`PS_MODEL` has to satisfy three things at once, and the default is the model that
+`PM_MODEL` has to satisfy three things at once, and the default is the model that
 does.
 
 **It has to be validated on Gaudi 2.** Sol's cards are Gaudi 2, and Intel's
@@ -418,7 +418,7 @@ entry covers Gaudi 2 — `Qwen/Qwen3-30B-A3B-Instruct-2507`, at tensor parallel 
 validated against Gaudi **3** only. That is also why the CUDA notebook's
 `Qwen/Qwen3-VL-30B-A3B-Instruct` is not the default here.
 
-**It must not be a thinking model.** `paperscraper/extract.py` asks for a
+**It must not be a thinking model.** `paperminer/extract.py` asks for a
 10000-token completion and nothing more. A hybrid-thinking model — `Qwen3-8B`,
 anything `-Thinking-` — spends that budget reasoning before it writes any JSON,
 so records truncate or the response comes back with no JSON at all. The
@@ -433,25 +433,25 @@ HPU graph capture. Only 3.3B parameters are active per token, so throughput is
 closer to a small dense model than the parameter count suggests.
 
 The model card recommends `temperature=0.7, top_p=0.8` for general use, while
-PaperScraper defaults to `temperature=0, top_p=1` so extraction is reproducible.
+PaperMiner defaults to `temperature=0, top_p=1` so extraction is reproducible.
 Keep the deterministic defaults; if you see a run degenerate into repetition that
-eats the completion budget, `PAPERSCRAPER_MODEL_TEMPERATURE` and
-`PAPERSCRAPER_MODEL_TOP_P` override them per job.
+eats the completion budget, `PAPERMINER_MODEL_TEMPERATURE` and
+`PAPERMINER_MODEL_TOP_P` override them per job.
 
 ### Context sizing — the one thing to get right
 
-`PS_MAX_MODEL_LEN` and `PS_INPUT_TOKEN_LIMIT` are **not** the same number.
+`PM_MAX_MODEL_LEN` and `PM_INPUT_TOKEN_LIMIT` are **not** the same number.
 
-`paperscraper/extract.py` requests a 10000-token completion on every call, and
+`paperminer/extract.py` requests a 10000-token completion on every call, and
 that value is hardcoded — there is no flag for it. vLLM rejects any request where
 prompt plus completion exceeds `--max-model-len`. So the input budget has to
 leave room for it:
 
 ```
-PS_MAX_MODEL_LEN  >=  PS_INPUT_TOKEN_LIMIT + 11000
+PM_MAX_MODEL_LEN  >=  PM_INPUT_TOKEN_LIMIT + 11000
 ```
 
-| `PS_MAX_MODEL_LEN` | `PS_INPUT_TOKEN_LIMIT` | Use |
+| `PM_MAX_MODEL_LEN` | `PM_INPUT_TOKEN_LIMIT` | Use |
 | --- | --- | --- |
 | 8192 | — | too small for any mode; every request 400s |
 | 16384 | 5000 | `--mode abstract` only |
@@ -461,7 +461,7 @@ PS_MAX_MODEL_LEN  >=  PS_INPUT_TOKEN_LIMIT + 11000
 The default model supports 262144 tokens natively, so the ceiling here is device
 memory rather than the model. At tensor parallel 4 the weights take about 15 GB
 of each card, which leaves enough KV cache for 65536 to be worth trying — raise
-`PS_MAX_MODEL_LEN` and `PS_INPUT_TOKEN_LIMIT` together, keeping the 11000-token
+`PM_MAX_MODEL_LEN` and `PM_INPUT_TOKEN_LIMIT` together, keeping the 11000-token
 gap.
 
 Setting the two equal is the most likely way to lose a four-hour allocation:
@@ -480,26 +480,26 @@ use. They are not vLLM defaults, and they are HPU-specific:
 
 | Knob | Default | Why |
 | --- | --- | --- |
-| `PS_BLOCK_SIZE` | `128` | the KV block size the Gaudi backend is tuned for |
-| `PS_GPU_MEMORY_UTILIZATION` | `0.80` | leaves device memory free for HPU graph capture |
-| `PS_MAX_NUM_SEQS` | `16` | caps concurrent sequences, and so KV cache growth |
+| `PM_BLOCK_SIZE` | `128` | the KV block size the Gaudi backend is tuned for |
+| `PM_GPU_MEMORY_UTILIZATION` | `0.80` | leaves device memory free for HPU graph capture |
+| `PM_MAX_NUM_SEQS` | `16` | caps concurrent sequences, and so KV cache growth |
 
-If warmup dies on an allocation failure, lower `PS_GPU_MEMORY_UTILIZATION`
+If warmup dies on an allocation failure, lower `PM_GPU_MEMORY_UTILIZATION`
 before touching anything else:
 
 ```bash
-sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 scrape_gaudi.sbatch
+sbatch --export=ALL,PM_GPU_MEMORY_UTILIZATION=0.70 scrape_gaudi.sbatch
 ```
 
 ### Adding vision
 
-PaperScraper keeps separate `text` and `vision` profiles, so the text model does
+PaperMiner keeps separate `text` and `vision` profiles, so the text model does
 not have to change — but it does mean a second server, and `scrape_gaudi.sbatch`
 has no spare cards to put one on. Run the vision model as its own job with
 [`serve_gaudi.sbatch`](serve_gaudi.sbatch), on one card:
 
 ```bash
-sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1,PS_MODEL=Qwen/Qwen2.5-VL-7B-Instruct,ENDPOINT_FILE=$PWD/vllm_vision_endpoint.txt \
+sbatch -G 1 --export=ALL,PM_TENSOR_PARALLEL_SIZE=1,PM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct,ENDPOINT_FILE=$PWD/vllm_vision_endpoint.txt \
        serve_gaudi.sbatch
 cat vllm_vision_endpoint.txt     # -> <node>:<port>
 ```
@@ -515,13 +515,13 @@ supported rather than proven — try it on a couple of papers before committing 
 run to it. Point the vision profile at the endpoint the job wrote:
 
 ```bash
-export PAPERSCRAPER_VISION_MODEL_PROVIDER=local
-export PAPERSCRAPER_VISION_MODEL_NAME=Qwen/Qwen2.5-VL-7B-Instruct
-export PAPERSCRAPER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/v1"
-export PAPERSCRAPER_VISION_MODEL_CAPABILITIES=text,vision
+export PAPERMINER_VISION_MODEL_PROVIDER=local
+export PAPERMINER_VISION_MODEL_NAME=Qwen/Qwen2.5-VL-7B-Instruct
+export PAPERMINER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/v1"
+export PAPERMINER_VISION_MODEL_CAPABILITIES=text,vision
 ```
 
-Then run with `PS_MODE=text-images`. If you raise `ps_scrape --image-batch-size`
+Then run with `PM_MODE=text-images`. If you raise `pm_scrape --image-batch-size`
 above its default of `1`, the server needs a matching
 `--limit-mm-per-prompt image=N` or it will reject the requests.
 
@@ -529,18 +529,18 @@ above its default of `1`, the server needs a matching
 
 **The job sits at "Waiting for vLLM" for a long time.** Normal on first run. HPU
 graph compilation happens during warmup, and weights may still be downloading.
-Raise `PS_STARTUP_TIMEOUT`, or uncomment `VLLM_SKIP_WARMUP=true` while iterating —
+Raise `PM_STARTUP_TIMEOUT`, or uncomment `VLLM_SKIP_WARMUP=true` while iterating —
 but leave warmup on for real runs, since it buys steady-state throughput.
 
 **vLLM exits during startup.** Almost always the model: unsupported architecture
 on Gaudi 2, or it does not fit. Try a smaller model, or lower
-`PS_MAX_MODEL_LEN`, `PS_GPU_MEMORY_UTILIZATION`, or `PS_MAX_NUM_SEQS` — see
+`PM_MAX_MODEL_LEN`, `PM_GPU_MEMORY_UTILIZATION`, or `PM_MAX_NUM_SEQS` — see
 Gaudi launch flags above.
 
-**The job dies immediately with a card-count error.** `PS_TENSOR_PARALLEL_SIZE`
+**The job dies immediately with a card-count error.** `PM_TENSOR_PARALLEL_SIZE`
 and the `-G` header have to agree, and both scripts check that against
 `SLURM_GPUS_ON_NODE` before loading anything. Change the header, or set both at
-submit time: `sbatch -G 1 --export=ALL,PS_TENSOR_PARALLEL_SIZE=1 …`. Left
+submit time: `sbatch -G 1 --export=ALL,PM_TENSOR_PARALLEL_SIZE=1 …`. Left
 unchecked this failure costs minutes of model load and then hangs on the first
 collective rather than exiting.
 
@@ -571,13 +571,13 @@ Run the uninstall with no environment active, so pip targets user site. If pip
 reports the packages are not installed, that interpreter is not the one that owns
 the directory — move the offending package directories aside by hand instead.
 
-**Chunking looks wrong and nothing is logged.** PaperScraper falls back to a
+**Chunking looks wrong and nothing is logged.** PaperMiner falls back to a
 `len/3` character estimate whenever the tokenizer fails to load, and it does so
-silently. Confirm `PS_MODEL` is the exact Hugging Face repo id and that `HF_HOME`
+silently. Confirm `PM_MODEL` is the exact Hugging Face repo id and that `HF_HOME`
 is set in the job.
 
 **The scrape produces no rows, but the job "succeeded".** This is the failure
-mode to internalise. `ps_scrape` catches exceptions per paper, records them on
+mode to internalise. `pm_scrape` catches exceptions per paper, records them on
 the row, and moves on, so a run where *every* request failed still exits 0 and
 reports "0 material rows written". **Never judge a run by its exit code.** The
 script prints a grouped dump of the recorded `last_error` values at the end —
@@ -590,11 +590,11 @@ read that. Common causes, in order:
   `polymer_db` to `polymer` is the first thing to try,
 - a tokenizer that never loaded, so chunks were sized by character estimate.
 
-**`ps_download` fails from a compute node.** Sol sits behind static NAT so
+**`pm_download` fails from a compute node.** Sol sits behind static NAT so
 outbound access is expected to work, but if it does not, run step 6 on a login
 node and submit only `papers.db` into the job. The corpus is self-contained.
 
-**The job hangs after scraping.** `ps_store` prompts for confirmation without
+**The job hangs after scraping.** `pm_store` prompts for confirmation without
 `--assume-yes`. The provided script passes it.
 
 ## Before committing changes to these scripts
@@ -610,10 +610,10 @@ requires it for collectives across HPUs. Other ASU pages show
 page as authoritative for this workload, and if a submit is rejected, run
 `sinfo -s` before editing anything.
 
-If you change `PS_MODEL`, check it against Intel's
+If you change `PM_MODEL`, check it against Intel's
 [validated models list](https://docs.vllm.ai/projects/gaudi/en/latest/getting_started/validated_models.html)
 for a Gaudi **2** entry and confirm the tensor parallel size it was validated at,
-then update the `-G` header, `PS_TENSOR_PARALLEL_SIZE`, and the tokenizer default
+then update the `-G` header, `PM_TENSOR_PARALLEL_SIZE`, and the tokenizer default
 in [`install.sbatch`](install.sbatch) together.
 
 `serve_gaudi.sbatch` is the one deliberate exception: it asks for `-t 0-08:00:00`

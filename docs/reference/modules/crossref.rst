@@ -1,6 +1,6 @@
-paperscraper.crossref
+paperminer.crossref
 ========================================
 
-.. automodule:: paperscraper.crossref
+.. automodule:: paperminer.crossref
    :members:
    :show-inheritance:

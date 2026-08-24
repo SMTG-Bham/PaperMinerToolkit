@@ -1,6 +1,6 @@
-paperscraper.scrape
+paperminer.scrape
 ========================================
 
-.. automodule:: paperscraper.scrape
+.. automodule:: paperminer.scrape
    :members:
    :show-inheritance:

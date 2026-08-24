@@ -1,6 +1,6 @@
-paperscraper.provider
+paperminer.provider
 ========================================
 
-.. automodule:: paperscraper.provider
+.. automodule:: paperminer.provider
    :members:
    :show-inheritance:

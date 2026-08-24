@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.elsevier as elsevier
-from paperscraper import provider
+import paperminer.elsevier as elsevier
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -18,7 +18,7 @@ def test_api_headers_include_key_accept_and_user_agent() -> None:
     assert elsevier.api_headers('elsevier-key') == {
         'X-ELS-APIKey': 'elsevier-key',
         'Accept': 'application/json',
-        'User-Agent': 'PaperScraper/0.0.1',
+        'User-Agent': 'PaperMiner/0.0.1',
     }
     assert elsevier.api_headers('elsevier-key', accept='application/pdf')['Accept'] == 'application/pdf'
 

@@ -1,6 +1,6 @@
-paperscraper.download
+paperminer.download
 ========================================
 
-.. automodule:: paperscraper.download
+.. automodule:: paperminer.download
    :members:
    :show-inheritance:

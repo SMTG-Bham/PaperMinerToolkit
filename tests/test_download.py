@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.download.
+"""Unit tests for paperminer.download.
 
 This module tests download helper behavior without calling live APIs, including
 Elsevier text/PDF helpers, open-access PDF source selection, filename creation,
@@ -14,8 +14,8 @@ from typing import Any, Self
 
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.download as download
+import paperminer.corpus as corpus
+import paperminer.download as download
 
 
 def write_corpus(db_path: str | Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -1483,7 +1483,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
 def test_download_unpaywall_pdf_uses_real_api(tmp_path: Path) -> None:
     """Download Unpaywall PDF uses real API."""
     assert download._unpaywall_email(), (
-        'Set unpaywall_email in ~/.config/.pscraperrc.json or UNPAYWALL_EMAIL before running network tests.'
+        'Set unpaywall_email in ~/.config/.paperminerrc.json or UNPAYWALL_EMAIL before running network tests.'
     )
     pdf_path = tmp_path / 'unpaywall.pdf'
 
@@ -1496,7 +1496,7 @@ def test_download_unpaywall_pdf_uses_real_api(tmp_path: Path) -> None:
 @pytest.mark.network
 def test_download_openalex_pdf_uses_real_api(tmp_path: Path) -> None:
     """Download OpenAlex PDF uses real API."""
-    from paperscraper import openalex
+    from paperminer import openalex
 
     payload = openalex.request_json(openalex.WORKS_URL,
                                     params={
@@ -1521,9 +1521,9 @@ def test_download_openalex_pdf_uses_real_api(tmp_path: Path) -> None:
 def test_download_core_pdf_uses_real_api_when_configured(tmp_path: Path) -> None:
     """Download CORE PDF uses real API when configured."""
     assert download._core_headers().get('Authorization'), (
-        'Set core_api_key in ~/.config/.pscraperrc.json or CORE_API_KEY before running network tests.'
+        'Set core_api_key in ~/.config/.paperminerrc.json or CORE_API_KEY before running network tests.'
     )
-    from paperscraper.search import core_search
+    from paperminer.search import core_search
 
     candidates = core_search('solid electrolyte', count=5)
     last_error = 'no CORE candidates were returned'
@@ -1541,7 +1541,7 @@ def test_download_core_pdf_uses_real_api_when_configured(tmp_path: Path) -> None
 def test_download_elsevier_pdf_uses_real_api_when_entitled(tmp_path: Path) -> None:
     """Download Elsevier PDF uses real API when entitled."""
     assert download.load_settings().get('elsevier_api_key'), (
-        'Set elsevier_api_key in ~/.config/.pscraperrc.json or ELSEVIER_API_KEY before running network tests.'
+        'Set elsevier_api_key in ~/.config/.paperminerrc.json or ELSEVIER_API_KEY before running network tests.'
     )
     pdf_path = tmp_path / 'elsevier.pdf'
     paper = {
@@ -2429,7 +2429,7 @@ def test_download_chemrxiv_pdf_reports_a_refused_fetch(
 ) -> None:
     """Report a bot-challenge refusal as the failure reason.
 
-    chemrxiv.org can refuse a client outright. PaperScraper does not work
+    chemrxiv.org can refuse a client outright. PaperMiner does not work
     around that, so the refusal has to reach the caller as the reason.
     """
     monkeypatch.setattr(download.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())

@@ -1,4 +1,4 @@
-"""Test the PaperScraper command-line entry points."""
+"""Test the PaperMiner command-line entry points."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any, NoReturn
 import pytest
 from click.testing import CliRunner
 
-import paperscraper.cli as cli
-import paperscraper.corpus as corpus
+import paperminer.cli as cli
+import paperminer.corpus as corpus
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -688,8 +688,8 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
     monkeypatch.setattr(cli, 'status', lambda path: calls.append(('status', path)))
 
     runner = CliRunner()
-    assert runner.invoke(cli.reset_scraper, [str(db_path)]).exit_code == 0
-    assert runner.invoke(cli.scraper_status, [str(db_path)]).exit_code == 0
+    assert runner.invoke(cli.reset_miner, [str(db_path)]).exit_code == 0
+    assert runner.invoke(cli.miner_status, [str(db_path)]).exit_code == 0
 
     assert calls == [
         ('reset', str(db_path)),

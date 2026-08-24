@@ -1,6 +1,6 @@
 # Recipes and prompt construction
 
-Recipes define the structured records that PaperScraper asks a language or vision model to extract. They are not restricted to materials: a record can represent a material, experiment, reaction, device, organism, intervention, measurement series, or another unit that can be described by a paper.
+Recipes define the structured records that PaperMiner asks a language or vision model to extract. They are not restricted to materials: a record can represent a material, experiment, reaction, device, organism, intervention, measurement series, or another unit that can be described by a paper.
 
 A recipe controls four related parts of the workflow:
 
@@ -9,7 +9,7 @@ A recipe controls four related parts of the workflow:
 3. Domain-specific extraction and reconciliation rules.
 4. Column aliases and optional unit conversion during storage.
 
-Use the same recipe for `ps_scrape` and `ps_store`. Mixing recipes can produce incompatible columns, aliases, and units.
+Use the same recipe for `pm_scrape` and `pm_store`. Mixing recipes can produce incompatible columns, aliases, and units.
 
 ## Complete example
 
@@ -66,8 +66,8 @@ The following recipe extracts one record per electrochemical cycling experiment.
 Save a custom recipe as a standalone JSON file and pass its path in place of a bundled recipe name:
 
 ```bash
-ps_scrape papers.db ./cycling_recipe.json --mode text
-ps_store papers.db temp_scraped_materials.csv cycling_results.csv ./cycling_recipe.json --assume-yes
+pm_scrape papers.db ./cycling_recipe.json --mode text
+pm_store papers.db temp_scraped_materials.csv cycling_results.csv ./cycling_recipe.json --assume-yes
 ```
 
 A standalone file may contain the recipe object directly, as above, or exactly one named recipe:
@@ -106,7 +106,7 @@ A standalone file may contain the recipe object directly, as above, or exactly o
 : The noun or short noun phrase used for one record subject, such as `material`, `experiment`, or `intervention`.
 
 `plural`
-: Its explicit plural form. PaperScraper does not guess plurals because scientific terms and multi-word phrases are not reliably pluralised automatically.
+: Its explicit plural form. PaperMiner does not guess plurals because scientific terms and multi-word phrases are not reliably pluralised automatically.
 
 `unit`
 : A precise description of what one JSON object represents. This is the most important granularity instruction. State which changes create a new record, for example `a distinct cell and cycling protocol` or `a distinct material, composition, phase, or sample`.
@@ -129,10 +129,10 @@ Each field can define:
 : Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one.
 
 `aliases`
-: Optional alternative headings accepted by `ps_store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
+: Optional alternative headings accepted by `pm_store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
 
 `unit`
-: Optional target unit used by `ps_store`. It does not silently rewrite the extraction prompt. During storage, supported non-missing values can be converted to the configured unit and the final column receives the unit suffix.
+: Optional target unit used by `pm_store`. It does not silently rewrite the extraction prompt. During storage, supported non-missing values can be converted to the configured unit and the final column receives the unit suffix.
 
 For example, a field that must always contain a JSON list should say so explicitly and show a list-valued example:
 
@@ -173,7 +173,7 @@ Avoid duplicating every field definition in `additional prompts`. Field-specific
 
 ## How the extraction prompt is assembled
 
-PaperScraper constructs a system prompt in a fixed order:
+PaperMiner constructs a system prompt in a fixed order:
 
 1. **Task statement.** `subject` identifies the target information and the source is named as paper text or a paper image.
 2. **Record definition.** `unit`, `singular`, and `plural` define record granularity and provide natural terminology.
@@ -196,7 +196,7 @@ Record definition:
 - The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
 ```
 
-Recipe values are inserted only into fixed prompt sections. PaperScraper does not run arbitrary string formatting over `additional prompts`, so braces in JSON examples or scientific notation are preserved literally.
+Recipe values are inserted only into fixed prompt sections. PaperMiner does not run arbitrary string formatting over `additional prompts`, so braces in JSON examples or scientific notation are preserved literally.
 
 ## Complete rendered prompt examples
 
@@ -456,7 +456,7 @@ The accompanying user message contains both record sets as JSON:
 <details>
 <summary><strong>Unit-conversion prompt during storage</strong></summary>
 
-When `ps_store` converts the `Capacity` field to its recipe unit of `mAh g^-1`, it sends this system prompt:
+When `pm_store` converts the `Capacity` field to its recipe unit of `mAh g^-1`, it sends this system prompt:
 
 ```text
 Convert the following values of Capacity to mAh g^-1. Each result should be returned as a decimal on a separate line. If the input contains multiple values on one line, return the converted values as a python list on the same line. Only put values in square brackets if multiple values are provided on the line. Do not include the units. If you are unsure how to do the conversion, just return the original value. If a range is given, report this as two decimals with a hyphen/dash inbetween (For example: 1-10). If the value is already in the desired unit, just convert it to a decimal. Do not return "None". Do not return the value as an addition. If text is given and cannot be meaningfully converted, return the same text. Convert "RT" or "Room temperature" to the equivalent of 298.15K. Do not use quotation marks. Make sure that there are as many output values as input.
@@ -506,8 +506,8 @@ Common failures include:
 Before a large scrape, inspect the prompt and run a small representative batch. The Python prompt builders can be used without calling a model:
 
 ```python
-from paperscraper.extract import build_image_extraction_prompt, build_text_extraction_prompt
-from paperscraper.recipes import load_recipe
+from paperminer.extract import build_image_extraction_prompt, build_text_extraction_prompt
+from paperminer.recipes import load_recipe
 
 recipe = load_recipe("./cycling_recipe.json")
 print(build_text_extraction_prompt(recipe))

@@ -1,6 +1,6 @@
-paperscraper.core
+paperminer.core
 ========================================
 
-.. automodule:: paperscraper.core
+.. automodule:: paperminer.core
    :members:
    :show-inheritance:

@@ -1,6 +1,6 @@
-paperscraper.openalex
+paperminer.openalex
 ========================================
 
-.. automodule:: paperscraper.openalex
+.. automodule:: paperminer.openalex
    :members:
    :show-inheritance:

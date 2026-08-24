@@ -1,6 +1,6 @@
-paperscraper.models
+paperminer.models
 ========================================
 
-.. automodule:: paperscraper.models
+.. automodule:: paperminer.models
    :members:
    :show-inheritance:

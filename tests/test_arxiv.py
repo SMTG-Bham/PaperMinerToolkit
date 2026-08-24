@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.arxiv as arxiv
-from paperscraper import provider
+import paperminer.arxiv as arxiv
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 

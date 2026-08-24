@@ -1,6 +1,6 @@
-paperscraper._rxiv
+paperminer._rxiv
 ========================================
 
-.. automodule:: paperscraper._rxiv
+.. automodule:: paperminer._rxiv
    :members:
    :show-inheritance:

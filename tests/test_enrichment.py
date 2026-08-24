@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 import requests
 
-import paperscraper.corpus as corpus
-import paperscraper.enrichment as enrichment
+import paperminer.corpus as corpus
+import paperminer.enrichment as enrichment
 
 
 def crossref_work(doi: str = '10.1234/example') -> dict[str, Any]:
@@ -739,7 +739,7 @@ def test_enrich_corpus_matches_doi_less_papers_by_openalex_identifier(tmp_path: 
 
 def test_reset_clears_enrichment_status_but_keeps_enrichment_data(tmp_path: Path) -> None:
     """Re-arm the enrichment stage without discarding enrichment values."""
-    import paperscraper.utilities as utilities
+    import paperminer.utilities as utilities
 
     db_path = tmp_path / 'corpus.db'
     seed_corpus(db_path, [{'doi': '10.1234/example', 'sources': 'seed'}])

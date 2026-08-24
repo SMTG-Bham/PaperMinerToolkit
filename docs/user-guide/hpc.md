@@ -4,11 +4,11 @@ Search and download stages are network and CPU workloads; model serving and scra
 
 ## General batch workflow
 
-1. Install PaperScraper in a persistent environment.
+1. Install PaperMiner in a persistent environment.
 2. Store caches and downloaded model weights on project scratch rather than a small home filesystem.
 3. Build and inspect the corpus from a login, interactive, or high-throughput CPU job.
 4. Start the model server inside the accelerator allocation.
-5. Wait for its `/v1/models` endpoint before starting PaperScraper.
+5. Wait for its `/v1/models` endpoint before starting PaperMiner.
 6. Configure the local model endpoint, scrape, and store results.
 7. Preserve the corpus, final CSV, model configuration, recipe, and scheduler logs.
 
@@ -31,11 +31,11 @@ cd examples/sol_gaudi
 sbatch install.sbatch
 ```
 
-The supplied workflow defaults to biodegradable polymers. Override `PS_RECIPE`, the query, model, context size, and scheduler resources for other projects.
+The supplied workflow defaults to biodegradable polymers. Override `PM_RECIPE`, the query, model, context size, and scheduler resources for other projects.
 
 ## Context and memory sizing
 
-The model server's advertised context limit, its actual memory allocation, and PaperScraper's configured input limit must agree. A large context can consume substantial accelerator memory before inference begins. Start conservatively, inspect server logs and PaperScraper's chunk plan, then increase only when the server is stable.
+The model server's advertised context limit, its actual memory allocation, and PaperMiner's configured input limit must agree. A large context can consume substantial accelerator memory before inference begins. Start conservatively, inspect server logs and PaperMiner's chunk plan, then increase only when the server is stable.
 
 Use a bounded LDA `--batch-size` and a scratch `--cache-dir` for corpora containing tens of thousands of papers. Streaming training is specifically designed to keep memory use proportional to the batch rather than the corpus.
 

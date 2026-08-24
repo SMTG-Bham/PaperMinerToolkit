@@ -1,6 +1,6 @@
-paperscraper.chemrxiv
+paperminer.chemrxiv
 ========================================
 
-.. automodule:: paperscraper.chemrxiv
+.. automodule:: paperminer.chemrxiv
    :members:
    :show-inheritance:

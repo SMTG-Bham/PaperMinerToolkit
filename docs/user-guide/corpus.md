@@ -1,30 +1,30 @@
 # Building a corpus
 
-A PaperScraper corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
+A PaperMiner corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
 
 ## Search literature services
 
 Search all configured providers:
 
 ```bash
-ps_search "Lithium solid electrolyte" papers.db --count 200
+pm_search "Lithium solid electrolyte" papers.db --count 200
 ```
 
 Select a single provider when you need reproducible source coverage:
 
 ```bash
-ps_search "Lithium solid electrolyte" papers.db --source core --count 100
-ps_search "Lithium solid electrolyte" papers.db --source openalex --count 100
-ps_search "Lithium solid electrolyte" papers.db --source elsevier --count 100
-ps_search "Lithium solid electrolyte" papers.db --source pubmed --count 100
-ps_search "Lithium solid electrolyte" papers.db --source arxiv --count 100
-ps_search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
-ps_search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
-ps_search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
+pm_search "Lithium solid electrolyte" papers.db --source core --count 100
+pm_search "Lithium solid electrolyte" papers.db --source openalex --count 100
+pm_search "Lithium solid electrolyte" papers.db --source elsevier --count 100
+pm_search "Lithium solid electrolyte" papers.db --source pubmed --count 100
+pm_search "Lithium solid electrolyte" papers.db --source arxiv --count 100
+pm_search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
+pm_search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
+pm_search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
-search matches more than that, PaperScraper prints the shortfall; split the query by date range to
+search matches more than that, PaperMiner prints the shortfall; split the query by date range to
 reach the rest. arXiv has the same limit at 30000 matches, and the same shortfall message.
 
 arXiv accepts a fielded query language rather than a plain phrase. A plain phrase is translated
@@ -32,8 +32,8 @@ for you — its words are combined with `AND` across all fields — but a query 
 field prefix or a boolean operator is sent as written, so you can be precise:
 
 ```bash
-ps_search 'cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"' papers.db --source arxiv
-ps_search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
+pm_search 'cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"' papers.db --source arxiv
+pm_search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
 ```
 
 The available prefixes are `ti:`, `au:`, `abs:`, `co:`, `jr:`, `cat:`, `rn:`, `id:`, and `all:`.
@@ -46,7 +46,7 @@ calendar year and published in the next is stored as its own row. arXiv is searc
 exactly this reason: the published record wins whenever the two do match.
 
 medRxiv and bioRxiv publish no search endpoint. Their API can return one preprint by DOI, or
-every posting in a date range, and nothing else. PaperScraper answers such a query by reading that
+every posting in a date range, and nothing else. PaperMiner answers such a query by reading that
 archive newest first and matching each posting itself, over the title, abstract, authors, and
 category. A term matches at the start of a word, so `vaccine` finds `vaccines` and `genome` finds
 `genomes`, and several terms are combined with `AND`.
@@ -55,14 +55,14 @@ That makes the query the only place to say how much should be read, so it carrie
 `category:`, `from:`, and `to:` narrow the archive; everything else is a match term:
 
 ```bash
-ps_search 'vaccine hesitancy category:"public and global health"' papers.db --source medrxiv
-ps_search '"long covid" from:2024-01-01 to:2024-06-30' papers.db --source medrxiv
-ps_search 'chromatin category:"developmental biology"' papers.db --source biorxiv
-ps_search '"single cell" from:2024-01-01 to:2024-06-30' papers.db --source biorxiv
+pm_search 'vaccine hesitancy category:"public and global health"' papers.db --source medrxiv
+pm_search '"long covid" from:2024-01-01 to:2024-06-30' papers.db --source medrxiv
+pm_search 'chromatin category:"developmental biology"' papers.db --source biorxiv
+pm_search '"single cell" from:2024-01-01 to:2024-06-30' papers.db --source biorxiv
 ```
 
 Without them the walk starts at today and runs back to the first posting in the archive: June 2019
-for medRxiv, November 2013 for bioRxiv. Before it starts, PaperScraper prints how many postings
+for medRxiv, November 2013 for bioRxiv. Before it starts, PaperMiner prints how many postings
 that is. The walk ends as soon as `--count` papers match, so a query about the archive's own
 subject matter is usually answered in a few requests; a query that matches nothing recent is the
 expensive case, and it stops after 20000 postings and says how many it left unread. Narrowing with
@@ -83,7 +83,7 @@ preprint with no published version is stored under its own DOI with `medRxiv` or
 journal.
 
 The two servers share a DOI prefix — `10.1101` for older postings and `10.64898` for newer ones —
-so the prefix does not say which archive a preprint belongs to. PaperScraper tells them apart by
+so the prefix does not say which archive a preprint belongs to. PaperMiner tells them apart by
 the accession number, which is six digits on bioRxiv and eight on medRxiv, and routes each row to
 the one server that can answer for it. bioRxiv postings from before 2018 carry a bare accession
 such as `10.1101/060400` instead, which is recognized too.
@@ -94,13 +94,13 @@ and matching locally. The same `category:`, `from:`, and `to:` terms are accepte
 are passed to the service as filters:
 
 ```bash
-ps_search 'photocatalysis category:Catalysis' papers.db --source chemrxiv
-ps_search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --source chemrxiv
+pm_search 'photocatalysis category:Catalysis' papers.db --source chemrxiv
+pm_search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --source chemrxiv
 ```
 
 Narrowing a chemRxiv query therefore makes the service do less work rather than saving you a long
 read, and an unscoped query is not the expensive case it is for medRxiv and bioRxiv. Only the first
-10000 matches are reachable for any one query; when a query matches more, PaperScraper prints the
+10000 matches are reachable for any one query; when a query matches more, PaperMiner prints the
 shortfall, and a `category:` or date scope reaches the rest. Categories are chemRxiv's own list —
 `Catalysis`, `Organic Chemistry`, `Analytical Chemistry`, `Theoretical and Computational
 Chemistry`, and the rest — and a name that matches none of them is reported rather than ignored.
@@ -109,11 +109,11 @@ A chemRxiv DOI keeps the version it was issued with, and that suffix is part of 
 decoration on the end of it. `10.26434/chemrxiv.15007737/v1` is a registered DOI while
 `10.26434/chemrxiv.15007737` is not, and for the older dated accessions the reverse holds:
 `10.26434/chemrxiv-2022-w08rh` is registered and `10.26434/chemrxiv-2022-w08rh-v1` is not.
-PaperScraper stores whichever form the archive issued, unchanged, so the DOI in `chemrxiv_doi`
+PaperMiner stores whichever form the archive issued, unchanged, so the DOI in `chemrxiv_doi`
 always resolves. Five suffix shapes are in use across the three platforms chemRxiv has run on, and
 all of them are recognized. A `10.26434` DOI is never mistaken for a medRxiv or bioRxiv one.
 
-chemrxiv.org is fronted by a bot challenge that can refuse a client outright. PaperScraper does not
+chemrxiv.org is fronted by a bot challenge that can refuse a client outright. PaperMiner does not
 try to get around it: a refusal is reported as the reason a search or download failed, and the same
 papers stay reachable through the `openalex` and `crossref` sources.
 
@@ -124,13 +124,13 @@ papers stay reachable through the `openalex` and `crossref` sources.
 Import every PDF in a directory:
 
 ```bash
-ps_import_pdfs papers/ papers.db
+pm_import_pdfs papers/ papers.db
 ```
 
 The importer scans PDF metadata and text for DOI candidates, looks up Crossref metadata, and stores the original PDF in the corpus. For offline imports, retain DOI extraction but skip Crossref:
 
 ```bash
-ps_import_pdfs papers/ papers.db --no-crossref
+pm_import_pdfs papers/ papers.db --no-crossref
 ```
 
 ## Import an author's works
@@ -138,7 +138,7 @@ ps_import_pdfs papers/ papers.db --no-crossref
 Crossref can seed a corpus before any content is downloaded. Prefer an ORCID:
 
 ```bash
-ps_import_author supervisor.db \
+pm_import_author supervisor.db \
   --orcid 0000-0000-0000-0000 \
   --email you@example.ac.uk \
   --review-csv supervisor_works.csv
@@ -147,7 +147,7 @@ ps_import_author supervisor.db \
 If no ORCID is available, use a full name and optionally an affiliation:
 
 ```bash
-ps_import_author supervisor.db \
+pm_import_author supervisor.db \
   --author "First Family" \
   --affiliation "University of Example" \
   --email you@example.ac.uk
@@ -157,11 +157,11 @@ Inspect the review CSV before downloading. Crossref provides metadata and DOIs, 
 
 ## Supplement metadata
 
-Search and import records carry only a handful of bibliographic fields. `ps_enrich` fills in the rest
+Search and import records carry only a handful of bibliographic fields. `pm_enrich` fills in the rest
 from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv:
 
 ```bash
-ps_enrich papers.db
+pm_enrich papers.db
 ```
 
 Crossref supplies the metadata the publisher deposited against the DOI — publisher, work type,
@@ -200,22 +200,22 @@ Enrichment is re-runnable and resumable. A second run costs nothing because it o
 that are still pending, and an interrupted run keeps everything it already committed:
 
 ```bash
-ps_enrich papers.db --limit 500        # stop after 500 papers, resume later
-ps_enrich papers.db --retry-failed     # retry only papers that previously failed
-ps_enrich papers.db --refresh-after 90 # refresh citation counts older than 90 days
-ps_enrich papers.db --force            # re-fetch everything
+pm_enrich papers.db --limit 500        # stop after 500 papers, resume later
+pm_enrich papers.db --retry-failed     # retry only papers that previously failed
+pm_enrich papers.db --refresh-after 90 # refresh citation counts older than 90 days
+pm_enrich papers.db --force            # re-fetch everything
 ```
 
 Restrict the providers, or skip reference lists when you only want the bibliographic fields:
 
 ```bash
-ps_enrich papers.db --source crossref
-ps_enrich papers.db --source openalex --no-references
-ps_enrich papers.db --source pubmed
-ps_enrich papers.db --source arxiv
-ps_enrich papers.db --source medrxiv
-ps_enrich papers.db --source biorxiv
-ps_enrich papers.db --source chemrxiv
+pm_enrich papers.db --source crossref
+pm_enrich papers.db --source openalex --no-references
+pm_enrich papers.db --source pubmed
+pm_enrich papers.db --source arxiv
+pm_enrich papers.db --source medrxiv
+pm_enrich papers.db --source biorxiv
+pm_enrich papers.db --source chemrxiv
 ```
 
 Papers with no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, bioRxiv DOI, or
@@ -229,20 +229,20 @@ enriches only rows that already carry the identifier it issued.
 To supplement rows as they arrive instead of in a separate pass, add `--enrich` to discovery:
 
 ```bash
-ps_search "Lithium solid electrolyte" papers.db --enrich
-ps_import_author supervisor.db --orcid 0000-0000-0000-0000 --enrich
+pm_search "Lithium solid electrolyte" papers.db --enrich
+pm_import_author supervisor.db --orcid 0000-0000-0000-0000 --enrich
 ```
 
-`ps_reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
+`pm_reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
 re-enriched without refetching everything.
 
 ## Download abstracts, text, and PDFs
 
 ```bash
-ps_download papers.db --format abstract
-ps_download papers.db --format text
-ps_download papers.db --format pdf
-ps_download papers.db --format both
+pm_download papers.db --format abstract
+pm_download papers.db --format text
+pm_download papers.db --format pdf
+pm_download papers.db --format both
 ```
 
 `--source` applies to abstracts, full text, and PDFs alike. Abstract retrieval tries OpenAlex,
@@ -257,22 +257,22 @@ servers are tried last because the other sources may hold the publisher's versio
 holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
 
 ```bash
-ps_download papers.db --format pdf \
+pm_download papers.db --format pdf \
   --source unpaywall \
   --source openalex
 ```
 
-PaperScraper tracks abstracts, full text, and PDFs independently. It skips a requested type when that type is already present while continuing to obtain missing types. Override this protection only when deliberately refreshing content:
+PaperMiner tracks abstracts, full text, and PDFs independently. It skips a requested type when that type is already present while continuing to obtain missing types. Override this protection only when deliberately refreshing content:
 
 ```bash
-ps_download papers.db --format both --force
+pm_download papers.db --format both --force
 ```
 
 Full text comes from Elsevier when a key is configured, and otherwise from the PubMed Central
 open-access subset, which needs no credentials:
 
 ```bash
-ps_download papers.db --format text --source pubmed
+pm_download papers.db --format text --source pubmed
 ```
 
 Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
@@ -288,7 +288,7 @@ same format PubMed Central serves, so `--format text` takes their full text dire
 scraping a PDF:
 
 ```bash
-ps_download papers.db --format text --source biorxiv
+pm_download papers.db --format text --source biorxiv
 ```
 
 Their PDFs sit behind a bot challenge that occasionally refuses a client outright; when that
@@ -298,7 +298,7 @@ unaffected.
 chemRxiv is like arXiv rather than like the other two: it serves PDFs and abstracts but publishes
 no machine-readable full text, so it is not a `--format text` source and `--source chemrxiv` is
 rejected for that format. Text for a chemRxiv paper comes from scraping its downloaded PDF. Its
-PDFs sit behind the same bot challenge, which PaperScraper reports rather than works around, so a
+PDFs sit behind the same bot challenge, which PaperMiner reports rather than works around, so a
 download run on a network the challenge refuses will report those papers and carry on.
 
 By default, abstracts are also attempted while downloading text or PDFs. Disable that with
@@ -308,8 +308,8 @@ fetches abstracts from that provider alone; leave `--source` at its default to c
 ## Inspect the corpus
 
 ```bash
-ps_corpus_stats papers.db
-ps_status papers.db
+pm_corpus_stats papers.db
+pm_status papers.db
 ```
 
 Corpus statistics include paper and asset counts, original and compressed storage sizes, and counts of text or abstract inputs that required chunking. Pipeline status summarizes search, download, scrape, and storage progress.

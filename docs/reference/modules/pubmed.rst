@@ -1,6 +1,6 @@
-paperscraper.pubmed
+paperminer.pubmed
 ========================================
 
-.. automodule:: paperscraper.pubmed
+.. automodule:: paperminer.pubmed
    :members:
    :show-inheritance:

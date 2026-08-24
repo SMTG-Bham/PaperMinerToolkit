@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.pubmed as pubmed
-from paperscraper import provider
+import paperminer.pubmed as pubmed
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -228,9 +228,9 @@ def test_normalize_identifiers_extract_digits_and_prefix_pmc() -> None:
 
 def test_request_params_add_tool_and_omit_absent_credentials() -> None:
     """Always identify the tool but never invent a key or contact address."""
-    assert pubmed.request_params({'db': 'pubmed'}) == {'db': 'pubmed', 'tool': 'PaperScraper'}
+    assert pubmed.request_params({'db': 'pubmed'}) == {'db': 'pubmed', 'tool': 'PaperMiner'}
     assert pubmed.request_params(None, 'key', 'person@example.com') == {
-        'tool': 'PaperScraper', 'email': 'person@example.com', 'api_key': 'key'}
+        'tool': 'PaperMiner', 'email': 'person@example.com', 'api_key': 'key'}
 
 
 def test_min_interval_switches_on_the_presence_of_an_api_key() -> None:

@@ -1,6 +1,6 @@
-paperscraper.utilities
+paperminer.utilities
 ========================================
 
-.. automodule:: paperscraper.utilities
+.. automodule:: paperminer.utilities
    :members:
    :show-inheritance:

@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.recipes.
+"""Unit tests for paperminer.recipes.
 
 This module tests recipe validation, loading bundled and file-based recipes,
 building output columns, alias collection, and canonical column matching.
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-import paperscraper.recipes as recipes
+import paperminer.recipes as recipes
 
 
 def sample_recipe() -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.models.
+"""Unit tests for paperminer.models.
 
 This module tests model configuration, provider selection, image encoding,
 OpenAI Responses clients, Anthropic Messages clients, OpenAI-compatible chat
@@ -13,8 +13,8 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperscraper.compression import CompressionConfig
-import paperscraper.models as models
+from paperminer.compression import CompressionConfig
+import paperminer.models as models
 
 
 def text_config(**overrides: Any) -> models.ModelConfig:
