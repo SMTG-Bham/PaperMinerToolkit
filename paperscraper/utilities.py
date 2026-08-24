@@ -1,4 +1,4 @@
-"""Small maintenance utilities for the PaperScraper corpus.
+"""Small maintenance utilities for the PaperMiner corpus.
 
 These helpers back CLI commands for resetting pipeline status and printing a
 progress summary for the SQLite paper corpus.
@@ -47,7 +47,7 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     """
     with connect(db_path) as conn:
         papers = paper_rows(conn)
-    print('\nPaperScraper Progress Summary')
+    print('\nPaperMiner Progress Summary')
     print('---------------------------')
     print(f'Total papers: {len(papers)}')
     rows = [

@@ -1,4 +1,4 @@
-"""Import local PDFs into a PaperScraper SQLite corpus.
+"""Import local PDFs into a PaperMiner SQLite corpus.
 
 The import flow scans each PDF for DOI metadata, optionally enriches rows with
 Crossref, stores the PDF bytes as corpus assets, and merges imported files with

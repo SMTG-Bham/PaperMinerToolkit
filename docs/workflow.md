@@ -1,6 +1,6 @@
 # Workflow
 
-PaperScraper keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
+PaperMiner keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
 
 ```{mermaid}
 flowchart LR

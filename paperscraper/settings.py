@@ -1,4 +1,4 @@
-"""Load, save, and update PaperScraper API and model configuration.
+"""Load, save, and update PaperMiner API and model configuration.
 
 Settings are read from the user config file and environment variables. This
 module also provides interactive command helpers for storing API keys and model
@@ -147,7 +147,7 @@ def _env_profile(prefix: str) -> dict[str, str]:
 
 
 def load_settings() -> dict[str, Any]:
-    """Load effective PaperScraper settings.
+    """Load effective PaperMiner settings.
 
     Values from the user config file are merged with package defaults, then
     overridden by supported environment variables.
@@ -225,7 +225,7 @@ def load_settings() -> dict[str, Any]:
 
 
 def save_settings(settings: dict[str, Any]) -> None:
-    """Persist PaperScraper settings as JSON.
+    """Persist PaperMiner settings as JSON.
 
     Parameters
     ----------

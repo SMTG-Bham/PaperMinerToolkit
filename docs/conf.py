@@ -1,10 +1,10 @@
-"""Sphinx configuration for the PaperScraper documentation."""
+"""Sphinx configuration for the PaperMiner documentation."""
 
 from importlib.metadata import PackageNotFoundError, version
 
-project = "PaperScraper"
-author = "PaperScraper contributors"
-copyright = "2026, PaperScraper contributors"
+project = "PaperMiner"
+author = "PaperMiner contributors"
+copyright = "2026, PaperMiner contributors"
 
 try:
     release = version("paperscraper")
@@ -72,13 +72,13 @@ napoleon_use_rtype = True
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static", "../assets"]
 html_css_files = ["custom.css"]
-html_title = f"PaperScraper {release}"
-html_favicon = "../assets/Paper_Scraper_logo.svg"
+html_title = f"PaperMiner {release}"
+html_favicon = "../assets/Paper_Miner.svg"
 html_theme_options = {
     "logo": {
-        "image_light": "Paper_Scraper_banner_large_text.svg",
-        "image_dark": "Paper_Scraper_banner_large_text.svg",
-        "alt_text": "PaperScraper",
+        "image_light": "Paper_Miner_banner_large_text_light.svg",
+        "image_dark": "Paper_Miner_banner_large_text_dark.svg",
+        "alt_text": "PaperMiner",
     },
     "header_links_before_dropdown": 6,
     "show_toc_level": 2,
@@ -88,7 +88,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/SMTG-Bham/PaperScraper",
+            "url": "https://github.com/SMTG-Bham/PaperMiner",
             "icon": "fa-brands fa-github",
             "type": "fontawesome",
         }
@@ -96,7 +96,7 @@ html_theme_options = {
 }
 html_context = {
     "github_user": "SMTG-Bham",
-    "github_repo": "PaperScraper",
+    "github_repo": "PaperMiner",
     "github_version": "dev",
     "doc_path": "docs",
 }

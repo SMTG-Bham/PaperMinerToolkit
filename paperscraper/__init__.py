@@ -1,4 +1,4 @@
-"""Expose package version and currently loaded PaperScraper settings."""
+"""Expose package version and currently loaded PaperMiner settings."""
 
 from paperscraper._version import __version__ as __version__
 from paperscraper.settings import (load_settings as load_settings,

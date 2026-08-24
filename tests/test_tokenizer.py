@@ -30,7 +30,7 @@ def config(
 
 
 def live_anthropic_config() -> types.SimpleNamespace:
-    """Build an Anthropic model config from the user's real PaperScraper settings."""
+    """Build an Anthropic model config from the user's real PaperMiner settings."""
     loaded = settings.load_settings()
     profiles = loaded.get('model_profiles', {})
     anthropic_profile = next(

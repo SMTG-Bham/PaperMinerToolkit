@@ -1,6 +1,6 @@
 # Python modules
 
-Each public PaperScraper module has its own API page. Private members beginning with `_` are intentionally omitted.
+Each public PaperMiner module has its own API page. Private members beginning with `_` are intentionally omitted.
 
 ## Package and command line
 

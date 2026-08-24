@@ -1,6 +1,6 @@
 # Running on ASU Sol's Intel Gaudi nodes
 
-This guide gets PaperScraper running against a local vLLM server on Sol's Gaudi 2
+This guide gets PaperMiner running against a local vLLM server on Sol's Gaudi 2
 accelerators. It replaces the general
 [`qwen_vllm_workflow.ipynb`](../../docs/examples/qwen_vllm_workflow.ipynb),
 which assumes a CUDA workstation.
@@ -9,18 +9,18 @@ The worked example is biodegradable polymers: the scripts default to the
 `polymer` recipe and an OECD 301 search query. Everything here applies to any
 recipe — override `PS_RECIPE` and the query if you are after something else.
 
-The important thing to understand first: **PaperScraper does no accelerator work
+The important thing to understand first: **PaperMiner does no accelerator work
 of its own.** It is an HTTP client that speaks the OpenAI chat API. The Gaudi
 cards are used only by a separate vLLM server process. So this is not a code
 port — it is two environments and an sbatch script.
 
 Those two environments cannot be merged. The vLLM Gaudi stack is built on Python
-3.10; PaperScraper requires 3.11 or newer. They talk over `localhost` instead.
+3.10; PaperMiner requires 3.11 or newer. They talk over `localhost` instead.
 
 | Environment | Owner | Python | Contents |
 | --- | --- | --- | --- |
 | `gaudi-pytorch-vllm` | ASU Research Computing (shared) | 3.10 | vLLM + Habana PyTorch |
-| `paperscraper` | you | 3.14 | PaperScraper and its dependencies |
+| `paperscraper` | you | 3.14 | PaperMiner and its dependencies |
 
 > **Never `pip install` into `gaudi-pytorch-vllm`.** It is shared by everyone on
 > Sol, and pip would happily replace Habana's patched PyTorch with a stock wheel,
@@ -82,7 +82,7 @@ interactive -c 4 -t 0-2
 
 That is shorthand for `salloc -c 1 -p htc -q public -t 0-4` with your overrides.
 
-## 2. Create the PaperScraper environment
+## 2. Create the PaperMiner environment
 
 ```bash
 module load mamba/latest
@@ -115,14 +115,14 @@ module or an apptainer image, and — verbatim — "Do not use `uv`, `conda`, or
 PyTorch-mismatch entry under Troubleshooting is exactly what it exists to
 prevent. What follows stays inside it: the environment comes from the `mamba`
 module, torch and vLLM are only ever the shared `gaudi-pytorch-vllm` copies, and
-`pip` installs nothing but PaperScraper and its pure-Python dependencies into an
+`pip` installs nothing but PaperMiner and its pure-Python dependencies into an
 environment of our own — never the shared one, never `~/.local`. If your group
 reads the rule more strictly than that, build a `.sif` and run the scraper from
-it instead; nothing in PaperScraper needs the host environment.
+it instead; nothing in PaperMiner needs the host environment.
 
 `pyproject.toml` depends on `headroom-ai[image,ml]`, whose `ml` extra requires
 `torch`. Left alone, pip resolves that to the CUDA build and pulls several GB of
-`nvidia-*` wheels and `triton` that are useless on a Gaudi node. PaperScraper only
+`nvidia-*` wheels and `triton` that are useless on a Gaudi node. PaperMiner only
 touches torch indirectly, through a lazy `transformers` import used for token
 counting, so the CPU build satisfies it completely.
 
@@ -168,7 +168,7 @@ export HF_HOME="/scratch/$USER/hf"
 export PIP_CACHE_DIR="/scratch/$USER/pip"
 ```
 
-This matters on both sides. vLLM downloads the weights, and PaperScraper loads
+This matters on both sides. vLLM downloads the weights, and PaperMiner loads
 the *tokenizer* for the same model name to size its text chunks — sharing one
 `HF_HOME` means the second lookup is a cache hit rather than a re-download.
 
@@ -370,16 +370,16 @@ variables rather than `ps_model_config`, because `ps_model_config` persists to
 ### Checking the server by hand
 
 If a run misbehaves, get an interactive Gaudi session, start the server, and
-separate server problems from client problems before involving PaperScraper:
+separate server problems from client problems before involving PaperMiner:
 
 ```bash
 curl -s "http://127.0.0.1:$PORT/v1/models"
 ```
 
 The returned `data[0].id` must be exactly the Hugging Face repo id — that string
-is what PaperScraper uses to load its tokenizer.
+is what PaperMiner uses to load its tokenizer.
 
-Then send the completion budget PaperScraper actually uses. This is the single
+Then send the completion budget PaperMiner actually uses. This is the single
 most useful check, because it is the one that catches the context-sizing mistake:
 
 ```bash
@@ -433,7 +433,7 @@ HPU graph capture. Only 3.3B parameters are active per token, so throughput is
 closer to a small dense model than the parameter count suggests.
 
 The model card recommends `temperature=0.7, top_p=0.8` for general use, while
-PaperScraper defaults to `temperature=0, top_p=1` so extraction is reproducible.
+PaperMiner defaults to `temperature=0, top_p=1` so extraction is reproducible.
 Keep the deterministic defaults; if you see a run degenerate into repetition that
 eats the completion budget, `PAPERSCRAPER_MODEL_TEMPERATURE` and
 `PAPERSCRAPER_MODEL_TOP_P` override them per job.
@@ -493,7 +493,7 @@ sbatch --export=ALL,PS_GPU_MEMORY_UTILIZATION=0.70 scrape_gaudi.sbatch
 
 ### Adding vision
 
-PaperScraper keeps separate `text` and `vision` profiles, so the text model does
+PaperMiner keeps separate `text` and `vision` profiles, so the text model does
 not have to change — but it does mean a second server, and `scrape_gaudi.sbatch`
 has no spare cards to put one on. Run the vision model as its own job with
 [`serve_gaudi.sbatch`](serve_gaudi.sbatch), on one card:
@@ -571,7 +571,7 @@ Run the uninstall with no environment active, so pip targets user site. If pip
 reports the packages are not installed, that interpreter is not the one that owns
 the directory — move the offending package directories aside by hand instead.
 
-**Chunking looks wrong and nothing is logged.** PaperScraper falls back to a
+**Chunking looks wrong and nothing is logged.** PaperMiner falls back to a
 `len/3` character estimate whenever the tokenizer fails to load, and it does so
 silently. Confirm `PS_MODEL` is the exact Hugging Face repo id and that `HF_HOME`
 is set in the job.

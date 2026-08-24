@@ -1,4 +1,4 @@
-"""Command-line entry points for PaperScraper workflows.
+"""Command-line entry points for PaperMiner workflows.
 
 This module maps installed ``ps_*`` commands to the underlying search, import,
 download, scrape, store, configuration, and maintenance functions.

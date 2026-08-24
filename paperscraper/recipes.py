@@ -144,9 +144,9 @@ def load_recipe(recipe_name: str) -> _Recipe:
         with open(RECIPES_PATH, 'r', encoding='utf-8') as f:
             recipes = json.load(f)
     except FileNotFoundError:
-        raise FileNotFoundError('The recipes.json file is missing. Please reinstall PaperScraper.')
+        raise FileNotFoundError('The recipes.json file is missing. Please reinstall PaperMiner.')
     except json.JSONDecodeError as e:
-        raise ValueError('The recipes.json file is not valid JSON. Please reinstall PaperScraper.') from e
+        raise ValueError('The recipes.json file is not valid JSON. Please reinstall PaperMiner.') from e
 
     try:
         return _validate_recipe(recipes[recipe_name.lower()], recipe_name)

@@ -2243,7 +2243,7 @@ def plot_topic_trends(
         from matplotlib.ticker import MaxNLocator, PercentFormatter
     except ImportError as error:
         raise RuntimeError(
-            'Plotting topic trends requires matplotlib. Install PaperScraper dependencies '
+            'Plotting topic trends requires matplotlib. Install PaperMiner dependencies '
             'and rerun ps_topics_trends with --plot.'
         ) from error
 

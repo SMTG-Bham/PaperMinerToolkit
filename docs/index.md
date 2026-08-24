@@ -1,8 +1,8 @@
-# Build literature datasets with PaperScraper
+# Build literature datasets with PaperMiner
 
 <p class="hero-tagline">Build scientific-paper corpora and extract structured, recipe-defined data with configurable language and vision models.</p>
 
-PaperScraper searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and supplements what it finds from Crossref; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
+PaperMiner searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and supplements what it finds from Crossref; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
 
 Start with {doc}`getting-started/installation`, then follow the {doc}`workflow` for a small end-to-end scrape, including LDA model selection, training, trends, and topic filtering. Runnable workflows are collected under {doc}`examples/index`.
 

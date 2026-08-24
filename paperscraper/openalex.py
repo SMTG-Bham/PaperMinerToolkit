@@ -1,7 +1,7 @@
-"""Small request helpers for the OpenAlex API used by PaperScraper.
+"""Small request helpers for the OpenAlex API used by PaperMiner.
 
 This module centralizes OpenAlex HTTP details and the mapping from OpenAlex
-work records onto PaperScraper's paper schema so search and download code can
+work records onto PaperMiner's paper schema so search and download code can
 share one implementation. OpenAlex meters access against a daily credit budget;
 requests without an API key still work but draw on a much smaller budget.
 """
@@ -77,7 +77,7 @@ def request_headers() -> dict[str, str]:
     Returns
     -------
     dict[str, str]
-        Headers containing the PaperScraper user agent.
+        Headers containing the PaperMiner user agent.
     """
     return provider.default_headers()
 
@@ -407,7 +407,7 @@ def works_batch(identifiers: Sequence[str],
 
 
 def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
-    """Map an OpenAlex work onto PaperScraper's paper schema.
+    """Map an OpenAlex work onto PaperMiner's paper schema.
 
     Parameters
     ----------

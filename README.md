@@ -1,23 +1,26 @@
-# PaperScraper
+# PaperMiner
 
-[![Tests](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml/badge.svg?branch=dev)](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml)
-[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperScraper/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperScraper)
+[![Tests](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml/badge.svg?branch=dev)](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml)
+[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperMiner/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperMiner)
 
 <p align="center">
-  <img src="assets/Paper_Scraper_banner.svg" alt="PaperScraper banner" width="640">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/Paper_Miner_banner_dark.svg">
+    <img src="assets/Paper_Miner_banner_light.svg" alt="PaperMiner banner" width="640">
+  </picture>
 </p>
 
-PaperScraper builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
+PaperMiner builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
 The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](docs/index.md). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
 
 ## Installation
 
-PaperScraper requires Python 3.11 or newer:
+PaperMiner requires Python 3.11 or newer:
 
 ```bash
-git clone https://github.com/SMTG-Bham/PaperScraper.git
-cd PaperScraper
+git clone https://github.com/SMTG-Bham/PaperMiner.git
+cd PaperMiner
 python -m pip install -e .
 ```
 
@@ -65,4 +68,4 @@ ruff check paperscraper tests
 pytest
 ```
 
-PaperScraper is currently alpha software. Keep the corpus database, recipe, model configuration, intermediate extraction CSV, and final results together so a workflow can be reviewed and reproduced.
+PaperMiner is currently alpha software. Keep the corpus database, recipe, model configuration, intermediate extraction CSV, and final results together so a workflow can be reviewed and reproduced.

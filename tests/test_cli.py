@@ -1,4 +1,4 @@
-"""Test the PaperScraper command-line entry points."""
+"""Test the PaperMiner command-line entry points."""
 
 from __future__ import annotations
 

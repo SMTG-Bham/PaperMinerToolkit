@@ -1,6 +1,6 @@
 # Credentials and model configuration
 
-PaperScraper keeps search/download credentials separate from the text and vision model profiles. Secrets can be supplied through environment variables, which is best for batch jobs, or saved interactively with the `ps_*_key` commands.
+PaperMiner keeps search/download credentials separate from the text and vision model profiles. Secrets can be supplied through environment variables, which is best for batch jobs, or saved interactively with the `ps_*_key` commands.
 
 ## Search and download services
 
@@ -67,7 +67,7 @@ ps_model_config vision --provider openai --model YOUR_VISION_MODEL
 ps_model_status
 ```
 
-Use model identifiers available to your provider account. PaperScraper infers ordinary capabilities from the provider and model name; `--capability` is an override for unusual or locally served models.
+Use model identifiers available to your provider account. PaperMiner infers ordinary capabilities from the provider and model name; `--capability` is an override for unusual or locally served models.
 
 ## Local OpenAI-compatible servers
 

@@ -1,6 +1,6 @@
 # Recipes and prompt construction
 
-Recipes define the structured records that PaperScraper asks a language or vision model to extract. They are not restricted to materials: a record can represent a material, experiment, reaction, device, organism, intervention, measurement series, or another unit that can be described by a paper.
+Recipes define the structured records that PaperMiner asks a language or vision model to extract. They are not restricted to materials: a record can represent a material, experiment, reaction, device, organism, intervention, measurement series, or another unit that can be described by a paper.
 
 A recipe controls four related parts of the workflow:
 
@@ -106,7 +106,7 @@ A standalone file may contain the recipe object directly, as above, or exactly o
 : The noun or short noun phrase used for one record subject, such as `material`, `experiment`, or `intervention`.
 
 `plural`
-: Its explicit plural form. PaperScraper does not guess plurals because scientific terms and multi-word phrases are not reliably pluralised automatically.
+: Its explicit plural form. PaperMiner does not guess plurals because scientific terms and multi-word phrases are not reliably pluralised automatically.
 
 `unit`
 : A precise description of what one JSON object represents. This is the most important granularity instruction. State which changes create a new record, for example `a distinct cell and cycling protocol` or `a distinct material, composition, phase, or sample`.
@@ -173,7 +173,7 @@ Avoid duplicating every field definition in `additional prompts`. Field-specific
 
 ## How the extraction prompt is assembled
 
-PaperScraper constructs a system prompt in a fixed order:
+PaperMiner constructs a system prompt in a fixed order:
 
 1. **Task statement.** `subject` identifies the target information and the source is named as paper text or a paper image.
 2. **Record definition.** `unit`, `singular`, and `plural` define record granularity and provide natural terminology.
@@ -196,7 +196,7 @@ Record definition:
 - The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
 ```
 
-Recipe values are inserted only into fixed prompt sections. PaperScraper does not run arbitrary string formatting over `additional prompts`, so braces in JSON examples or scientific notation are preserved literally.
+Recipe values are inserted only into fixed prompt sections. PaperMiner does not run arbitrary string formatting over `additional prompts`, so braces in JSON examples or scientific notation are preserved literally.
 
 ## Complete rendered prompt examples
 

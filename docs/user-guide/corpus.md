@@ -1,6 +1,6 @@
 # Building a corpus
 
-A PaperScraper corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
+A PaperMiner corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
 
 ## Search literature services
 
@@ -262,7 +262,7 @@ ps_download papers.db --format pdf \
   --source openalex
 ```
 
-PaperScraper tracks abstracts, full text, and PDFs independently. It skips a requested type when that type is already present while continuing to obtain missing types. Override this protection only when deliberately refreshing content:
+PaperMiner tracks abstracts, full text, and PDFs independently. It skips a requested type when that type is already present while continuing to obtain missing types. Override this protection only when deliberately refreshing content:
 
 ```bash
 ps_download papers.db --format both --force

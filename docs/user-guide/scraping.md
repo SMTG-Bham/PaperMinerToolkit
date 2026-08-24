@@ -1,6 +1,6 @@
 # Scraping and storing records
 
-A recipe defines what one output record represents, the extraction instructions, output fields, examples, aliases, and unit conversions. See {doc}`recipes` for the complete recipe format and an explanation of how PaperScraper constructs prompts. Use exactly the same recipe for scraping and storage.
+A recipe defines what one output record represents, the extraction instructions, output fields, examples, aliases, and unit conversions. See {doc}`recipes` for the complete recipe format and an explanation of how PaperMiner constructs prompts. Use exactly the same recipe for scraping and storage.
 
 ## Bundled recipes
 
@@ -51,7 +51,7 @@ When both modes produce records, the text model reconciles matching records into
 
 ## Context limits and compression
 
-PaperScraper reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.
+PaperMiner reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.
 
 :::{warning}
 Records extracted from separate chunks are not reconciled automatically. A material spanning chunk boundaries may be duplicated or incomplete. Increase the configured input limit only when the serving model genuinely supports it.

@@ -35,7 +35,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 # --- Knobs ------------------------------------------------------------------
-# PS_MODEL must be the exact Hugging Face repo id. PaperScraper loads the
+# PS_MODEL must be the exact Hugging Face repo id. PaperMiner loads the
 # matching tokenizer by that name for chunk sizing, so a mismatch silently
 # degrades to a character estimate.
 #
@@ -157,7 +157,7 @@ fi
 if (( PS_MAX_MODEL_LEN < PS_INPUT_TOKEN_LIMIT + PS_OUTPUT_RESERVE )); then
   echo "ERROR: PS_MAX_MODEL_LEN ($PS_MAX_MODEL_LEN) must be at least" >&2
   echo "       PS_INPUT_TOKEN_LIMIT ($PS_INPUT_TOKEN_LIMIT) + $PS_OUTPUT_RESERVE." >&2
-  echo "       PaperScraper always requests a 10000-token completion, and vLLM counts" >&2
+  echo "       PaperMiner always requests a 10000-token completion, and vLLM counts" >&2
   echo "       prompt + completion against --max-model-len. Every request would 400." >&2
   exit 1
 fi
@@ -284,7 +284,7 @@ until curl -sf "${BASE_URL}/models" >/dev/null 2>&1; do
 done
 echo "=== vLLM ready ==="
 
-# --- Run PaperScraper -------------------------------------------------------
+# --- Run PaperMiner -------------------------------------------------------
 activate_env "$PS_ENV"
 
 # Configure the text profile through environment overrides rather than

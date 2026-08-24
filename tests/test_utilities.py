@@ -76,7 +76,7 @@ def test_status_prints_pipeline_progress_summary(
     utilities.status(str(db_path))
 
     output = capsys.readouterr().out
-    assert 'PaperScraper Progress Summary' in output
+    assert 'PaperMiner Progress Summary' in output
     assert 'Total papers: 2' in output
     assert 'Metadata retrieved: 2' in output
     assert 'Text downloaded: 1' in output

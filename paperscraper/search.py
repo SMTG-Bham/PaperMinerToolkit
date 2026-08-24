@@ -1,6 +1,6 @@
 """Search Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, then merge results into the paper corpus.
 
-The functions here translate provider-specific API responses into PaperScraper's
+The functions here translate provider-specific API responses into PaperMiner's
 small public paper schema and append or update rows without duplicating papers
 that appear in multiple sources.
 """
@@ -45,7 +45,7 @@ def document_search(query: str,
                     search_fields: str = 'TITLE-ABS-KEY') -> pd.DataFrame:
     """Search Elsevier and return raw provider records.
 
-    This is a small replacement for the Elsapy search helper so PaperScraper can
+    This is a small replacement for the Elsapy search helper so PaperMiner can
     control pagination and treat ``count`` as a hard result cap.
 
     Parameters

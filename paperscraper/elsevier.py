@@ -1,4 +1,4 @@
-"""Small request helpers for the Elsevier APIs used by PaperScraper.
+"""Small request helpers for the Elsevier APIs used by PaperMiner.
 
 This module centralizes Elsevier HTTP details so the rest of the package does
 not depend on the unsupported ``elsapy`` wrapper, and maps Elsevier search

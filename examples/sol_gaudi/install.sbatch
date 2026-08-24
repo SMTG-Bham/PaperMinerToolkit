@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the PaperScraper environment on Sol, ready for the Gaudi example.
+# Build the PaperMiner environment on Sol, ready for the Gaudi example.
 #
 # Submit this once, before anything else, from this directory:
 #
@@ -76,7 +76,7 @@ find_repo_root() {
 
 submit_dir="$(cd "${SLURM_SUBMIT_DIR:-$PWD}" && pwd -P)"
 if ! REPO_ROOT="$(find_repo_root "$submit_dir")"; then
-  echo "ERROR: no PaperScraper checkout found at or above $submit_dir." >&2
+  echo "ERROR: no PaperMiner checkout found at or above $submit_dir." >&2
   echo "       Submit from the example directory inside the checkout:" >&2
   echo "         cd examples/sol_gaudi && sbatch install.sbatch" >&2
   exit 1
@@ -129,7 +129,7 @@ if (( ${#shadowing[@]} )); then
   echo "         Clear them by hand, with no environment active:"
   echo "           python3 -m pip uninstall -y torch torchvision torchaudio"
   echo "         This script does not touch ~/.local: it is shared by everything"
-  echo "         you run on this account, not just PaperScraper."
+  echo "         you run on this account, not just PaperMiner."
 fi
 
 # --- 1. Create the environment, from scratch --------------------------------
@@ -192,13 +192,13 @@ echo "python: $(python --version) at $(command -v python)"
 # headroom-ai[ml] requires torch, which resolves to the CUDA build on x86_64
 # Linux and drags in ~15 nvidia-* wheels plus triton — several GB that are dead
 # weight on a Gaudi node, and confusing to have beside Habana's runtime.
-# PaperScraper only touches torch through a lazy transformers import used for
+# PaperMiner only touches torch through a lazy transformers import used for
 # token counting, so the CPU build satisfies it completely. Installing it first
 # means pip sees the constraint as already met and never considers a CUDA wheel.
 echo "=== Installing CPU-only torch ==="
 pip install --index-url https://download.pytorch.org/whl/cpu torch
 
-echo "=== Installing PaperScraper ==="
+echo "=== Installing PaperMiner ==="
 pip install -e ".[test]"
 
 # --- 3. Assert the install is actually CUDA-free ----------------------------
@@ -236,7 +236,7 @@ echo "=== Test suite ==="
 pytest -q
 
 # --- 4. Pre-cache the tokenizer --------------------------------------------
-# For a local provider PaperScraper sizes its text chunks with
+# For a local provider PaperMiner sizes its text chunks with
 # transformers.AutoTokenizer.from_pretrained(<model name>), and silently falls
 # back to a len/3 character estimate if that lookup fails. Caching it here, on a
 # node with reliable outbound access, keeps the Gaudi job off the network.

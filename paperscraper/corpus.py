@@ -1,6 +1,6 @@
 """Store a compressed SQLite corpus of downloaded papers.
 
-This module provides a small standalone corpus layer for PaperScraper. It stores
+This module provides a small standalone corpus layer for PaperMiner. It stores
 paper metadata, pipeline state, deduplicated text/PDF blobs, and paper-to-blob
 links in SQLite without including the extracted materials table.
 """

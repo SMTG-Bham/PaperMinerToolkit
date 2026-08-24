@@ -1,6 +1,6 @@
 # LDA topic analysis
 
-PaperScraper uses a fixed-vocabulary scikit-learn latent Dirichlet allocation model to discover recurring word distributions. Topic names remain manual: inspect the terms and representative papers, then assign names that make sense for the corpus.
+PaperMiner uses a fixed-vocabulary scikit-learn latent Dirichlet allocation model to discover recurring word distributions. Topic names remain manual: inspect the terms and representative papers, then assign names that make sense for the corpus.
 
 ## Prepare the corpus
 

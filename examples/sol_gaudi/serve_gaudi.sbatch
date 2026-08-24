@@ -14,7 +14,7 @@
 #   cat vllm_endpoint.txt            # -> <node>:<port>
 #
 # Then, from a client job on a CPU partition or from your laptop through a
-# tunnel, point PaperScraper at it (still from this directory, where the corpus
+# tunnel, point PaperMiner at it (still from this directory, where the corpus
 # is):
 #
 #   export PAPERSCRAPER_MODEL_PROVIDER=local
@@ -24,7 +24,7 @@
 #   export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
 #   ps_scrape papers.db polymer --mode text --output scraped_polymer.csv
 #
-# The input limit must stay at least 11000 below PS_MAX_MODEL_LEN: PaperScraper
+# The input limit must stay at least 11000 below PS_MAX_MODEL_LEN: PaperMiner
 # always asks for a 10000-token completion and vLLM counts prompt + completion
 # against --max-model-len. See scrape_gaudi.sbatch for the full explanation.
 
@@ -50,7 +50,7 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 # Qwen3-30B-A3B-Instruct-2507 is the only Qwen3 model on Intel's validated list
 # for Gaudi 2, at tensor parallel 4 or 8 - hence -G 4 above. The -Instruct-2507
 # suffix is load-bearing: that variant is non-thinking by design, where a hybrid
-# thinking model would spend PaperScraper's hardcoded 10000-token completion
+# thinking model would spend PaperMiner's hardcoded 10000-token completion
 # budget on reasoning before writing any JSON. 30.5B parameters at bf16 is ~61 GB
 # of weights, ~15 GB per card across four.
 PS_MODEL="${PS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
