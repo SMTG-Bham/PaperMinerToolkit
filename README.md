@@ -1,8 +1,3 @@
-# PaperMiner
-
-[![Tests](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml)
-[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperMiner/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperMiner)
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/Paper_Miner_banner_dark.svg">
@@ -10,9 +5,17 @@
   </picture>
 </p>
 
+<p align="center">
+  <a href="https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml"><img src="https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+  <a href="https://codecov.io/gh/SMTG-Bham/PaperMiner"><img src="https://codecov.io/gh/SMTG-Bham/PaperMiner/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://paperminer.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF?logo=readthedocs&amp;logoColor=white" alt="Documentation"></a>
+</p>
+
+# PaperMiner
+
 PaperMiner builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
-The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](docs/index.md). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
+The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminer.readthedocs.io/en/latest/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
 
 ## Installation
 
