@@ -8,8 +8,8 @@ from typing import Any, NoReturn
 import pytest
 from click.testing import CliRunner
 
-import paperscraper.cli as cli
-import paperscraper.corpus as corpus
+import paperminer.cli as cli
+import paperminer.corpus as corpus
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:

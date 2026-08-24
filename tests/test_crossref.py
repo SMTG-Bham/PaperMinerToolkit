@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 import requests
 
-import paperscraper.corpus as corpus
-import paperscraper.crossref as crossref
-from paperscraper import provider
+import paperminer.corpus as corpus
+import paperminer.crossref as crossref
+from paperminer import provider
 
 from tests.doubles import FakeResponse
 

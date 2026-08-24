@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.settings as settings
-import paperscraper.tokenizer as tokenizer
+import paperminer.settings as settings
+import paperminer.tokenizer as tokenizer
 
 
 def config(
@@ -38,7 +38,7 @@ def live_anthropic_config() -> types.SimpleNamespace:
         {},
     )
     api_key = anthropic_profile.get('api_key') or loaded.get('anthropic_api_key')
-    model = os.environ.get('PAPERSCRAPER_ANTHROPIC_TEST_MODEL') or anthropic_profile.get('model')
+    model = os.environ.get('PAPERMINER_ANTHROPIC_TEST_MODEL') or anthropic_profile.get('model')
     base_url = anthropic_profile.get('base_url')
     return config(provider='anthropic', name=model, api_key=api_key, base_url=base_url)
 
@@ -153,7 +153,7 @@ def test_anthropic_token_count_uses_real_count_tokens_api() -> None:
         'Set anthropic_api_key in ~/.config/.pscraperrc.json or ANTHROPIC_API_KEY before running network tests.'
     )
     assert model_config.name, (
-        'Configure an Anthropic model profile or set PAPERSCRAPER_ANTHROPIC_TEST_MODEL before running network tests.'
+        'Configure an Anthropic model profile or set PAPERMINER_ANTHROPIC_TEST_MODEL before running network tests.'
     )
     count = tokenizer.anthropic_token_count('Count these paper-scraping tokens.', model_config)
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-import paperscraper.cli as cli
-import paperscraper.download as download
-import paperscraper.enrichment as enrichment
-import paperscraper.search as search
-from paperscraper import sources
+import paperminer.cli as cli
+import paperminer.download as download
+import paperminer.enrichment as enrichment
+import paperminer.search as search
+from paperminer import sources
 
 
 @pytest.mark.parametrize('capability', sources.CAPABILITIES)
@@ -46,7 +46,7 @@ def test_every_source_declares_at_least_one_capability() -> None:
         assert entry.capabilities <= set(sources.CAPABILITIES)
         assert entry.name == name
         assert entry.label
-        assert entry.module.startswith('paperscraper.')
+        assert entry.module.startswith('paperminer.')
 
 
 def test_a_credential_bearing_source_names_its_setup_command() -> None:

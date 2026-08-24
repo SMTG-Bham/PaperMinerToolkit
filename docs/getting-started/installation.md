@@ -7,8 +7,8 @@ PaperMiner requires Python 3.11 or newer. Create an isolated environment before 
 Clone the repository, activate your environment, and install the package in editable mode:
 
 ```bash
-git clone https://github.com/SMTG-Bham/PaperMiner.git
-cd PaperMiner
+git clone https://github.com/SMTG-Bham/PaperScraper.git
+cd PaperScraper
 python -m pip install -e .
 ```
 

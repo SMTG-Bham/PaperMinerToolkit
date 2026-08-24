@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-import paperscraper.biorxiv as biorxiv
-from paperscraper import _rxiv, provider
-import paperscraper.medrxiv as medrxiv
+import paperminer.biorxiv as biorxiv
+from paperminer import _rxiv, provider
+import paperminer.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
 

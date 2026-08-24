@@ -9,7 +9,7 @@ conda env create -f build_tools/environment.yml
 ```
 
 ```bash
-conda activate paperscraper
+conda activate paperminer
 ```
 
 Then install the package and its dependencies from the repository root. All
@@ -23,7 +23,7 @@ pip install -e ".[test]"
 Verify the install, docstrings, and function annotations:
 
 ```bash
-ruff check paperscraper tests
+ruff check paperminer tests
 pytest
 ```
 

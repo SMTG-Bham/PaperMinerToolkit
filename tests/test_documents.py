@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.documents.
+"""Unit tests for paperminer.documents.
 
 This module tests text extraction from PDF/TXT inputs, PDF image extraction,
 and page rendering helpers.
@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-import paperscraper.documents as documents
+import paperminer.documents as documents
 
 
 def test_read_pdf_text_concatenates_page_text(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,6 @@
-paperscraper.arxiv
+paperminer.arxiv
 ========================================
 
-.. automodule:: paperscraper.arxiv
+.. automodule:: paperminer.arxiv
    :members:
    :show-inheritance:

@@ -10,9 +10,9 @@ from typing import Any, Self
 import pandas as pd
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.scrape as scrape
-from paperscraper.compression import CompressionConfig
+import paperminer.corpus as corpus
+import paperminer.scrape as scrape
+from paperminer.compression import CompressionConfig
 
 
 def sample_recipe() -> dict[str, Any]:

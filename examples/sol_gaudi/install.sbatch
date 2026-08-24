@@ -19,7 +19,7 @@
 # login node. No accelerator is requested — this only installs an HTTP client.
 #
 # Options:
-#   PS_ENV=paperscraper            name of the environment to create
+#   PS_ENV=paperminer            name of the environment to create
 #   PS_FORCE=0                     reuse an existing environment instead of rebuilding
 #   PS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507   model whose tokenizer to pre-cache
 #   PS_PREFETCH_WEIGHTS=1          also download the model weights (~61 GB for the default)
@@ -39,7 +39,7 @@
 
 set -euo pipefail
 
-PS_ENV="${PS_ENV:-paperscraper}"
+PS_ENV="${PS_ENV:-paperminer}"
 PS_FORCE="${PS_FORCE:-1}"
 # Keep in step with the default in scrape_gaudi.sbatch: this only pre-caches
 # the tokenizer that sizes text chunks, and a tokenizer for the wrong model is

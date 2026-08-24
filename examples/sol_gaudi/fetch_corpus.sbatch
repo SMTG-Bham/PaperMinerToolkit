@@ -19,8 +19,8 @@
 # Credentials: a batch job does not reliably inherit your shell environment, so
 # keep the keys in a file only you can read and this script will source it:
 #
-#   printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperscraper_env
-#   chmod 600 ~/.paperscraper_env
+#   printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperminer_env
+#   chmod 600 ~/.paperminer_env
 #
 # When the job finishes, submit the scrape from the same directory:
 #
@@ -56,7 +56,7 @@ PS_DB="${PS_DB:-papers.db}"
 # Every paper the sources will give us, per source. See fetch_corpus.sh for what
 # the number means; set it to something small while testing a new query.
 PS_COUNT="${PS_COUNT:-1000000}"
-PS_SECRETS="${PS_SECRETS:-$HOME/.paperscraper_env}"
+PS_SECRETS="${PS_SECRETS:-$HOME/.paperminer_env}"
 
 # Run from wherever the job was submitted — normally examples/sol_gaudi — so the
 # corpus lands beside the scripts rather than in the scheduler's spool directory.

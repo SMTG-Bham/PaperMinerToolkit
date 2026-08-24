@@ -1,6 +1,6 @@
-paperscraper.settings
+paperminer.settings
 ========================================
 
-.. automodule:: paperscraper.settings
+.. automodule:: paperminer.settings
    :members:
    :show-inheritance:

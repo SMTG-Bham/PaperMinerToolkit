@@ -17,11 +17,11 @@
 # tunnel, point PaperMiner at it (still from this directory, where the corpus
 # is):
 #
-#   export PAPERSCRAPER_MODEL_PROVIDER=local
-#   export PAPERSCRAPER_MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
-#   export PAPERSCRAPER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
-#   export PAPERSCRAPER_MODEL_CAPABILITIES=text
-#   export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
+#   export PAPERMINER_MODEL_PROVIDER=local
+#   export PAPERMINER_MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
+#   export PAPERMINER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
+#   export PAPERMINER_MODEL_CAPABILITIES=text
+#   export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
 #   ps_scrape papers.db polymer --mode text --output scraped_polymer.csv
 #
 # The input limit must stay at least 11000 below PS_MAX_MODEL_LEN: PaperMiner

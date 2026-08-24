@@ -1,13 +1,17 @@
 """Sphinx configuration for the PaperMiner documentation."""
 
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 project = "PaperMiner"
 author = "PaperMiner contributors"
 copyright = "2026, PaperMiner contributors"
 
 try:
-    release = version("paperscraper")
+    release = version("paperminer")
 except PackageNotFoundError:
     release = "0.0.1"
 version = release
@@ -88,7 +92,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/SMTG-Bham/PaperMiner",
+            "url": "https://github.com/SMTG-Bham/PaperScraper",
             "icon": "fa-brands fa-github",
             "type": "fontawesome",
         }
@@ -96,7 +100,7 @@ html_theme_options = {
 }
 html_context = {
     "github_user": "SMTG-Bham",
-    "github_repo": "PaperMiner",
+    "github_repo": "PaperScraper",
     "github_version": "dev",
     "doc_path": "docs",
 }

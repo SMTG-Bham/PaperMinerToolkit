@@ -1,6 +1,6 @@
-paperscraper.enrichment
+paperminer.enrichment
 ========================================
 
-.. automodule:: paperscraper.enrichment
+.. automodule:: paperminer.enrichment
    :members:
    :show-inheritance:

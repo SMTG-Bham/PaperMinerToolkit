@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.openalex as openalex
-from paperscraper import provider
+import paperminer.openalex as openalex
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 

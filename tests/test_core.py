@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.core as core
-from paperscraper import provider
+import paperminer.core as core
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 

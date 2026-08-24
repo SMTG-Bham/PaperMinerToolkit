@@ -3,7 +3,7 @@
 #
 # The job starts vLLM from ASU Research Computing's shared gaudi-pytorch-vllm
 # environment, waits for it to serve, then runs ps_scrape from our own
-# paperscraper environment against 127.0.0.1. Both live in the same job, so
+# paperminer environment against 127.0.0.1. Both live in the same job, so
 # nothing is left running and no cross-node networking is involved.
 #
 # Submit from this directory, where fetch_corpus.sh left papers.db:
@@ -61,7 +61,7 @@ PS_TENSOR_PARALLEL_SIZE="${PS_TENSOR_PARALLEL_SIZE:-4}"
 
 # These two are NOT equal, and that is deliberate.
 #
-# paperscraper/extract.py hardcodes max_output_tokens=10000 on every request,
+# paperminer/extract.py hardcodes max_output_tokens=10000 on every request,
 # which OpenAICompatibleChatClient passes through as max_tokens. vLLM rejects a
 # request when prompt_tokens + max_tokens exceeds --max-model-len. So the input
 # budget must leave room for that fixed 10000-token completion:
@@ -114,7 +114,7 @@ PS_RECIPE="${PS_RECIPE:-polymer}"
 # columns for matching, so two recipes must never share one CSV.
 PS_IN_CSV="${PS_IN_CSV:-scraped_${PS_RECIPE}.csv}"
 PS_OUT_CSV="${PS_OUT_CSV:-materials_${PS_RECIPE}.csv}"
-PS_ENV="${PS_ENV:-paperscraper}"    # our env, created per examples/sol_gaudi/README.md
+PS_ENV="${PS_ENV:-paperminer}"    # our env, created per examples/sol_gaudi/README.md
 PS_VLLM_ENV="${PS_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
 PS_RUN_STORE="${PS_RUN_STORE:-1}"   # ps_store also calls the model, so do it while the server is up
 PS_STARTUP_TIMEOUT="${PS_STARTUP_TIMEOUT:-3600}"
@@ -290,11 +290,11 @@ activate_env "$PS_ENV"
 # Configure the text profile through environment overrides rather than
 # ps_model_config. ps_model_config persists to ~/.config/.pscraperrc.json,
 # which concurrent jobs would race over; these variables are job-local.
-export PAPERSCRAPER_MODEL_PROVIDER=local
-export PAPERSCRAPER_MODEL_NAME="$PS_MODEL"
-export PAPERSCRAPER_MODEL_BASE_URL="$BASE_URL"
-export PAPERSCRAPER_MODEL_CAPABILITIES=text
-export PAPERSCRAPER_MODEL_INPUT_TOKEN_LIMIT="$PS_INPUT_TOKEN_LIMIT"
+export PAPERMINER_MODEL_PROVIDER=local
+export PAPERMINER_MODEL_NAME="$PS_MODEL"
+export PAPERMINER_MODEL_BASE_URL="$BASE_URL"
+export PAPERMINER_MODEL_CAPABILITIES=text
+export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT="$PS_INPUT_TOKEN_LIMIT"
 
 ps_model_status
 

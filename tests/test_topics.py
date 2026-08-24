@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from paperscraper import corpus, filtering, topics
+from paperminer import corpus, filtering, topics
 
 
 THEME_TEXTS = [

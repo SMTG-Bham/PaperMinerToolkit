@@ -1,6 +1,6 @@
-paperscraper.recipes
+paperminer.recipes
 ========================================
 
-.. automodule:: paperscraper.recipes
+.. automodule:: paperminer.recipes
    :members:
    :show-inheritance:

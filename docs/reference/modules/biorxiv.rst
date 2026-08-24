@@ -1,6 +1,6 @@
-paperscraper.biorxiv
+paperminer.biorxiv
 ========================================
 
-.. automodule:: paperscraper.biorxiv
+.. automodule:: paperminer.biorxiv
    :members:
    :show-inheritance:

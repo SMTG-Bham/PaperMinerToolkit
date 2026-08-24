@@ -7,7 +7,7 @@ Each public PaperMiner module has its own API page. Private members beginning wi
 ```{toctree}
 :maxdepth: 1
 
-modules/paperscraper
+modules/paperminer
 modules/cli
 ```
 

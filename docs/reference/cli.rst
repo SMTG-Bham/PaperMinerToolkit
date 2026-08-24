@@ -7,103 +7,103 @@ task-oriented guides for complete workflows.
 Corpus discovery and content
 ----------------------------
 
-.. click:: paperscraper.cli:paper_search
+.. click:: paperminer.cli:paper_search
    :prog: ps_search
    :nested: full
 
-.. click:: paperscraper.cli:import_pdf_folder
+.. click:: paperminer.cli:import_pdf_folder
    :prog: ps_import_pdfs
    :nested: full
 
-.. click:: paperscraper.cli:import_author
+.. click:: paperminer.cli:import_author
    :prog: ps_import_author
    :nested: full
 
-.. click:: paperscraper.cli:enrich
+.. click:: paperminer.cli:enrich
    :prog: ps_enrich
    :nested: full
 
-.. click:: paperscraper.cli:download
+.. click:: paperminer.cli:download
    :prog: ps_download
    :nested: full
 
-.. click:: paperscraper.cli:corpus_status
+.. click:: paperminer.cli:corpus_status
    :prog: ps_corpus_stats
    :nested: full
 
 Filtering
 ---------
 
-.. click:: paperscraper.cli:filter_regex
+.. click:: paperminer.cli:filter_regex
    :prog: ps_filter_regex
    :nested: full
 
-.. click:: paperscraper.cli:filter_topic
+.. click:: paperminer.cli:filter_topic
    :prog: ps_filter_topic
    :nested: full
 
-.. click:: paperscraper.cli:filter_status
+.. click:: paperminer.cli:filter_status
    :prog: ps_filter_status
    :nested: full
 
-.. click:: paperscraper.cli:filter_reset
+.. click:: paperminer.cli:filter_reset
    :prog: ps_filter_reset
    :nested: full
 
 LDA topics
 ----------
 
-.. click:: paperscraper.cli:topics_train
+.. click:: paperminer.cli:topics_train
    :prog: ps_topics_train
    :nested: full
 
-.. click:: paperscraper.cli:topics_compare
+.. click:: paperminer.cli:topics_compare
    :prog: ps_topics_compare
    :nested: full
 
-.. click:: paperscraper.cli:topics_show
+.. click:: paperminer.cli:topics_show
    :prog: ps_topics_show
    :nested: full
 
-.. click:: paperscraper.cli:topics_name
+.. click:: paperminer.cli:topics_name
    :prog: ps_topics_name
    :nested: full
 
-.. click:: paperscraper.cli:topics_predict
+.. click:: paperminer.cli:topics_predict
    :prog: ps_topics_predict
    :nested: full
 
-.. click:: paperscraper.cli:topics_trends
+.. click:: paperminer.cli:topics_trends
    :prog: ps_topics_trends
    :nested: full
 
-.. click:: paperscraper.cli:topics_store
+.. click:: paperminer.cli:topics_store
    :prog: ps_topics_store
    :nested: full
 
-.. click:: paperscraper.cli:topics_models
+.. click:: paperminer.cli:topics_models
    :prog: ps_topics_models
    :nested: full
 
 Extraction and storage
 ----------------------
 
-.. click:: paperscraper.cli:scrape
+.. click:: paperminer.cli:scrape
    :prog: ps_scrape
    :nested: full
 
-.. click:: paperscraper.cli:store
+.. click:: paperminer.cli:store
    :prog: ps_store
    :nested: full
 
 Model and credential configuration
 ----------------------------------
 
-.. click:: paperscraper.cli:model_config
+.. click:: paperminer.cli:model_config
    :prog: ps_model_config
    :nested: full
 
-.. click:: paperscraper.cli:model_status
+.. click:: paperminer.cli:model_status
    :prog: ps_model_status
    :nested: full
 
@@ -140,10 +140,10 @@ positional arguments or options.
 Pipeline maintenance
 --------------------
 
-.. click:: paperscraper.cli:scraper_status
+.. click:: paperminer.cli:scraper_status
    :prog: ps_status
    :nested: full
 
-.. click:: paperscraper.cli:reset_scraper
+.. click:: paperminer.cli:reset_scraper
    :prog: ps_reset
    :nested: full

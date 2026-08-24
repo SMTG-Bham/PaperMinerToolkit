@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperscraper.elsevier as elsevier
-from paperscraper import provider
+import paperminer.elsevier as elsevier
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 

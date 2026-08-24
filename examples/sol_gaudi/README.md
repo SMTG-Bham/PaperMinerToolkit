@@ -20,7 +20,7 @@ Those two environments cannot be merged. The vLLM Gaudi stack is built on Python
 | Environment | Owner | Python | Contents |
 | --- | --- | --- | --- |
 | `gaudi-pytorch-vllm` | ASU Research Computing (shared) | 3.10 | vLLM + Habana PyTorch |
-| `paperscraper` | you | 3.14 | PaperMiner and its dependencies |
+| `paperminer` | you | 3.14 | PaperMiner and its dependencies |
 
 > **Never `pip install` into `gaudi-pytorch-vllm`.** It is shared by everyone on
 > Sol, and pip would happily replace Habana's patched PyTorch with a stock wheel,
@@ -87,7 +87,7 @@ That is shorthand for `salloc -c 1 -p htc -q public -t 0-4` with your overrides.
 ```bash
 module load mamba/latest
 mamba env create -f build_tools/environment.yml
-source activate paperscraper
+source activate paperminer
 ```
 
 [`build_tools/environment.yml`](../../build_tools/environment.yml) supplies only the interpreter;
@@ -259,8 +259,8 @@ A batch job does not reliably inherit your shell environment, so put the
 credentials in a file only you can read and the script will source it:
 
 ```bash
-printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperscraper_env
-chmod 600 ~/.paperscraper_env
+printf 'export ELSEVIER_API_KEY=...\nexport CORE_API_KEY=...\nexport UNPAYWALL_EMAIL=you@asu.edu\nexport OPENALEX_API_KEY=...\n' > ~/.paperminer_env
+chmod 600 ~/.paperminer_env
 ```
 
 ## 7. Submit the scrape
@@ -363,7 +363,7 @@ columns for matching, so two recipes sharing one CSV will not work.
 Note that `ps_store`'s unit conversions are per unit-bearing column, not per row:
 `polymer_db` costs 30 model round trips even for a single scraped record.
 
-The script configures the model through `PAPERSCRAPER_MODEL_*` environment
+The script configures the model through `PAPERMINER_MODEL_*` environment
 variables rather than `ps_model_config`, because `ps_model_config` persists to
 `~/.config/.pscraperrc.json` and concurrent jobs would race over it.
 
@@ -418,7 +418,7 @@ entry covers Gaudi 2 — `Qwen/Qwen3-30B-A3B-Instruct-2507`, at tensor parallel 
 validated against Gaudi **3** only. That is also why the CUDA notebook's
 `Qwen/Qwen3-VL-30B-A3B-Instruct` is not the default here.
 
-**It must not be a thinking model.** `paperscraper/extract.py` asks for a
+**It must not be a thinking model.** `paperminer/extract.py` asks for a
 10000-token completion and nothing more. A hybrid-thinking model — `Qwen3-8B`,
 anything `-Thinking-` — spends that budget reasoning before it writes any JSON,
 so records truncate or the response comes back with no JSON at all. The
@@ -435,14 +435,14 @@ closer to a small dense model than the parameter count suggests.
 The model card recommends `temperature=0.7, top_p=0.8` for general use, while
 PaperMiner defaults to `temperature=0, top_p=1` so extraction is reproducible.
 Keep the deterministic defaults; if you see a run degenerate into repetition that
-eats the completion budget, `PAPERSCRAPER_MODEL_TEMPERATURE` and
-`PAPERSCRAPER_MODEL_TOP_P` override them per job.
+eats the completion budget, `PAPERMINER_MODEL_TEMPERATURE` and
+`PAPERMINER_MODEL_TOP_P` override them per job.
 
 ### Context sizing — the one thing to get right
 
 `PS_MAX_MODEL_LEN` and `PS_INPUT_TOKEN_LIMIT` are **not** the same number.
 
-`paperscraper/extract.py` requests a 10000-token completion on every call, and
+`paperminer/extract.py` requests a 10000-token completion on every call, and
 that value is hardcoded — there is no flag for it. vLLM rejects any request where
 prompt plus completion exceeds `--max-model-len`. So the input budget has to
 leave room for it:
@@ -515,10 +515,10 @@ supported rather than proven — try it on a couple of papers before committing 
 run to it. Point the vision profile at the endpoint the job wrote:
 
 ```bash
-export PAPERSCRAPER_VISION_MODEL_PROVIDER=local
-export PAPERSCRAPER_VISION_MODEL_NAME=Qwen/Qwen2.5-VL-7B-Instruct
-export PAPERSCRAPER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/v1"
-export PAPERSCRAPER_VISION_MODEL_CAPABILITIES=text,vision
+export PAPERMINER_VISION_MODEL_PROVIDER=local
+export PAPERMINER_VISION_MODEL_NAME=Qwen/Qwen2.5-VL-7B-Instruct
+export PAPERMINER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/v1"
+export PAPERMINER_VISION_MODEL_CAPABILITIES=text,vision
 ```
 
 Then run with `PS_MODE=text-images`. If you raise `ps_scrape --image-batch-size`

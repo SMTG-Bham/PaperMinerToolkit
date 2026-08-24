@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.imports.
+"""Unit tests for paperminer.imports.
 
 This module tests importing local PDF files into the paper corpus, including
 folder validation, empty-folder handling, metadata mapping, and merging imported
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.imports as imports
+import paperminer.corpus as corpus
+import paperminer.imports as imports
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'

@@ -506,8 +506,8 @@ Common failures include:
 Before a large scrape, inspect the prompt and run a small representative batch. The Python prompt builders can be used without calling a model:
 
 ```python
-from paperscraper.extract import build_image_extraction_prompt, build_text_extraction_prompt
-from paperscraper.recipes import load_recipe
+from paperminer.extract import build_image_extraction_prompt, build_text_extraction_prompt
+from paperminer.recipes import load_recipe
 
 recipe = load_recipe("./cycling_recipe.json")
 print(build_text_extraction_prompt(recipe))

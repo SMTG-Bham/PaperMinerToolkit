@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.corpus.
+"""Unit tests for paperminer.corpus.
 
 This module tests the standalone SQLite corpus layer for storing paper metadata,
 compressed blobs, deduplicated content, paper asset links, and corpus storage
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-import paperscraper.corpus as corpus
+import paperminer.corpus as corpus
 
 
 V4_PAPER_FIELDS = [

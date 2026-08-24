@@ -1,4 +1,4 @@
-"""Unit tests for paperscraper.search.
+"""Unit tests for paperminer.search.
 
 This module tests provider-specific search helpers, CORE and Elsevier row
 normalization, pagination behavior, request headers, and merging search results
@@ -14,8 +14,8 @@ from typing import Any, NoReturn, Self
 import pandas as pd
 import pytest
 
-import paperscraper.corpus as corpus
-import paperscraper.search as search
+import paperminer.corpus as corpus
+import paperminer.search as search
 
 
 

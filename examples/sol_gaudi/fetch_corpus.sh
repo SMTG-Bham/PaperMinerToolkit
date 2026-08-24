@@ -46,7 +46,7 @@ DB="${2:-papers.db}"
 # OpenAlex with the same number and merges the results on DOI, so the corpus
 # ends up somewhere between the largest single source and the sum of all three.
 COUNT="${3:-1000000}"
-PS_ENV="${PS_ENV:-paperscraper}"
+PS_ENV="${PS_ENV:-paperminer}"
 
 export HF_HOME="${HF_HOME:-/scratch/$USER/hf}"
 

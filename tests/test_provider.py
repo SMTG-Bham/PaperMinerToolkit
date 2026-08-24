@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 import requests
 
-import paperscraper.arxiv as arxiv
-import paperscraper.crossref as crossref
-import paperscraper.openalex as openalex
-import paperscraper.pubmed as pubmed
-from paperscraper import provider
+import paperminer.arxiv as arxiv
+import paperminer.crossref as crossref
+import paperminer.openalex as openalex
+import paperminer.pubmed as pubmed
+from paperminer import provider
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -27,7 +27,7 @@ def limiter() -> provider.RateLimiter:
 
 def test_user_agent_carries_the_package_version_and_an_optional_address() -> None:
     """Build both the plain and the polite-pool user agent from one version."""
-    assert provider.USER_AGENT == f'PaperScraper/{provider.__version__}'
+    assert provider.USER_AGENT == f'PaperMiner/{provider.__version__}'
     assert provider.user_agent() == provider.USER_AGENT
     assert provider.user_agent('me@example.com') == f'{provider.USER_AGENT} (mailto:me@example.com)'
     assert provider.default_headers() == {'User-Agent': provider.USER_AGENT}

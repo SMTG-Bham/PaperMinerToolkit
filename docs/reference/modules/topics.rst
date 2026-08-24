@@ -1,6 +1,6 @@
-paperscraper.topics
+paperminer.topics
 ========================================
 
-.. automodule:: paperscraper.topics
+.. automodule:: paperminer.topics
    :members:
    :show-inheritance:

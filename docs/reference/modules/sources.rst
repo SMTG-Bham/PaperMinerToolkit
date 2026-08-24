@@ -1,6 +1,6 @@
-paperscraper.sources
+paperminer.sources
 ========================================
 
-.. automodule:: paperscraper.sources
+.. automodule:: paperminer.sources
    :members:
    :show-inheritance:

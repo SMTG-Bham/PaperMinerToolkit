@@ -24,7 +24,7 @@ ps_search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
-search matches more than that, PaperScraper prints the shortfall; split the query by date range to
+search matches more than that, PaperMiner prints the shortfall; split the query by date range to
 reach the rest. arXiv has the same limit at 30000 matches, and the same shortfall message.
 
 arXiv accepts a fielded query language rather than a plain phrase. A plain phrase is translated
@@ -46,7 +46,7 @@ calendar year and published in the next is stored as its own row. arXiv is searc
 exactly this reason: the published record wins whenever the two do match.
 
 medRxiv and bioRxiv publish no search endpoint. Their API can return one preprint by DOI, or
-every posting in a date range, and nothing else. PaperScraper answers such a query by reading that
+every posting in a date range, and nothing else. PaperMiner answers such a query by reading that
 archive newest first and matching each posting itself, over the title, abstract, authors, and
 category. A term matches at the start of a word, so `vaccine` finds `vaccines` and `genome` finds
 `genomes`, and several terms are combined with `AND`.
@@ -62,7 +62,7 @@ ps_search '"single cell" from:2024-01-01 to:2024-06-30' papers.db --source biorx
 ```
 
 Without them the walk starts at today and runs back to the first posting in the archive: June 2019
-for medRxiv, November 2013 for bioRxiv. Before it starts, PaperScraper prints how many postings
+for medRxiv, November 2013 for bioRxiv. Before it starts, PaperMiner prints how many postings
 that is. The walk ends as soon as `--count` papers match, so a query about the archive's own
 subject matter is usually answered in a few requests; a query that matches nothing recent is the
 expensive case, and it stops after 20000 postings and says how many it left unread. Narrowing with
@@ -83,7 +83,7 @@ preprint with no published version is stored under its own DOI with `medRxiv` or
 journal.
 
 The two servers share a DOI prefix — `10.1101` for older postings and `10.64898` for newer ones —
-so the prefix does not say which archive a preprint belongs to. PaperScraper tells them apart by
+so the prefix does not say which archive a preprint belongs to. PaperMiner tells them apart by
 the accession number, which is six digits on bioRxiv and eight on medRxiv, and routes each row to
 the one server that can answer for it. bioRxiv postings from before 2018 carry a bare accession
 such as `10.1101/060400` instead, which is recognized too.
@@ -100,7 +100,7 @@ ps_search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --
 
 Narrowing a chemRxiv query therefore makes the service do less work rather than saving you a long
 read, and an unscoped query is not the expensive case it is for medRxiv and bioRxiv. Only the first
-10000 matches are reachable for any one query; when a query matches more, PaperScraper prints the
+10000 matches are reachable for any one query; when a query matches more, PaperMiner prints the
 shortfall, and a `category:` or date scope reaches the rest. Categories are chemRxiv's own list —
 `Catalysis`, `Organic Chemistry`, `Analytical Chemistry`, `Theoretical and Computational
 Chemistry`, and the rest — and a name that matches none of them is reported rather than ignored.
@@ -109,11 +109,11 @@ A chemRxiv DOI keeps the version it was issued with, and that suffix is part of 
 decoration on the end of it. `10.26434/chemrxiv.15007737/v1` is a registered DOI while
 `10.26434/chemrxiv.15007737` is not, and for the older dated accessions the reverse holds:
 `10.26434/chemrxiv-2022-w08rh` is registered and `10.26434/chemrxiv-2022-w08rh-v1` is not.
-PaperScraper stores whichever form the archive issued, unchanged, so the DOI in `chemrxiv_doi`
+PaperMiner stores whichever form the archive issued, unchanged, so the DOI in `chemrxiv_doi`
 always resolves. Five suffix shapes are in use across the three platforms chemRxiv has run on, and
 all of them are recognized. A `10.26434` DOI is never mistaken for a medRxiv or bioRxiv one.
 
-chemrxiv.org is fronted by a bot challenge that can refuse a client outright. PaperScraper does not
+chemrxiv.org is fronted by a bot challenge that can refuse a client outright. PaperMiner does not
 try to get around it: a refusal is reported as the reason a search or download failed, and the same
 papers stay reachable through the `openalex` and `crossref` sources.
 
@@ -298,7 +298,7 @@ unaffected.
 chemRxiv is like arXiv rather than like the other two: it serves PDFs and abstracts but publishes
 no machine-readable full text, so it is not a `--format text` source and `--source chemrxiv` is
 rejected for that format. Text for a chemRxiv paper comes from scraping its downloaded PDF. Its
-PDFs sit behind the same bot challenge, which PaperScraper reports rather than works around, so a
+PDFs sit behind the same bot challenge, which PaperMiner reports rather than works around, so a
 download run on a network the challenge refuses will report those papers and carry on.
 
 By default, abstracts are also attempted while downloading text or PDFs. Disable that with
