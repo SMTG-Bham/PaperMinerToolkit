@@ -92,7 +92,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/SMTG-Bham/PaperScraper",
+            "url": "https://github.com/SMTG-Bham/PaperMiner",
             "icon": "fa-brands fa-github",
             "type": "fontawesome",
         }
@@ -100,8 +100,8 @@ html_theme_options = {
 }
 html_context = {
     "github_user": "SMTG-Bham",
-    "github_repo": "PaperScraper",
-    "github_version": "dev",
+    "github_repo": "PaperMiner",
+    "github_version": "main",
     "doc_path": "docs",
 }
 

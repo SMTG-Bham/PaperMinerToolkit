@@ -1,7 +1,7 @@
 # PaperMiner
 
-[![Tests](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml/badge.svg?branch=dev)](https://github.com/SMTG-Bham/PaperScraper/actions/workflows/tests.yml)
-[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperScraper/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperScraper)
+[![Tests](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/SMTG-Bham/PaperMiner/actions/workflows/tests.yml)
+[![Coverage](https://codecov.io/gh/SMTG-Bham/PaperMiner/branch/main/graph/badge.svg)](https://codecov.io/gh/SMTG-Bham/PaperMiner)
 
 <p align="center">
   <picture>
@@ -19,8 +19,8 @@ The complete user guide, CLI reference, Python API, HPC instructions, and render
 PaperMiner requires Python 3.11 or newer:
 
 ```bash
-git clone https://github.com/SMTG-Bham/PaperScraper.git
-cd PaperScraper
+git clone https://github.com/SMTG-Bham/PaperMiner.git
+cd PaperMiner
 python -m pip install -e .
 ```
 

@@ -57,9 +57,9 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SMTG-Bham/PaperScraper"
-Repository = "https://github.com/SMTG-Bham/PaperScraper"
-Issues = "https://github.com/SMTG-Bham/PaperScraper/issues"
+Homepage = "https://github.com/SMTG-Bham/PaperMiner"
+Repository = "https://github.com/SMTG-Bham/PaperMiner"
+Issues = "https://github.com/SMTG-Bham/PaperMiner/issues"
 
 [project.scripts]
 pm_search = "paperminer.cli:paper_search"
