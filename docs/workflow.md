@@ -21,6 +21,7 @@ getting-started/quickstart
 getting-started/configuration
 user-guide/corpus
 user-guide/filtering
+user-guide/recipes
 user-guide/scraping
 user-guide/topics
 user-guide/hpc

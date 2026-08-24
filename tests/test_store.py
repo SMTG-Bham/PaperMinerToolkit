@@ -20,7 +20,13 @@ import paperscraper.store as store
 def sample_recipe() -> dict[str, Any]:
     """Return a minimal recipe for store unit tests."""
     return {
-        'material type': 'test material',
+        'record definition': {
+            'subject': 'test materials',
+            'singular': 'material',
+            'plural': 'materials',
+            'unit': 'a distinct test material',
+            'identity fields': ['Name'],
+        },
         'search fields': {
             'Name': {'aliases': []},
             'Conductivity': {'unit': 'S cm^-1', 'aliases': []},
