@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import csv
 import json
+import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -58,6 +61,370 @@ def train_small_model(db_path: Path, model_dir: Path) -> dict[str, Any]:
         representative_papers=2,
         streaming=False,
     )
+
+
+def test_topic_helpers_validate_fields_batches_and_corpus_shape(tmp_path: Path) -> None:
+    """Reject invalid field, batching, topic-count, and empty-text inputs."""
+    assert topics.normalize_topic_text(None) == ''
+    with pytest.raises(ValueError, match='At least one'):
+        topics._validate_text_fields(())
+    with pytest.raises(ValueError, match='Unsupported'):
+        topics._validate_text_fields(('title', 'body'))
+    with pytest.raises(ValueError, match='batch_size'):
+        list(topics.iter_topic_document_batches(tmp_path / 'papers.db', batch_size=0))
+    with pytest.raises(ValueError, match='at least 2'):
+        topics.assess_topic_corpus([], 1)
+    with pytest.raises(ValueError, match='at least as many'):
+        topics.assess_topic_corpus([], 2)
+
+    documents = [
+        {'paper_id': 'a', 'doi': '', 'title': '', 'publication_date': '',
+         'text': 'word ' * 60, 'token_count': 60},
+        {'paper_id': 'b', 'doi': '', 'title': '', 'publication_date': '',
+         'text': 'word', 'token_count': 0},
+        {'paper_id': 'c', 'doi': '', 'title': '', 'publication_date': '',
+         'text': 'word ' * 60, 'token_count': 60},
+    ]
+    report = topics.assess_topic_corpus(documents, 2)
+    assert any('contain no usable text' in warning for warning in report['warnings'])
+
+
+def test_topic_document_trims_references_from_full_text() -> None:
+    """Exclude reference-section text when constructing LDA documents."""
+    document = topics._topic_document(
+        {'paper_id': 'p', 'title': '', 'doi': '', 'publication_date': ''},
+        {'text': {'content': b'Result words.\nReferences\nCited words.'}},
+        ('text',),
+    )
+    assert document['text'] == 'result words.'
+
+
+def test_topic_artifact_helpers_handle_absent_names_and_skipped_documents(tmp_path: Path) -> None:
+    """Leave absent artifacts alone and export no-vocabulary prediction rows."""
+    missing = tmp_path / 'missing.csv'
+    topics._refresh_csv_topic_names(missing, {'0': 'name'})
+    malformed = tmp_path / 'malformed.csv'
+    malformed.write_text('topic_id,value\n0,x\n')
+    topics._refresh_csv_topic_names(malformed, {'0': 'name'})
+    assert 'topic_name' not in malformed.read_text()
+    assert topics._topic_names(tmp_path, 2) == {'0': '', '1': ''}
+
+    output = tmp_path / 'predictions.csv'
+    topics._write_predictions(
+        output,
+        [{'paper_id': 'p', 'doi': '', 'title': 'No terms',
+          'publication_date': '2020', 'text': '', 'token_count': 0}],
+        [], {}, [],
+    )
+    assert list(csv.DictReader(output.open()))[0]['status'] == 'no_vocabulary_terms'
+
+
+def test_streaming_report_covers_errors_and_all_quality_warnings() -> None:
+    """Describe insufficient caches and every low-quality corpus condition."""
+    prepared = {
+        'documents_total': 10, 'documents_usable_before_vectorization': 3,
+        'documents_empty': 2, 'median_tokens': 10, 'documents_used': 2,
+        'vocabulary_size': 3, 'preparation_seconds': 0.1, 'cache_size_bytes': 20,
+    }
+    with pytest.raises(ValueError, match='at least as many'):
+        topics._streaming_corpus_report({**prepared, 'documents_usable_before_vectorization': 1}, 2)
+    with pytest.raises(ValueError, match='retained vocabulary'):
+        topics._streaming_corpus_report({**prepared, 'documents_used': 1}, 2)
+    report = topics._streaming_corpus_report(prepared, 2)
+    assert len(report['warnings']) == 5
+
+
+def test_streaming_preparation_handles_empty_filtered_and_zero_sample_corpora(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validate streaming vocabulary failures and retain rows excluded after vectorization."""
+    def document(identifier: str, text: str, tokens: int | None = None) -> dict[str, Any]:
+        """Build one streaming document mapping."""
+        return {
+            'paper_id': identifier, 'doi': '', 'title': identifier,
+            'publication_date': '2020', 'text': text,
+            'token_count': len(text.split()) if tokens is None else tokens,
+        }
+
+    batches: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        topics, 'iter_topic_document_batches',
+        lambda *args, **kwargs: iter(batches),
+    )
+    call = lambda directory, **overrides: topics._prepare_streaming_corpus(
+        tmp_path / 'unused.db', ('title',), [], 1,
+        overrides.get('min_df', 1), overrides.get('max_df', 1.0), 20, 10,
+        overrides.get('sample', 0), directory,
+    )
+
+    batches[:] = [[document('empty', '', 0)]]
+    with pytest.raises(ValueError, match='no usable'):
+        call(tmp_path / 'empty')
+    batches[:] = [[document('a', 'alpha'), document('b', 'beta')]]
+    with pytest.raises(ValueError, match='min_df=3'):
+        call(tmp_path / 'min-df', min_df=3)
+    batches[:] = [[document('a', 'alpha'), document('b', 'alpha')]]
+    with pytest.raises(ValueError, match='no terms remain'):
+        call(tmp_path / 'filtered', max_df=0.5)
+
+    batches[:] = [[
+        document('a', 'common alpha'), document('b', 'common beta'),
+        document('c', 'common'),
+    ]]
+    prepared = call(tmp_path / 'prepared', max_df=0.67, sample=0)
+    assert prepared['evaluation_matrix'].shape[0] == 0 if 'evaluation_matrix' in prepared else True
+    result = topics.train_topic_model(
+        tmp_path / 'unused.db', tmp_path / 'streamed', num_topics=2,
+        min_df=1, max_df=0.67, max_features=20, max_iter=1,
+        top_terms=2, representative_papers=1, ngram_max=1,
+        streaming=True, evaluation_sample_size=1,
+        _prepared_streaming=prepared, emit_warnings=False,
+    )
+    assert result['report']['perplexity'] is None
+    rows = list(csv.DictReader((tmp_path / 'streamed' / topics.PREDICTIONS_FILENAME).open()))
+    assert any(row['status'] == 'no_vocabulary_terms' for row in rows)
+
+
+@pytest.mark.parametrize(
+    ('overrides', 'message'),
+    [
+        ({'learning_method': 'invalid'}, 'learning_method'),
+        ({'min_df': 0}, 'min_df'),
+        ({'max_df': 0}, 'max_df'),
+        ({'max_features': 1}, 'max_features'),
+        ({'ngram_max': 3}, 'ngram_max'),
+        ({'max_iter': 0}, 'max_iter'),
+        ({'batch_size': 0}, 'batch_size'),
+        ({'streaming': True, 'learning_method': 'batch'}, 'Streaming training'),
+        ({'streaming': True, 'documents': []}, 'Explicit documents'),
+    ],
+)
+def test_topic_training_rejects_invalid_configuration(
+    tmp_path: Path,
+    overrides: dict[str, Any],
+    message: str,
+) -> None:
+    """Validate all training parameters before loading a corpus."""
+    options: dict[str, Any] = {
+        'num_topics': 2, 'min_df': 1, 'max_df': 1.0, 'max_features': 10,
+        'learning_method': 'online', 'max_iter': 1, 'top_terms': 1,
+        'representative_papers': 1, 'ngram_max': 1, 'streaming': False,
+        'batch_size': 1, 'evaluation_sample_size': 1,
+    }
+    options.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        topics.train_topic_model(tmp_path / 'papers.db', tmp_path / 'model', **options)
+
+
+def test_topic_comparison_and_trends_validate_early_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject malformed comparison grids and trend windows before file access."""
+    for counts, seeds, streaming, method, message in [
+        ((1,), (0, 1), False, 'batch', 'at least 2'),
+        ((2, 3), (), False, 'batch', 'random state'),
+        ((2, 3), (0,), True, 'batch', 'Streaming comparison'),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            topics.compare_topic_models(
+                tmp_path / 'papers.db', tmp_path / 'comparison',
+                topic_counts=counts, random_states=seeds,
+                streaming=streaming, learning_method=method,
+            )
+    with pytest.raises(ValueError, match='positive'):
+        topics.aggregate_topic_trends(tmp_path, tmp_path / 'out', bin_size=0)
+    monkeypatch.setattr(
+        topics, 'load_topic_model',
+        lambda path: (object(), object(), {'num_topics': 2}, {'0': '', '1': ''}),
+    )
+    with pytest.raises(FileNotFoundError, match='Missing topic predictions'):
+        topics.aggregate_topic_trends(tmp_path, tmp_path / 'out')
+
+
+def test_set_topic_name_validates_id_and_nonempty_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject invalid manual topic labels before rewriting model artifacts."""
+    monkeypatch.setattr(
+        topics, 'load_topic_model',
+        lambda path: (object(), object(), {'num_topics': 2}, {'0': '', '1': ''}),
+    )
+    with pytest.raises(ValueError, match='between 0 and 1'):
+        topics.set_topic_name(tmp_path, 2, 'bad')
+    with pytest.raises(ValueError, match='must not be empty'):
+        topics.set_topic_name(tmp_path, 0, '   ')
+
+
+def test_in_memory_training_reports_vocabulary_failures_and_exclusions(tmp_path: Path) -> None:
+    """Explain frequency-filter failures and retain diagnostics for excluded papers."""
+    assert topics._median([]) == 0
+
+    def document(identifier: str, text: str) -> dict[str, Any]:
+        """Build one explicit topic document."""
+        return {
+            'paper_id': identifier, 'doi': '', 'title': identifier,
+            'publication_date': '2020', 'text': text,
+            'token_count': len(text.split()),
+        }
+
+    common = dict(
+        num_topics=2, min_df=1, max_df=1.0, max_features=20,
+        learning_method='batch', max_iter=1, top_terms=2,
+        representative_papers=1, streaming=False, emit_warnings=False,
+        ngram_max=1,
+    )
+    with pytest.raises(ValueError, match='min_df=3'):
+        topics.train_topic_model(
+            tmp_path / 'unused.db', tmp_path / 'min-df',
+            documents=[document('a', 'alpha beta'), document('b', 'beta gamma')],
+            **{**common, 'min_df': 3},
+        )
+    with pytest.raises(ValueError, match='Could not build the topic vocabulary'):
+        topics.train_topic_model(
+            tmp_path / 'unused.db', tmp_path / 'empty-vocabulary',
+            documents=[document('a', 'the and'), document('b', 'the and')], **common,
+        )
+    with pytest.raises(ValueError, match='Only 1 documents'):
+        topics.train_topic_model(
+            tmp_path / 'unused.db', tmp_path / 'too-few',
+            documents=[document('a', 'common alpha'), document('b', 'common')],
+            **{**common, 'max_df': 0.5},
+        )
+
+    result = topics.train_topic_model(
+        tmp_path / 'unused.db', tmp_path / 'warnings',
+        documents=[
+            document('a', 'common alpha'), document('b', 'common beta'),
+            document('c', 'common'),
+        ],
+        **{**common, 'max_df': 0.67},
+    )
+    assert result['report']['documents_without_vocabulary_terms'] == 1
+    assert any('Small topic vocabulary' in item for item in result['report']['warnings'])
+
+
+def test_topic_artifact_and_prediction_failures_are_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject missing or incompatible artifacts and prediction runs with no papers."""
+    with pytest.raises(FileNotFoundError, match='Missing topic model configuration'):
+        topics.load_topic_model(tmp_path / 'missing')
+    invalid = tmp_path / 'invalid'
+    invalid.mkdir()
+    (invalid / topics.CONFIG_FILENAME).write_text(json.dumps({'artifact_version': -1}))
+    with pytest.raises(ValueError, match='Unsupported topic model artifact version'):
+        topics.load_topic_model(invalid)
+
+    monkeypatch.setattr(
+        topics, 'load_topic_model',
+        lambda path: (
+            object(), object(), {'num_topics': 2, 'text_fields': ['title']},
+            {'0': '', '1': ''},
+        ),
+    )
+    monkeypatch.setattr(topics, 'iter_topic_document_batches', lambda *args, **kwargs: iter(()))
+    with pytest.raises(ValueError, match='no papers'):
+        topics.predict_topic_model(tmp_path, tmp_path / 'empty.db', tmp_path / 'predictions.csv')
+
+
+def test_trend_aggregation_handles_bad_dates_unpredicted_rows_and_partial_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count missing dates, skip unpredicted values, and optionally omit partial windows."""
+    monkeypatch.setattr(
+        topics, 'load_topic_model',
+        lambda path: (object(), object(), {'num_topics': 1, 'model_id': 'lda:test'}, {'0': 'Topic'}),
+    )
+    predictions = tmp_path / 'predictions.csv'
+    fields = [
+        'paper_id', 'doi', 'title', 'publication_date', 'topic_id', 'topic_name',
+        'probability', 'is_dominant', 'status',
+    ]
+    with predictions.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows([
+            {'paper_id': 'bad-date', 'publication_date': '', 'status': 'no_vocabulary_terms'},
+            {'paper_id': 'missing', 'publication_date': '2020', 'status': 'no_vocabulary_terms'},
+            {'paper_id': 'found', 'publication_date': '2021', 'topic_id': 0,
+             'probability': 1, 'is_dominant': True, 'status': 'predicted'},
+        ])
+    result = topics.aggregate_topic_trends(
+        tmp_path, tmp_path / 'trends', predictions_path=predictions,
+        bin_size=2, step_size=1, start_year=2020, end_year=2021,
+        include_partial=False,
+    )
+    assert result['papers_missing_or_invalid_date'] == 1
+    assert result['windows'] == 1
+    with pytest.raises(ValueError, match='start_year'):
+        topics.aggregate_topic_trends(
+            tmp_path, tmp_path / 'reverse', predictions_path=predictions,
+            start_year=2022, end_year=2021,
+        )
+
+    only_bad = tmp_path / 'only-bad.csv'
+    with only_bad.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerow({'paper_id': 'bad', 'publication_date': 'unknown', 'status': 'no_vocabulary_terms'})
+    with pytest.raises(ValueError, match='no valid publication years'):
+        topics.aggregate_topic_trends(
+            tmp_path, tmp_path / 'bad-trends', predictions_path=only_bad,
+        )
+
+
+def test_plot_topic_trends_validates_rows_and_styles_partial_only_series(tmp_path: Path) -> None:
+    """Reject empty trend data and render relative extensionless partial output names."""
+    report = tmp_path / 'report.json'
+    report.write_text(json.dumps({
+        'bin_size': 2, 'step_size': 1, 'papers_total': 2,
+        'observed_start_year': 2020, 'observed_end_year': 2021,
+    }))
+    empty = tmp_path / 'empty.csv'
+    empty.write_text('window_start,mean_probability\n')
+    with pytest.raises(ValueError, match='contains no rows'):
+        topics.plot_topic_trends(empty, report)
+
+    blank = tmp_path / 'blank.csv'
+    blank.write_text(
+        'window_start,window_end,is_partial,topic_id,topic_name,mean_probability,papers_total\n'
+        '2020,2021,True,0,Topic,,1\n'
+    )
+    with pytest.raises(ValueError, match='no predicted topic values'):
+        topics.plot_topic_trends(blank, report)
+
+    partial = tmp_path / 'partial.csv'
+    partial.write_text(
+        'window_start,window_end,is_partial,topic_id,topic_name,mean_probability,papers_total\n'
+        '2020,2021,True,0,Topic,0.5,1\n'
+        '2021,2022,True,0,Topic,0.6,1\n'
+    )
+    rendered = topics.plot_topic_trends(partial, report, 'figures/trend')
+    assert Path(rendered).name == 'trend.png'
+    assert Path(rendered).exists()
+
+
+def test_plot_topic_trends_explains_missing_matplotlib(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turn an optional plotting dependency failure into an actionable error."""
+    original_import = builtins.__import__
+
+    def without_matplotlib(name: str, *args: Any, **kwargs: Any) -> Any:
+        """Reject only Matplotlib imports while delegating every other module."""
+        if name == 'matplotlib' or name.startswith('matplotlib.'):
+            raise ImportError('matplotlib unavailable')
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', without_matplotlib)
+    with pytest.raises(RuntimeError, match='requires matplotlib'):
+        topics.plot_topic_trends(tmp_path / 'trends.csv', tmp_path / 'report.json')
 
 
 def test_normalize_topic_text_removes_markup_urls_and_dois() -> None:
@@ -386,6 +753,7 @@ def test_streaming_comparison_prepares_the_corpus_once(
         streaming=True,
         batch_size=3,
         evaluation_sample_size=4,
+        cache_dir=tmp_path / 'cache',
     )
 
     assert calls == [1]
@@ -436,7 +804,10 @@ def test_topic_trends_support_fixed_and_overlapping_windows(tmp_path: Path) -> N
         )
 
 
-def test_topic_store_predicts_fresh_scores_and_reports_staleness(tmp_path: Path) -> None:
+def test_topic_store_predicts_fresh_scores_and_reports_staleness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Store normalized scores transactionally and detect subsequent corpus changes."""
     db_path = tmp_path / 'papers.db'
     model_dir = tmp_path / 'model'
@@ -447,6 +818,72 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(tmp_path: Path)
     summary = topics.store_topic_model_scores(
         model_dir, db_path, name='demo-model', batch_size=2
     )
+
+    with pytest.raises(ValueError, match='Model name'):
+        topics.store_topic_model_scores(model_dir, db_path, name='bad name')
+    with pytest.raises(ValueError, match='already stored'):
+        topics.store_topic_model_scores(model_dir, db_path, name='another-name')
+
+    original_load = topics.load_topic_model
+
+    def changed_identity(path: Any) -> tuple[Any, Any, dict[str, Any], dict[str, str]]:
+        """Return the trained artifact under a distinct immutable model identity."""
+        model, vectorizer, config, names = original_load(path)
+        return model, vectorizer, {**config, 'model_id': 'lda:different'}, names
+
+    monkeypatch.setattr(topics, 'load_topic_model', changed_identity)
+    with pytest.raises(ValueError, match='different model'):
+        topics.store_topic_model_scores(model_dir, db_path, name='demo-model')
+    monkeypatch.setattr(topics, 'load_topic_model', original_load)
+
+    original_import = builtins.__import__
+
+    def without_filtering(name: str, *args: Any, **kwargs: Any) -> Any:
+        """Simulate a minimal installation without the optional filtering import."""
+        if name == 'paperminer.filtering':
+            raise ImportError('filtering unavailable')
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', without_filtering)
+    topics.store_topic_model_scores(model_dir, db_path, name='demo-model')
+    monkeypatch.setattr(builtins, '__import__', original_import)
+
+    original_connect = topics.connect
+    rolled_back = []
+
+    class FailingConnection:
+        """Delegate reads but fail the transactional model upsert."""
+
+        def __init__(self, connection: Any) -> None:
+            """Store the real corpus connection."""
+            self.connection = connection
+
+        def __getattr__(self, name: str) -> Any:
+            """Delegate unspecified connection operations."""
+            return getattr(self.connection, name)
+
+        def execute(self, sql: str, parameters: Any = ()) -> Any:
+            """Fail only once the model-storage transaction has begun."""
+            if 'INSERT INTO topic_models' in sql:
+                raise sqlite3.OperationalError('disk full')
+            return self.connection.execute(sql, parameters)
+
+        def rollback(self) -> None:
+            """Record and delegate transaction rollback."""
+            rolled_back.append(True)
+            self.connection.rollback()
+
+    @contextlib.contextmanager
+    def failing_connect(path: Any) -> Any:
+        """Wrap the normal corpus connection in the failure proxy."""
+        with original_connect(path) as connection:
+            yield FailingConnection(connection)
+
+    monkeypatch.setattr(topics, 'connect', failing_connect)
+    with pytest.raises(sqlite3.OperationalError, match='disk full'):
+        topics.store_topic_model_scores(model_dir, db_path, name='demo-model')
+    assert rolled_back == [True]
+    monkeypatch.setattr(topics, 'connect', original_connect)
 
     assert summary['papers_predicted'] == 9
     with corpus.connect(db_path) as conn:
