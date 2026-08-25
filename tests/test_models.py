@@ -8,6 +8,7 @@ clients, and public query helpers without calling live model APIs.
 from __future__ import annotations
 
 import types
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -15,6 +16,24 @@ import pytest
 
 from paperminer.compression import CompressionConfig
 import paperminer.models as models
+
+
+def test_anthropic_error_detail_handles_every_response_shape() -> None:
+    """Prefer structured provider errors and fall back to bounded response text."""
+    assert models._anthropic_error_detail(None) == ''
+
+    class InvalidJSON:
+        """Response double whose body is not valid JSON."""
+
+        text = ' plain failure '
+
+        def json(self) -> Any:
+            """Raise a response decoding error."""
+            raise ValueError('bad json')
+
+    assert models._anthropic_error_detail(InvalidJSON()) == 'plain failure'
+    response = SimpleNamespace(json=lambda: {'error': {'message': 'structured failure'}}, text='ignored')
+    assert models._anthropic_error_detail(response) == 'structured failure'
 
 
 def text_config(**overrides: Any) -> models.ModelConfig:
