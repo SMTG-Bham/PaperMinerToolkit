@@ -2,16 +2,49 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+import xml.etree.ElementTree as ET
+
 import pytest
 import requests
 
 import paperminer.arxiv as arxiv
+import paperminer.biorxiv as biorxiv
+import paperminer.core as core
+import paperminer.elsevier as elsevier
+import paperminer.medrxiv as medrxiv
 import paperminer.crossref as crossref
 import paperminer.openalex as openalex
 import paperminer.pubmed as pubmed
 from paperminer import provider
+from paperminer import _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
+
+
+def test_provider_wrappers_delegate_and_handle_sparse_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise shared wrappers against empty and sparse provider responses."""
+    monkeypatch.setattr(_rxiv.provider, 'request_mapping', lambda *args, **kwargs: None)
+    assert _rxiv.request_json(biorxiv.SERVER_CONFIG, 'url') is None
+    monkeypatch.setattr(_rxiv, 'request', lambda *args, **kwargs: None)
+    assert _rxiv.full_text(biorxiv.SERVER_CONFIG, {'jatsxml': 'url'}) == ''
+    assert _rxiv.parse_query('""')[0] == []
+    sentinel = object()
+    monkeypatch.setattr(_rxiv, 'request', lambda *args, **kwargs: sentinel)
+    assert biorxiv.request('url') is sentinel
+    assert medrxiv.request('url') is sentinel
+    entry = ET.Element(f'{{{arxiv.ATOM_NS}}}entry')
+    assert arxiv._publication_date(entry) == ''
+    assert arxiv.entry_to_paper(entry)['paper_id'] == ''
+    assert len(arxiv.parse_entries(entry)) == 1
+    monkeypatch.setattr(core, 'request_json', lambda *args, **kwargs: {'id': 'work'})
+    assert core.get_work('1') == {'id': 'work'}
+    assert core._first(['', None]) == ''
+    monkeypatch.setattr(provider, 'request', lambda *args, **kwargs: None)
+    assert provider.request_xml('url', label='test', limiter=provider.RateLimiter(1)) is None
+    monkeypatch.setattr(elsevier.provider, 'request', lambda *args, **kwargs: sentinel)
+    assert elsevier.request('url', 'api-key') is sentinel
+    assert elsevier._link_values(1) == []
 
 
 def limiter() -> provider.RateLimiter:
@@ -117,6 +150,31 @@ def test_request_fails_at_once_on_a_client_error_other_than_a_rate_limit() -> No
         provider.request('https://example.test', label='Test', limiter=limiter(),
                          session=session)
     assert len(session.calls) == 1
+
+
+def test_request_does_not_retry_a_client_error_raised_by_the_session() -> None:
+    """Treat an HTTP error carrying a terminal 4xx response like a returned 4xx."""
+    response = FakeResponse(status_code=400)
+    error = requests.HTTPError('bad request', response=response)
+
+    class RaisingSession:
+        """Raise the prepared HTTP error and count calls."""
+
+        def __init__(self) -> None:
+            """Start with no calls."""
+            self.calls = 0
+
+        def get(self, *args: object, **kwargs: object) -> NoReturn:
+            """Raise the terminal response error."""
+            self.calls += 1
+            raise error
+
+    session = RaisingSession()
+    with pytest.raises(RuntimeError, match='failed after'):
+        provider.request(
+            'https://example.test', label='Test', limiter=limiter(), session=session,
+        )
+    assert session.calls == 1
 
 
 def test_request_retries_a_rate_limited_response_and_honours_retry_after(
