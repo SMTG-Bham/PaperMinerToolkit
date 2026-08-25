@@ -218,6 +218,89 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
     assert 'Storage saved:' in result.output
 
 
+def test_import_author_translates_service_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present Crossref validation and runtime failures as Click errors."""
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Raise a representative provider failure."""
+        raise RuntimeError('crossref failed')
+
+    monkeypatch.setattr(cli, 'import_author_works', fail)
+    result = CliRunner().invoke(cli.import_author, [
+        'papers.db', '--author', 'Jane Smith', '--email', 'person@example.org',
+    ])
+    assert result.exit_code == 1
+    assert 'crossref failed' in result.output
+
+
+def test_filter_overview_prints_topic_details_reasons_and_staleness() -> None:
+    """Render topic filters, bounded unavailable reasons, and stale-model advice."""
+    reasons = {f'reason {index}': index for index in range(12)}
+    overview = {
+        'filters': [{
+            'name': 'topic-filter', 'method': 'topic', 'join_operator': None,
+            'definition': {'model': 'model', 'include_mode': 'all'},
+            'counts': {'included': 1, 'excluded': 2, 'unavailable': 3},
+            'stale': True,
+        }],
+        'expression': 'topic-filter',
+        'counts': {'included': 1, 'excluded': 2, 'unavailable': 3},
+        'unavailable_reasons': reasons,
+        'stale_topic_filters': ['topic-filter'],
+    }
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        cli._echo_filter_overview('papers.db', overview)
+
+
+@pytest.mark.parametrize(
+    ('command_name', 'target', 'arguments'),
+    [
+        ('filter_regex', 'apply_regex_filter', ('db', 'rules')),
+        ('filter_topic', 'apply_topic_filter', ('db', 'rules')),
+        ('filter_reset', 'reset_filters', ('db', '--all')),
+        ('topics_train', 'train_topic_model', ('db', 'model')),
+        ('topics_compare', 'compare_topic_models', ('db', 'comparison')),
+        ('topics_show', 'topic_descriptions', ('model',)),
+        ('topics_name', 'set_topic_name', ('model', '0', 'name')),
+        ('topics_predict', 'predict_topic_model', ('model', 'db', 'predictions.csv')),
+        ('topics_trends', 'aggregate_topic_trends', ('model', 'trends')),
+        ('topics_store', 'store_topic_model_scores', ('model', 'db')),
+    ],
+)
+def test_analysis_commands_translate_domain_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command_name: str,
+    target: str,
+    arguments: tuple[str, ...],
+) -> None:
+    """Convert analysis-layer exceptions into concise command-line failures."""
+    for name in {'db', 'rules'}:
+        (tmp_path / name).write_text('{}')
+    (tmp_path / 'model').mkdir()
+
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Raise a representative domain validation error."""
+        raise ValueError('domain failed')
+
+    monkeypatch.setattr(cli, target, fail)
+    resolved = tuple(str(tmp_path / value) if value in {'db', 'rules', 'model'} else value
+                     for value in arguments)
+    result = CliRunner().invoke(getattr(cli, command_name), resolved)
+    assert result.exit_code == 1
+    assert 'domain failed' in result.output
+
+
+def test_topics_models_reports_an_empty_corpus(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Tell users explicitly when no stored topic models exist."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    monkeypatch.setattr(cli, 'stored_topic_models', lambda *args, **kwargs: [])
+    result = CliRunner().invoke(cli.topics_models, [str(db_path)])
+    assert result.exit_code == 0
+    assert 'No topic models' in result.output
+
+
 def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Train the topic model with explicit fields and print corpus warnings."""
     db_path = tmp_path / 'papers.db'
@@ -893,3 +976,21 @@ def test_search_download_and_enrich_source_choices_accept_pubmed(
 
     assert result.exit_code == 0
     assert enrich_calls['sources'] == ['pubmed']
+
+
+def test_filter_topic_prints_the_successful_overview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass a successful topic-filter result to the shared CLI formatter."""
+    db_path = tmp_path / 'papers.db'
+    rules_path = tmp_path / 'rules.json'
+    db_path.write_text('')
+    rules_path.write_text('{}')
+    overview = {'counts': {}, 'filters': [], 'stale_topic_filters': []}
+    seen = []
+    monkeypatch.setattr(cli, 'apply_topic_filter', lambda *args, **kwargs: overview)
+    monkeypatch.setattr(cli, '_echo_filter_overview', lambda *args: seen.append(args))
+    result = CliRunner().invoke(cli.filter_topic, [str(db_path), str(rules_path)])
+    assert result.exit_code == 0
+    assert seen == [(str(db_path), overview)]
