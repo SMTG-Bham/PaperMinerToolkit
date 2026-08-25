@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NoReturn, Self
 
 import pandas as pd
@@ -16,6 +17,26 @@ import pytest
 
 import paperminer.corpus as corpus
 import paperminer.search as search
+
+
+def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop provider pagination cleanly and normalize unusual search values."""
+    assert search._elsevier_link([{'href': 'https://example.org/full-text'}]).endswith('full-text')
+    assert search._elsevier_link([{'href': 'https://example.org/article'}]).endswith('article')
+    assert search._elsevier_link({'url': 'https://example.org'}) == 'https://example.org'
+    assert search._clean_search_abstract(['<b>one</b>', 'two']) == 'one two'
+    monkeypatch.setattr(search.openalex, 'request_json', lambda *args, **kwargs: {'results': []})
+    assert search.openalex_search('unused', 1).empty
+    monkeypatch.setattr(search.pubmed, 'configured_api_key', lambda: '')
+    monkeypatch.setattr(search.pubmed, 'configured_email', lambda: '')
+    monkeypatch.setattr(search.pubmed, 'esearch_history', lambda *args, **kwargs: ('env', '1', 1))
+    monkeypatch.setattr(search.pubmed, 'efetch_history', lambda *args, **kwargs: None)
+    monkeypatch.setattr(search.pubmed, 'parse_articles', lambda payload: [])
+    assert search.pubmed_search('query', 1).empty
+    fake = SimpleNamespace(parse_query=lambda query: (['term'], {}), CORPUS_START='2020-01-01', interval_page=lambda *args, **kwargs: {}, total_results=lambda payload: 1, page_size=lambda payload, default: 1, endpoint=lambda category: ('url', 1), page_cursors=lambda total, step: [0], parse_records=lambda payload: [], matches=lambda entry, terms: False, latest_versions=lambda entries: [])
+    assert search._rxiv_search(fake, 'testRxiv', 'term', 1).empty
+    with corpus.connect(tmp_path / 'papers.db') as conn:
+        assert search._store_search_abstracts(conn, [{'paper_id': 'p', 'abstract': ' '}]) == 0
 
 
 
