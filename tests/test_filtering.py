@@ -433,3 +433,323 @@ def test_topic_filters_support_probability_dominance_hybrid_and_stale_scores(
 def test_three_valued_status_combination(left: str, right: str, operator: str, expected: str) -> None:
     """Combine representative three-valued filter decisions."""
     assert filtering.combine_status(left, right, operator) == expected
+
+
+@pytest.mark.parametrize(
+    ('definition', 'message'),
+    [
+        (None, 'must be dict'),
+        ({'name': 'bad name', 'include': [{'name': 'x', 'pattern': 'x'}]}, 'Filter name'),
+        ({'name': 'x', 'include_mode': 'neither', 'include': [{'name': 'x', 'pattern': 'x'}]}, 'include_mode'),
+        ({'name': 'x', 'include': {}}, 'JSON lists'),
+        ({'name': 'x'}, 'at least one include'),
+        ({'name': 'x', 'include': [{}]}, 'non-empty name'),
+        ({'name': 'x', 'include': [{'name': 'x'}]}, 'string pattern'),
+        ({'name': 'x', 'include': [{'name': 'same', 'pattern': 'x'}],
+          'exclude': [{'name': 'same', 'pattern': 'y'}]}, 'unique'),
+        ({'name': 'x', 'include': [{'name': 'x', 'pattern': 'x'}], 'fields': []}, 'non-empty list'),
+        ({'name': 'x', 'include': [{'name': 'x', 'pattern': 'x'}], 'fields': ['body']}, 'Unknown'),
+        ({'name': 'x', 'include': [{'name': 'x', 'pattern': 'x'}], 'timeout_ms': True}, 'positive integer'),
+        ({'name': 'x', 'include': [{'name': 'x', 'pattern': 'x'}], 'case_sensitive': 'yes'}, 'true or false'),
+        ({'name': 'x', 'include': [{'name': 'x', 'pattern': 'x'}], 'description': 1}, 'description'),
+    ],
+)
+def test_regex_definition_rejects_each_invalid_component(
+    definition: object,
+    message: str,
+) -> None:
+    """Reject malformed regex definitions at the field that caused the error."""
+    with pytest.raises(ValueError, match=message):
+        filtering.normalize_regex_definition(definition)
+
+
+def test_filter_definition_loaders_report_invalid_json(tmp_path: Path) -> None:
+    """Wrap malformed JSON with a filter-specific validation message."""
+    path = tmp_path / 'broken.json'
+    path.write_text('{')
+    with pytest.raises(ValueError, match='Invalid filter JSON'):
+        filtering.load_regex_definition(path)
+    with corpus.connect(tmp_path / 'papers.db') as conn:
+        with pytest.raises(ValueError, match='Invalid filter JSON'):
+            filtering.load_topic_definition(conn, path)
+
+
+@pytest.mark.parametrize(
+    ('rule', 'message'),
+    [
+        ({}, 'non-empty name'),
+        ({'name': 'x', 'topic_id': True, 'min_probability': 0.5}, 'integer'),
+        ({'name': 'x', 'topic_id': 9, 'min_probability': 0.5}, 'unknown topic'),
+        ({'name': 'x', 'topic_id': 0, 'min_probability': 2}, 'between 0 and 1'),
+        ({'name': 'x', 'topic_id': 0, 'require_dominant': 'yes'}, 'true or false'),
+        ({'name': 'x', 'topic_id': 0}, 'requires min_probability'),
+    ],
+)
+def test_topic_rule_rejects_invalid_conditions(rule: object, message: str) -> None:
+    """Validate every independently constrained topic-rule component."""
+    with pytest.raises(ValueError, match=message):
+        filtering._normalize_topic_rule(rule, 'rule', {0, 1})
+
+
+def test_topic_definition_rejects_invalid_structure(tmp_path: Path) -> None:
+    """Validate topic-filter names, models, modes, rules, and descriptions."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
+        corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
+        corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
+    _store_fake_topic_scores(db_path)
+    base = {
+        'name': 'valid', 'model': 'test-model',
+        'include': [{'name': 'include', 'topic_id': 0, 'min_probability': 0.5}],
+        'exclude': [],
+    }
+    cases = [
+        ({**base, 'name': 'bad name'}, 'Filter name'),
+        ({'name': 'valid'}, 'requires a stored model'),
+        ({**base, 'model': 'missing'}, 'No stored topic model'),
+        ({**base, 'include_mode': 'neither'}, 'include_mode'),
+        ({**base, 'include': {}}, 'JSON lists'),
+        ({**base, 'include': []}, 'at least one include'),
+        ({**base, 'exclude': [{'name': 'include', 'topic_id': 1,
+                               'min_probability': 0.5}]}, 'unique'),
+        ({**base, 'description': 1}, 'description'),
+    ]
+    with corpus.connect(db_path) as conn:
+        for definition, message in cases:
+            with pytest.raises(ValueError, match=message):
+                filtering.normalize_topic_definition(conn, definition)
+
+
+def test_content_loading_reports_missing_and_unreadable_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain field-specific reasons when stored text and PDF assets fail."""
+    def broken_asset(*args: object) -> None:
+        """Represent a corrupt stored asset."""
+        raise RuntimeError('broken asset')
+
+    monkeypatch.setattr(filtering, 'get_asset', broken_asset)
+    content, _, unavailable = filtering._paper_content(
+        None, {'paper_id': 'paper:x', 'title': ''},
+        ['title', 'abstract', 'full_text'],
+    )
+    assert content == {}
+    assert unavailable[0] == 'title: missing'
+    assert 'abstract: unreadable (broken asset)' in unavailable
+    assert 'full_text: unreadable (broken asset; broken asset)' in unavailable
+
+
+def test_pdf_loading_handles_empty_and_broken_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat empty PDFs as missing and extraction failures as unreadable."""
+    asset = {'content': b'pdf'}
+    monkeypatch.setattr(
+        filtering, 'get_asset', lambda *args: asset if args[2] == 'pdf' else None
+    )
+    monkeypatch.setattr(filtering, 'read_pdf_bytes', lambda value: '   ')
+    assert filtering._paper_content(
+        None, {'paper_id': 'paper:x'}, ['full_text']
+    )[2] == ['full_text: missing']
+
+    def broken_pdf(value: bytes) -> str:
+        """Represent a PDF parser failure."""
+        raise RuntimeError('broken pdf')
+
+    monkeypatch.setattr(filtering, 'read_pdf_bytes', broken_pdf)
+    assert 'broken pdf' in filtering._paper_content(
+        None, {'paper_id': 'paper:x'}, ['full_text']
+    )[2][0]
+
+
+def test_match_rule_caps_evidence_and_records_timeouts() -> None:
+    """Bound regex evidence and retain fields that time out."""
+    expression = filtering.regex.compile('x')
+    matches, timed_out = filtering._match_rule(
+        expression, {'title': 'x' * (filtering.MAX_MATCHES_PER_FIELD + 5)}, 1,
+    )
+    assert matches[0]['count'] == filtering.MAX_MATCHES_PER_FIELD
+    assert matches[0]['count_truncated'] is True
+    assert len(matches[0]['snippets']) == filtering.MAX_SNIPPETS_PER_FIELD
+    assert timed_out == []
+
+    class TimedOutExpression:
+        """Regex-like object that times out for every field."""
+
+        def finditer(self, text: str, timeout: float) -> NoReturn:
+            """Raise the timeout expected from the regex library."""
+            raise TimeoutError
+
+    assert filtering._match_rule(TimedOutExpression(), {'title': 'x'}, 0.001) == (
+        [], ['title']
+    )
+
+
+def test_topic_evaluation_reports_missing_and_incomplete_predictions(tmp_path: Path) -> None:
+    """Fail closed when a paper lacks a prediction or a required topic score."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
+        corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
+    _store_fake_topic_scores(db_path)
+    definition = {
+        'model': 'test-model', 'model_id': 'lda:test', 'include_mode': 'all',
+        'include': [
+            {'name': 'a', 'topic_id': 0, 'min_probability': 0.5,
+             'require_dominant': False},
+            {'name': 'b', 'topic_id': 1, 'min_probability': 0.9,
+             'require_dominant': False},
+        ],
+        'exclude': [],
+    }
+    with corpus.connect(db_path) as conn:
+        status, _, reason = filtering.evaluate_topic_paper(
+            conn, {'paper_id': 'paper:missing'}, definition
+        )
+        assert (status, reason) == ('unavailable', 'topic prediction missing')
+        status, _, reason = filtering.evaluate_topic_paper(
+            conn, {'paper_id': 'paper:alpha'}, definition
+        )
+        assert (status, reason) == ('excluded', '')
+        conn.execute(
+            'DELETE FROM paper_topic_scores WHERE model_id = ? AND paper_id = ? AND topic_id = ?',
+            ('lda:test', 'paper:alpha', 1),
+        )
+        status, _, reason = filtering.evaluate_topic_paper(
+            conn, {'paper_id': 'paper:alpha'}, definition
+        )
+        assert (status, reason) == ('unavailable', 'topic scores incomplete')
+
+
+def test_status_combination_rejects_unknown_inputs() -> None:
+    """Reject unknown states and Boolean operators explicitly."""
+    with pytest.raises(ValueError, match='Unknown filter status'):
+        filtering.combine_status('bad', 'included', 'and')
+    with pytest.raises(ValueError, match='Unknown join operator'):
+        filtering.combine_status('included', 'included', 'xor')
+    assert filtering.combine_status('excluded', 'excluded', 'or') == 'excluded'
+
+
+def test_regex_filter_validates_join_and_exercises_replacement(tmp_path: Path) -> None:
+    """Reject misplaced joins and transactionally replace an existing regex filter."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'p', 'title': 'alpha'})
+    rules = _write_rules(tmp_path / 'rules.json', 'same', 'alpha')
+    with pytest.raises(ValueError, match='join_operator'):
+        filtering.apply_regex_filter(db_path, rules, join_operator='xor')
+    with pytest.raises(ValueError, match='first filter'):
+        filtering.apply_regex_filter(db_path, rules, join_operator='and')
+    filtering.apply_regex_filter(db_path, rules)
+    _write_rules(rules, 'same', 'beta')
+    overview = filtering.apply_regex_filter(db_path, rules, replace=True)
+    assert overview['counts']['excluded'] == 1
+    with pytest.raises(ValueError, match='first filter'):
+        filtering.apply_regex_filter(db_path, rules, join_operator='or', replace=True)
+
+
+def test_topic_filter_validates_join_duplicate_and_replacement(tmp_path: Path) -> None:
+    """Validate topic joins and replace a stored topic filter in place."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        for paper_id in ('paper:alpha', 'paper:beta'):
+            corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
+    _store_fake_topic_scores(db_path)
+    rules = tmp_path / 'topics.json'
+    rules.write_text(json.dumps({
+        'name': 'topics', 'model': 'test-model',
+        'include': [{'name': 'alpha', 'topic_id': 0, 'min_probability': 0.5}],
+        'exclude': [],
+    }))
+    with pytest.raises(ValueError, match='join_operator'):
+        filtering.apply_topic_filter(db_path, rules, join_operator='xor')
+    with pytest.raises(ValueError, match='first filter'):
+        filtering.apply_topic_filter(db_path, rules, join_operator='and')
+    filtering.apply_topic_filter(db_path, rules)
+    with pytest.raises(ValueError, match='already active'):
+        filtering.apply_topic_filter(db_path, rules)
+    overview = filtering.apply_topic_filter(db_path, rules, replace=True)
+    assert overview['filters'][0]['method'] == 'topic'
+    with pytest.raises(ValueError, match='first filter'):
+        filtering.apply_topic_filter(db_path, rules, join_operator='or', replace=True)
+
+    second = json.loads(rules.read_text())
+    second['name'] = 'topics-second'
+    second['include'][0]['name'] = 'alpha-second'
+    rules.write_text(json.dumps(second))
+    filtering.apply_topic_filter(db_path, rules, join_operator='and')
+    with corpus.connect(db_path) as conn:
+        assert filtering.topic_filter_staleness(conn) == {'lda:test': False}
+
+
+def test_topic_filter_staleness_fails_closed_without_a_database_path() -> None:
+    """Treat active topic filters on anonymous connections as stale."""
+    with corpus.connect(':memory:') as conn:
+        now = corpus.utc_now()
+        conn.execute(
+            'INSERT INTO corpus_filters '
+            '(name, method, description, definition_json, stack_position, join_operator, '
+            'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            ('topic', 'topic', '', json.dumps({'model_id': 'missing'}), 0, None, now, now),
+        )
+        assert filtering.topic_filter_staleness(conn) == {'missing': True}
+
+
+def test_filter_method_collisions_and_reset_validation(tmp_path: Path) -> None:
+    """Reject cross-method replacement and invalid filter removal requests."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        for paper_id in ('paper:alpha', 'paper:beta'):
+            corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
+    _store_fake_topic_scores(db_path)
+    regex_rules = _write_rules(tmp_path / 'regex.json', 'collision', 'alpha')
+    filtering.apply_regex_filter(db_path, regex_rules)
+    topic_rules = tmp_path / 'topic.json'
+    topic_rules.write_text(json.dumps({
+        'name': 'collision', 'model': 'test-model',
+        'include': [{'name': 'alpha-topic', 'topic_id': 0, 'min_probability': 0.5}],
+        'exclude': [],
+    }))
+    with pytest.raises(ValueError, match="method 'regex'"):
+        filtering.apply_topic_filter(db_path, topic_rules, replace=True)
+
+    filtering.reset_filters(db_path, all_filters=True)
+    filtering.apply_topic_filter(db_path, topic_rules)
+    with pytest.raises(ValueError, match="method 'topic'"):
+        filtering.apply_regex_filter(db_path, regex_rules, replace=True)
+    with pytest.raises(ValueError, match='exactly one'):
+        filtering.reset_filters(db_path)
+    with pytest.raises(ValueError, match='exactly one'):
+        filtering.reset_filters(db_path, name='collision', all_filters=True)
+    with pytest.raises(ValueError, match='No active filter'):
+        filtering.reset_filters(db_path, name='missing')
+
+
+def test_refresh_topic_filters_rolls_back_failed_reevaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave stored topic-filter results intact when reevaluation fails."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
+        corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
+    _store_fake_topic_scores(db_path)
+    rules = tmp_path / 'topics.json'
+    rules.write_text(json.dumps({
+        'name': 'topics', 'model': 'test-model',
+        'include': [{'name': 'alpha', 'topic_id': 0, 'min_probability': 0.5}],
+        'exclude': [],
+    }))
+    filtering.apply_topic_filter(db_path, rules)
+
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Simulate a failed prediction evaluation."""
+        raise RuntimeError('evaluation failed')
+
+    monkeypatch.setattr(filtering, 'evaluate_topic_paper', fail)
+    with pytest.raises(RuntimeError, match='evaluation failed'):
+        filtering.refresh_topic_filters(db_path, 'lda:test')
+    with corpus.connect(db_path) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM paper_filter_results').fetchone()[0] == 2
