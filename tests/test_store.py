@@ -34,6 +34,18 @@ def sample_recipe() -> dict[str, Any]:
     }
 
 
+def test_helpers_reject_empty_ids_and_skip_unscraped_papers(tmp_path: Path) -> None:
+    """Require useful paper IDs and avoid marking papers without successful scrapes."""
+    with pytest.raises(ValueError, match='non-empty'):
+        store._stored_paper_ids(pd.DataFrame({'Paper id': ['', None]}))
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'p', 'title': 'paper'})
+    store._mark_stored_papers(db_path, {'p'})
+    with corpus.connect(db_path) as conn:
+        assert corpus.paper_rows(conn)[0]['store_status'] == 'pending'
+
+
 def write_papers_corpus(path: Path) -> None:
     """Write a minimal paper corpus for store unit tests."""
     with corpus.connect(path) as conn:
