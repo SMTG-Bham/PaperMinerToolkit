@@ -12,6 +12,21 @@ from paperminer.compression import CompressionConfig
 import paperminer.extract as extract
 
 
+def test_record_reconciliation_without_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tell reconciliation to use context when no identity field exists."""
+    captured: dict[str, str] = {}
+
+    def query(messages: list[dict[str, Any]], model_config: object = None) -> str:
+        """Capture the reconciliation prompt."""
+        captured['prompt'] = messages[0]['content']
+        return '[]'
+
+    monkeypatch.setattr(extract, 'query_model', query)
+    recipe = {'record definition': {'subject': 'results', 'singular': 'result', 'plural': 'results', 'unit': 'one result', 'identity fields': []}, 'search fields': {}}
+    assert extract.combine_material_records([], [], recipe) == []
+    assert 'No primary identity fields are configured' in captured['prompt']
+
+
 def sample_recipe() -> dict[str, Any]:
     """Return a minimal extraction recipe for tests."""
     return {
