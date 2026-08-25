@@ -6,8 +6,8 @@ Confirm that the intended environment is active and reinstall the editable packa
 
 ```bash
 python -m pip install -e .
-which pm_scrape
-pm_scrape --help
+command -v pm
+pm scrape --help
 ```
 
 ## Search returns fewer papers than expected
@@ -20,11 +20,11 @@ pm_scrape --help
 
 ## Content is not downloaded
 
-Run `pm_corpus_stats` and inspect configured credentials with the relevant key commands. Access is source- and publisher-dependent; metadata discovery does not imply PDF availability. Repeat `--source` to test individual PDF sources. Use `--force` only when refreshing an asset that is already stored.
+Run `pm corpus stats` and inspect configured credentials with the relevant key commands. Access is source- and publisher-dependent; metadata discovery does not imply PDF availability. Repeat `--source` to test individual PDF sources. Use `--force` only when refreshing an asset that is already stored.
 
 ## A filter reports unavailable papers
 
-The requested abstract, text, or PDF may not exist, PDF extraction may have failed, or a regex may have timed out. Narrow expensive patterns, increase the timeout deliberately, or download the missing content. `pm_filter_status` reports the most frequent unavailable reasons.
+The requested abstract, text, or PDF may not exist, PDF extraction may have failed, or a regex may have timed out. Narrow expensive patterns, increase the timeout deliberately, or download the missing content. `pm filter status` reports the most frequent unavailable reasons.
 
 ## Topic terms are not meaningful
 
@@ -40,7 +40,7 @@ The requested abstract, text, or PDF may not exist, PDF extraction may have fail
 The paper text fingerprint no longer matches the stored prediction. Refresh it with the same model name:
 
 ```bash
-pm_topics_store topic_model papers.db --name MODEL_NAME
+pm topics store topic_model papers.db --name MODEL_NAME
 ```
 
 ## Text is split into many chunks
@@ -49,7 +49,7 @@ Check the configured model input limit and the server's true context size. Reduc
 
 ## A scrape rerun does nothing
 
-Successful stages are skipped. Pass `--force` to rescrape, or use `pm_reset` when deliberately resetting wider pipeline state. Inspect `pm_status` before resetting anything.
+Successful stages are skipped. Pass `--force` to rescrape, or use `pm reset` when deliberately resetting wider pipeline state. Inspect `pm status` before resetting anything.
 
 ## Documentation does not build
 

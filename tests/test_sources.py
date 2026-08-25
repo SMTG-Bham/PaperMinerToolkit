@@ -84,6 +84,7 @@ def test_a_credential_bearing_source_names_its_setup_command() -> None:
         if entry.credential:
             assert entry.credential_env, f'{entry.name} has no environment variable'
             assert entry.setup_command, f'{entry.name} has no setup command'
+            assert entry.setup_command.startswith('pm config ')
         else:
             assert not entry.credential_env
             assert not entry.setup_command

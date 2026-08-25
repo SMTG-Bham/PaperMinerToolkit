@@ -187,7 +187,7 @@ def configured_api_key(settings: Mapping[str, str] | None = None) -> str:
     settings = settings if settings is not None else load_settings()
     api_key = settings.get('elsevier_api_key') or os.environ.get('ELSEVIER_API_KEY')
     if not api_key:
-        raise ValueError('Elsevier API key is not configured. Run ps_elsevier_key first.')
+        raise ValueError('Elsevier API key is not configured. Run pm config elsevier-key first.')
     return str(api_key)
 
 

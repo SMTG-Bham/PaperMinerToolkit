@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -10,6 +11,48 @@ from click.testing import CliRunner
 
 import paperminer.cli as cli
 import paperminer.corpus.database as corpus
+
+
+def test_package_installs_only_the_nested_pm_entry_point() -> None:
+    """Replace the legacy underscore scripts with one discoverable command."""
+    project = tomllib.loads((Path(__file__).parents[1] / 'pyproject.toml').read_text())
+    assert project['project']['scripts'] == {'pm': 'paperminer.cli:main'}
+
+
+def test_main_command_exposes_discoverable_nested_groups() -> None:
+    """Expose one executable whose group help lists the available workflows."""
+    runner = CliRunner()
+
+    root_help = runner.invoke(cli.main, ['--help'])
+    filter_help = runner.invoke(cli.main, ['filter', '--help'])
+    topics_help = runner.invoke(cli.main, ['topics', '--help'])
+
+    assert root_help.exit_code == 0
+    for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
+                    'config', 'scrape', 'store', 'status', 'reset']:
+        assert command in root_help.output
+    assert filter_help.exit_code == 0
+    assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}
+    assert all(command in filter_help.output for command in cli.filter_group.commands)
+    assert topics_help.exit_code == 0
+    assert set(cli.topics_group.commands) == {
+        'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models',
+    }
+
+
+def test_nested_groups_register_every_command_at_its_public_path() -> None:
+    """Keep the installed command hierarchy from drifting from its design."""
+    assert set(cli.corpus_group.commands) == {'stats'}
+    assert set(cli.import_group.commands) == {'pdfs', 'author'}
+    assert set(cli.config_group.commands) == {
+        'model', 'status', 'elsevier-key', 'core-key', 'unpaywall-email',
+        'crossref-email', 'openalex-key', 'ncbi-key', 'ncbi-email',
+        'openai-key', 'anthropic-key',
+    }
+    for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
+                  cli.import_group, cli.config_group]:
+        for public_name, command in group.commands.items():
+            assert command.name == public_name
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +824,7 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
 
 
 def test_enrich_passes_sources_batch_size_and_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Forward every ps_enrich option to the enrichment worker."""
+    """Forward every pm enrich option to the enrichment worker."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')

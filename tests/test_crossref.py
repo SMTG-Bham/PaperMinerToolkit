@@ -269,7 +269,7 @@ def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch
     assert crossref.resolve_email(None) == 'stored@example.com'
 
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
-    with pytest.raises(ValueError, match='ps_crossref_email'):
+    with pytest.raises(ValueError, match='pm config crossref-email'):
         crossref.resolve_email(None)
 
 

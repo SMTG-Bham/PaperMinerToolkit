@@ -2,7 +2,7 @@
 
 This module coordinates document lookup, text chunking, PDF image extraction,
 model calls, text/image reconciliation, status updates, and optional cleanup for
-the main ``pm_scrape`` command.
+the main ``pm scrape`` command.
 """
 
 from __future__ import annotations

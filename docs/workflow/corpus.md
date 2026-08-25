@@ -7,20 +7,20 @@ A PaperMiner corpus is a SQLite database containing normalized paper metadata, c
 Search all configured providers:
 
 ```bash
-pm_search "Lithium solid electrolyte" papers.db --count 200
+pm search "Lithium solid electrolyte" papers.db --count 200
 ```
 
 Select a single provider when you need reproducible source coverage:
 
 ```bash
-pm_search "Lithium solid electrolyte" papers.db --source core --count 100
-pm_search "Lithium solid electrolyte" papers.db --source openalex --count 100
-pm_search "Lithium solid electrolyte" papers.db --source elsevier --count 100
-pm_search "Lithium solid electrolyte" papers.db --source pubmed --count 100
-pm_search "Lithium solid electrolyte" papers.db --source arxiv --count 100
-pm_search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
-pm_search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
-pm_search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
+pm search "Lithium solid electrolyte" papers.db --source core --count 100
+pm search "Lithium solid electrolyte" papers.db --source openalex --count 100
+pm search "Lithium solid electrolyte" papers.db --source elsevier --count 100
+pm search "Lithium solid electrolyte" papers.db --source pubmed --count 100
+pm search "Lithium solid electrolyte" papers.db --source arxiv --count 100
+pm search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
+pm search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
+pm search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
@@ -32,8 +32,8 @@ for you — its words are combined with `AND` across all fields — but a query 
 field prefix or a boolean operator is sent as written, so you can be precise:
 
 ```bash
-pm_search 'cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"' papers.db --source arxiv
-pm_search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
+pm search 'cat:cond-mat.mtrl-sci AND abs:"solid electrolyte"' papers.db --source arxiv
+pm search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
 ```
 
 The available prefixes are `ti:`, `au:`, `abs:`, `co:`, `jr:`, `cat:`, `rn:`, `id:`, and `all:`.
@@ -55,10 +55,10 @@ That makes the query the only place to say how much should be read, so it carrie
 `category:`, `from:`, and `to:` narrow the archive; everything else is a match term:
 
 ```bash
-pm_search 'vaccine hesitancy category:"public and global health"' papers.db --source medrxiv
-pm_search '"long covid" from:2024-01-01 to:2024-06-30' papers.db --source medrxiv
-pm_search 'chromatin category:"developmental biology"' papers.db --source biorxiv
-pm_search '"single cell" from:2024-01-01 to:2024-06-30' papers.db --source biorxiv
+pm search 'vaccine hesitancy category:"public and global health"' papers.db --source medrxiv
+pm search '"long covid" from:2024-01-01 to:2024-06-30' papers.db --source medrxiv
+pm search 'chromatin category:"developmental biology"' papers.db --source biorxiv
+pm search '"single cell" from:2024-01-01 to:2024-06-30' papers.db --source biorxiv
 ```
 
 Without them the walk starts at today and runs back to the first posting in the archive: June 2019
@@ -94,8 +94,8 @@ and matching locally. The same `category:`, `from:`, and `to:` terms are accepte
 are passed to the service as filters:
 
 ```bash
-pm_search 'photocatalysis category:Catalysis' papers.db --source chemrxiv
-pm_search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --source chemrxiv
+pm search 'photocatalysis category:Catalysis' papers.db --source chemrxiv
+pm search '"metal organic framework" from:2024-01-01 to:2024-12-31' papers.db --source chemrxiv
 ```
 
 Narrowing a chemRxiv query therefore makes the service do less work rather than saving you a long
@@ -124,13 +124,13 @@ papers stay reachable through the `openalex` and `crossref` sources.
 Import every PDF in a directory:
 
 ```bash
-pm_import_pdfs papers/ papers.db
+pm import pdfs papers/ papers.db
 ```
 
 The importer scans PDF metadata and text for DOI candidates, looks up Crossref metadata, and stores the original PDF in the corpus. For offline imports, retain DOI extraction but skip Crossref:
 
 ```bash
-pm_import_pdfs papers/ papers.db --no-crossref
+pm import pdfs papers/ papers.db --no-crossref
 ```
 
 ## Import an author's works
@@ -138,7 +138,7 @@ pm_import_pdfs papers/ papers.db --no-crossref
 Crossref can seed a corpus before any content is downloaded. Prefer an ORCID:
 
 ```bash
-pm_import_author supervisor.db \
+pm import author supervisor.db \
   --orcid 0000-0000-0000-0000 \
   --email you@example.ac.uk \
   --review-csv supervisor_works.csv
@@ -147,7 +147,7 @@ pm_import_author supervisor.db \
 If no ORCID is available, use a full name and optionally an affiliation:
 
 ```bash
-pm_import_author supervisor.db \
+pm import author supervisor.db \
   --author "First Family" \
   --affiliation "University of Example" \
   --email you@example.ac.uk
@@ -157,11 +157,11 @@ Inspect the review CSV before downloading. Crossref provides metadata and DOIs, 
 
 ## Supplement metadata
 
-Search and import records carry only a handful of bibliographic fields. `pm_enrich` fills in the rest
+Search and import records carry only a handful of bibliographic fields. `pm enrich` fills in the rest
 from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv:
 
 ```bash
-pm_enrich papers.db
+pm enrich papers.db
 ```
 
 Crossref supplies the metadata the publisher deposited against the DOI — publisher, work type,
@@ -200,22 +200,22 @@ Enrichment is re-runnable and resumable. A second run costs nothing because it o
 that are still pending, and an interrupted run keeps everything it already committed:
 
 ```bash
-pm_enrich papers.db --limit 500        # stop after 500 papers, resume later
-pm_enrich papers.db --retry-failed     # retry only papers that previously failed
-pm_enrich papers.db --refresh-after 90 # refresh citation counts older than 90 days
-pm_enrich papers.db --force            # re-fetch everything
+pm enrich papers.db --limit 500        # stop after 500 papers, resume later
+pm enrich papers.db --retry-failed     # retry only papers that previously failed
+pm enrich papers.db --refresh-after 90 # refresh citation counts older than 90 days
+pm enrich papers.db --force            # re-fetch everything
 ```
 
 Restrict the providers, or skip reference lists when you only want the bibliographic fields:
 
 ```bash
-pm_enrich papers.db --source crossref
-pm_enrich papers.db --source openalex --no-references
-pm_enrich papers.db --source pubmed
-pm_enrich papers.db --source arxiv
-pm_enrich papers.db --source medrxiv
-pm_enrich papers.db --source biorxiv
-pm_enrich papers.db --source chemrxiv
+pm enrich papers.db --source crossref
+pm enrich papers.db --source openalex --no-references
+pm enrich papers.db --source pubmed
+pm enrich papers.db --source arxiv
+pm enrich papers.db --source medrxiv
+pm enrich papers.db --source biorxiv
+pm enrich papers.db --source chemrxiv
 ```
 
 Papers with no DOI, OpenAlex identifier, PMID, arXiv identifier, medRxiv DOI, bioRxiv DOI, or
@@ -229,20 +229,20 @@ enriches only rows that already carry the identifier it issued.
 To supplement rows as they arrive instead of in a separate pass, add `--enrich` to discovery:
 
 ```bash
-pm_search "Lithium solid electrolyte" papers.db --enrich
-pm_import_author supervisor.db --orcid 0000-0000-0000-0000 --enrich
+pm search "Lithium solid electrolyte" papers.db --enrich
+pm import author supervisor.db --orcid 0000-0000-0000-0000 --enrich
 ```
 
-`pm_reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
+`pm reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
 re-enriched without refetching everything.
 
 ## Download abstracts, text, and PDFs
 
 ```bash
-pm_download papers.db --format abstract
-pm_download papers.db --format text
-pm_download papers.db --format pdf
-pm_download papers.db --format both
+pm download papers.db --format abstract
+pm download papers.db --format text
+pm download papers.db --format pdf
+pm download papers.db --format both
 ```
 
 `--source` applies to abstracts, full text, and PDFs alike. Abstract retrieval tries OpenAlex,
@@ -257,7 +257,7 @@ servers are tried last because the other sources may hold the publisher's versio
 holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
 
 ```bash
-pm_download papers.db --format pdf \
+pm download papers.db --format pdf \
   --source unpaywall \
   --source openalex
 ```
@@ -265,14 +265,14 @@ pm_download papers.db --format pdf \
 PaperMiner tracks abstracts, full text, and PDFs independently. It skips a requested type when that type is already present while continuing to obtain missing types. Override this protection only when deliberately refreshing content:
 
 ```bash
-pm_download papers.db --format both --force
+pm download papers.db --format both --force
 ```
 
 Full text comes from Elsevier when a key is configured, and otherwise from the PubMed Central
 open-access subset, which needs no credentials:
 
 ```bash
-pm_download papers.db --format text --source pubmed
+pm download papers.db --format text --source pubmed
 ```
 
 Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
@@ -288,7 +288,7 @@ same format PubMed Central serves, so `--format text` takes their full text dire
 scraping a PDF:
 
 ```bash
-pm_download papers.db --format text --source biorxiv
+pm download papers.db --format text --source biorxiv
 ```
 
 Their PDFs sit behind a bot challenge that occasionally refuses a client outright; when that
@@ -308,8 +308,8 @@ fetches abstracts from that provider alone; leave `--source` at its default to c
 ## Inspect the corpus
 
 ```bash
-pm_corpus_stats papers.db
-pm_status papers.db
+pm corpus stats papers.db
+pm status papers.db
 ```
 
 Corpus statistics include paper and asset counts, original and compressed storage sizes, and counts of text or abstract inputs that required chunking. Pipeline status summarizes search, download, scrape, and storage progress.

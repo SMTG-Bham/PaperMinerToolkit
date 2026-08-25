@@ -27,9 +27,9 @@ A regex definition contains positive rules and optional veto rules:
 Apply a first filter and compose subsequent filters explicitly:
 
 ```bash
-pm_filter_regex papers.db band_gap.json
-pm_filter_regex papers.db experimental.json --join or
-pm_filter_regex papers.db oxide.json --join and
+pm filter regex papers.db band_gap.json
+pm filter regex papers.db experimental.json --join or
+pm filter regex papers.db oxide.json --join and
 ```
 
 Operators are evaluated from left to right, so this stack becomes `((band-gap-materials OR experimental) AND oxide)`. `include_mode` controls whether any or all positive rules must match; every matching exclusion vetoes that filter. Repeat `--field` or pass `--timeout-ms` to override those settings for an application.
@@ -43,7 +43,7 @@ Example title filters are available in `examples/filters/`.
 First store predictions from a named model in the corpus:
 
 ```bash
-pm_topics_store topic_model papers.db --name sse-lda-v1
+pm topics store topic_model papers.db --name sse-lda-v1
 ```
 
 Then create a topic filter:
@@ -73,7 +73,7 @@ Then create a topic filter:
 ```
 
 ```bash
-pm_filter_topic papers.db solid_electrolyte_topics.json
+pm filter topic papers.db solid_electrolyte_topics.json
 ```
 
 Rules can require a minimum probability, dominance, or both. Exclusion rules take precedence. If source text changes after prediction, the topic filter becomes stale and scraping fails closed until the predictions are refreshed.
@@ -83,16 +83,16 @@ Rules can require a minimum probability, dominance, or both. Exclusion rules tak
 Regex and topic filters share one stack:
 
 ```bash
-pm_filter_regex papers.db broad_materials.json
-pm_filter_topic papers.db focused_topics.json --join and
-pm_filter_status papers.db
+pm filter regex papers.db broad_materials.json
+pm filter topic papers.db focused_topics.json --join and
+pm filter status papers.db
 ```
 
 Replacing an existing named filter requires `--replace`. Remove one filter or the complete stack with:
 
 ```bash
-pm_filter_reset papers.db --name focused-topics
-pm_filter_reset papers.db --all
+pm filter reset papers.db --name focused-topics
+pm filter reset papers.db --all
 ```
 
-Use `pm_scrape ... --ignore-filters` only for a deliberate one-run bypass. With no active filters, all eligible papers retain the original processing behavior.
+Use `pm scrape ... --ignore-filters` only for a deliberate one-run bypass. With no active filters, all eligible papers retain the original processing behavior.

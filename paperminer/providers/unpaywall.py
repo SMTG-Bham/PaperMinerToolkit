@@ -6,7 +6,7 @@ run tries, and not a search or enrichment source at all.
 
 A contact address is required rather than a key: Unpaywall identifies a client
 by an email in the query string and refuses a request without one. Store one
-with ``ps_unpaywall_email`` or in ``UNPAYWALL_EMAIL``.
+with ``pm config unpaywall-email`` or in ``UNPAYWALL_EMAIL``.
 
 A record lists every open location it knows of and flags the one it considers
 best. :func:`pdf_candidates` returns them best-first, because an individual
@@ -101,7 +101,7 @@ def get_work(doi: object,
         return None
     address = email or configured_email()
     if not address:
-        raise ValueError('Unpaywall email is not configured. Run ps_unpaywall_email first.')
+        raise ValueError('Unpaywall email is not configured. Run pm config unpaywall-email first.')
     return provider.request_mapping(url, label='Unpaywall', limiter=LIMITER,
                                     params={'email': address}, session=session,
                                     timeout=timeout, attempts=attempts)

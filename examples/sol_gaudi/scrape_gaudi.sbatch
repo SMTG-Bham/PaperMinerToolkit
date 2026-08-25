@@ -2,7 +2,7 @@
 # Scrape biodegradable polymer data with a local vLLM server on four Gaudi 2 cards.
 #
 # The job starts vLLM from ASU Research Computing's shared gaudi-pytorch-vllm
-# environment, waits for it to serve, then runs pm_scrape from our own
+# environment, waits for it to serve, then runs pm scrape from our own
 # paperminer environment against 127.0.0.1. Both live in the same job, so
 # nothing is left running and no cross-node networking is involved.
 #
@@ -110,13 +110,13 @@ PM_COUNT="${PM_COUNT:-}"
 #   schema and the papers report few samples each.
 PM_RECIPE="${PM_RECIPE:-polymer}"
 
-# One materials file per recipe. pm_store reuses an existing output file's
+# One materials file per recipe. pm store reuses an existing output file's
 # columns for matching, so two recipes must never share one CSV.
 PM_IN_CSV="${PM_IN_CSV:-scraped_${PM_RECIPE}.csv}"
 PM_OUT_CSV="${PM_OUT_CSV:-materials_${PM_RECIPE}.csv}"
 PM_ENV="${PM_ENV:-paperminer}"    # our env, created per examples/sol_gaudi/README.md
 PM_VLLM_ENV="${PM_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
-PM_RUN_STORE="${PM_RUN_STORE:-1}"   # pm_store also calls the model, so do it while the server is up
+PM_RUN_STORE="${PM_RUN_STORE:-1}"   # pm store also calls the model, so do it while the server is up
 PM_STARTUP_TIMEOUT="${PM_STARTUP_TIMEOUT:-3600}"
 
 # --- Gaudi and cache environment -------------------------------------------
@@ -288,7 +288,7 @@ echo "=== vLLM ready ==="
 activate_env "$PM_ENV"
 
 # Configure the text profile through environment overrides rather than
-# pm_model_config. pm_model_config persists to ~/.config/.paperminerrc.json,
+# pm config model. pm config model persists to ~/.config/.paperminerrc.json,
 # which concurrent jobs would race over; these variables are job-local.
 export PAPERMINER_MODEL_PROVIDER=local
 export PAPERMINER_MODEL_NAME="$PM_MODEL"
@@ -296,25 +296,25 @@ export PAPERMINER_MODEL_BASE_URL="$BASE_URL"
 export PAPERMINER_MODEL_CAPABILITIES=text
 export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT="$PM_INPUT_TOKEN_LIMIT"
 
-pm_model_status
+pm config status
 
 scrape_args=(--mode "$PM_MODE" --output "$PM_IN_CSV")
 [[ -n "$PM_COUNT" ]] && scrape_args+=(--count "$PM_COUNT")
 
 echo "=== Scraping ==="
-pm_scrape "$PM_DB" "$PM_RECIPE" "${scrape_args[@]}"
+pm scrape "$PM_DB" "$PM_RECIPE" "${scrape_args[@]}"
 
 if [[ "$PM_RUN_STORE" == "1" ]]; then
-  # pm_store runs LLM-driven unit conversion, so it needs the server too.
-  # --assume-yes is required: without it pm_store waits on an interactive
+  # pm store runs LLM-driven unit conversion, so it needs the server too.
+  # --assume-yes is required: without it pm store waits on an interactive
   # confirmation and the job would sit idle until it hits the walltime.
   echo "=== Storing ==="
-  pm_store "$PM_DB" "$PM_IN_CSV" "$PM_OUT_CSV" "$PM_RECIPE" --assume-yes
+  pm store "$PM_DB" "$PM_IN_CSV" "$PM_OUT_CSV" "$PM_RECIPE" --assume-yes
 fi
 
-pm_status "$PM_DB"
+pm status "$PM_DB"
 
-# pm_scrape catches per-paper exceptions, records them on the row, and carries
+# pm scrape catches per-paper exceptions, records them on the row, and carries
 # on, so a completely broken run still exits 0 and reports "0 material rows".
 # Surface the recorded errors explicitly or they go unnoticed.
 echo "=== Recorded per-paper errors ==="

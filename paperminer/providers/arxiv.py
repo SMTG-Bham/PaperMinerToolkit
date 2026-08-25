@@ -572,7 +572,7 @@ def total_results(root: ET.Element | None) -> int:
 def query_expression(query: str, default_field: str = 'all') -> str:
     """Translate a plain search phrase into an arXiv fielded expression.
 
-    ``ps_search`` hands every provider the same bare phrase, but arXiv's
+    ``pm search`` hands every provider the same bare phrase, but arXiv's
     ``search_query`` is a fielded language whose behaviour for an unprefixed
     multi-word query is undocumented. Terms are therefore joined with ``AND``
     under one field, matching how OpenAlex and PubMed read the same phrase, so

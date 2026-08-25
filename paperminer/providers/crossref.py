@@ -296,7 +296,7 @@ def resolve_email(email: str | None = None) -> str:
     if not resolved or '@' not in resolved:
         raise ValueError(
             'A contact email is required for Crossref requests. '
-            'Run ps_crossref_email, set CROSSREF_EMAIL, or pass --email.'
+            'Run pm config crossref-email, set CROSSREF_EMAIL, or pass --email.'
         )
     return resolved
 
@@ -461,7 +461,7 @@ def author_works(orcid: str | None = None,
         raise ValueError('Provide exactly one of orcid or author_name.')
     if not email or '@' not in email:
         raise ValueError('A contact email is required for Crossref polite-pool requests. '
-                         'Run ps_crossref_email, set CROSSREF_EMAIL, or pass --email.')
+                         'Run pm config crossref-email, set CROSSREF_EMAIL, or pass --email.')
     if max_results is not None and max_results < 1:
         raise ValueError('max_results must be a positive integer or None.')
     if page_size < 1 or page_size > 1000:

@@ -40,7 +40,7 @@
 # htc caps wall time at 4 hours but runs without interruption.
 #
 # Mind that against the unbounded PM_COUNT below. Search is cheap and re-running
-# it is nearly free, because pm_search upserts on DOI. Download is not: pm_download
+# it is nearly free, because pm search upserts on DOI. Download is not: pm download
 # walks every row in the corpus and has no skip for assets it already has, so a
 # job killed at the wall clock re-downloads from the start on the next submit.
 # If the corpus is big enough for that to bite, either bound PM_COUNT so the job

@@ -7,7 +7,7 @@ rather than only a DOI, and that identifier is what reaches the API again
 later; it is kept in the corpus ``core_id`` column.
 
 A key is required. CORE answers a keyless request with a 401, so a run that has
-none is better off not asking. Store one with ``ps_core_key`` or in
+none is better off not asking. Store one with ``pm config core-key`` or in
 ``CORE_API_KEY``; it travels as a bearer token rather than as a query
 parameter, which is what separates this source from OpenAlex and PubMed.
 

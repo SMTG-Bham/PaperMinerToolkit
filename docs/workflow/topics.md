@@ -7,8 +7,8 @@ PaperMiner uses a fixed-vocabulary scikit-learn latent Dirichlet allocation mode
 Titles and abstracts are the default input. Download abstracts and inspect coverage before training:
 
 ```bash
-pm_download papers.db --format abstract
-pm_corpus_stats papers.db
+pm download papers.db --format abstract
+pm corpus stats papers.db
 ```
 
 Use a corpus-specific stopword file to remove terms that occur everywhere:
@@ -26,7 +26,7 @@ Bigram features such as `solid_electrolyte` are enabled by default, preserving p
 ## Compare candidate models
 
 ```bash
-pm_topics_compare papers.db topic_comparison \
+pm topics compare papers.db topic_comparison \
   --topics 6 --topics 8 --topics 10 \
   --seed 0 --seed 1 --seed 2 \
   --field abstract \
@@ -38,15 +38,15 @@ The comparison prepares the streaming vocabulary and sparse batches once, then r
 ## Train, inspect, and name
 
 ```bash
-pm_topics_train papers.db topic_model \
+pm topics train papers.db topic_model \
   --topics 8 \
   --field abstract \
   --stopwords-file domain_stopwords.txt \
   --batch-size 1000 \
   --iterations 10
 
-pm_topics_show topic_model --representatives 5
-pm_topics_name topic_model 0 "sulfide solid electrolytes"
+pm topics show topic_model --representatives 5
+pm topics name topic_model 0 "sulfide solid electrolytes"
 ```
 
 Disk-backed streaming is the default and avoids constructing the complete document-term matrix in memory. Put temporary sparse batches on high-capacity scratch with `--cache-dir`. For a small corpus, `--in-memory` supports conventional batch LDA.
@@ -58,7 +58,7 @@ Training warns about small corpora, short inputs, missing text, and weak retaine
 Apply the saved model without retraining its topics:
 
 ```bash
-pm_topics_predict topic_model new_papers.db new_paper_topics.csv
+pm topics predict topic_model new_papers.db new_paper_topics.csv
 ```
 
 Inputs containing no fitted vocabulary terms are reported as `no_vocabulary_terms`, rather than receiving uniform probabilities.
@@ -66,8 +66,8 @@ Inputs containing no fitted vocabulary terms are reported as `no_vocabulary_term
 External CSV predictions are useful for analysis. To make a model available to persistent corpus filters, perform a fresh transactional prediction into the corpus:
 
 ```bash
-pm_topics_store topic_model papers.db --name sse-lda-v1
-pm_topics_models papers.db
+pm topics store topic_model papers.db --name sse-lda-v1
+pm topics models papers.db
 ```
 
 ## Trends
@@ -76,22 +76,22 @@ Always aggregate one fixed model across time; do not fit separate topics in each
 
 ```bash
 # Annual windows
-pm_topics_trends topic_model annual_trends \
+pm topics trends topic_model annual_trends \
   --bin-size 1 --step-size 1 --plot
 
 # Non-overlapping five-year blocks
-pm_topics_trends topic_model five_year_trends \
+pm topics trends topic_model five_year_trends \
   --bin-size 5 --step-size 5 --plot
 
 # Rolling five-year windows advanced annually
-pm_topics_trends topic_model rolling_trends \
+pm topics trends topic_model rolling_trends \
   --bin-size 5 --step-size 1 --plot-file rolling_topics.pdf
 ```
 
-Relative plot filenames are written inside the output directory. PNG is the default; the filename extension selects another Matplotlib format. Trend data include mean and summed probability, dominant-paper count and share, coverage, and partial-window state. Use `--predictions` to analyse a CSV created by `pm_topics_predict`.
+Relative plot filenames are written inside the output directory. PNG is the default; the filename extension selects another Matplotlib format. Trend data include mean and summed probability, dominant-paper count and share, coverage, and partial-window state. Use `--predictions` to analyse a CSV created by `pm topics predict`.
 
 Avoid interpreting sharp movements in bins containing very few papers. Compare probability prevalence with the paper-count panel and inspect representative papers before assigning a scientific explanation.
 
 ## Filter with topics
 
-After storing a model, use `pm_filter_topic` alone or compose it with regex filters. See {doc}`filtering` for the definition schema, stale-score protection, and hybrid stack semantics.
+After storing a model, use `pm filter topic` alone or compose it with regex filters. See {doc}`filtering` for the definition schema, stale-score protection, and hybrid stack semantics.

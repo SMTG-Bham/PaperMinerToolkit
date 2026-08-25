@@ -1570,7 +1570,7 @@ def _enrich_from_crossref_message(conn: sqlite3.Connection,
                                  message: Mapping[str, Any]) -> None:
     """Store enrichment for one paper from an already-fetched Crossref work.
 
-    This is the write path that keeps ``ps_import_pdfs`` from discarding the
+    This is the write path that keeps ``pm import pdfs`` from discarding the
     publisher, work type, volume, issue, pages, ISSN and language it already
     fetched while resolving a PDF's DOI.
 

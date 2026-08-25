@@ -42,10 +42,10 @@ Sphinx mocks runtime-only scientific and model libraries while reading docstring
 Every command should be available after installation:
 
 ```bash
-pm_status --help
-pm_search --help
-pm_scrape --help
-pm_topics_train --help
+pm status --help
+pm search --help
+pm scrape --help
+pm topics train --help
 ```
 
 ## HPC environments

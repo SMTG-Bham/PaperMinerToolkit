@@ -5,6 +5,6 @@ PaperMiner is primarily a command-line application. Use the command-line referen
 ```{toctree}
 :maxdepth: 1
 
-cli
+cli/index
 api
 ```
