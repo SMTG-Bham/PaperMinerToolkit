@@ -42,7 +42,7 @@ TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
 
 
-def elsevier_string_formatter(text: str) -> str:
+def _elsevier_string_formatter(text: str) -> str:
     """Clean wrapper artifacts from Elsevier original text.
 
     Parameters
@@ -168,7 +168,7 @@ def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> b
     if not text:
         return False
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(elsevier_string_formatter(text))
+        out_file.write(_elsevier_string_formatter(text))
     return True
 
 

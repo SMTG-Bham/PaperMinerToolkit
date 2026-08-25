@@ -95,7 +95,7 @@ def clean_doi(value: object) -> str:
     return doi.casefold()
 
 
-def normalize_metadata_text(value: object) -> str:
+def _normalize_metadata_text(value: object) -> str:
     """Normalize text from a metadata provider.
 
     Parameters
@@ -378,7 +378,7 @@ def _published_date(message: Mapping[str, Any]) -> str:
     return ''
 
 
-def crossref_issn(message: Mapping[str, Any]) -> str:
+def _crossref_issn(message: Mapping[str, Any]) -> str:
     """Join a Crossref work's ISSNs, print issues first.
 
     Parameters
@@ -399,7 +399,7 @@ def crossref_issn(message: Mapping[str, Any]) -> str:
     return ';'.join(dict.fromkeys(str(value).strip() for value in ordered if value))
 
 
-def crossref_pages(message: Mapping[str, Any]) -> str:
+def _crossref_pages(message: Mapping[str, Any]) -> str:
     """Read a Crossref work's page range or article number.
 
     Journals that number articles rather than pages, such as those published by
@@ -440,14 +440,14 @@ def crossref_fields(message: Mapping[str, Any], doi: str = '') -> dict[str, Any]
     return {
         'doi': message.get('DOI', doi),
         'publication_date': _published_date(message),
-        'title': normalize_metadata_text((message.get('title') or [''])[0]),
-        'journal': normalize_metadata_text((message.get('container-title') or [''])[0]),
-        'publisher': normalize_metadata_text(message.get('publisher', '')),
+        'title': _normalize_metadata_text((message.get('title') or [''])[0]),
+        'journal': _normalize_metadata_text((message.get('container-title') or [''])[0]),
+        'publisher': _normalize_metadata_text(message.get('publisher', '')),
         'work_type': str(message.get('type') or ''),
         'volume': str(message.get('volume') or ''),
         'issue': str(message.get('issue') or ''),
-        'pages': crossref_pages(message),
-        'issn': crossref_issn(message),
+        'pages': _crossref_pages(message),
+        'issn': _crossref_issn(message),
         'language': str(message.get('language') or ''),
         'crossref_message': dict(message),
     }

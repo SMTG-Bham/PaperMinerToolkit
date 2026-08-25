@@ -45,9 +45,9 @@ def live_anthropic_config() -> types.SimpleNamespace:
 
 def test_conservative_token_estimate_handles_missing_and_text_values() -> None:
     """Estimate text conservatively and map missing values to zero."""
-    assert tokenizer.conservative_token_estimate(None) == 0
-    assert tokenizer.conservative_token_estimate('') == 0
-    assert tokenizer.conservative_token_estimate('abcdefghij') == 4
+    assert tokenizer._conservative_token_estimate(None) == 0
+    assert tokenizer._conservative_token_estimate('') == 0
+    assert tokenizer._conservative_token_estimate('abcdefghij') == 4
 
 
 def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,7 +71,7 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: p
         return FakeEncoding()
 
     monkeypatch.setattr(tokenizer.tiktoken, 'encoding_for_model', fake_encoding_for_model)
-    assert tokenizer.openai_token_count('one two three', 'gpt-test') == 3
+    assert tokenizer._openai_token_count('one two three', 'gpt-test') == 3
     assert calls['model'] == 'gpt-test'
 
     monkeypatch.setattr(
@@ -87,7 +87,7 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: p
         return FakeEncoding(separator='|')
 
     monkeypatch.setattr(tokenizer.tiktoken, 'get_encoding', fake_get_encoding)
-    assert tokenizer.openai_token_count('one|two', 'unknown-model') == 2
+    assert tokenizer._openai_token_count('one|two', 'unknown-model') == 2
     assert fallback_calls['name'] == 'o200k_base'
 
 
@@ -121,7 +121,7 @@ def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(tokenizer.requests, 'post', fake_post)
 
-    count = tokenizer.anthropic_token_count(
+    count = tokenizer._anthropic_token_count(
         'paper text',
         config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url='https://anthropic.local'),
     )
@@ -141,7 +141,7 @@ def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.Mo
 def test_anthropic_token_count_requires_api_key() -> None:
     """Require an API key for Anthropic token counting."""
     with pytest.raises(ValueError, match='requires an API key'):
-        tokenizer.anthropic_token_count('paper text', config(provider='anthropic', api_key=None))
+        tokenizer._anthropic_token_count('paper text', config(provider='anthropic', api_key=None))
 
 
 @pytest.mark.network
@@ -155,7 +155,7 @@ def test_anthropic_token_count_uses_real_count_tokens_api() -> None:
     assert model_config.name, (
         'Configure an Anthropic model profile or set PAPERMINER_ANTHROPIC_TEST_MODEL before running network tests.'
     )
-    count = tokenizer.anthropic_token_count('Count these paper-scraping tokens.', model_config)
+    count = tokenizer._anthropic_token_count('Count these paper-scraping tokens.', model_config)
 
     assert isinstance(count, int)
     assert count > 0
@@ -187,7 +187,7 @@ def test_transformers_token_count_uses_auto_tokenizer(monkeypatch: pytest.Monkey
     fake_transformers = types.SimpleNamespace(AutoTokenizer=FakeAutoTokenizer)
     monkeypatch.setattr(tokenizer.importlib, 'import_module', lambda name: fake_transformers)
 
-    assert tokenizer.transformers_token_count('local text', 'Qwen/Qwen3') == 3
+    assert tokenizer._transformers_token_count('local text', 'Qwen/Qwen3') == 3
     assert calls == {
         'model': 'Qwen/Qwen3',
         'text': 'local text',
@@ -197,9 +197,9 @@ def test_transformers_token_count_uses_auto_tokenizer(monkeypatch: pytest.Monkey
 
 def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """Route token counts by provider and fall back on failures."""
-    monkeypatch.setattr(tokenizer, 'openai_token_count', lambda text, model: 5)
-    monkeypatch.setattr(tokenizer, 'anthropic_token_count', lambda text, model_config: 6)
-    monkeypatch.setattr(tokenizer, 'transformers_token_count', lambda text, model: 7)
+    monkeypatch.setattr(tokenizer, '_openai_token_count', lambda text, model: 5)
+    monkeypatch.setattr(tokenizer, '_anthropic_token_count', lambda text, model_config: 6)
+    monkeypatch.setattr(tokenizer, '_transformers_token_count', lambda text, model: 7)
 
     assert tokenizer.count_text_tokens('text', config(provider='openai')) == 5
     assert tokenizer.count_text_tokens('text', config(provider='anthropic')) == 6
@@ -209,21 +209,21 @@ def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest
 
     monkeypatch.setattr(
         tokenizer,
-        'transformers_token_count',
+        '_transformers_token_count',
         lambda *_: (_ for _ in ()).throw(ImportError('missing transformers')),
     )
     assert tokenizer.count_text_tokens('abcdefghij', config(provider='local')) == 4
 
     monkeypatch.setattr(
         tokenizer,
-        'openai_token_count',
+        '_openai_token_count',
         lambda *_: (_ for _ in ()).throw(KeyError('unknown model')),
     )
     assert tokenizer.count_text_tokens('abcdefghij', config(provider='openai')) == 4
 
     monkeypatch.setattr(
         tokenizer,
-        'anthropic_token_count',
+        '_anthropic_token_count',
         lambda *_: (_ for _ in ()).throw(ValueError('missing key')),
     )
     assert tokenizer.count_text_tokens('abcdefghij', config(provider='anthropic')) == 4

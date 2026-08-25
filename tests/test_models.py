@@ -106,7 +106,7 @@ def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path: Path) -
     image_path = tmp_path / 'image.png'
     image_path.write_bytes(b'image bytes')
 
-    assert models.image_to_data_url(str(image_path)) == 'data:image/png;base64,aW1hZ2UgYnl0ZXM='
+    assert models._image_to_data_url(str(image_path)) == 'data:image/png;base64,aW1hZ2UgYnl0ZXM='
 
 
 def test_base_model_client_methods_are_abstract() -> None:

@@ -160,7 +160,7 @@ class ModelConfig:
             )
 
 
-def image_to_data_url(path: str) -> str:
+def _image_to_data_url(path: str) -> str:
     """Encode a local image as a data URL.
 
     Parameters
@@ -366,7 +366,7 @@ class OpenAIResponsesClient(BaseModelClient):
         if context:
             content.append({'type': 'input_text', 'text': context})
         for image_path in image_paths:
-            content.append({'type': 'input_image', 'image_url': image_to_data_url(image_path)})
+            content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
             messages,
@@ -654,7 +654,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
         if context:
             content.append({'type': 'text', 'text': context})
         for image_path in image_paths:
-            content.append({'type': 'image_url', 'image_url': {'url': image_to_data_url(image_path)}})
+            content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
             messages,

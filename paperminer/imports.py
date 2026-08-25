@@ -17,7 +17,7 @@ from paperminer.corpus import (PAPER_FIELDS,
                                  find_paper,
                                  normalize_paper,
                                  upsert_papers)
-from paperminer.enrichment import enrich_from_crossref_message
+from paperminer.enrichment import _enrich_from_crossref_message
 from paperminer.metadata import metadata_from_pdf
 
 
@@ -112,7 +112,7 @@ def import_pdfs(
                 original_filename=row['_pdf_path'].name,
             )
             if row['_crossref_message']:
-                enrich_from_crossref_message(conn, str(matched['paper_id']), row['_crossref_message'])
+                _enrich_from_crossref_message(conn, str(matched['paper_id']), row['_crossref_message'])
     enriched = sum(1 for row in paper_rows if row['metadata_status'] == 'enriched')
     doi_found = sum(1 for row in paper_rows if row['doi'])
     print(

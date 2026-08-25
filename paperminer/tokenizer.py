@@ -45,7 +45,7 @@ class _TokenizerLike(Protocol):
         ...
 
 
-def conservative_token_estimate(text: str) -> int:
+def _conservative_token_estimate(text: str) -> int:
     """Estimate tokens when no model tokenizer is available.
 
     Parameters
@@ -101,7 +101,7 @@ def _model_name(model_config: _ModelConfigSource | None = None, model: str | Non
     return model or getattr(model_config, 'name', None) or DEFAULT_MODEL
 
 
-def openai_token_count(text: str, model: str | None = None) -> int:
+def _openai_token_count(text: str, model: str | None = None) -> int:
     """Count text tokens with an OpenAI tokenizer.
 
     Parameters
@@ -125,7 +125,7 @@ def openai_token_count(text: str, model: str | None = None) -> int:
     return len(encoding.encode(text))
 
 
-def anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
+def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     """Count text tokens with Anthropic's Messages API.
 
     Parameters
@@ -190,7 +190,7 @@ def _auto_tokenizer(model: str) -> _TokenizerLike:
     return transformers.AutoTokenizer.from_pretrained(model)
 
 
-def transformers_token_count(text: str, model: str) -> int:
+def _transformers_token_count(text: str, model: str) -> int:
     """Count text tokens with a Hugging Face tokenizer.
 
     Parameters
@@ -242,20 +242,20 @@ def count_text_tokens(
     model_name = _model_name(model_config, model)
     if provider_name in {'', 'openai'}:
         try:
-            return openai_token_count(text, model_name)
+            return _openai_token_count(text, model_name)
         except Exception:
-            return conservative_token_estimate(text)
+            return _conservative_token_estimate(text)
     if provider_name == 'anthropic':
         try:
-            return anthropic_token_count(text, model_config)
+            return _anthropic_token_count(text, model_config)
         except Exception:
-            return conservative_token_estimate(text)
+            return _conservative_token_estimate(text)
     if provider_name == 'local':
         try:
-            return transformers_token_count(text, model_name)
+            return _transformers_token_count(text, model_name)
         except Exception:
-            return conservative_token_estimate(text)
-    return conservative_token_estimate(text)
+            return _conservative_token_estimate(text)
+    return _conservative_token_estimate(text)
 
 
 def usable_input_token_limit(

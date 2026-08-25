@@ -41,9 +41,9 @@ def test_json_to_text_and_elsevier_string_formatter() -> None:
     assert download.elsevier.full_text({'originalText': {'bad': 'text'}}) == ''
     assert download.elsevier.full_text({}) == ''
     assert download.elsevier.full_text(None) == ''
-    assert download.elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
-    assert download.elsevier_string_formatter('A References clean References') == ' clean '
-    assert download.elsevier_string_formatter('prefix amazonaws.com/key paper text') == ' paper text'
+    assert download._elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
+    assert download._elsevier_string_formatter('A References clean References') == ' clean '
+    assert download._elsevier_string_formatter('prefix amazonaws.com/key paper text') == ' paper text'
 
 
 def test_full_text_uri_and_download_text_success_and_failure(

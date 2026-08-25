@@ -224,7 +224,7 @@ def load_settings() -> dict[str, Any]:
     return merged
 
 
-def save_settings(settings: dict[str, Any]) -> None:
+def _save_settings(settings: dict[str, Any]) -> None:
     """Persist PaperMiner settings as JSON.
 
     Parameters
@@ -340,10 +340,10 @@ def set_model_profile(
         'top_p': float(top_p),
         'input_token_limit': int(input_token_limit),
     }
-    save_settings(settings)
+    _save_settings(settings)
 
 
-def check_openai_api_key(api_key: str) -> bool:
+def _check_openai_api_key(api_key: str) -> bool:
     """Validate an OpenAI API key against the models API.
 
     Parameters
@@ -432,9 +432,9 @@ def update_openai_key(settings: dict[str, Any] | Literal[True] = True) -> None:
         settings = load_settings()
     _show_current_setting(settings, 'openai_api_key', 'OpenAI API key')
     api_key = input('Enter OpenAI API key: ')
-    if check_openai_api_key(api_key):
+    if _check_openai_api_key(api_key):
         settings['openai_api_key'] = api_key
-        save_settings(settings)
+        _save_settings(settings)
     else:
         raise ValueError('OpenAI API key is invalid.')
 
@@ -452,10 +452,10 @@ def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True) -> Non
     _show_current_setting(settings, 'anthropic_api_key', 'Anthropic API key')
     api_key = input('Enter Anthropic API key: ')
     settings['anthropic_api_key'] = api_key
-    save_settings(settings)
+    _save_settings(settings)
 
 
-def check_elsevier_api_key(api_key: str) -> bool:
+def _check_elsevier_api_key(api_key: str) -> bool:
     """Validate an Elsevier API key with a minimal Scopus search.
 
     Parameters
@@ -489,9 +489,9 @@ def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True) -> None
         settings = load_settings()
     _show_current_setting(settings, 'elsevier_api_key', 'Elsevier API key')
     api_key = input('Enter Elsevier API key: ')
-    if check_elsevier_api_key(api_key):
+    if _check_elsevier_api_key(api_key):
         settings['elsevier_api_key'] = api_key
-        save_settings(settings)
+        _save_settings(settings)
     else:
         raise ValueError('Elsevier API key is invalid.')
 
@@ -509,7 +509,7 @@ def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     _show_current_setting(settings, 'core_api_key', 'CORE API key')
     api_key = input('Enter CORE API key: ')
     settings['core_api_key'] = api_key
-    save_settings(settings)
+    _save_settings(settings)
 
 
 def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -532,7 +532,7 @@ def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True) -> N
     if '@' not in email:
         raise ValueError('Unpaywall email must be a valid email address.')
     settings['unpaywall_email'] = email
-    save_settings(settings)
+    _save_settings(settings)
 
 
 def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -558,7 +558,7 @@ def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> No
     if '@' not in email:
         raise ValueError('Crossref email must be a valid email address.')
     settings['crossref_email'] = email
-    save_settings(settings)
+    _save_settings(settings)
 
 
 def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -577,7 +577,7 @@ def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     _show_current_setting(settings, 'ncbi_api_key', 'NCBI API key')
     api_key = input('Enter NCBI API key: ')
     settings['ncbi_api_key'] = api_key
-    save_settings(settings)
+    _save_settings(settings)
 
 
 def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -604,10 +604,10 @@ def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
     if '@' not in email:
         raise ValueError('NCBI email must be a valid email address.')
     settings['ncbi_email'] = email
-    save_settings(settings)
+    _save_settings(settings)
 
 
-def check_openalex_api_key(api_key: str) -> bool:
+def _check_openalex_api_key(api_key: str) -> bool:
     """Check whether OpenAlex explicitly rejects an API key.
 
     Parameters
@@ -654,8 +654,8 @@ def update_openalex_key(settings: dict[str, Any] | Literal[True] = True) -> None
         settings = load_settings()
     _show_current_setting(settings, 'openalex_api_key', 'OpenAlex API key')
     api_key = input('Enter OpenAlex API key: ').strip()
-    if check_openalex_api_key(api_key):
+    if _check_openalex_api_key(api_key):
         settings['openalex_api_key'] = api_key
-        save_settings(settings)
+        _save_settings(settings)
     else:
         raise ValueError('OpenAlex API key is invalid.')

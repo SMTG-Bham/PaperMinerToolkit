@@ -67,7 +67,7 @@ _Record: TypeAlias = dict[str, Any]
 _Fields: TypeAlias = dict[str, Any]
 
 
-def configured_sources(sources: Sequence[str] | None) -> list[str]:
+def _configured_sources(sources: Sequence[str] | None) -> list[str]:
     """Resolve requested enrichment providers, expanding ``all``.
 
     Parameters
@@ -99,7 +99,7 @@ def _text(value: object) -> str:
     return '' if value is None else str(value).strip()
 
 
-def partition_candidates(
+def _partition_candidates(
     candidates: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:
     """Split candidates by the lookup key each one can be resolved with.
@@ -138,11 +138,11 @@ def partition_candidates(
     return by_doi, by_openalex, unresolved
 
 
-def pubmed_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _pubmed_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's PubMed identifier to its paper identifier.
 
     This is a parallel accessor rather than a fourth
-    :func:`partition_candidates` bucket, because a PMID is read from the same
+    :func:`_partition_candidates` bucket, because a PMID is read from the same
     candidate row that already supplies the DOI and OpenAlex keys.
 
     Parameters
@@ -168,7 +168,7 @@ def pubmed_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]
     return by_pmid
 
 
-def pubmed_fields(article: Mapping[str, Any]) -> _Fields:
+def _pubmed_fields(article: Mapping[str, Any]) -> _Fields:
     """Map one PubMed article onto the shared enrichment field set.
 
     Parameters
@@ -194,7 +194,7 @@ def pubmed_fields(article: Mapping[str, Any]) -> _Fields:
     }
 
 
-def pubmed_subject_rows(paper_id: str, article: Mapping[str, Any] | None) -> list[_Record]:
+def _pubmed_subject_rows(paper_id: str, article: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from a PubMed article's controlled terms.
 
     MeSH descriptors, MeSH qualifiers, publication types and author keywords
@@ -246,10 +246,10 @@ def pubmed_subject_rows(paper_id: str, article: Mapping[str, Any] | None) -> lis
     return unique
 
 
-def arxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _arxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's arXiv identifier to its paper identifier.
 
-    Unlike :func:`pubmed_candidates`, which can fall back to resolving a PMID
+    Unlike :func:`_pubmed_candidates`, which can fall back to resolving a PMID
     from a DOI, this can only ever see rows that already carry an arXiv
     identifier: arXiv publishes no DOI search field, so a DOI-only row is
     unreachable no matter how many requests are spent.
@@ -277,7 +277,7 @@ def arxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return by_arxiv
 
 
-def arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
+def _arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     """Map one arXiv entry onto the shared enrichment field set.
 
     Every arXiv paper is freely readable, so ``is_oa`` and ``oa_status`` are
@@ -308,7 +308,7 @@ def arxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     }
 
 
-def arxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
+def _arxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from an arXiv entry's categories.
 
     Categories use the ``arxiv_category`` scheme, which is disjoint from every
@@ -346,10 +346,10 @@ def arxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_
     return rows
 
 
-def medrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _medrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's medRxiv DOI to its paper identifier.
 
-    Like :func:`arxiv_candidates`, this can only see rows that already carry
+    Like :func:`_arxiv_candidates`, this can only see rows that already carry
     the identifier medRxiv issued. A row's ``doi`` is not a usable substitute
     once the preprint has been published, because it then names the journal
     version, which medRxiv does not index.
@@ -375,7 +375,7 @@ def medrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str
     return by_medrxiv
 
 
-def medrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
+def _medrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     """Map one medRxiv record onto the shared enrichment field set.
 
     Every medRxiv preprint is freely readable, so ``is_oa`` and ``oa_status``
@@ -411,7 +411,7 @@ def medrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     }
 
 
-def medrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
+def _medrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from a medRxiv record's category.
 
     Categories use the ``medrxiv_category`` scheme, which is disjoint from
@@ -447,10 +447,10 @@ def medrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list
     return rows
 
 
-def biorxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _biorxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's bioRxiv DOI to its paper identifier.
 
-    Like :func:`medrxiv_candidates`, this can only see rows that already carry
+    Like :func:`_medrxiv_candidates`, this can only see rows that already carry
     the identifier bioRxiv issued. A row's ``doi`` is not a usable substitute
     once the preprint has been published, because it then names the journal
     version, which bioRxiv does not index.
@@ -476,7 +476,7 @@ def biorxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str
     return by_biorxiv
 
 
-def biorxiv_fields(entry: Mapping[str, Any]) -> _Fields:
+def _biorxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     """Map one bioRxiv record onto the shared enrichment field set.
 
     Every bioRxiv preprint is freely readable, so ``is_oa`` and ``oa_status``
@@ -512,7 +512,7 @@ def biorxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     }
 
 
-def biorxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
+def _biorxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from a bioRxiv record's category.
 
     Categories use the ``biorxiv_category`` scheme, which is disjoint from
@@ -550,7 +550,7 @@ def biorxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list
     return rows
 
 
-def openalex_fields(work: Mapping[str, Any]) -> _Fields:
+def _openalex_fields(work: Mapping[str, Any]) -> _Fields:
     """Map one OpenAlex work onto the shared enrichment field set.
 
     Parameters
@@ -602,7 +602,7 @@ def openalex_fields(work: Mapping[str, Any]) -> _Fields:
     }
 
 
-def crossref_retraction(work: Mapping[str, Any]) -> tuple[bool, str]:
+def _crossref_retraction(work: Mapping[str, Any]) -> tuple[bool, str]:
     """Detect a retraction notice on a Crossref work.
 
     ``updated-by`` also carries corrections, errata and expressions of concern,
@@ -626,7 +626,7 @@ def crossref_retraction(work: Mapping[str, Any]) -> tuple[bool, str]:
     return False, ''
 
 
-def crossref_fields(work: Mapping[str, Any]) -> _Fields:
+def _crossref_fields(work: Mapping[str, Any]) -> _Fields:
     """Map one Crossref work onto the shared enrichment field set.
 
     Parameters
@@ -641,7 +641,7 @@ def crossref_fields(work: Mapping[str, Any]) -> _Fields:
     """
     mapped = crossref_metadata_fields(work)
     mapped.pop('crossref_message', None)
-    retracted, _ = crossref_retraction(work)
+    retracted, _ = _crossref_retraction(work)
     mapped.update({
         'doi': clean_doi(mapped.get('doi')),
         'authors': '; '.join(
@@ -663,7 +663,7 @@ def _crossref_license(work: Mapping[str, Any]) -> str:
     return ''
 
 
-def chemrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _chemrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's chemRxiv DOI to its paper identifier.
 
     Like the other preprint servers, this can only see rows that already carry
@@ -692,7 +692,7 @@ def chemrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, st
     return by_chemrxiv
 
 
-def chemrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
+def _chemrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     """Map one chemRxiv record onto the shared enrichment field set.
 
     Every chemRxiv preprint is freely readable, so ``is_oa`` and ``oa_status``
@@ -734,7 +734,7 @@ def chemrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     }
 
 
-def chemrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
+def _chemrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from a chemRxiv record's terms.
 
     Two schemes are written. ``chemrxiv_category`` carries the subject
@@ -792,7 +792,7 @@ def _provenance(crossref: Mapping[str, Any] | None,
     """Build the trimmed provenance document stored in ``enrichment_json``."""
     provenance: _Record = {'fetched_at': utc_now()}
     if crossref is not None:
-        retracted, notice = crossref_retraction(crossref)
+        retracted, notice = _crossref_retraction(crossref)
         provenance['crossref'] = {
             'publisher': _text(crossref.get('publisher')),
             'is_referenced_by_count': crossref.get('is-referenced-by-count'),
@@ -885,7 +885,7 @@ PRESERVED_ON_PROVIDER_ERROR = (CROSSREF_PREFERRED + OPENALEX_ONLY
                                + ('referenced_works_count', 'is_retracted'))
 
 
-def merge_fields(paper_id: str,
+def _merge_fields(paper_id: str,
                  crossref: Mapping[str, Any] | None,
                  openalex_work: Mapping[str, Any] | None,
                  requested: Sequence[str],
@@ -926,13 +926,13 @@ def merge_fields(paper_id: str,
     dict[str, Any]
         Mapping covering every enrichment update parameter.
     """
-    from_crossref = crossref_fields(crossref) if crossref is not None else {}
-    from_openalex = openalex_fields(openalex_work) if openalex_work is not None else {}
-    from_pubmed = pubmed_fields(pubmed_article) if pubmed_article is not None else {}
-    from_arxiv = arxiv_fields(arxiv_entry) if arxiv_entry is not None else {}
-    from_medrxiv = medrxiv_fields(medrxiv_entry) if medrxiv_entry is not None else {}
-    from_biorxiv = biorxiv_fields(biorxiv_entry) if biorxiv_entry is not None else {}
-    from_chemrxiv = chemrxiv_fields(chemrxiv_entry) if chemrxiv_entry is not None else {}
+    from_crossref = _crossref_fields(crossref) if crossref is not None else {}
+    from_openalex = _openalex_fields(openalex_work) if openalex_work is not None else {}
+    from_pubmed = _pubmed_fields(pubmed_article) if pubmed_article is not None else {}
+    from_arxiv = _arxiv_fields(arxiv_entry) if arxiv_entry is not None else {}
+    from_medrxiv = _medrxiv_fields(medrxiv_entry) if medrxiv_entry is not None else {}
+    from_biorxiv = _biorxiv_fields(biorxiv_entry) if biorxiv_entry is not None else {}
+    from_chemrxiv = _chemrxiv_fields(chemrxiv_entry) if chemrxiv_entry is not None else {}
     update = {field: '' for field in enrichment_update_fields()}
 
     for column in FILL_COLUMNS + CROSSREF_PREFERRED:
@@ -1029,7 +1029,7 @@ def _safe_orcid(value: object) -> str:
         return ''
 
 
-def author_rows(paper_id: str,
+def _author_rows(paper_id: str,
                 crossref: Mapping[str, Any] | None,
                 openalex_work: Mapping[str, Any] | None) -> list[_Record]:
     """Build one ``paper_authors`` row per author and affiliation.
@@ -1120,7 +1120,7 @@ def author_rows(paper_id: str,
     return rows
 
 
-def subject_rows(paper_id: str, openalex_work: Mapping[str, Any] | None) -> list[_Record]:
+def _subject_rows(paper_id: str, openalex_work: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_subjects`` rows from an OpenAlex work.
 
     Crossref retired subject assignment and returns an empty list, so subjects
@@ -1209,7 +1209,7 @@ def subject_rows(paper_id: str, openalex_work: Mapping[str, Any] | None) -> list
     return unique
 
 
-def reference_rows(paper_id: str,
+def _reference_rows(paper_id: str,
                    crossref: Mapping[str, Any] | None,
                    openalex_work: Mapping[str, Any] | None) -> list[_Record]:
     """Build ``paper_references`` rows from both providers.
@@ -1388,7 +1388,7 @@ def _fetch(source_names: Sequence[str], context: _FetchContext) -> _FetchResult:
     return result
 
 
-def enrich_batch(conn: sqlite3.Connection,
+def _enrich_batch(conn: sqlite3.Connection,
                  candidates: Sequence[Mapping[str, Any]],
                  sources: Sequence[str],
                  email: str,
@@ -1449,12 +1449,12 @@ def enrich_batch(conn: sqlite3.Connection,
     if not candidates:
         return summary
 
-    by_doi, by_openalex, unresolved = partition_candidates(candidates)
-    by_pmid = pubmed_candidates(candidates) if 'pubmed' in sources else {}
-    by_arxiv = arxiv_candidates(candidates) if 'arxiv' in sources else {}
-    by_medrxiv = medrxiv_candidates(candidates) if 'medrxiv' in sources else {}
-    by_biorxiv = biorxiv_candidates(candidates) if 'biorxiv' in sources else {}
-    by_chemrxiv = chemrxiv_candidates(candidates) if 'chemrxiv' in sources else {}
+    by_doi, by_openalex, unresolved = _partition_candidates(candidates)
+    by_pmid = _pubmed_candidates(candidates) if 'pubmed' in sources else {}
+    by_arxiv = _arxiv_candidates(candidates) if 'arxiv' in sources else {}
+    by_medrxiv = _medrxiv_candidates(candidates) if 'medrxiv' in sources else {}
+    by_biorxiv = _biorxiv_candidates(candidates) if 'biorxiv' in sources else {}
+    by_chemrxiv = _chemrxiv_candidates(candidates) if 'chemrxiv' in sources else {}
     openalex_papers = set(by_openalex.values())
     pubmed_papers = set(by_pmid.values())
     arxiv_papers = set(by_arxiv.values())
@@ -1462,7 +1462,7 @@ def enrich_batch(conn: sqlite3.Connection,
     biorxiv_papers = set(by_biorxiv.values())
     chemrxiv_papers = set(by_chemrxiv.values())
     # A row known only to PubMed, arXiv, medRxiv, bioRxiv, or chemRxiv carries no DOI or
-    # OpenAlex ID, so partition_candidates reports it unresolved. It is
+    # OpenAlex ID, so _partition_candidates reports it unresolved. It is
     # resolvable whenever the provider that already knows its identifier is
     # being queried.
     identifier_papers = (pubmed_papers | arxiv_papers | medrxiv_papers | biorxiv_papers
@@ -1523,7 +1523,7 @@ def enrich_batch(conn: sqlite3.Connection,
                      or (source == 'chemrxiv' and paper_id in chemrxiv_papers)]
         errors = {source: fetched.errors[source]
                   for source in requested if source in fetched.errors}
-        update = merge_fields(paper_id, crossref_work, openalex_work, requested,
+        update = _merge_fields(paper_id, crossref_work, openalex_work, requested,
                               pubmed_article, arxiv_entry, medrxiv_entry, biorxiv_entry,
                               chemrxiv_entry, provider_errors=errors)
         if errors:
@@ -1535,15 +1535,15 @@ def enrich_batch(conn: sqlite3.Connection,
         summary[update['enrichment_status']] += 1
         if update['enrichment_status'] in {'failed', 'not_found'}:
             continue
-        authors.extend(author_rows(paper_id, crossref_work, openalex_work))
-        subjects.extend(subject_rows(paper_id, openalex_work))
-        subjects.extend(pubmed_subject_rows(paper_id, pubmed_article))
-        subjects.extend(arxiv_subject_rows(paper_id, arxiv_entry))
-        subjects.extend(medrxiv_subject_rows(paper_id, medrxiv_entry))
-        subjects.extend(biorxiv_subject_rows(paper_id, biorxiv_entry))
-        subjects.extend(chemrxiv_subject_rows(paper_id, chemrxiv_entry))
+        authors.extend(_author_rows(paper_id, crossref_work, openalex_work))
+        subjects.extend(_subject_rows(paper_id, openalex_work))
+        subjects.extend(_pubmed_subject_rows(paper_id, pubmed_article))
+        subjects.extend(_arxiv_subject_rows(paper_id, arxiv_entry))
+        subjects.extend(_medrxiv_subject_rows(paper_id, medrxiv_entry))
+        subjects.extend(_biorxiv_subject_rows(paper_id, biorxiv_entry))
+        subjects.extend(_chemrxiv_subject_rows(paper_id, chemrxiv_entry))
         if references:
-            reference_records.extend(reference_rows(paper_id, crossref_work, openalex_work))
+            reference_records.extend(_reference_rows(paper_id, crossref_work, openalex_work))
 
     for update in updates:
         update['enrichment_json'] = _json_text(update['enrichment_json'])
@@ -1565,7 +1565,7 @@ def _json_text(value: object) -> str:
     return json.dumps(value or {}, sort_keys=True, default=str)
 
 
-def enrich_from_crossref_message(conn: sqlite3.Connection,
+def _enrich_from_crossref_message(conn: sqlite3.Connection,
                                  paper_id: str,
                                  message: Mapping[str, Any]) -> None:
     """Store enrichment for one paper from an already-fetched Crossref work.
@@ -1585,13 +1585,13 @@ def enrich_from_crossref_message(conn: sqlite3.Connection,
     """
     if not paper_id or not message:
         return
-    update = merge_fields(paper_id, message, None, ['crossref'])
+    update = _merge_fields(paper_id, message, None, ['crossref'])
     update['enrichment_json'] = _json_text(update['enrichment_json'])
     write_enrichment(conn,
                      [update],
-                     author_rows(paper_id, message, None),
+                     _author_rows(paper_id, message, None),
                      [],
-                     reference_rows(paper_id, message, None))
+                     _reference_rows(paper_id, message, None))
 
 
 def enrich_papers(conn: sqlite3.Connection,
@@ -1656,7 +1656,7 @@ def enrich_papers(conn: sqlite3.Connection,
     dict[str, int]
         Counts of each resulting status and of stored child rows.
     """
-    sources = configured_sources(sources)
+    sources = _configured_sources(sources)
     email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
     if not email and 'pubmed' in sources:
         email = pubmed.configured_email()
@@ -1679,7 +1679,7 @@ def enrich_papers(conn: sqlite3.Connection,
     batch_size = max(1, min(batch_size, MAX_BATCH_SIZE))
     for start in range(0, len(candidates), batch_size):
         batch = candidates[start:start + batch_size]
-        for key, value in enrich_batch(conn, batch, sources, email, api_key, references,
+        for key, value in _enrich_batch(conn, batch, sources, email, api_key, references,
                                        openalex_session, crossref_session, pace,
                                        pubmed_session, pubmed_api_key,
                                        arxiv_session, medrxiv_session,
@@ -1779,7 +1779,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
     RuntimeError
         If a provider request cannot be completed.
     """
-    sources = configured_sources(sources)
+    sources = _configured_sources(sources)
     if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         raise ValueError(f'batch_size must be between 1 and {MAX_BATCH_SIZE}.')
     email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
@@ -1810,7 +1810,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                 if not candidates:
                     break
                 after_rowid = int(candidates[-1]['rowid'])
-                counts = enrich_batch(conn, candidates, sources, email, api_key, references,
+                counts = _enrich_batch(conn, candidates, sources, email, api_key, references,
                                       openalex_session, crossref_session, pace,
                                       pubmed_session, pubmed_api_key, arxiv_session,
                                       medrxiv_session, biorxiv_session, chemrxiv_session)
@@ -1821,7 +1821,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                 if remaining is not None:
                     remaining -= len(candidates)
         if resolve_references:
-            resolve_reference_targets(conn)
+            _resolve_reference_targets(conn)
     return summary
 
 
@@ -1875,11 +1875,11 @@ def resolve_reference_dois(db_path: str | PathLike[str] = 'papers.db',
             )
             updated += cursor.rowcount if cursor.rowcount > 0 else 0
             conn.commit()
-        resolve_reference_targets(conn)
+        _resolve_reference_targets(conn)
     return updated
 
 
-def resolve_reference_targets(conn: sqlite3.Connection) -> int:
+def _resolve_reference_targets(conn: sqlite3.Connection) -> int:
     """Link referenced DOIs to papers already present in the corpus.
 
     Parameters

@@ -49,14 +49,14 @@ def test_normalize_metadata_text_flattens_unicode_punctuation_and_super_subscrip
     """Flatten Unicode punctuation and super/subscripts in metadata text."""
     text = 'Disorder‐Driven Na⁺ <sup>+</sup> Transport in Li₁₀GeP₂S₁₂ &amp; oxides'
 
-    assert metadata.normalize_metadata_text(text) == 'Disorder-Driven Na+ + Transport in Li10GeP2S12 & oxides'
+    assert metadata._normalize_metadata_text(text) == 'Disorder-Driven Na+ + Transport in Li10GeP2S12 & oxides'
 
 
 def test_normalize_metadata_text_handles_missing_and_uncommon_punctuation() -> None:
     """Normalize missing values and uncommon Unicode punctuation."""
-    assert metadata.normalize_metadata_text(None) == ''
-    assert metadata.normalize_metadata_text('A‹quoted› title') == 'A"quoted" title'
-    assert metadata.normalize_metadata_text('Charge⁺ carrier') == 'Charge+ carrier'
+    assert metadata._normalize_metadata_text(None) == ''
+    assert metadata._normalize_metadata_text('A‹quoted› title') == 'A"quoted" title'
+    assert metadata._normalize_metadata_text('Charge⁺ carrier') == 'Charge+ carrier'
 
 
 def test_normalize_punctuation_char_covers_fallback_branches() -> None:

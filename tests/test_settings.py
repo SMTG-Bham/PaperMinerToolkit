@@ -219,7 +219,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
 
 def test_save_settings_writes_json_to_config_file(isolated_settings_file: Path) -> None:
     """Write supplied settings as JSON to the config file."""
-    settings.save_settings({'core_api_key': 'core-key'})
+    settings._save_settings({'core_api_key': 'core-key'})
 
     assert isolated_settings_file.is_file()
     assert json.loads(isolated_settings_file.read_text()) == {'core_api_key': 'core-key'}
@@ -269,7 +269,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
 
 def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for and save an Anthropic API key."""
-    settings.save_settings({'anthropic_api_key': 'old-anthropic-key'})
+    settings._save_settings({'anthropic_api_key': 'old-anthropic-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'anthropic-key')
 
     settings.update_anthropic_key()
@@ -299,7 +299,7 @@ def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(settings.openai, 'OpenAI', FakeOpenAI)
 
-    assert settings.check_openai_api_key('placeholder-openai-key') is True
+    assert settings._check_openai_api_key('placeholder-openai-key') is True
 
 
 def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,14 +328,14 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch: pytest.
     monkeypatch.setattr(settings.openai, 'AuthenticationError', FakeAuthenticationError)
     monkeypatch.setattr(settings.openai, 'OpenAI', FakeOpenAI)
 
-    assert settings.check_openai_api_key('placeholder-openai-key') is False
+    assert settings._check_openai_api_key('placeholder-openai-key') is False
 
 
 def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for, validate, and save an OpenAI API key."""
-    settings.save_settings({'openai_api_key': 'old-openai-key'})
+    settings._save_settings({'openai_api_key': 'old-openai-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openai-key')
-    monkeypatch.setattr(settings, 'check_openai_api_key', lambda api_key: api_key == 'openai-key')
+    monkeypatch.setattr(settings, '_check_openai_api_key', lambda api_key: api_key == 'openai-key')
 
     settings.update_openai_key()
 
@@ -347,7 +347,7 @@ def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_fil
 def test_update_openai_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject and avoid saving an invalid OpenAI API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-openai-key')
-    monkeypatch.setattr(settings, 'check_openai_api_key', lambda _: False)
+    monkeypatch.setattr(settings, '_check_openai_api_key', lambda _: False)
 
     with pytest.raises(ValueError, match='OpenAI API key is invalid'):
         settings.update_openai_key()
@@ -357,7 +357,7 @@ def test_update_openai_key_rejects_invalid_key(isolated_settings_file: Path, mon
 
 def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for and save a CORE API key."""
-    settings.save_settings({'core_api_key': 'old-core-key'})
+    settings._save_settings({'core_api_key': 'old-core-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'core-key')
 
     settings.update_core_key()
@@ -381,18 +381,18 @@ def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
     calls = []
     monkeypatch.setattr(elsevier, 'check_api_key',
                         lambda key, **_: calls.append(key) or True)
-    assert settings.check_elsevier_api_key('placeholder-elsevier-key') is True
+    assert settings._check_elsevier_api_key('placeholder-elsevier-key') is True
     assert calls == ['placeholder-elsevier-key']
 
     monkeypatch.setattr(elsevier, 'check_api_key', lambda *_, **__: False)
-    assert settings.check_elsevier_api_key('bad-key') is False
+    assert settings._check_elsevier_api_key('bad-key') is False
 
 
 def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Prompt for, validate, and save an Elsevier API key."""
-    settings.save_settings({'elsevier_api_key': 'old-elsevier-key'})
+    settings._save_settings({'elsevier_api_key': 'old-elsevier-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'elsevier-key')
-    monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda api_key: api_key == 'elsevier-key')
+    monkeypatch.setattr(settings, '_check_elsevier_api_key', lambda api_key: api_key == 'elsevier-key')
 
     settings.update_elsevier_key()
 
@@ -404,7 +404,7 @@ def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_f
 def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reject and avoid saving an invalid Elsevier API key."""
     monkeypatch.setattr('builtins.input', lambda _: 'bad-elsevier-key')
-    monkeypatch.setattr(settings, 'check_elsevier_api_key', lambda _: False)
+    monkeypatch.setattr(settings, '_check_elsevier_api_key', lambda _: False)
 
     with pytest.raises(ValueError, match='Elsevier API key is invalid'):
         settings.update_elsevier_key()
@@ -414,7 +414,7 @@ def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file: Path, m
 
 def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Save a valid Unpaywall email and reject an invalid one."""
-    settings.save_settings({'unpaywall_email': 'old@example.com'})
+    settings._save_settings({'unpaywall_email': 'old@example.com'})
     monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
     settings.update_unpaywall_email()
     output = capsys.readouterr().out
@@ -428,7 +428,7 @@ def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file
 
 def test_update_crossref_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Save a valid Crossref email and reject an invalid one."""
-    settings.save_settings({'crossref_email': 'old@example.com'})
+    settings._save_settings({'crossref_email': 'old@example.com'})
     monkeypatch.setattr('builtins.input', lambda _: 'person@example.com')
     settings.update_crossref_email()
     output = capsys.readouterr().out
@@ -449,9 +449,9 @@ def test_load_settings_reads_crossref_email_from_the_settings_file(isolated_sett
 
 def test_update_openalex_key_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Save a valid OpenAlex key and reject an invalid one."""
-    settings.save_settings({'openalex_api_key': 'old-openalex-key'})
+    settings._save_settings({'openalex_api_key': 'old-openalex-key'})
     monkeypatch.setattr('builtins.input', lambda _: 'openalex-key')
-    monkeypatch.setattr(settings, 'check_openalex_api_key', lambda api_key: api_key == 'openalex-key')
+    monkeypatch.setattr(settings, '_check_openalex_api_key', lambda api_key: api_key == 'openalex-key')
 
     settings.update_openalex_key()
 
@@ -475,17 +475,17 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch: pytest
             self.status_code = status_code
 
     monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(401))
-    assert settings.check_openalex_api_key('bad-key') is False
+    assert settings._check_openalex_api_key('bad-key') is False
 
     monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(200))
-    assert settings.check_openalex_api_key('good-key') is True
+    assert settings._check_openalex_api_key('good-key') is True
 
     def unreachable(*_: object, **__: object) -> NoReturn:
         """Simulate an unreachable OpenAlex API."""
         raise settings.requests.ConnectionError('offline')
 
     monkeypatch.setattr(settings.requests, 'get', unreachable)
-    assert settings.check_openalex_api_key('good-key') is True
+    assert settings._check_openalex_api_key('good-key') is True
 
 
 @pytest.mark.network
@@ -495,7 +495,7 @@ def test_check_openai_api_key_validates_configured_key() -> None:
     api_key = loaded.get('openai_api_key')
 
     assert api_key, 'Set openai_api_key in ~/.config/.paperminerrc.json or OPENAI_API_KEY before running network tests.'
-    assert settings.check_openai_api_key(api_key) is True
+    assert settings._check_openai_api_key(api_key) is True
 
 
 @pytest.mark.network
@@ -505,4 +505,4 @@ def test_check_elsevier_api_key_validates_configured_key() -> None:
     api_key = loaded.get('elsevier_api_key')
 
     assert api_key, 'Set elsevier_api_key in ~/.config/.paperminerrc.json or ELSEVIER_API_KEY before running network tests.'
-    assert settings.check_elsevier_api_key(api_key) is True
+    assert settings._check_elsevier_api_key(api_key) is True

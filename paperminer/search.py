@@ -38,7 +38,7 @@ def _recast_elsevier_records(records: Iterable[Mapping[str, Any]]) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
-def document_search(query: str,
+def _document_search(query: str,
                     index: str = 'scopus',
                     count: int = 200,
                     get_all: bool = True,
@@ -760,10 +760,10 @@ def _elsevier_search(query: str, count: int = 200) -> pd.DataFrame:
     pandas.DataFrame
         Normalized paper rows capped at ``count`` records.
     """
-    return _elsevier_rows(document_search(query, count=count))
+    return _elsevier_rows(_document_search(query, count=count))
 
 
-def source_search(name: str) -> Callable[..., pd.DataFrame]:
+def _source_search(name: str) -> Callable[..., pd.DataFrame]:
     """Return the search function for one source.
 
     The registry resolves the function by name at call time, so replacing a
@@ -853,7 +853,7 @@ def search_for_papers(query: str,
     frames = []
     for name in requested:
         try:
-            frames.append(source_search(name)(query, count=count))
+            frames.append(_source_search(name)(query, count=count))
         except Exception as e:
             if len(requested) == 1:
                 raise

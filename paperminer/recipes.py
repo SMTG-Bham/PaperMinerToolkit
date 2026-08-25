@@ -183,7 +183,7 @@ def field_columns(recipe: _Recipe, existing_columns: Iterable[str] | None = None
     return columns
 
 
-def aliases_for(recipe: _Recipe) -> dict[str, set[str]]:
+def _aliases_for(recipe: _Recipe) -> dict[str, set[str]]:
     """Build aliases for recipe and metadata fields.
 
     Parameters
@@ -229,7 +229,7 @@ def canonical_match(series_name: str, columns: Iterable[str], recipe: _Recipe) -
     """
     raw_name = series_name.strip()
     normalized = raw_name.lower()
-    aliases = aliases_for(recipe)
+    aliases = _aliases_for(recipe)
     for column in columns:
         base = column.split(' [')[0]
         if normalized in aliases.get(base, {base.lower()}):

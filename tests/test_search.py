@@ -85,7 +85,7 @@ def test_document_search_caps_count_and_paginates_results(
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
-    results = search.document_search('solid electrolyte', count=2, get_all=True)
+    results = search._document_search('solid electrolyte', count=2, get_all=True)
 
     output = capsys.readouterr().out
     assert results['dc:title'].tolist() == ['first', 'second']
@@ -103,7 +103,7 @@ def test_document_search_returns_empty_dataframe_for_zero_results(monkeypatch: p
         lambda *_, **__: {'search-results': {'opensearch:totalResults': '0', 'entry': [], 'link': []}},
     )
 
-    assert search.document_search('missing').empty
+    assert search._document_search('missing').empty
 
 
 def test_document_search_without_get_all_returns_first_page_slice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,7 +121,7 @@ def test_document_search_without_get_all_returns_first_page_slice(monkeypatch: p
         },
     )
 
-    results = search.document_search('solid electrolyte', count=2, get_all=False)
+    results = search._document_search('solid electrolyte', count=2, get_all=False)
 
     assert results['dc:title'].tolist() == ['first', 'second']
 
@@ -164,7 +164,7 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.Mon
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
-    results = search.document_search('solid electrolyte', count=3, get_all=True)
+    results = search._document_search('solid electrolyte', count=3, get_all=True)
 
     assert results['dc:title'].tolist() == ['first']
     assert len(calls) == 1
@@ -218,7 +218,7 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
     monkeypatch.setattr(search, 'tqdm', FakeTqdm)
 
-    results = search.document_search('solid electrolyte', index='article', count=6000, get_all=True)
+    results = search._document_search('solid electrolyte', index='article', count=6000, get_all=True)
 
     assert len(results) == 5001
     assert len(calls) == 2
@@ -553,7 +553,7 @@ def test_search_for_papers_merges_and_writes_results(
         'prism:doi': '10.1234/new',
         'dc:title': 'New paper',
     }]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
 
     search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
@@ -656,7 +656,7 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
 ) -> None:
     """Search for papers skips failed source for all but raises for selected source."""
     db_path = tmp_path / 'papers.db'
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([{'id': '1', 'title': 'Core paper'}]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
 
@@ -681,7 +681,7 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
     """Search for papers skips failed CORE for all but raises for CORE."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
     monkeypatch.setattr(
@@ -718,7 +718,7 @@ def test_search_for_papers_skips_a_core_failure_that_is_not_an_http_error(
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(
         pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(
         search, 'core_search',
@@ -741,7 +741,7 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
     """Search for papers skips failed OpenAlex for all but raises for OpenAlex."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(
@@ -769,7 +769,7 @@ def test_document_search_uses_real_elsevier_api_when_configured() -> None:
     loaded = search.load_settings()
 
     assert loaded.get('elsevier_api_key'), 'Set elsevier_api_key or ELSEVIER_API_KEY before running network tests.'
-    assert len(search.document_search('solid electrolyte', count=1, get_all=False)) <= 1
+    assert len(search._document_search('solid electrolyte', count=1, get_all=False)) <= 1
 
 
 @pytest.mark.network
@@ -800,7 +800,7 @@ def test_search_for_papers_enriches_new_rows_when_requested(
         'prism:doi': '10.1234/new',
         'dc:title': 'New paper',
     }]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
 
     calls = {}
@@ -832,7 +832,7 @@ def test_search_for_papers_skips_enrichment_by_default(
         'prism:doi': '10.1234/new',
         'dc:title': 'New paper',
     }]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
 
     def fail_enrich_papers(conn: Any, records: Any, **kwargs: Any) -> NoReturn:
@@ -949,7 +949,7 @@ def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
     """Skip a failing PubMed provider under all but surface it when selected."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
@@ -1113,7 +1113,7 @@ def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
     """Skip a failing arXiv provider under all but surface it when selected."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
@@ -1327,7 +1327,7 @@ def test_search_for_papers_skips_failed_medrxiv_for_all_but_raises_for_medrxiv(
     """Skip a failing medRxiv provider under all but surface it when selected."""
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1', 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
@@ -1538,7 +1538,7 @@ def test_search_for_papers_skips_failed_biorxiv_for_all_but_raises_for_biorxiv(
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1',
                                                 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
@@ -1746,7 +1746,7 @@ def test_search_for_papers_skips_failed_chemrxiv_for_all_but_raises_for_chemrxiv
     db_path = tmp_path / 'papers.db'
     rows = search._elsevier_rows(pd.DataFrame([{'dc:identifier': 'SCOPUS_ID:1',
                                                 'dc:title': 'Elsevier paper'}]))
-    monkeypatch.setattr(search, 'document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
     monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
     monkeypatch.setattr(search, 'core_search', lambda *_, **__: search._core_rows([]))
     monkeypatch.setattr(search, 'openalex_search', lambda *_, **__: search._openalex_rows([]))
