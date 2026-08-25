@@ -12,14 +12,19 @@ from typing import Any
 
 import pytest
 
-import paperminer.biorxiv as biorxiv
-import paperminer.medrxiv as medrxiv
-from paperminer import _rxiv
+import paperminer.providers.biorxiv as biorxiv
+import paperminer.providers.medrxiv as medrxiv
+from paperminer.providers import rxiv as _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
 ARCHIVES = [medrxiv, biorxiv]
 ARCHIVE_IDS = ['medrxiv', 'biorxiv']
+
+
+def test_message_ignores_non_mapping_entries() -> None:
+    """Ignore malformed message-list entries."""
+    assert _rxiv._message({'messages': ['not-a-mapping']}) == {}
 
 
 def payload(status: str = 'ok', total: str = '5', count: int = 5) -> str:

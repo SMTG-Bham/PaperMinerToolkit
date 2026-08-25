@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.documents.
+"""Unit tests for paperminer.corpus.documents.
 
 This module tests text extraction from PDF/TXT inputs, PDF image extraction,
 and page rendering helpers.
@@ -14,7 +14,13 @@ from typing import Any
 
 import pytest
 
-import paperminer.documents as documents
+import paperminer.corpus.documents as documents
+
+
+def test_pdf_bytes_delegates_to_stream_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap byte content in a file-like object for the common PDF reader."""
+    monkeypatch.setattr(documents, 'read_pdf_text', lambda stream: stream.read().decode())
+    assert documents.read_pdf_bytes(b'paper') == 'paper'
 
 
 def test_read_pdf_text_concatenates_page_text(monkeypatch: pytest.MonkeyPatch) -> None:

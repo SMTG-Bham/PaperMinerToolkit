@@ -1,71 +1,14 @@
-# Python modules
+# Python API
 
 Each public PaperMiner module has its own API page. Private members beginning with `_` are intentionally omitted.
 
-## Package and command line
-
 ```{toctree}
-:maxdepth: 1
+:maxdepth: 2
 
-modules/paperminer
 modules/cli
-```
-
-## Corpus, discovery, and documents
-
-```{toctree}
-:maxdepth: 1
-
-modules/corpus
-modules/provider
-modules/sources
-modules/search
-modules/crossref
-modules/openalex
-modules/pubmed
-modules/arxiv
-modules/rxiv
-modules/medrxiv
-modules/biorxiv
-modules/chemrxiv
-modules/enrichment
-modules/elsevier
-modules/core
-modules/unpaywall
-modules/metadata
-modules/imports
-modules/download
-modules/documents
-```
-
-## Recipes and extraction
-
-```{toctree}
-:maxdepth: 1
-
-modules/recipes
-modules/extract
-modules/scrape
-modules/store
-```
-
-## Models and analysis
-
-```{toctree}
-:maxdepth: 1
-
-modules/models
+modules/corpus/index
+modules/providers/index
+modules/workflows/index
+modules/extraction/index
 modules/settings
-modules/tokenizer
-modules/compression
-modules/filtering
-modules/topics
-```
-
-## Utilities
-
-```{toctree}
-:maxdepth: 1
-
-modules/utilities
 ```

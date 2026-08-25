@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.recipes.
+"""Unit tests for paperminer.extraction.recipes.
 
 This module tests recipe validation, loading bundled and file-based recipes,
 building output columns, alias collection, and canonical column matching.
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-import paperminer.recipes as recipes
+import paperminer.extraction.recipes as recipes
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -182,7 +182,7 @@ def test_bundled_band_gap_recipe_uses_structured_lists_and_material_granularity(
         assert example
         assert all(set(item) == item_keys for item in example)
 
-    aliases = recipes.aliases_for(recipe)
+    aliases = recipes._aliases_for(recipe)
     for field, field_aliases in aliases.items():
         other_aliases = set().union(*(names for owner, names in aliases.items() if owner != field))
         assert field_aliases.isdisjoint(other_aliases)
@@ -222,7 +222,7 @@ def test_field_columns_builds_recipe_columns_and_respects_existing_columns() -> 
 
 def test_aliases_for_includes_fields_prompts_aliases_and_metadata_fields() -> None:
     """Test alias construction for recipe and metadata fields."""
-    aliases = recipes.aliases_for(sample_recipe())
+    aliases = recipes._aliases_for(sample_recipe())
 
     assert aliases['Name'] == {'name', 'material name', 'compound name'}
     assert aliases['Conductivity'] == {'conductivity', 'ionic conductivity', 'sigma'}
@@ -238,6 +238,6 @@ def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns(
 
     assert recipes.canonical_match(' sigma ', columns, recipe) == 'Conductivity [S cm^-1]'
     assert recipes.canonical_match('doi', columns, recipe) == 'doi'
-    monkeypatch.setattr(recipes, 'aliases_for', lambda _: {'Extra Column': {'different alias'}})
+    monkeypatch.setattr(recipes, '_aliases_for', lambda _: {'Extra Column': {'different alias'}})
     assert recipes.canonical_match('extra column', ['Extra Column [kg]'], recipe) == 'Extra Column [kg]'
     assert recipes.canonical_match('Unknown field', columns, recipe) is None

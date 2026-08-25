@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.models.
+"""Unit tests for paperminer.extraction.models.
 
 This module tests model configuration, provider selection, image encoding,
 OpenAI Responses clients, Anthropic Messages clients, OpenAI-compatible chat
@@ -8,13 +8,32 @@ clients, and public query helpers without calling live model APIs.
 from __future__ import annotations
 
 import types
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, NoReturn
 
 import pytest
 
-from paperminer.compression import CompressionConfig
-import paperminer.models as models
+from paperminer.extraction.compression import CompressionConfig
+import paperminer.extraction.models as models
+
+
+def test_anthropic_error_detail_handles_every_response_shape() -> None:
+    """Prefer structured provider errors and fall back to bounded response text."""
+    assert models._anthropic_error_detail(None) == ''
+
+    class InvalidJSON:
+        """Response double whose body is not valid JSON."""
+
+        text = ' plain failure '
+
+        def json(self) -> Any:
+            """Raise a response decoding error."""
+            raise ValueError('bad json')
+
+    assert models._anthropic_error_detail(InvalidJSON()) == 'plain failure'
+    response = SimpleNamespace(json=lambda: {'error': {'message': 'structured failure'}}, text='ignored')
+    assert models._anthropic_error_detail(response) == 'structured failure'
 
 
 def text_config(**overrides: Any) -> models.ModelConfig:
@@ -106,7 +125,7 @@ def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path: Path) -
     image_path = tmp_path / 'image.png'
     image_path.write_bytes(b'image bytes')
 
-    assert models.image_to_data_url(str(image_path)) == 'data:image/png;base64,aW1hZ2UgYnl0ZXM='
+    assert models._image_to_data_url(str(image_path)) == 'data:image/png;base64,aW1hZ2UgYnl0ZXM='
 
 
 def test_base_model_client_methods_are_abstract() -> None:

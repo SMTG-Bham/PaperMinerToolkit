@@ -37,7 +37,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 QUERY="${1:-biodegradable polymer OECD 301 biodegradation}"
 DB="${2:-papers.db}"
 
-# Every paper the sources will give us. pm_search has no "unlimited" flag: each
+# Every paper the sources will give us. pm search has no "unlimited" flag: each
 # backend loops until it has COUNT records or the provider runs out, so a number
 # larger than any real result set is how you ask for everything. Scopus stops at
 # its own total, CORE and OpenAlex stop when a short page comes back.
@@ -76,13 +76,13 @@ if [[ -z "${OPENALEX_API_KEY:-}" ]]; then
 fi
 
 echo "=== Searching: $QUERY ==="
-pm_search "$QUERY" "$DB" --source all --count "$COUNT"
+pm search "$QUERY" "$DB" --source all --count "$COUNT"
 
 echo "=== Downloading ==="
-pm_download "$DB" --format both --source all
+pm download "$DB" --format both --source all
 
 echo "=== Corpus ==="
-pm_corpus_stats "$DB"
+pm corpus stats "$DB"
 
 # $DB is absolute when fetch_corpus.sbatch resolved it against the submit
 # directory, and relative when it came straight off the command line.

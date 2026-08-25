@@ -11,3 +11,16 @@
 .workflow-command {
   white-space: nowrap;
 }
+
+/* Leave enough height for the two vertical analysis branches. */
+.mermaid-container > pre > svg,
+pre.mermaid > svg {
+  height: 38rem !important;
+}
+
+@media (max-width: 576px) {
+  .mermaid-container > pre > svg,
+  pre.mermaid > svg {
+    height: 30rem !important;
+  }
+}

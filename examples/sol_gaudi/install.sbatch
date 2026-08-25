@@ -225,10 +225,14 @@ if [[ "$cuda_pkgs" != "0" ]]; then
 fi
 echo "CUDA packages: 0"
 
-for cmd in pm_search pm_download pm_scrape pm_store pm_status pm_model_status; do
-  command -v "$cmd" >/dev/null || { echo "ERROR: $cmd not on PATH" >&2; exit 1; }
+command -v pm >/dev/null || { echo "ERROR: pm not on PATH" >&2; exit 1; }
+for command_name in search download scrape store status reset; do
+  pm "$command_name" --help >/dev/null
 done
-echo "console scripts: OK"
+for group_name in corpus filter topics import config; do
+  pm "$group_name" --help >/dev/null
+done
+echo "pm command hierarchy: OK"
 
 echo "=== Test suite ==="
 # Needs no credentials and no accelerator: the network and slow markers are

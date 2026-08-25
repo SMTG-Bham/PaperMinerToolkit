@@ -32,25 +32,25 @@ python -m pip install -e .
 Configure a text model and any search/download credentials you need, then run a small workflow:
 
 ```bash
-pm_model_config text --provider openai --model YOUR_TEXT_MODEL
+pm config model text --provider openai --model YOUR_TEXT_MODEL
 
-pm_search "lithium solid electrolyte" papers.db \
+pm search "lithium solid electrolyte" papers.db \
   --source openalex --count 25
-pm_enrich papers.db
-pm_download papers.db --format abstract
+pm enrich papers.db
+pm download papers.db --format abstract
 
-pm_scrape papers.db sse \
+pm scrape papers.db sse \
   --mode abstract \
   --output temp_scraped_materials.csv
 
-pm_store papers.db \
+pm store papers.db \
   temp_scraped_materials.csv \
   materials.csv \
   sse \
   --assume-yes
 ```
 
-Use `pm_corpus_stats papers.db` to inspect stored content and `pm_status papers.db` to inspect pipeline progress.
+Use `pm corpus stats papers.db` to inspect stored content and `pm status papers.db` to inspect pipeline progress.
 
 ## Documentation
 

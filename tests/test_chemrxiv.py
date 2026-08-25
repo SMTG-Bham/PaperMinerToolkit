@@ -9,10 +9,10 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-import paperminer.biorxiv as biorxiv
-import paperminer.chemrxiv as chemrxiv
-from paperminer import provider
-import paperminer.medrxiv as medrxiv
+import paperminer.providers.biorxiv as biorxiv
+import paperminer.providers.chemrxiv as chemrxiv
+from paperminer.providers import base as provider
+import paperminer.providers.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -110,7 +110,7 @@ def test_normalize_chemrxiv_doi_preserves_the_version_the_registry_issued() -> N
     ``10.26434/chemrxiv.8011268.v1`` resolves while the bare form only
     redirects. Normalizing the version away would strand most of the archive,
     so this test exists to stop that being reintroduced for consistency with
-    :mod:`paperminer.biorxiv`.
+    :mod:`paperminer.providers.biorxiv`.
     """
     for doi in ['10.26434/chemrxiv.15007737/v1', '10.26434/chemrxiv.8011268.v1',
                 '10.26434/chemrxiv-2025-0dxhw/v4']:
@@ -542,7 +542,7 @@ def test_parse_query_rejects_a_bound_that_is_not_an_iso_date() -> None:
 def test_the_module_publishes_no_archive_walk_or_full_text_surface() -> None:
     """Confirm chemRxiv answers by search rather than by an archive walk.
 
-    The absent names are the ones :func:`paperminer.search._rxiv_search`
+    The absent names are the ones :func:`paperminer.workflows.search._rxiv_search`
     requires. chemRxiv has a search endpoint and no machine-readable full text,
     so implementing them would mean reading the archive to answer a query the
     server already answers, and promising a text source that does not exist.
@@ -550,6 +550,52 @@ def test_the_module_publishes_no_archive_walk_or_full_text_surface() -> None:
     for name in ['matches', 'page_cursors', 'interval_page', 'endpoint', 'page_size',
                  'CORPUS_START', 'MAX_SCAN_RECORDS', 'full_text']:
         assert not hasattr(chemrxiv, name)
+
+
+def test_chemrxiv_mapping_helpers_accept_sparse_and_mixed_api_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normalize the permissive shapes returned by several chemRxiv API versions."""
+    assert chemrxiv.request_headers()['User-Agent']
+    assert chemrxiv.item_url('item') == f'{chemrxiv.BASE_URL}/items/item'
+    assert chemrxiv.chemrxiv_stem(None) == ''
+    assert chemrxiv.chemrxiv_version(None) == ''
+    assert chemrxiv._authors(' Ada  Lovelace ') == 'Ada Lovelace'
+    assert chemrxiv._authors(['Grace Hopper', {'firstName': 'Dorothy', 'lastName': 'Hodgkin'}, 1]) == (
+        'Grace Hopper; Dorothy Hodgkin'
+    )
+    assert chemrxiv._categories({'categories': 'Catalysis'}) == [
+        {'id': 'catalysis', 'name': 'Catalysis', 'is_primary': True}
+    ]
+    assert chemrxiv._categories({'categories': ['', {'name': 'Theory'}]}) == [
+        {'id': 'theory', 'name': 'Theory', 'is_primary': True}
+    ]
+    assert chemrxiv._keywords({'keywords': ' catalysis '}) == ['catalysis']
+    assert chemrxiv._published_doi({'vor': {}}) == ''
+    assert chemrxiv._asset_url({'asset': {'url': 'https://example.org/paper.pdf'}}).endswith('paper.pdf')
+
+    assert chemrxiv.parse_records({'itemHits': 'invalid'}) == []
+    assert len(chemrxiv.parse_records({'itemHits': [None, {'item': items()[0]}]})) == 1
+    assert chemrxiv.latest_versions([{}]) == []
+
+    monkeypatch.setattr(
+        chemrxiv,
+        'request_payload',
+        lambda *args, **kwargs: {'data': [None, {'id': 'c1', 'name': 'Catalysis'}]},
+    )
+    chemrxiv.reset_categories_cache()
+    assert chemrxiv.categories() == [{'id': 'c1', 'name': 'Catalysis'}]
+
+
+def test_fetch_item_handles_blank_missing_and_present_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Avoid blank item requests and return the first normalized API record."""
+    assert chemrxiv.fetch_item(' ') is None
+    monkeypatch.setattr(chemrxiv, 'request_json', lambda *args, **kwargs: {'itemHits': []})
+    assert chemrxiv.fetch_item('missing') is None
+    monkeypatch.setattr(chemrxiv, 'request_json', lambda *args, **kwargs: {'item': items()[0]})
+    assert chemrxiv.fetch_item('present')['chemrxiv_doi'] == '10.26434/chemrxiv-2022-w08rh'
 
 
 @pytest.fixture

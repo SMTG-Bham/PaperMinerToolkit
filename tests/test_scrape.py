@@ -10,9 +10,17 @@ from typing import Any, Self
 import pandas as pd
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.scrape as scrape
-from paperminer.compression import CompressionConfig
+import paperminer.corpus.database as corpus
+import paperminer.extraction.scrape as scrape
+from paperminer.extraction.compression import CompressionConfig
+
+
+def test_status_and_asset_path_validate_nonstandard_values(tmp_path: Path) -> None:
+    """Reject unknown status columns and restore a missing asset extension."""
+    with pytest.raises(KeyError, match='Unknown pipeline status'):
+        scrape._set_status({}, 'unknown', 'failed')
+    path = scrape._asset_path({'original_filename': 'paper', 'content': b'content'}, tmp_path, 'fallback.txt')
+    assert path is not None and path.endswith('.txt')
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -409,6 +417,29 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(
     assert papers.loc[0, 'text_scrape_status'] == 'pending'
     assert papers.loc[0, 'num_abstract_materials'] == 1
     assert papers.loc[0, 'num_abstract_chunks'] == 1
+
+
+def test_scrape_papers_skips_an_already_successful_abstract_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Avoid repeat LLM calls for abstracts already scraped successfully."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    write_corpus(db_path, [{
+        'paper_id': 'paper-abstract', 'abstract_scrape_status': 'succeeded',
+    }])
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(
+        scrape, 'scrape_text',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('LLM should not run')),
+    )
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='abstract')
+    assert not output_path.exists()
+    assert 'abstracts=1' in capsys.readouterr().out
 
 
 def test_scrape_papers_applies_count_and_order_before_scraping(

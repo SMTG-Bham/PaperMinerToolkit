@@ -22,7 +22,7 @@
 #   export PAPERMINER_MODEL_BASE_URL="http://$(cat vllm_endpoint.txt)/v1"
 #   export PAPERMINER_MODEL_CAPABILITIES=text
 #   export PAPERMINER_MODEL_INPUT_TOKEN_LIMIT=20000   # NOT equal to max-model-len
-#   pm_scrape papers.db polymer --mode text --output scraped_polymer.csv
+#   pm scrape papers.db polymer --mode text --output scraped_polymer.csv
 #
 # The input limit must stay at least 11000 below PM_MAX_MODEL_LEN: PaperMiner
 # always asks for a 10000-token completion and vLLM counts prompt + completion

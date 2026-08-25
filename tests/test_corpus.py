@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.corpus.
+"""Unit tests for paperminer.corpus.database.
 
 This module tests the standalone SQLite corpus layer for storing paper metadata,
 compressed blobs, deduplicated content, paper asset links, and corpus storage
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-import paperminer.corpus as corpus
+import paperminer.corpus.database as corpus
 
 
 V4_PAPER_FIELDS = [
@@ -28,6 +28,30 @@ V4_PAPER_FIELDS = [
     'num_images', 'num_text_materials', 'num_abstract_materials', 'num_image_materials',
     'num_text_chunks', 'num_abstract_chunks', 'last_error',
 ]
+
+
+def test_defensive_helpers_and_empty_operations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover schema guards, normalization edges, defaults, and empty batches."""
+    conn = sqlite3.connect(':memory:')
+    conn.execute(f'PRAGMA user_version = {corpus.SCHEMA_VERSION + 1}')
+    with pytest.raises(RuntimeError, match='newer than supported'):
+        corpus.init_corpus(conn)
+    conn.close()
+    assert corpus._has_value(float('nan')) is False
+    assert corpus._clean_doi('doi:10.1/ABC.') == '10.1/abc'
+    monkeypatch.setattr(corpus, 'normalize_paper', lambda paper: dict(paper))
+    merged = corpus._merge_paper(
+        {'paper_id': 'p', 'title': 'title', 'metadata_json': ''},
+        {'paper_id': 'p', 'metadata_json': '{"source": true}', 'last_error': 'failed'},
+    )
+    assert merged['metadata_json'] == '{"source": true}'
+    assert merged['last_error'] == 'failed'
+    with corpus.connect(':memory:') as conn:
+        conn.execute("CREATE TABLE defaults (value TEXT DEFAULT CURRENT_TIMESTAMP)")
+        assert corpus._child_column_defaults(conn, 'defaults')['value'] == 'CURRENT_TIMESTAMP'
+        assert corpus.write_enrichment(conn, []) == 0
+        assert corpus.set_enrichment_status(conn, [], 'pending') == 0
+        assert corpus.latest_assets(conn, []) == {}
 V1_PAPER_FIELDS = [
     field for field in V4_PAPER_FIELDS
     if field not in {'num_text_chunks', 'num_abstract_chunks'}

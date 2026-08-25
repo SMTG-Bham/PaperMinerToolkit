@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 import requests
 
-import paperminer.corpus as corpus
-import paperminer.enrichment as enrichment
+import paperminer.corpus.database as corpus
+import paperminer.workflows.enrichment as enrichment
 
 
 def crossref_work(doi: str = '10.1234/example') -> dict[str, Any]:
@@ -219,18 +219,18 @@ def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
 
 def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
     """Expand the all sentinel and reject an unsupported provider name."""
-    assert enrichment.configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv',
+    assert enrichment._configured_sources(None) == ['crossref', 'openalex', 'pubmed', 'arxiv',
                                                    'medrxiv', 'biorxiv', 'chemrxiv']
-    assert enrichment.configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv',
+    assert enrichment._configured_sources(['all']) == ['crossref', 'openalex', 'pubmed', 'arxiv',
                                                       'medrxiv', 'biorxiv', 'chemrxiv']
-    assert enrichment.configured_sources(['openalex']) == ['openalex']
+    assert enrichment._configured_sources(['openalex']) == ['openalex']
     with pytest.raises(ValueError):
-        enrichment.configured_sources(['scopus'])
+        enrichment._configured_sources(['scopus'])
 
 
 def test_partition_candidates_splits_by_available_lookup_key() -> None:
     """Route papers by DOI, by OpenAlex identifier, or to the unresolved set."""
-    by_doi, by_openalex, unresolved = enrichment.partition_candidates([
+    by_doi, by_openalex, unresolved = enrichment._partition_candidates([
         {'paper_id': 'doi:10.1234/a', 'doi': '10.1234/A'},
         {'paper_id': 'openalex:W7', 'doi': '', 'openalex_id': ''},
         {'paper_id': 'core:5', 'doi': '', 'openalex_id': 'https://openalex.org/W8'},
@@ -244,7 +244,7 @@ def test_partition_candidates_splits_by_available_lookup_key() -> None:
 
 def test_crossref_fields_map_core_bibliographic_values() -> None:
     """Map the deposited bibliographic record onto corpus column names."""
-    mapped = enrichment.crossref_fields(crossref_work())
+    mapped = enrichment._crossref_fields(crossref_work())
 
     assert mapped['publisher'] == 'Deposited Publisher'
     assert mapped['work_type'] == 'journal-article'
@@ -258,31 +258,31 @@ def test_crossref_fields_map_core_bibliographic_values() -> None:
 
 def test_crossref_fields_order_typed_issns_with_print_first() -> None:
     """Put the print ISSN first regardless of the deposited order."""
-    assert enrichment.crossref_fields(crossref_work())['issn'] == '2000-0001;2000-0002'
+    assert enrichment._crossref_fields(crossref_work())['issn'] == '2000-0001;2000-0002'
 
 
 def test_crossref_fields_ignore_text_mining_licences() -> None:
     """Skip a text-mining grant and keep the version-of-record licence."""
     work = crossref_work()
-    assert enrichment.crossref_fields(work)['license'] == 'https://creativecommons.org/licenses/by/4.0'
+    assert enrichment._crossref_fields(work)['license'] == 'https://creativecommons.org/licenses/by/4.0'
 
     work['license'] = [{'content-version': 'tdm', 'URL': 'https://example.org/text-mining'}]
-    assert enrichment.crossref_fields(work)['license'] == ''
+    assert enrichment._crossref_fields(work)['license'] == ''
 
 
 def test_crossref_retraction_requires_a_retraction_update_type() -> None:
     """Treat only a retraction update as a retraction, never a correction."""
     work = crossref_work()
     work['updated-by'] = [{'type': 'correction', 'DOI': '10.1234/correction'}]
-    assert enrichment.crossref_retraction(work) == (False, '')
+    assert enrichment._crossref_retraction(work) == (False, '')
 
     work['updated-by'].append({'type': 'retraction', 'DOI': '10.1234/Retraction'})
-    assert enrichment.crossref_retraction(work) == (True, '10.1234/retraction')
+    assert enrichment._crossref_retraction(work) == (True, '10.1234/retraction')
 
 
 def test_openalex_fields_map_impact_and_open_access_values() -> None:
     """Map the derived impact, access, and identifier fields from OpenAlex."""
-    mapped = enrichment.openalex_fields(openalex_work())
+    mapped = enrichment._openalex_fields(openalex_work())
 
     assert mapped['openalex_id'] == 'W123'
     assert mapped['doi'] == '10.1234/example'
@@ -302,7 +302,7 @@ def test_openalex_fields_tolerate_a_null_primary_location() -> None:
     work['best_oa_location'] = None
     work['open_access'] = None
 
-    mapped = enrichment.openalex_fields(work)
+    mapped = enrichment._openalex_fields(work)
 
     assert mapped['journal'] == ''
     assert mapped['publisher'] == ''
@@ -313,7 +313,7 @@ def test_openalex_fields_tolerate_a_null_primary_location() -> None:
 
 def test_merge_prefers_crossref_bibliography_and_openalex_impact() -> None:
     """Apply the documented precedence between the two providers."""
-    merged = enrichment.merge_fields('doi:10.1234/example', crossref_work(), openalex_work(),
+    merged = enrichment._merge_fields('doi:10.1234/example', crossref_work(), openalex_work(),
                                      ['crossref', 'openalex'])
 
     assert merged['publisher'] == 'Deposited Publisher'
@@ -332,7 +332,7 @@ def test_merge_prefers_crossref_bibliography_and_openalex_impact() -> None:
 
 def test_merge_falls_back_to_openalex_when_crossref_is_missing() -> None:
     """Use derived values and report a partial result when Crossref misses."""
-    merged = enrichment.merge_fields('doi:10.1234/example', None, openalex_work(),
+    merged = enrichment._merge_fields('doi:10.1234/example', None, openalex_work(),
                                      ['crossref', 'openalex'])
 
     assert merged['publisher'] == 'Derived Publisher'
@@ -349,14 +349,14 @@ def test_merge_flags_a_retraction_reported_by_either_provider() -> None:
     retracted_openalex['is_retracted'] = True
 
     both = ['crossref', 'openalex']
-    assert enrichment.merge_fields('p', retracted_crossref, openalex_work(), both)['is_retracted'] == 1
-    assert enrichment.merge_fields('p', crossref_work(), retracted_openalex, both)['is_retracted'] == 1
-    assert enrichment.merge_fields('p', crossref_work(), openalex_work(), both)['is_retracted'] == 0
+    assert enrichment._merge_fields('p', retracted_crossref, openalex_work(), both)['is_retracted'] == 1
+    assert enrichment._merge_fields('p', crossref_work(), retracted_openalex, both)['is_retracted'] == 1
+    assert enrichment._merge_fields('p', crossref_work(), openalex_work(), both)['is_retracted'] == 0
 
 
 def test_merge_records_both_citation_counts_separately() -> None:
     """Keep the two differently scoped citation counts from being reconciled."""
-    merged = enrichment.merge_fields('p', crossref_work(), openalex_work(),
+    merged = enrichment._merge_fields('p', crossref_work(), openalex_work(),
                                      ['crossref', 'openalex'])
     provenance = merged['enrichment_json']
 
@@ -369,7 +369,7 @@ def test_merge_records_both_citation_counts_separately() -> None:
 
 def test_merge_reports_not_found_when_no_provider_has_the_work() -> None:
     """Report a miss without an enrichment timestamp when nothing is found."""
-    merged = enrichment.merge_fields('p', None, None, ['crossref', 'openalex'])
+    merged = enrichment._merge_fields('p', None, None, ['crossref', 'openalex'])
 
     assert merged['enrichment_status'] == 'not_found'
     assert merged['enrichment_sources'] == ''
@@ -378,9 +378,9 @@ def test_merge_reports_not_found_when_no_provider_has_the_work() -> None:
 
 def test_merge_records_provider_failures_separately_from_not_found() -> None:
     """Distinguish an unavailable provider from a successful empty lookup."""
-    failed = enrichment.merge_fields(
+    failed = enrichment._merge_fields(
         'p', None, None, ['crossref'], provider_errors={'crossref': 'service unavailable'})
-    partial = enrichment.merge_fields(
+    partial = enrichment._merge_fields(
         'p', None, openalex_work(), ['crossref', 'openalex'],
         provider_errors={'crossref': 'service unavailable'})
 
@@ -392,7 +392,7 @@ def test_merge_records_provider_failures_separately_from_not_found() -> None:
 
 def test_author_rows_emit_one_row_per_affiliation() -> None:
     """Emit a row per author and affiliation so institutions stay joinable."""
-    rows = enrichment.author_rows('p', crossref_work(), openalex_work())
+    rows = enrichment._author_rows('p', crossref_work(), openalex_work())
 
     first = [row for row in rows if row['author_position'] == 0]
     assert [row['affiliation_rank'] for row in first] == [0, 1]
@@ -409,7 +409,7 @@ def test_author_rows_emit_one_row_per_affiliation() -> None:
 
 def test_author_rows_take_names_from_crossref_and_identifiers_from_openalex() -> None:
     """Combine the deposited name split with the disambiguated identifiers."""
-    rows = enrichment.author_rows('p', crossref_work(), openalex_work())
+    rows = enrichment._author_rows('p', crossref_work(), openalex_work())
 
     assert rows[0]['display_name'] == 'Jane A. Smith'
     assert rows[0]['given_name'] == 'Jane A.'
@@ -426,7 +426,7 @@ def test_author_rows_tolerate_an_invalid_orcid() -> None:
     deposited = crossref_work()
     deposited['author'][0]['ORCID'] = 'also-invalid'
 
-    assert enrichment.author_rows('p', deposited, work)[0]['orcid'] == ''
+    assert enrichment._author_rows('p', deposited, work)[0]['orcid'] == ''
 
 
 def test_author_rows_extend_a_truncated_openalex_list_from_crossref() -> None:
@@ -434,7 +434,7 @@ def test_author_rows_extend_a_truncated_openalex_list_from_crossref() -> None:
     work = openalex_work()
     work['authorships'] = work['authorships'][:1]
 
-    rows = enrichment.author_rows('p', crossref_work(), work)
+    rows = enrichment._author_rows('p', crossref_work(), work)
 
     assert [row['author_position'] for row in rows] == [0, 0, 1]
     assert rows[-1]['source'] == 'crossref'
@@ -443,7 +443,7 @@ def test_author_rows_extend_a_truncated_openalex_list_from_crossref() -> None:
 
 def test_author_rows_use_crossref_alone_when_openalex_has_no_record() -> None:
     """Fall back to the deposited author list with a Crossref provenance."""
-    rows = enrichment.author_rows('p', crossref_work(), None)
+    rows = enrichment._author_rows('p', crossref_work(), None)
 
     assert [row['source'] for row in rows] == ['crossref', 'crossref']
     assert [row['position_label'] for row in rows] == ['first', 'last']
@@ -452,7 +452,7 @@ def test_author_rows_use_crossref_alone_when_openalex_has_no_record() -> None:
 
 def test_subject_rows_mark_the_primary_topic_and_cover_every_scheme() -> None:
     """Store topics, hierarchy rollups, concepts, keywords, and SDGs."""
-    rows = enrichment.subject_rows('p', openalex_work())
+    rows = enrichment._subject_rows('p', openalex_work())
     schemes = {row['scheme'] for row in rows}
 
     assert schemes == {'topic', 'subfield', 'field', 'domain', 'concept', 'keyword', 'sdg'}
@@ -464,12 +464,12 @@ def test_subject_rows_mark_the_primary_topic_and_cover_every_scheme() -> None:
 
 def test_subject_rows_are_empty_without_an_openalex_record() -> None:
     """Return no subjects when OpenAlex has no record, as Crossref has none."""
-    assert enrichment.subject_rows('p', None) == []
+    assert enrichment._subject_rows('p', None) == []
 
 
 def test_reference_rows_keep_each_provider_separate() -> None:
     """Store both reference lists side by side without merging them."""
-    rows = enrichment.reference_rows('p', crossref_work(), openalex_work())
+    rows = enrichment._reference_rows('p', crossref_work(), openalex_work())
 
     from_crossref = [row for row in rows if row['source'] == 'crossref']
     from_openalex = [row for row in rows if row['source'] == 'openalex']
@@ -739,7 +739,7 @@ def test_enrich_corpus_matches_doi_less_papers_by_openalex_identifier(tmp_path: 
 
 def test_reset_clears_enrichment_status_but_keeps_enrichment_data(tmp_path: Path) -> None:
     """Re-arm the enrichment stage without discarding enrichment values."""
-    import paperminer.utilities as utilities
+    import paperminer.workflows.utilities as utilities
 
     db_path = tmp_path / 'corpus.db'
     seed_corpus(db_path, [{'doi': '10.1234/example', 'sources': 'seed'}])
@@ -764,7 +764,7 @@ def test_enrich_from_crossref_message_writes_import_metadata(tmp_path: Path) -> 
                            'sources': 'external'}])
 
     with open_corpus(db_path) as conn:
-        enrichment.enrich_from_crossref_message(conn, 'external:scan', crossref_work())
+        enrichment._enrich_from_crossref_message(conn, 'external:scan', crossref_work())
         row = corpus.paper_rows(conn)[0]
         references = corpus.paper_references(conn, 'external:scan')
 
@@ -781,8 +781,8 @@ def test_resolve_reference_targets_links_in_corpus_dois(tmp_path: Path) -> None:
                           {'doi': '10.1234/cited-one', 'sources': 'seed'}])
 
     with open_corpus(db_path) as conn:
-        enrichment.enrich_from_crossref_message(conn, 'doi:10.1234/example', crossref_work())
-        enrichment.resolve_reference_targets(conn)
+        enrichment._enrich_from_crossref_message(conn, 'doi:10.1234/example', crossref_work())
+        enrichment._resolve_reference_targets(conn)
         references = corpus.paper_references(conn, 'doi:10.1234/example')
 
     assert references[0]['referenced_paper_id'] == 'doi:10.1234/cited-one'
@@ -891,11 +891,11 @@ def pubmed_article(pmid: str = '31234567',
 
 def test_openalex_fields_backfill_pubmed_identifiers_from_the_ids_block() -> None:
     """Recover a PMID that OpenAlex already reports rather than requesting it."""
-    fields = enrichment.openalex_fields(openalex_work())
+    fields = enrichment._openalex_fields(openalex_work())
 
     assert fields['pmid'] == '1'
-    assert enrichment.openalex_fields({})['pmid'] == ''
-    assert enrichment.openalex_fields(
+    assert enrichment._openalex_fields({})['pmid'] == ''
+    assert enrichment._openalex_fields(
         {'ids': {'pmcid': 'https://www.ncbi.nlm.nih.gov/pmc/articles/PMC55'}})['pmcid'] == 'PMC55'
 
 
@@ -908,12 +908,12 @@ def test_pubmed_candidates_key_rows_by_their_pubmed_identifier() -> None:
         {'paper_id': ''},
     ]
 
-    assert enrichment.pubmed_candidates(candidates) == {'11': 'doi:10.1234/a', '22': 'pmid:22'}
+    assert enrichment._pubmed_candidates(candidates) == {'11': 'doi:10.1234/a', '22': 'pmid:22'}
 
 
 def test_pubmed_fields_map_the_shared_enrichment_columns() -> None:
     """Contribute the bibliographic columns PubMed can fill."""
-    fields = enrichment.pubmed_fields(pubmed_article())
+    fields = enrichment._pubmed_fields(pubmed_article())
 
     assert fields['doi'] == '10.1234/pubmed-one'
     assert fields['title'] == 'PubMed title'
@@ -926,7 +926,7 @@ def test_pubmed_fields_map_the_shared_enrichment_columns() -> None:
 
 def test_pubmed_subject_rows_split_descriptors_qualifiers_types_and_keywords() -> None:
     """Keep each controlled vocabulary in its own scheme and drop duplicates."""
-    rows = enrichment.pubmed_subject_rows('doi:10.1234/pubmed-one', pubmed_article())
+    rows = enrichment._pubmed_subject_rows('doi:10.1234/pubmed-one', pubmed_article())
 
     assert [(row['scheme'], row['subject_id'], row['display_name']) for row in rows] == [
         ('mesh', 'D007854', 'Lithium'),
@@ -937,13 +937,13 @@ def test_pubmed_subject_rows_split_descriptors_qualifiers_types_and_keywords() -
     assert {row['source'] for row in rows} == {'pubmed'}
     assert rows[0]['is_primary'] == 1
     assert rows[1]['is_primary'] == 0
-    assert enrichment.pubmed_subject_rows('doi:10.1234/x', None) == []
+    assert enrichment._pubmed_subject_rows('doi:10.1234/x', None) == []
 
 
 def test_pubmed_keywords_use_a_scheme_distinct_from_openalex_keywords() -> None:
     """Keep both providers' keywords addressable under the composite key."""
-    openalex_schemes = {row['scheme'] for row in enrichment.subject_rows('p', openalex_work())}
-    pubmed_schemes = {row['scheme'] for row in enrichment.pubmed_subject_rows('p', pubmed_article())}
+    openalex_schemes = {row['scheme'] for row in enrichment._subject_rows('p', openalex_work())}
+    pubmed_schemes = {row['scheme'] for row in enrichment._pubmed_subject_rows('p', pubmed_article())}
 
     assert 'keyword' in openalex_schemes
     assert 'mesh_keyword' in pubmed_schemes
@@ -980,7 +980,7 @@ def test_arxiv_candidates_key_rows_by_their_arxiv_identifier() -> None:
         {'paper_id': ''},
     ]
 
-    assert enrichment.arxiv_candidates(candidates) == {
+    assert enrichment._arxiv_candidates(candidates) == {
         '2301.00001': 'doi:10.1234/a',
         'cond-mat/0501001': 'arxiv:cond-mat/0501001',
     }
@@ -988,7 +988,7 @@ def test_arxiv_candidates_key_rows_by_their_arxiv_identifier() -> None:
 
 def test_arxiv_fields_map_the_shared_enrichment_columns() -> None:
     """Contribute the bibliographic columns arXiv can fill, plus its open access."""
-    fields = enrichment.arxiv_fields(arxiv_entry())
+    fields = enrichment._arxiv_fields(arxiv_entry())
 
     assert fields['doi'] == '10.1234/arxiv-one'
     assert fields['title'] == 'arXiv title'
@@ -1001,21 +1001,21 @@ def test_arxiv_fields_map_the_shared_enrichment_columns() -> None:
 
 def test_arxiv_subject_rows_flag_the_primary_category() -> None:
     """Emit one row per category and mark the primary one."""
-    rows = enrichment.arxiv_subject_rows('p', arxiv_entry())
+    rows = enrichment._arxiv_subject_rows('p', arxiv_entry())
 
     assert [(row['scheme'], row['subject_id'], row['is_primary']) for row in rows] == [
         ('arxiv_category', 'cond-mat.mtrl-sci', 1),
         ('arxiv_category', 'physics.chem-ph', 0),
     ]
     assert {row['source'] for row in rows} == {'arxiv'}
-    assert enrichment.arxiv_subject_rows('p', None) == []
+    assert enrichment._arxiv_subject_rows('p', None) == []
 
 
 def test_arxiv_categories_use_a_scheme_distinct_from_the_other_providers() -> None:
     """Keep arXiv categories off the primary key OpenAlex and PubMed share."""
-    openalex_schemes = {row['scheme'] for row in enrichment.subject_rows('p', openalex_work())}
-    pubmed_schemes = {row['scheme'] for row in enrichment.pubmed_subject_rows('p', pubmed_article())}
-    arxiv_schemes = {row['scheme'] for row in enrichment.arxiv_subject_rows('p', arxiv_entry())}
+    openalex_schemes = {row['scheme'] for row in enrichment._subject_rows('p', openalex_work())}
+    pubmed_schemes = {row['scheme'] for row in enrichment._pubmed_subject_rows('p', pubmed_article())}
+    arxiv_schemes = {row['scheme'] for row in enrichment._arxiv_subject_rows('p', arxiv_entry())}
 
     assert arxiv_schemes == {'arxiv_category'}
     assert not arxiv_schemes & openalex_schemes
@@ -1024,7 +1024,7 @@ def test_arxiv_categories_use_a_scheme_distinct_from_the_other_providers() -> No
 
 def test_merge_fields_ranks_arxiv_last_and_records_it_as_a_found_source() -> None:
     """Let a version-of-record value win, and fall back to arXiv when none exists."""
-    update = enrichment.merge_fields('p', crossref_work(), openalex_work(),
+    update = enrichment._merge_fields('p', crossref_work(), openalex_work(),
                                      ['crossref', 'openalex', 'arxiv'],
                                      None, arxiv_entry())
 
@@ -1034,7 +1034,7 @@ def test_merge_fields_ranks_arxiv_last_and_records_it_as_a_found_source() -> Non
     assert update['journal'] == crossref_work()['container-title'][0]
 
     # With only arXiv, its values fill the row and its open access is asserted.
-    solo = enrichment.merge_fields('p', None, None, ['arxiv'], None, arxiv_entry())
+    solo = enrichment._merge_fields('p', None, None, ['arxiv'], None, arxiv_entry())
     assert solo['enrichment_status'] == 'succeeded'
     assert solo['enrichment_sources'] == 'arxiv'
     assert solo['journal'] == 'Phys. Rev. B'
@@ -1055,7 +1055,7 @@ def test_enrich_batch_enriches_an_arxiv_only_row_and_stores_categories(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['arxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['arxiv'], '')
         subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
         rows = corpus.paper_rows(conn)
 
@@ -1085,7 +1085,7 @@ def test_enrich_batch_resolves_rows_only_pubmed_or_arxiv_can_reach(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['pubmed', 'arxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['pubmed', 'arxiv'], '')
 
     assert summary['succeeded'] == 2
     assert summary['unresolved'] == 1
@@ -1109,7 +1109,7 @@ def test_enrich_batch_does_not_count_unreachable_openalex_as_requested(
 
     monkeypatch.setattr(enrichment.openalex, 'works_batch', unreachable)
     with open_corpus(db_path) as conn:
-        summary = enrichment.enrich_batch(
+        summary = enrichment._enrich_batch(
             conn, corpus.enrichment_candidates(conn), ['openalex', 'arxiv'], '')
         row = corpus.paper_rows(conn)[0]
 
@@ -1132,7 +1132,7 @@ def test_enrich_batch_raises_when_the_only_provider_fails(
     )
 
     with open_corpus(db_path) as conn, pytest.raises(RuntimeError, match='OpenAlex unavailable'):
-        enrichment.enrich_batch(
+        enrichment._enrich_batch(
             conn, corpus.enrichment_candidates(conn), ['openalex'], '')
 
 
@@ -1161,7 +1161,7 @@ def test_enrich_batch_preserves_child_rows_from_a_failed_provider(
                        'display_name': 'Stored topic', 'source': 'openalex'}],
             sources=['openalex'],
         )
-        summary = enrichment.enrich_batch(
+        summary = enrichment._enrich_batch(
             conn, corpus.enrichment_candidates(conn), ['crossref', 'openalex'],
             'me@example.com',
             crossref_session=FakeCrossrefSession([{'items': [crossref_work()]}]), pace=0)
@@ -1198,7 +1198,7 @@ def test_enrich_batch_keeps_other_provider_subjects_when_only_arxiv_is_requested
             subjects=[{'paper_id': 'doi:10.1234/arxiv-one', 'scheme': 'topic',
                        'subject_id': 'T1', 'display_name': 'Batteries', 'source': 'openalex'}],
             sources=['openalex'])
-        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+        enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
                                 ['arxiv'], '')
         sources = {row['source'] for row in
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
@@ -1234,7 +1234,7 @@ def test_medrxiv_candidates_key_rows_by_the_doi_medrxiv_issued() -> None:
         {'paper_id': '', 'medrxiv_doi': '10.1101/2024.03.01.24303597'},
     ]
 
-    assert enrichment.medrxiv_candidates(candidates) == {
+    assert enrichment._medrxiv_candidates(candidates) == {
         '10.1101/2024.03.01.24303596': 'doi:10.1234/a',
         '10.64898/2026.08.05.26359794': 'doi:10.64898/2026.08.05.26359794',
     }
@@ -1242,7 +1242,7 @@ def test_medrxiv_candidates_key_rows_by_the_doi_medrxiv_issued() -> None:
 
 def test_medrxiv_fields_map_the_shared_enrichment_columns() -> None:
     """Assert open access and keep the preprint DOI beside the published one."""
-    fields = enrichment.medrxiv_fields(medrxiv_entry())
+    fields = enrichment._medrxiv_fields(medrxiv_entry())
 
     assert fields['doi'] == '10.1234/medrxiv-one'
     assert fields['medrxiv_doi'] == '10.1101/2024.03.01.24303596'
@@ -1251,13 +1251,13 @@ def test_medrxiv_fields_map_the_shared_enrichment_columns() -> None:
     assert fields['oa_status'] == 'green'
     # A published paper is no longer a preprint, whatever medRxiv still hosts.
     assert fields['work_type'] == ''
-    assert enrichment.medrxiv_fields(medrxiv_entry(published=''))['work_type'] == 'preprint'
-    assert enrichment.medrxiv_fields(medrxiv_entry(published=''))['journal'] == 'medRxiv'
+    assert enrichment._medrxiv_fields(medrxiv_entry(published=''))['work_type'] == 'preprint'
+    assert enrichment._medrxiv_fields(medrxiv_entry(published=''))['journal'] == 'medRxiv'
 
 
 def test_medrxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -> None:
     """Flag the single category medRxiv files a preprint under."""
-    rows = enrichment.medrxiv_subject_rows('doi:10.1234/medrxiv-one', medrxiv_entry())
+    rows = enrichment._medrxiv_subject_rows('doi:10.1234/medrxiv-one', medrxiv_entry())
 
     assert len(rows) == 1
     assert rows[0]['scheme'] == 'medrxiv_category'
@@ -1265,17 +1265,17 @@ def test_medrxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -
     assert rows[0]['display_name'] == 'Health Policy'
     assert rows[0]['is_primary'] == 1
     assert rows[0]['source'] == 'medrxiv'
-    assert enrichment.medrxiv_subject_rows('doi:x', None) == []
+    assert enrichment._medrxiv_subject_rows('doi:x', None) == []
 
     schemes = {row['scheme'] for row in
-               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
-               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())}
+               enrichment._arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment._medrxiv_subject_rows('doi:x', medrxiv_entry())}
     assert schemes == {'arxiv_category', 'medrxiv_category'}
 
 
 def test_merge_fields_ranks_medrxiv_below_the_other_providers() -> None:
     """Fill only what no better-placed provider supplied for the same column."""
-    update = enrichment.merge_fields('doi:10.1234/medrxiv-one', None, None,
+    update = enrichment._merge_fields('doi:10.1234/medrxiv-one', None, None,
                                      ['crossref', 'medrxiv'], None, None, medrxiv_entry())
 
     assert update['enrichment_status'] == 'partial'
@@ -1297,7 +1297,7 @@ def test_merge_fields_lets_a_better_placed_provider_win_over_medrxiv() -> None:
     openalex = {'id': 'https://openalex.org/W1',
                 'open_access': {'is_oa': True, 'oa_status': 'gold'},
                 'best_oa_location': {'license': 'cc-by-4.0'}}
-    update = enrichment.merge_fields('doi:10.1234/medrxiv-one', crossref, openalex,
+    update = enrichment._merge_fields('doi:10.1234/medrxiv-one', crossref, openalex,
                                      ['crossref', 'openalex', 'medrxiv'], None, None,
                                      medrxiv_entry())
 
@@ -1323,7 +1323,7 @@ def test_enrich_batch_enriches_a_medrxiv_only_row_and_stores_its_category(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['medrxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['medrxiv'], '')
         subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
         rows = corpus.paper_rows(conn)
 
@@ -1350,7 +1350,7 @@ def test_enrich_batch_skips_medrxiv_for_a_row_carrying_only_a_published_doi(
     monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi', unreachable)
 
     with open_corpus(db_path) as conn:
-        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+        summary = enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn),
                                           ['medrxiv'], '')
 
     assert summary['not_found'] == 1
@@ -1375,7 +1375,7 @@ def test_enrich_batch_keeps_other_provider_subjects_when_only_medrxiv_is_request
             subjects=[{'paper_id': 'doi:10.1234/medrxiv-one', 'scheme': 'topic',
                        'subject_id': 'T1', 'display_name': 'Vaccines', 'source': 'openalex'}],
             sources=['openalex'])
-        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+        enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
                                 ['medrxiv'], '')
         sources = {row['source'] for row in
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
@@ -1413,7 +1413,7 @@ def test_biorxiv_candidates_key_rows_by_the_doi_biorxiv_issued() -> None:
         {'paper_id': 'doi:10.1234/c', 'medrxiv_doi': '10.1101/2024.03.01.24303596'},
     ]
 
-    assert enrichment.biorxiv_candidates(candidates) == {
+    assert enrichment._biorxiv_candidates(candidates) == {
         '10.1101/2023.12.01.569634': 'doi:10.1234/a',
         '10.64898/2026.08.07.742070': 'doi:10.64898/2026.08.07.742070',
     }
@@ -1421,7 +1421,7 @@ def test_biorxiv_candidates_key_rows_by_the_doi_biorxiv_issued() -> None:
 
 def test_biorxiv_fields_map_the_shared_enrichment_columns() -> None:
     """Assert open access and keep the preprint DOI beside the published one."""
-    fields = enrichment.biorxiv_fields(biorxiv_entry())
+    fields = enrichment._biorxiv_fields(biorxiv_entry())
 
     assert fields['doi'] == '10.1234/biorxiv-one'
     assert fields['biorxiv_doi'] == '10.1101/2023.12.01.569634'
@@ -1430,13 +1430,13 @@ def test_biorxiv_fields_map_the_shared_enrichment_columns() -> None:
     assert fields['oa_status'] == 'green'
     # A published paper is no longer a preprint, whatever bioRxiv still hosts.
     assert fields['work_type'] == ''
-    assert enrichment.biorxiv_fields(biorxiv_entry(published=''))['work_type'] == 'preprint'
-    assert enrichment.biorxiv_fields(biorxiv_entry(published=''))['journal'] == 'bioRxiv'
+    assert enrichment._biorxiv_fields(biorxiv_entry(published=''))['work_type'] == 'preprint'
+    assert enrichment._biorxiv_fields(biorxiv_entry(published=''))['journal'] == 'bioRxiv'
 
 
 def test_biorxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -> None:
     """Flag the single category bioRxiv files a preprint under."""
-    rows = enrichment.biorxiv_subject_rows('doi:10.1234/biorxiv-one', biorxiv_entry())
+    rows = enrichment._biorxiv_subject_rows('doi:10.1234/biorxiv-one', biorxiv_entry())
 
     assert len(rows) == 1
     assert rows[0]['scheme'] == 'biorxiv_category'
@@ -1444,20 +1444,20 @@ def test_biorxiv_subject_rows_use_a_scheme_distinct_from_the_other_providers() -
     assert rows[0]['display_name'] == 'Neuroscience'
     assert rows[0]['is_primary'] == 1
     assert rows[0]['source'] == 'biorxiv'
-    assert enrichment.biorxiv_subject_rows('doi:x', None) == []
+    assert enrichment._biorxiv_subject_rows('doi:x', None) == []
 
     # The two archives classify under different lists, so their schemes must
     # differ or one would overwrite the other on the subjects primary key.
     schemes = {row['scheme'] for row in
-               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
-               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())
-               + enrichment.biorxiv_subject_rows('doi:x', biorxiv_entry())}
+               enrichment._arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment._medrxiv_subject_rows('doi:x', medrxiv_entry())
+               + enrichment._biorxiv_subject_rows('doi:x', biorxiv_entry())}
     assert schemes == {'arxiv_category', 'medrxiv_category', 'biorxiv_category'}
 
 
 def test_merge_fields_ranks_biorxiv_below_the_other_providers() -> None:
     """Fill only what no better-placed provider supplied for the same column."""
-    update = enrichment.merge_fields('doi:10.1234/biorxiv-one', None, None,
+    update = enrichment._merge_fields('doi:10.1234/biorxiv-one', None, None,
                                      ['crossref', 'biorxiv'], None, None, None,
                                      biorxiv_entry())
 
@@ -1480,7 +1480,7 @@ def test_merge_fields_lets_a_better_placed_provider_win_over_biorxiv() -> None:
     openalex = {'id': 'https://openalex.org/W1',
                 'open_access': {'is_oa': True, 'oa_status': 'gold'},
                 'best_oa_location': {'license': 'cc-by-4.0'}}
-    update = enrichment.merge_fields('doi:10.1234/biorxiv-one', crossref, openalex,
+    update = enrichment._merge_fields('doi:10.1234/biorxiv-one', crossref, openalex,
                                      ['crossref', 'openalex', 'biorxiv'], None, None, None,
                                      biorxiv_entry())
 
@@ -1495,7 +1495,7 @@ def test_merge_fields_lets_a_better_placed_provider_win_over_biorxiv() -> None:
 
 def test_merge_fields_keeps_both_preprint_servers_apart_on_one_row() -> None:
     """Record each archive's DOI in its own column when a row reaches both."""
-    update = enrichment.merge_fields('doi:10.1234/both', None, None,
+    update = enrichment._merge_fields('doi:10.1234/both', None, None,
                                      ['medrxiv', 'biorxiv'], None, None,
                                      medrxiv_entry(published='10.1234/both'),
                                      biorxiv_entry(published='10.1234/both'))
@@ -1519,7 +1519,7 @@ def test_enrich_batch_enriches_a_biorxiv_only_row_and_stores_its_category(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['biorxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['biorxiv'], '')
         subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
         rows = corpus.paper_rows(conn)
 
@@ -1553,7 +1553,7 @@ def test_enrich_batch_does_not_ask_either_preprint_server_for_the_others_doi(
                         lambda *_, **__: biorxiv_entry(published=''))
 
     with open_corpus(db_path) as conn:
-        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+        summary = enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn),
                                           ['medrxiv', 'biorxiv'], '')
 
     assert summary['succeeded'] == 1
@@ -1574,7 +1574,7 @@ def test_enrich_batch_skips_biorxiv_for_a_row_carrying_only_a_published_doi(
     monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi', unreachable)
 
     with open_corpus(db_path) as conn:
-        summary = enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn),
+        summary = enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn),
                                           ['biorxiv'], '')
 
     assert summary['not_found'] == 1
@@ -1582,7 +1582,7 @@ def test_enrich_batch_skips_biorxiv_for_a_row_carrying_only_a_published_doi(
 
 def test_merge_fields_records_pubmed_as_a_found_source() -> None:
     """Count PubMed towards the enrichment status and store its provenance."""
-    update = enrichment.merge_fields('doi:10.1234/pubmed-one', None, None,
+    update = enrichment._merge_fields('doi:10.1234/pubmed-one', None, None,
                                      ['pubmed'], pubmed_article())
 
     assert update['enrichment_status'] == 'succeeded'
@@ -1591,7 +1591,7 @@ def test_merge_fields_records_pubmed_as_a_found_source() -> None:
     assert update['pmcid'] == 'PMC9876543'
     assert update['enrichment_json']['pubmed']['mesh_count'] == 2
 
-    partial = enrichment.merge_fields('doi:10.1234/pubmed-one', None, None,
+    partial = enrichment._merge_fields('doi:10.1234/pubmed-one', None, None,
                                       ['crossref', 'pubmed'], pubmed_article())
     assert partial['enrichment_status'] == 'partial'
 
@@ -1606,7 +1606,7 @@ def test_enrich_batch_enriches_a_pubmed_only_row_and_stores_mesh(tmp_path: Path,
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['pubmed'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['pubmed'], '')
         subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
         rows = corpus.paper_rows(conn)
 
@@ -1638,7 +1638,7 @@ def test_enrich_batch_keeps_openalex_subjects_when_only_pubmed_is_requested(
             subjects=[{'paper_id': 'doi:10.1234/pubmed-one', 'scheme': 'topic',
                        'subject_id': 'T1', 'display_name': 'Batteries', 'source': 'openalex'}],
             sources=['openalex'])
-        enrichment.enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
+        enrichment._enrich_batch(conn, corpus.enrichment_candidates(conn, statuses=('pending',)),
                                 ['pubmed'], '')
         sources = {row['source'] for row in
                    conn.execute('SELECT source FROM paper_subjects').fetchall()}
@@ -1670,7 +1670,7 @@ def chemrxiv_entry(published: str = '10.1234/chemrxiv-one') -> dict[str, Any]:
 
 def test_chemrxiv_candidates_key_rows_by_the_doi_chemrxiv_issued() -> None:
     """Index candidate rows by their chemRxiv DOI, version suffix included."""
-    by_chemrxiv = enrichment.chemrxiv_candidates([
+    by_chemrxiv = enrichment._chemrxiv_candidates([
         {'paper_id': 'doi:a', 'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1'},
         {'paper_id': 'doi:b', 'doi': '10.1234/journal-only'},
         {'paper_id': '', 'chemrxiv_doi': '10.26434/chemrxiv-2022-w08rh'},
@@ -1681,7 +1681,7 @@ def test_chemrxiv_candidates_key_rows_by_the_doi_chemrxiv_issued() -> None:
 
 def test_chemrxiv_fields_map_the_shared_enrichment_columns() -> None:
     """Map a chemRxiv record onto the columns enrichment merges."""
-    fields = enrichment.chemrxiv_fields(chemrxiv_entry())
+    fields = enrichment._chemrxiv_fields(chemrxiv_entry())
 
     assert fields['doi'] == '10.1234/chemrxiv-one'
     assert fields['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v1'
@@ -1690,7 +1690,7 @@ def test_chemrxiv_fields_map_the_shared_enrichment_columns() -> None:
     assert fields['oa_status'] == 'green'
     assert fields['license'] == 'CC BY 4.0'
 
-    unpublished = enrichment.chemrxiv_fields(chemrxiv_entry(published=''))
+    unpublished = enrichment._chemrxiv_fields(chemrxiv_entry(published=''))
     assert unpublished['work_type'] == 'preprint'
     assert unpublished['doi'] == '10.26434/chemrxiv.15007737/v1'
     assert unpublished['journal'] == 'chemRxiv'
@@ -1698,7 +1698,7 @@ def test_chemrxiv_fields_map_the_shared_enrichment_columns() -> None:
 
 def test_chemrxiv_subject_rows_use_schemes_distinct_from_every_provider() -> None:
     """Emit a row per category plus the keywords, under their own schemes."""
-    rows = enrichment.chemrxiv_subject_rows('doi:10.1234/chemrxiv-one', chemrxiv_entry())
+    rows = enrichment._chemrxiv_subject_rows('doi:10.1234/chemrxiv-one', chemrxiv_entry())
 
     categories = [row for row in rows if row['scheme'] == 'chemrxiv_category']
     keywords = [row for row in rows if row['scheme'] == 'chemrxiv_keyword']
@@ -1706,22 +1706,22 @@ def test_chemrxiv_subject_rows_use_schemes_distinct_from_every_provider() -> Non
     assert [row['is_primary'] for row in categories] == [1, 0]
     assert [row['subject_id'] for row in keywords] == ['photocatalysis']
     assert {row['source'] for row in rows} == {'chemrxiv'}
-    assert enrichment.chemrxiv_subject_rows('doi:x', None) == []
+    assert enrichment._chemrxiv_subject_rows('doi:x', None) == []
 
     # Every provider classifies under its own list, so the schemes must stay
     # disjoint or one would overwrite another on the subjects primary key.
     schemes = {row['scheme'] for row in
-               enrichment.arxiv_subject_rows('doi:x', arxiv_entry())
-               + enrichment.medrxiv_subject_rows('doi:x', medrxiv_entry())
-               + enrichment.biorxiv_subject_rows('doi:x', biorxiv_entry())
-               + enrichment.chemrxiv_subject_rows('doi:x', chemrxiv_entry())}
+               enrichment._arxiv_subject_rows('doi:x', arxiv_entry())
+               + enrichment._medrxiv_subject_rows('doi:x', medrxiv_entry())
+               + enrichment._biorxiv_subject_rows('doi:x', biorxiv_entry())
+               + enrichment._chemrxiv_subject_rows('doi:x', chemrxiv_entry())}
     assert schemes == {'arxiv_category', 'medrxiv_category', 'biorxiv_category',
                        'chemrxiv_category', 'chemrxiv_keyword'}
 
 
 def test_merge_fields_ranks_chemrxiv_below_the_other_providers() -> None:
     """Let chemRxiv fill a column no better-placed provider supplied."""
-    update = enrichment.merge_fields('doi:10.1234/chemrxiv-one', None, None, ['chemrxiv'],
+    update = enrichment._merge_fields('doi:10.1234/chemrxiv-one', None, None, ['chemrxiv'],
                                      None, None, None, None, chemrxiv_entry())
 
     assert update['title'] == 'chemRxiv title'
@@ -1734,7 +1734,7 @@ def test_merge_fields_ranks_chemrxiv_below_the_other_providers() -> None:
 
 def test_merge_fields_lets_a_better_placed_provider_win_over_chemrxiv() -> None:
     """Prefer bioRxiv's values but keep the chemRxiv identifier alongside."""
-    update = enrichment.merge_fields('doi:x', None, None, ['biorxiv', 'chemrxiv'],
+    update = enrichment._merge_fields('doi:x', None, None, ['biorxiv', 'chemrxiv'],
                                      None, None, None, biorxiv_entry(published=''),
                                      chemrxiv_entry(published=''))
 
@@ -1758,7 +1758,7 @@ def test_enrich_batch_enriches_a_chemrxiv_only_row_and_stores_its_terms(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['chemrxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['chemrxiv'], '')
         subjects = conn.execute('SELECT scheme, source FROM paper_subjects').fetchall()
         rows = corpus.paper_rows(conn)
 
@@ -1790,7 +1790,7 @@ def test_enrich_batch_does_not_ask_chemrxiv_for_another_archives_doi(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        summary = enrichment.enrich_batch(conn, candidates, ['biorxiv', 'chemrxiv'], '')
+        summary = enrichment._enrich_batch(conn, candidates, ['biorxiv', 'chemrxiv'], '')
 
     assert summary['succeeded'] == 1
 
@@ -1812,4 +1812,70 @@ def test_enrich_batch_skips_chemrxiv_for_a_row_carrying_only_a_published_doi(
 
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
-        enrichment.enrich_batch(conn, candidates, ['chemrxiv'], '')
+        enrichment._enrich_batch(conn, candidates, ['chemrxiv'], '')
+
+
+def test_enrichment_helpers_ignore_blank_and_duplicate_subject_data(
+    tmp_path: Path,
+) -> None:
+    """Skip unusable identifiers while retaining unique provider subjects."""
+    assert enrichment._partition_candidates([{}, {'paper_id': ''}]) == ({}, {}, [])
+    assert enrichment._pubmed_subject_rows('p', {'mesh': [{'id': ''}, {'id': ''}]}) == []
+    assert enrichment._arxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._medrxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._biorxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._chemrxiv_subject_rows(
+        'p', {'categories': [{'id': ''}], 'keywords': ['']}
+    ) == []
+    subjects = enrichment._subject_rows('p', {
+        'primary_topic': {},
+        'topics': [
+            {'id': 'https://openalex.org/T1', 'display_name': 'One'},
+            {'id': 'https://openalex.org/T1', 'display_name': 'Duplicate'},
+            {},
+        ],
+    })
+    assert len(subjects) == 1
+
+    context = enrichment._FetchContext(
+        dois=[], identifiers=[], email='', api_key=None,
+        openalex_session=None, crossref_session=None, pace=0,
+    )
+    assert enrichment._fetch_crossref(context) == {}
+    assert enrichment._json_text('already-json') == 'already-json'
+    with corpus.connect(tmp_path / 'empty.db') as conn:
+        assert enrichment._enrich_batch(conn, [], ['crossref'], '')['succeeded'] == 0
+        enrichment._enrich_from_crossref_message(conn, '', {})
+
+
+def test_enrichment_entry_points_use_optional_pubmed_identity_and_reference_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve optional NCBI settings and run reference linking on request."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'p', 'title': 'Paper'}])
+    monkeypatch.setattr(enrichment.pubmed, 'configured_email', lambda: 'ncbi@example.org')
+    monkeypatch.setattr(enrichment.pubmed, 'configured_api_key', lambda: 'ncbi-key')
+    monkeypatch.setattr(enrichment.openalex, 'configured_api_key', lambda: '')
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_papers(conn, [], sources=['pubmed'])
+    assert summary['succeeded'] == 0
+    assert enrichment._selected_statuses(False, True) == ('pending', 'failed')
+
+    resolved = []
+    monkeypatch.setattr(enrichment, '_resolve_reference_targets', lambda conn: resolved.append(True))
+    enrichment.enrich_corpus(
+        db_path, sources=['pubmed'], resolve_references=True,
+        email='', pubmed_api_key=None,
+    )
+    assert resolved == [True]
+
+    with open_corpus(db_path) as conn:
+        conn.execute(
+            "INSERT INTO paper_references (paper_id, source, reference_rank, referenced_openalex_id) "
+            "VALUES ('p', 'openalex', 0, 'W404')"
+        )
+        conn.commit()
+    monkeypatch.setattr(enrichment.openalex, 'works_batch', lambda *args, **kwargs: {})
+    assert enrichment.resolve_reference_dois(db_path) == 0

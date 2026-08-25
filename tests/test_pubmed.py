@@ -7,10 +7,77 @@ from typing import Any
 
 import pytest
 
-import paperminer.pubmed as pubmed
-from paperminer import provider
+import paperminer.providers.pubmed as pubmed
+from paperminer.providers import base as provider
 
 from tests.doubles import FakeResponse, FakeSession
+
+
+def test_article_mapping_falls_back_to_the_record_root() -> None:
+    """Map a sparse record even when its usual Article child is absent."""
+    assert pubmed.article_to_paper(ET.Element('PubmedArticle'))['paper_id'] == ''
+
+
+def test_pubmed_defensive_request_and_parser_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover empty responses, invalid payloads, option guards, and sparse XML records."""
+    monkeypatch.setattr(pubmed.provider, 'default_headers', lambda: {'X': 'header'})
+    assert pubmed.request_headers() == {'X': 'header'}
+    assert pubmed._error_text(object()) == ''
+
+    monkeypatch.setattr(pubmed, 'request', lambda *args, **kwargs: None)
+    assert pubmed.request_json('url') is None
+    assert pubmed.request_xml('url') is None
+
+    class InvalidJSON:
+        """Response double with an undecodable JSON body."""
+
+        def json(self) -> Any:
+            """Raise a JSON-like decoding failure."""
+            raise ValueError('bad json')
+
+    monkeypatch.setattr(pubmed, 'request', lambda *args, **kwargs: InvalidJSON())
+    with pytest.raises(RuntimeError, match='undecodable JSON'):
+        pubmed.request_json('url')
+
+    with pytest.raises(ValueError, match='sort must be'):
+        pubmed._search_params('term', 'bad', '', '', '', 0, 'pubmed')
+    with pytest.raises(ValueError, match='datetype must be'):
+        pubmed._search_params('term', '', 'bad', '', '', 0, 'pubmed')
+
+    monkeypatch.setattr(
+        pubmed, 'request_json',
+        lambda *args, **kwargs: {'esearchresult': {'count': 'not-a-number'}},
+    )
+    assert pubmed.esearch('term') == ([], 0)
+    assert pubmed.esearch_history('term') == ('', '', 0)
+
+    sparse = ET.fromstring(
+        '<PubmedArticle><MedlineCitation><Article>'
+        '<Abstract><AbstractText/></Abstract>'
+        '<AuthorList><Author/></AuthorList>'
+        '</Article></MedlineCitation>'
+        '<PubmedData><ArticleIdList><ArticleId IdType="doi"/></ArticleIdList></PubmedData>'
+        '<MeshHeadingList><MeshHeading><DescriptorName/></MeshHeading></MeshHeadingList>'
+        '</PubmedArticle>'
+    )
+    paper = pubmed.article_to_paper(sparse)
+    assert paper['paper_id'] == ''
+    assert paper['abstract'] == ''
+    assert paper['authors'] == ''
+    assert paper['mesh'] == []
+    assert pubmed.parse_articles(sparse) == [paper]
+
+
+def test_pubmed_open_access_helpers_handle_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return empty results for absent identifiers, records, links, and PMC bodies."""
+    assert pubmed.oa_package_urls('') == []
+    monkeypatch.setattr(pubmed, 'request_xml', lambda *args, **kwargs: None)
+    assert pubmed.oa_package_urls('PMC1') == []
+    root = ET.fromstring('<oa><record><link href="" format="pdf"/></record></oa>')
+    monkeypatch.setattr(pubmed, 'request_xml', lambda *args, **kwargs: root)
+    assert pubmed.oa_package_urls('PMC1') == []
+    monkeypatch.setattr(pubmed, 'efetch_ids', lambda *args, **kwargs: None)
+    assert pubmed.pmc_full_text('PMC1') == ''
 
 
 def article_set() -> str:

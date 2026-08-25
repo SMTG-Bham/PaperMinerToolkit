@@ -11,11 +11,32 @@ import pandas as pd
 import pytest
 import requests
 
-import paperminer.corpus as corpus
-import paperminer.crossref as crossref
-from paperminer import provider
+import paperminer.corpus.database as corpus
+import paperminer.providers.crossref as crossref
+import paperminer.workflows.enrichment as enrichment
+from paperminer.providers import base as provider
 
 from tests.doubles import FakeResponse
+
+
+def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validate author options and stop safely on duplicate records and cursors."""
+    assert not crossref._given_names_match('', 'Jane')
+    assert not crossref._given_names_match('Jane', 'Janet')
+    with pytest.raises(ValueError, match='given and family'):
+        crossref._matching_authors({}, 'Madonna')
+    assert crossref._author_orcid({'ORCID': 'invalid'}) == ''
+    monkeypatch.setattr(crossref.provider, 'request', lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match='failed after'):
+        crossref._request_page(None, {}, 'person@example.org')
+    for kwargs, message in [({}, 'exactly one'), ({'author_name': 'Jane Smith', 'email': ''}, 'contact email'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'max_results': 0}, 'positive'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'page_size': 0}, 'between')]:
+        with pytest.raises(ValueError, match=message):
+            crossref.author_works(**kwargs)
+    monkeypatch.setattr(crossref, 'work_matches_author', lambda *args, **kwargs: True)
+    monkeypatch.setattr(crossref, '_request_page', lambda *args, **kwargs: {'items': [{'DOI': ''}, {'DOI': '10.1/A'}, {'DOI': '10.1/A'}], 'next-cursor': '*'})
+    assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', page_size=3)) == 1
+    monkeypatch.setattr(crossref, '_request_page', lambda *args, **kwargs: {'items': [{'DOI': '10.1/A'}]})
+    assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', max_results=1)) == 1
 
 
 def work(
@@ -217,6 +238,24 @@ def test_import_author_works_writes_review_csv_and_corpus(tmp_path: Path) -> Non
     assert review['doi'].tolist() == ['10.1/one']
 
 
+def test_import_author_works_tolerates_a_lost_match_and_can_enrich(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continue after a reconciliation miss and report optional enrichment counts."""
+    monkeypatch.setattr(crossref, 'author_works', lambda **kwargs: [work('10.1/one')])
+    monkeypatch.setattr(crossref, 'find_paper', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        enrichment, 'enrich_papers',
+        lambda *args, **kwargs: {'succeeded': 1},
+    )
+    summary = crossref.import_author_works(
+        tmp_path / 'papers.db', email='person@example.org',
+        author_name='Jane Smith', enrich=True,
+    )
+    assert summary == {'found': 1, 'added': 1, 'updated': 0, 'enriched': 1}
+
+
 def test_configured_email_reads_the_stored_setting() -> None:
     """Read the Crossref contact email from a supplied settings mapping."""
     assert crossref.configured_email({'crossref_email': 'me@example.com'}) == 'me@example.com'
@@ -230,7 +269,7 @@ def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch
     assert crossref.resolve_email(None) == 'stored@example.com'
 
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
-    with pytest.raises(ValueError, match='ps_crossref_email'):
+    with pytest.raises(ValueError, match='pm config crossref-email'):
         crossref.resolve_email(None)
 
 

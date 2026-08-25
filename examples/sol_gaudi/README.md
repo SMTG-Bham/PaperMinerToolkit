@@ -184,8 +184,8 @@ export UNPAYWALL_EMAIL="you@asu.edu"
 export OPENALEX_API_KEY="..."
 ```
 
-The interactive `pm_elsevier_key`, `pm_core_key`, `pm_unpaywall_email`, and
-`pm_openalex_key` commands store these in `~/.config/.paperminerrc.json` if you
+The interactive `pm config elsevier-key`, `pm config core-key`, `pm config unpaywall-email`, and
+`pm config openalex-key` commands store these in `~/.config/.paperminerrc.json` if you
 prefer.
 
 OpenAlex is the one source that still answers without a key, but it meters
@@ -220,13 +220,13 @@ sources will return**. Two things to know about it:
 - It is **per source, not in total.** `--source all` asks Scopus, CORE and
   OpenAlex for that many each, then merges on DOI, so the corpus lands between
   the largest single source and the sum of the three.
-- There is no "unlimited" flag in `pm_search`. Each backend loops until it has
+- There is no "unlimited" flag in `pm search`. Each backend loops until it has
   the requested number or the provider runs out, so the default is simply a
   number larger than any real result set. Scopus stops at its own total, CORE
   and OpenAlex stop when a short page comes back.
 
 Bound it with a number while you are testing a new query — a broad term can
-return tens of thousands of papers, and `pm_download` then fetches all of them.
+return tens of thousands of papers, and `pm download` then fetches all of them.
 
 For a corpus large enough that you do not want to sit in an interactive session
 waiting on rate limits, submit it instead:
@@ -246,9 +246,9 @@ directory, so both routes agree on where the corpus lives.
 **The four-hour cap and an unbounded `PM_COUNT` interact badly on a large
 corpus**, and the two halves of the job behave differently if it is killed:
 
-- `pm_search` upserts on DOI, so re-running it costs little and adds nothing
+- `pm search` upserts on DOI, so re-running it costs little and adds nothing
   twice.
-- `pm_download` walks every row in the corpus and has **no skip for assets it
+- `pm download` walks every row in the corpus and has **no skip for assets it
   already holds** — only abstracts short-circuit. A job that dies at the wall
   clock re-downloads everything on the next submit.
 
@@ -274,7 +274,7 @@ left it and writes the CSVs and its log alongside.
 
 [`scrape_gaudi.sbatch`](scrape_gaudi.sbatch) requests four Gaudi cards, starts
 vLLM from the shared environment in a background subshell, waits for
-`/v1/models` to answer, then runs `pm_scrape` and `pm_store` from your
+`/v1/models` to answer, then runs `pm scrape` and `pm store` from your
 environment against `127.0.0.1`. The server is killed on exit.
 
 Four cards because of the model. The default is
@@ -312,7 +312,7 @@ to run this:
 
 - Every paper's outcome is committed to `papers.db` as it happens, so a job that
   hits the wall clock loses only the paper in flight.
-- `pm_scrape` skips any stage already marked `succeeded`, so re-submitting the
+- `pm scrape` skips any stage already marked `succeeded`, so re-submitting the
   same job continues where the last one stopped. Finished papers cost
   milliseconds each.
 - The job now ends with a **Remaining work** section: how many papers are done,
@@ -328,8 +328,8 @@ corpus*, not the unfinished part of it, so a second job with `PM_COUNT=50` would
 re-select the same first 50 papers, find them already succeeded, and do no new
 work. Use it for testing (`PM_COUNT=1`), never for resuming.
 
-The one thing to watch is the CSV: `pm_scrape --output` appends across runs, and
-`pm_store` matches against the existing columns, so keep one file per recipe and
+The one thing to watch is the CSV: `pm scrape --output` appends across runs, and
+`pm store` matches against the existing columns, so keep one file per recipe and
 let successive jobs grow it.
 
 ### Choosing a recipe
@@ -343,7 +343,7 @@ else they drag along, and that difference is a token budget question.
 | Degradation-related | 8 | 15 |
 | Output tokens per record | ~450 | ~1100 |
 | Records before truncation | ~22 | ~9 |
-| Unit conversions in `pm_store` | 12 | 30 |
+| Unit conversions in `pm store` | 12 | 30 |
 
 `polymer` covers the test standard, medium, extent, duration, mechanism,
 degrading organisms, and certification — enough to reproduce something like
@@ -357,14 +357,14 @@ series truncates mid-JSON and loses the tail. Prefer it for papers with few
 samples and deep characterisation.
 
 Each recipe writes its own files — `materials_polymer.csv`,
-`materials_polymer_db.csv` — because `pm_store` reuses an existing output file's
+`materials_polymer_db.csv` — because `pm store` reuses an existing output file's
 columns for matching, so two recipes sharing one CSV will not work.
 
-Note that `pm_store`'s unit conversions are per unit-bearing column, not per row:
+Note that `pm store`'s unit conversions are per unit-bearing column, not per row:
 `polymer_db` costs 30 model round trips even for a single scraped record.
 
 The script configures the model through `PAPERMINER_MODEL_*` environment
-variables rather than `pm_model_config`, because `pm_model_config` persists to
+variables rather than `pm config model`, because `pm config model` persists to
 `~/.config/.paperminerrc.json` and concurrent jobs would race over it.
 
 ### Checking the server by hand
@@ -521,7 +521,7 @@ export PAPERMINER_VISION_MODEL_BASE_URL="http://$(cat vllm_vision_endpoint.txt)/
 export PAPERMINER_VISION_MODEL_CAPABILITIES=text,vision
 ```
 
-Then run with `PM_MODE=text-images`. If you raise `pm_scrape --image-batch-size`
+Then run with `PM_MODE=text-images`. If you raise `pm scrape --image-batch-size`
 above its default of `1`, the server needs a matching
 `--limit-mm-per-prompt image=N` or it will reject the requests.
 
@@ -577,7 +577,7 @@ silently. Confirm `PM_MODEL` is the exact Hugging Face repo id and that `HF_HOME
 is set in the job.
 
 **The scrape produces no rows, but the job "succeeded".** This is the failure
-mode to internalise. `pm_scrape` catches exceptions per paper, records them on
+mode to internalise. `pm scrape` catches exceptions per paper, records them on
 the row, and moves on, so a run where *every* request failed still exits 0 and
 reports "0 material rows written". **Never judge a run by its exit code.** The
 script prints a grouped dump of the recorded `last_error` values at the end —
@@ -590,11 +590,11 @@ read that. Common causes, in order:
   `polymer_db` to `polymer` is the first thing to try,
 - a tokenizer that never loaded, so chunks were sized by character estimate.
 
-**`pm_download` fails from a compute node.** Sol sits behind static NAT so
+**`pm download` fails from a compute node.** Sol sits behind static NAT so
 outbound access is expected to work, but if it does not, run step 6 on a login
 node and submit only `papers.db` into the job. The corpus is self-contained.
 
-**The job hangs after scraping.** `pm_store` prompts for confirmation without
+**The job hangs after scraping.** `pm store` prompts for confirmation without
 `--assume-yes`. The provided script passes it.
 
 ## Before committing changes to these scripts

@@ -1,7 +1,7 @@
 """Hold the PaperMiner version as a dependency-free constant.
 
 The version lives in its own module so that packaging can read it by static
-parse and so that low-level modules such as :mod:`paperminer.provider` can
+parse and so that low-level modules such as :mod:`paperminer.providers.base` can
 build a user agent from it without importing the package root, which would
 pull in settings and the whole provider stack.
 """

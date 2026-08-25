@@ -1,6 +1,6 @@
-"""Command-line entry points for PaperMiner workflows.
+"""The nested ``pm`` command-line interface for PaperMiner workflows.
 
-This module maps installed ``pm_*`` commands to the underlying search, import,
+This module maps installed commands to the underlying search, import,
 download, scrape, store, configuration, and maintenance functions.
 """
 
@@ -9,21 +9,21 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import click
-from paperminer import sources
-from paperminer.corpus import connect, corpus_stats, enrichment_stats
-from paperminer.crossref import import_author_works
-from paperminer.search import search_for_papers
-from paperminer.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
-from paperminer.download import download_papers
-from paperminer.enrichment import enrich_corpus
-from paperminer.filtering import (apply_regex_filter,
+from paperminer.providers import registry as sources
+from paperminer.corpus.database import connect, corpus_stats, enrichment_stats
+from paperminer.providers.crossref import import_author_works
+from paperminer.workflows.search import search_for_papers
+from paperminer.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
+from paperminer.workflows.download import download_papers
+from paperminer.workflows.enrichment import enrich_corpus
+from paperminer.corpus.filtering import (apply_regex_filter,
                                     apply_topic_filter,
                                     filter_overview,
                                     reset_filters)
-from paperminer.imports import import_pdfs
-from paperminer.scrape import SCRAPE_ORDERS, scrape_papers
-from paperminer.store import store_results
-from paperminer.topics import (aggregate_topic_trends,
+from paperminer.workflows.imports import import_pdfs
+from paperminer.extraction.scrape import SCRAPE_ORDERS, scrape_papers
+from paperminer.extraction.store import store_results
+from paperminer.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
                                  set_topic_name,
@@ -44,7 +44,7 @@ from paperminer.settings import (get_model_profile,
                                    update_openai_key,
                                    update_openalex_key,
                                    update_unpaywall_email)
-from paperminer.utilities import reset, status
+from paperminer.workflows.utilities import reset, status
 
 # A download may fetch a PDF, full text, or an abstract, so its choices are
 # the union of the three, kept in PDF order because that is the one a caller
@@ -66,7 +66,7 @@ def _format_bytes(size: int) -> str:
         value /= 1024
 
 
-@click.command()
+@click.command('search')
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--source',
@@ -94,7 +94,7 @@ def paper_search(query: str, db_path: str, source: str, count: int,
                       store_abstract=store_abstract, enrich=enrich_metadata)
 
 
-@click.command()
+@click.command('pdfs')
 @click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--no-crossref',
@@ -106,7 +106,7 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
     import_pdfs(dir, db_path, use_crossref=not no_crossref)
 
 
-@click.command()
+@click.command('author')
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--email', default=None,
               help='Contact email sent with Crossref requests. '
@@ -154,7 +154,7 @@ def import_author(db_path: str,
     click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
-@click.command()
+@click.command('download')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
               type=click.Choice(['abstract', 'text', 'pdf', 'both']),
@@ -191,7 +191,7 @@ def download(
     )
 
 
-@click.command()
+@click.command('enrich')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
               multiple=True,
@@ -269,7 +269,7 @@ def enrich(db_path: str,
         )
 
 
-@click.command()
+@click.command('stats')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def corpus_status(db_path: str) -> None:
     """Print storage statistics for the paper corpus."""
@@ -341,11 +341,11 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
     if overview.get('stale_topic_filters'):
         click.echo(
             'Stale topic filters: ' + ', '.join(overview['stale_topic_filters'])
-            + '. Run pm_topics_store again before scraping.'
+            + '. Run pm topics store again before scraping.'
         )
 
 
-@click.command()
+@click.command('regex')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
 @click.option('--field', 'fields', multiple=True,
@@ -374,7 +374,7 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
     _echo_filter_overview(db_path, overview)
 
 
-@click.command()
+@click.command('topic')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
 @click.option('--join', 'join_operator', type=click.Choice(['and', 'or']), default=None,
@@ -393,7 +393,7 @@ def filter_topic(db_path: str, rules_path: str,
     _echo_filter_overview(db_path, overview)
 
 
-@click.command()
+@click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def filter_status(db_path: str) -> None:
     """Show active corpus filters and their final paper decisions."""
@@ -402,7 +402,7 @@ def filter_status(db_path: str) -> None:
     _echo_filter_overview(db_path, overview)
 
 
-@click.command()
+@click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--name', default=None, help='Remove one active filter by name.')
 @click.option('--all', 'all_filters', is_flag=True, default=False,
@@ -416,7 +416,7 @@ def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
     _echo_filter_overview(db_path, overview)
 
 
-@click.command()
+@click.command('train')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('model_dir', default='topic_model', type=click.Path())
 @click.option('--topics', 'num_topics', default=10, type=click.IntRange(min=2), show_default=True)
@@ -502,7 +502,7 @@ def topics_train(db_path: str,
     click.echo(f'Manual topic review: {summary["model_dir"]}/topics.csv')
 
 
-@click.command()
+@click.command('compare')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_dir', default='topic_comparison', type=click.Path())
 @click.option('--topics', 'topic_counts', multiple=True, type=click.IntRange(min=2),
@@ -587,10 +587,10 @@ def topics_compare(db_path: str,
         click.echo(f'Warning: {message}', err=True)
     click.echo(f'Trained {summary["models_trained"]} comparison models in {summary["output_dir"]}.')
     click.echo(f'Comparison metrics: {summary["comparison_csv"]}')
-    click.echo('Inspect each model with pm_topics_show before choosing one.')
+    click.echo('Inspect each model with pm topics show before choosing one.')
 
 
-@click.command()
+@click.command('show')
 @click.argument('model_dir', default='topic_model', type=click.Path(exists=True, file_okay=False))
 @click.option('--representatives', default=3, type=click.IntRange(min=0), show_default=True,
               help='Representative paper titles to print for each topic.')
@@ -608,7 +608,7 @@ def topics_show(model_dir: str, representatives: int) -> None:
             click.echo(f'  - {paper["title"]} ({float(paper["probability"]):.3f})')
 
 
-@click.command()
+@click.command('name')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('topic_id', type=click.IntRange(min=0))
 @click.argument('topic_name', type=str)
@@ -621,7 +621,7 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
     click.echo(f'Named topic {topic_id}: {topic_name.strip()}')
 
 
-@click.command()
+@click.command('predict')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_path', default='paper_topics.csv', type=click.Path())
@@ -641,7 +641,7 @@ def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: i
     click.echo(f'Topic scores: {summary["output_path"]}')
 
 
-@click.command()
+@click.command('trends')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('output_dir', default='topic_trends', type=click.Path())
 @click.option('--predictions', 'predictions_path', default=None,
@@ -689,7 +689,7 @@ def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
         )
 
 
-@click.command()
+@click.command('store')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--name', default=None,
@@ -710,7 +710,7 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
     )
 
 
-@click.command()
+@click.command('models')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
 def topics_models(db_path: str, batch_size: int) -> None:
@@ -730,7 +730,7 @@ def topics_models(db_path: str, batch_size: int) -> None:
         )
 
 
-@click.command()
+@click.command('scrape')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
 @click.option('--mode', type=click.Choice(['abstract', 'text', 'images', 'text-images']), default='text', show_default=True)
@@ -854,7 +854,7 @@ def scrape(
     )
 
 
-@click.command()
+@click.command('store')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path())
 @click.argument('out_file', default='materials.csv', type=click.Path())
@@ -911,7 +911,7 @@ def update_anthropic_api_key() -> None:
     update_anthropic_key()
 
 
-@click.command()
+@click.command('model')
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
 @click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
 @click.option('--model', prompt=True, help='Model name.')
@@ -954,7 +954,7 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
 
-@click.command()
+@click.command('status')
 def model_status() -> None:
     """Print configured text and vision model profiles."""
     for profile in ['text', 'vision']:
@@ -964,15 +964,90 @@ def model_status() -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
-@click.command()
+@click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def reset_miner(db_path: str) -> None:
     """Reset pipeline statuses in the paper corpus."""
     reset(db_path)
 
 
-@click.command()
+@click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def miner_status(db_path: str) -> None:
     """Print pipeline progress for the paper corpus."""
     status(db_path)
+
+
+@click.group()
+def main() -> None:
+    """Build, analyse, and extract structured data from paper corpora."""
+
+
+@click.group('corpus')
+def corpus_group() -> None:
+    """Inspect and maintain a paper corpus."""
+
+
+@click.group('filter')
+def filter_group() -> None:
+    """Apply, inspect, and reset corpus filters."""
+
+
+@click.group('topics')
+def topics_group() -> None:
+    """Train, inspect, and apply LDA topic models."""
+
+
+@click.group('import')
+def import_group() -> None:
+    """Import existing papers or an author's publication list."""
+
+
+@click.group('config')
+def config_group() -> None:
+    """Configure model profiles and provider credentials."""
+
+
+main.add_command(paper_search, 'search')
+main.add_command(download, 'download')
+main.add_command(enrich, 'enrich')
+main.add_command(scrape, 'scrape')
+main.add_command(store, 'store')
+main.add_command(miner_status, 'status')
+main.add_command(reset_miner, 'reset')
+
+corpus_group.add_command(corpus_status, 'stats')
+main.add_command(corpus_group)
+
+filter_group.add_command(filter_regex, 'regex')
+filter_group.add_command(filter_topic, 'topic')
+filter_group.add_command(filter_status, 'status')
+filter_group.add_command(filter_reset, 'reset')
+main.add_command(filter_group)
+
+topics_group.add_command(topics_train, 'train')
+topics_group.add_command(topics_compare, 'compare')
+topics_group.add_command(topics_show, 'show')
+topics_group.add_command(topics_name, 'name')
+topics_group.add_command(topics_predict, 'predict')
+topics_group.add_command(topics_trends, 'trends')
+topics_group.add_command(topics_store, 'store')
+topics_group.add_command(topics_models, 'models')
+main.add_command(topics_group)
+
+import_group.add_command(import_pdf_folder, 'pdfs')
+import_group.add_command(import_author, 'author')
+main.add_command(import_group)
+
+config_group.add_command(model_config, 'model')
+config_group.add_command(model_status, 'status')
+config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
+config_group.add_command(click.command('core-key')(update_core_api_key))
+config_group.add_command(click.command('unpaywall-email')(update_unpaywall_api_email))
+config_group.add_command(click.command('crossref-email')(update_crossref_api_email))
+config_group.add_command(click.command('openalex-key')(update_openalex_api_key))
+config_group.add_command(click.command('ncbi-key')(update_ncbi_api_key))
+config_group.add_command(click.command('ncbi-email')(update_ncbi_api_email))
+config_group.add_command(click.command('openai-key')(update_openai_api_key))
+config_group.add_command(click.command('anthropic-key')(update_anthropic_api_key))
+main.add_command(config_group)

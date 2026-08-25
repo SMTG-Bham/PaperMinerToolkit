@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.store.
+"""Unit tests for paperminer.extraction.store.
 
 This module tests storing temporary scraped material rows into the final
 materials CSV, including missing inputs, empty inputs, column matching, optional
@@ -13,8 +13,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.store as store
+import paperminer.corpus.database as corpus
+import paperminer.extraction.store as store
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -32,6 +32,18 @@ def sample_recipe() -> dict[str, Any]:
             'Conductivity': {'unit': 'S cm^-1', 'aliases': []},
         },
     }
+
+
+def test_helpers_reject_empty_ids_and_skip_unscraped_papers(tmp_path: Path) -> None:
+    """Require useful paper IDs and avoid marking papers without successful scrapes."""
+    with pytest.raises(ValueError, match='non-empty'):
+        store._stored_paper_ids(pd.DataFrame({'Paper id': ['', None]}))
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'p', 'title': 'paper'})
+    store._mark_stored_papers(db_path, {'p'})
+    with corpus.connect(db_path) as conn:
+        assert corpus.paper_rows(conn)[0]['store_status'] == 'pending'
 
 
 def write_papers_corpus(path: Path) -> None:

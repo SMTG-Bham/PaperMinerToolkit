@@ -8,8 +8,23 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperminer.compression import CompressionConfig
-import paperminer.extract as extract
+from paperminer.extraction.compression import CompressionConfig
+import paperminer.extraction.extract as extract
+
+
+def test_record_reconciliation_without_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tell reconciliation to use context when no identity field exists."""
+    captured: dict[str, str] = {}
+
+    def query(messages: list[dict[str, Any]], model_config: object = None) -> str:
+        """Capture the reconciliation prompt."""
+        captured['prompt'] = messages[0]['content']
+        return '[]'
+
+    monkeypatch.setattr(extract, 'query_model', query)
+    recipe = {'record definition': {'subject': 'results', 'singular': 'result', 'plural': 'results', 'unit': 'one result', 'identity fields': []}, 'search fields': {}}
+    assert extract.combine_material_records([], [], recipe) == []
+    assert 'No primary identity fields are configured' in captured['prompt']
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -209,7 +224,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_compression'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
 
-    import paperminer.documents as documents
+    import paperminer.corpus.documents as documents
 
     monkeypatch.setattr(documents, 'read_pdf_text', lambda filepath: f'text from {filepath}')
     assert extract.scrape_pdf('paper.pdf', recipe) == [{'Name': 'LLZO'}]
