@@ -22,6 +22,11 @@ ARCHIVES = [medrxiv, biorxiv]
 ARCHIVE_IDS = ['medrxiv', 'biorxiv']
 
 
+def test_message_ignores_non_mapping_entries() -> None:
+    """Ignore malformed message-list entries."""
+    assert _rxiv._message({'messages': ['not-a-mapping']}) == {}
+
+
 def payload(status: str = 'ok', total: str = '5', count: int = 5) -> str:
     """Return an interval payload carrying only its message block.
 
