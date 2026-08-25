@@ -1,6 +1,6 @@
-paperminer.extraction.tokenizer
+paperminertoolkit.extraction.tokenizer
 ========================================
 
-.. automodule:: paperminer.extraction.tokenizer
+.. automodule:: paperminertoolkit.extraction.tokenizer
    :members:
    :show-inheritance:

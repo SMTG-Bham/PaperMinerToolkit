@@ -1,4 +1,4 @@
-# paperminer.extraction
+# paperminertoolkit.extraction
 
 Recipe-driven preparation, model execution, structured extraction, and result storage.
 

@@ -1,4 +1,4 @@
-# paperminer.providers
+# paperminertoolkit.providers
 
 Clients and registry definitions for external scholarly-data services.
 

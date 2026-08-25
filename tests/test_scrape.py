@@ -10,9 +10,9 @@ from typing import Any, Self
 import pandas as pd
 import pytest
 
-import paperminer.corpus.database as corpus
-import paperminer.extraction.scrape as scrape
-from paperminer.extraction.compression import CompressionConfig
+import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.extraction.scrape as scrape
+from paperminertoolkit.extraction.compression import CompressionConfig
 
 
 def test_status_and_asset_path_validate_nonstandard_values(tmp_path: Path) -> None:

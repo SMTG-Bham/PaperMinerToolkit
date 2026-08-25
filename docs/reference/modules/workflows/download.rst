@@ -1,6 +1,6 @@
-paperminer.workflows.download
+paperminertoolkit.workflows.download
 ========================================
 
-.. automodule:: paperminer.workflows.download
+.. automodule:: paperminertoolkit.workflows.download
    :members:
    :show-inheritance:

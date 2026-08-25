@@ -1,6 +1,6 @@
-paperminer.workflows.utilities
+paperminertoolkit.workflows.utilities
 ========================================
 
-.. automodule:: paperminer.workflows.utilities
+.. automodule:: paperminertoolkit.workflows.utilities
    :members:
    :show-inheritance:

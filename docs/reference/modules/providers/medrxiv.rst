@@ -1,6 +1,6 @@
-paperminer.providers.medrxiv
+paperminertoolkit.providers.medrxiv
 ========================================
 
-.. automodule:: paperminer.providers.medrxiv
+.. automodule:: paperminertoolkit.providers.medrxiv
    :members:
    :show-inheritance:

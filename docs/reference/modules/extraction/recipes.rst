@@ -1,6 +1,6 @@
-paperminer.extraction.recipes
+paperminertoolkit.extraction.recipes
 ========================================
 
-.. automodule:: paperminer.extraction.recipes
+.. automodule:: paperminertoolkit.extraction.recipes
    :members:
    :show-inheritance:

@@ -1,17 +1,22 @@
-# Build literature datasets with PaperMiner
+<p class="docs-hero-banner">
+  <img class="only-light" src="_static/Paper_Miner_Toolkit_banner_light.svg" alt="PaperMinerToolkit" width="800">
+  <img class="only-dark" src="_static/Paper_Miner_Toolkit_banner_dark.svg" alt="PaperMinerToolkit" width="800">
+</p>
+
+# Build literature datasets with PaperMinerToolkit
 
 <p class="hero-tagline">Build scientific-paper corpora and extract structured, recipe-defined data with configurable language and vision models.</p>
 
-PaperMiner searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and supplements what it finds from Crossref; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
+PaperMinerToolkit searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and supplements what it finds from Crossref; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
 
 Start with {doc}`installation`, then follow the {doc}`workflow/index` for a small end-to-end scrape, including LDA model selection, training, trends, and topic filtering. Runnable workflows are collected under {doc}`examples/index`.
 
 ## From discovery to dataset
 
-The SQLite corpus is the central hub of every PaperMiner workflow. Search results and imported records enter the corpus, where PaperMiner can enrich their metadata and add available abstracts, full text, and PDFs. The same corpus then supports topic modelling, trend analysis, paper filtering, and recipe-defined LLM extraction. Each stage records its outputs and processing state, making the workflow traceable, resumable, and easy to refine.
+The SQLite corpus is the central hub of every PaperMinerToolkit workflow. Search results and imported records enter the corpus, where PaperMinerToolkit can enrich their metadata and add available abstracts, full text, and PDFs. The same corpus then supports topic modelling, trend analysis, paper filtering, and recipe-defined LLM extraction. Each stage records its outputs and processing state, making the workflow traceable, resumable, and easy to refine.
 
 ```{mermaid}
-:alt: PaperMiner workflow arranged around a central SQLite corpus. Search enters from above, enrichment and downloading form return loops below it, LDA topic analysis descends on the left, and LLM extraction descends on the right.
+:alt: PaperMinerToolkit workflow arranged around a central SQLite corpus. Search enters from above, enrichment and downloading form return loops below it, LDA topic analysis descends on the left, and LLM extraction descends on the right.
 :align: center
 
 %%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 42}}}%%

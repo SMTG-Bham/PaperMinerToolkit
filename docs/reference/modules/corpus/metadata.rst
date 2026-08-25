@@ -1,6 +1,6 @@
-paperminer.corpus.metadata
+paperminertoolkit.corpus.metadata
 ========================================
 
-.. automodule:: paperminer.corpus.metadata
+.. automodule:: paperminertoolkit.corpus.metadata
    :members:
    :show-inheritance:

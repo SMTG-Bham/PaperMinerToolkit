@@ -1,6 +1,6 @@
-paperminer.providers.openalex
+paperminertoolkit.providers.openalex
 ========================================
 
-.. automodule:: paperminer.providers.openalex
+.. automodule:: paperminertoolkit.providers.openalex
    :members:
    :show-inheritance:

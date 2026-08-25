@@ -14,17 +14,17 @@ from typing import Any
 
 import pytest
 
-import paperminer.providers.arxiv as arxiv
-import paperminer.providers.biorxiv as biorxiv
-import paperminer.providers.chemrxiv as chemrxiv
-import paperminer.providers.core as core
-import paperminer.providers.crossref as crossref
-import paperminer.providers.elsevier as elsevier
-import paperminer.providers.medrxiv as medrxiv
-import paperminer.providers.openalex as openalex
-import paperminer.providers.pubmed as pubmed
-from paperminer.providers import registry as sources
-from paperminer.corpus.database import ENRICHMENT_COLUMNS, PAPER_FIELDS
+import paperminertoolkit.providers.arxiv as arxiv
+import paperminertoolkit.providers.biorxiv as biorxiv
+import paperminertoolkit.providers.chemrxiv as chemrxiv
+import paperminertoolkit.providers.core as core
+import paperminertoolkit.providers.crossref as crossref
+import paperminertoolkit.providers.elsevier as elsevier
+import paperminertoolkit.providers.medrxiv as medrxiv
+import paperminertoolkit.providers.openalex as openalex
+import paperminertoolkit.providers.pubmed as pubmed
+from paperminertoolkit.providers import registry as sources
+from paperminertoolkit.corpus.database import ENRICHMENT_COLUMNS, PAPER_FIELDS
 
 # The keys every source must supply, whatever it is and whatever it holds.
 CORE_KEYS = ('paper_id', 'doi', 'title', 'journal', 'publication_date',
@@ -143,7 +143,7 @@ def test_every_abstract_bearing_source_supplies_the_key(name: str) -> None:
 
 def test_a_record_survives_being_written_to_the_corpus_schema() -> None:
     """Keep every mapper's output loadable, extras and all."""
-    from paperminer.corpus.database import normalize_paper
+    from paperminertoolkit.corpus.database import normalize_paper
 
     for name, record in records().items():
         normalized = normalize_paper(record)

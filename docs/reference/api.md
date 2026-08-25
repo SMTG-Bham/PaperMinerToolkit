@@ -1,6 +1,6 @@
 # Python API
 
-Each public PaperMiner module has its own API page. Private members beginning with `_` are intentionally omitted.
+Each public PaperMinerToolkit module has its own API page. Private members beginning with `_` are intentionally omitted.
 
 ```{toctree}
 :maxdepth: 2

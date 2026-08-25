@@ -1,4 +1,4 @@
-"""Tests for paperminer.settings.
+"""Tests for paperminertoolkit.settings.
 
 This module tests configuration parsing, environment overrides, profile
 inference, and interactive key/profile update helpers. Live API validation
@@ -14,7 +14,7 @@ from typing import NoReturn
 
 import pytest
 
-import paperminer.settings as settings
+import paperminertoolkit.settings as settings
 
 
 API_ENV_KEYS = [
@@ -30,27 +30,27 @@ API_ENV_KEYS = [
 ]
 
 MODEL_ENV_KEYS = [
-    'PAPERMINER_MODEL_PROVIDER',
-    'PAPERMINER_MODEL_NAME',
-    'PAPERMINER_MODEL_BASE_URL',
-    'PAPERMINER_MODEL_API_KEY',
-    'PAPERMINER_MODEL_CAPABILITIES',
-    'PAPERMINER_MODEL_TEMPERATURE',
-    'PAPERMINER_MODEL_TOP_P',
-    'PAPERMINER_VISION_MODEL_PROVIDER',
-    'PAPERMINER_VISION_MODEL_NAME',
-    'PAPERMINER_VISION_MODEL_BASE_URL',
-    'PAPERMINER_VISION_MODEL_API_KEY',
-    'PAPERMINER_VISION_MODEL_CAPABILITIES',
-    'PAPERMINER_VISION_MODEL_TEMPERATURE',
-    'PAPERMINER_VISION_MODEL_TOP_P',
+    'PAPERMINERTOOLKIT_MODEL_PROVIDER',
+    'PAPERMINERTOOLKIT_MODEL_NAME',
+    'PAPERMINERTOOLKIT_MODEL_BASE_URL',
+    'PAPERMINERTOOLKIT_MODEL_API_KEY',
+    'PAPERMINERTOOLKIT_MODEL_CAPABILITIES',
+    'PAPERMINERTOOLKIT_MODEL_TEMPERATURE',
+    'PAPERMINERTOOLKIT_MODEL_TOP_P',
+    'PAPERMINERTOOLKIT_VISION_MODEL_PROVIDER',
+    'PAPERMINERTOOLKIT_VISION_MODEL_NAME',
+    'PAPERMINERTOOLKIT_VISION_MODEL_BASE_URL',
+    'PAPERMINERTOOLKIT_VISION_MODEL_API_KEY',
+    'PAPERMINERTOOLKIT_VISION_MODEL_CAPABILITIES',
+    'PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE',
+    'PAPERMINERTOOLKIT_VISION_MODEL_TOP_P',
 ]
 
 
 @pytest.fixture
 def isolated_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point settings reads/writes at a temporary config file and clear env overrides."""
-    settings_path = tmp_path / 'paperminerrc.json'
+    settings_path = tmp_path / 'paperminertoolkitrc.json'
     monkeypatch.setattr(settings, 'SETTINGS_FILE', str(settings_path))
     for key in API_ENV_KEYS + MODEL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -105,11 +105,11 @@ def test_merge_profile_defaults_missing_input_token_limit() -> None:
 
 def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatch) -> None:
     """Collect only defined environment values for a model profile."""
-    monkeypatch.setenv('PAPERMINER_MODEL_PROVIDER', 'local')
-    monkeypatch.setenv('PAPERMINER_MODEL_NAME', 'qwen')
-    monkeypatch.setenv('PAPERMINER_MODEL_INPUT_TOKEN_LIMIT', '120000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_PROVIDER', 'local')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'qwen')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_INPUT_TOKEN_LIMIT', '120000')
 
-    profile = settings._env_profile('PAPERMINER_MODEL_')
+    profile = settings._env_profile('PAPERMINERTOOLKIT_MODEL_')
 
     assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000'}
 
@@ -135,10 +135,10 @@ def test_load_settings_merges_file_and_environment_overrides(isolated_settings_f
         },
     }))
     monkeypatch.setenv('ELSEVIER_API_KEY', 'env-elsevier')
-    monkeypatch.setenv('PAPERMINER_MODEL_PROVIDER', 'local')
-    monkeypatch.setenv('PAPERMINER_MODEL_NAME', 'env-model')
-    monkeypatch.setenv('PAPERMINER_MODEL_BASE_URL', 'http://127.0.0.1:8000/v1')
-    monkeypatch.setenv('PAPERMINER_MODEL_CAPABILITIES', 'text,vision')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_PROVIDER', 'local')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'env-model')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_BASE_URL', 'http://127.0.0.1:8000/v1')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_CAPABILITIES', 'text,vision')
 
     loaded = settings.load_settings()
 
@@ -196,14 +196,14 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
 
 def test_load_settings_applies_vision_model_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override the complete vision model profile from the environment."""
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_PROVIDER', 'local')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_NAME', 'qwen-vl')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_BASE_URL', 'http://127.0.0.1:8000/v1')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_API_KEY', 'local-key')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_CAPABILITIES', 'text,vision')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_TEMPERATURE', '0.4')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_TOP_P', '0.7')
-    monkeypatch.setenv('PAPERMINER_VISION_MODEL_INPUT_TOKEN_LIMIT', '96000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_PROVIDER', 'local')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_NAME', 'qwen-vl')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_BASE_URL', 'http://127.0.0.1:8000/v1')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_API_KEY', 'local-key')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_CAPABILITIES', 'text,vision')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE', '0.4')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TOP_P', '0.7')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_INPUT_TOKEN_LIMIT', '96000')
 
     profile = settings.load_settings()['model_profiles']['vision']
 
@@ -372,11 +372,11 @@ def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
 ) -> None:
     """Validate a key through the Elsevier module rather than inline here.
 
-    settings used to import paperminer.providers.elsevier at module level for this one
+    settings used to import paperminertoolkit.providers.elsevier at module level for this one
     function, which was the single edge stopping the Elsevier client from
     importing settings the way every other source module does.
     """
-    import paperminer.providers.elsevier as elsevier
+    import paperminertoolkit.providers.elsevier as elsevier
 
     calls = []
     monkeypatch.setattr(elsevier, 'check_api_key',
@@ -527,7 +527,7 @@ def test_check_openai_api_key_validates_configured_key() -> None:
     loaded = settings.load_settings()
     api_key = loaded.get('openai_api_key')
 
-    assert api_key, 'Set openai_api_key in ~/.config/.paperminerrc.json or OPENAI_API_KEY before running network tests.'
+    assert api_key, 'Set openai_api_key in ~/.config/.paperminertoolkitrc.json or OPENAI_API_KEY before running network tests.'
     assert settings._check_openai_api_key(api_key) is True
 
 
@@ -537,5 +537,5 @@ def test_check_elsevier_api_key_validates_configured_key() -> None:
     loaded = settings.load_settings()
     api_key = loaded.get('elsevier_api_key')
 
-    assert api_key, 'Set elsevier_api_key in ~/.config/.paperminerrc.json or ELSEVIER_API_KEY before running network tests.'
+    assert api_key, 'Set elsevier_api_key in ~/.config/.paperminertoolkitrc.json or ELSEVIER_API_KEY before running network tests.'
     assert settings._check_elsevier_api_key(api_key) is True

@@ -8,8 +8,8 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperminer.extraction.compression import CompressionConfig
-import paperminer.extraction.extract as extract
+from paperminertoolkit.extraction.compression import CompressionConfig
+import paperminertoolkit.extraction.extract as extract
 
 
 def test_record_reconciliation_without_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -224,7 +224,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_compression'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
 
-    import paperminer.corpus.documents as documents
+    import paperminertoolkit.corpus.documents as documents
 
     monkeypatch.setattr(documents, 'read_pdf_text', lambda filepath: f'text from {filepath}')
     assert extract.scrape_pdf('paper.pdf', recipe) == [{'Name': 'LLZO'}]

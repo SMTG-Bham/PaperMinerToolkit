@@ -1,6 +1,6 @@
-paperminer.providers.unpaywall
+paperminertoolkit.providers.unpaywall
 ========================================
 
-.. automodule:: paperminer.providers.unpaywall
+.. automodule:: paperminertoolkit.providers.unpaywall
    :members:
    :show-inheritance:

@@ -1,6 +1,6 @@
-paperminer.extraction.models
+paperminertoolkit.extraction.models
 ========================================
 
-.. automodule:: paperminer.extraction.models
+.. automodule:: paperminertoolkit.extraction.models
    :members:
    :show-inheritance:

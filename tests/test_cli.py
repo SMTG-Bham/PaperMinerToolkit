@@ -1,4 +1,4 @@
-"""Test the PaperMiner command-line entry points."""
+"""Test the PaperMinerToolkit command-line entry points."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from typing import Any, NoReturn
 import pytest
 from click.testing import CliRunner
 
-import paperminer.cli as cli
-import paperminer.corpus.database as corpus
+import paperminertoolkit.cli as cli
+import paperminertoolkit.corpus.database as corpus
 
 
-def test_package_installs_only_the_nested_pm_entry_point() -> None:
+def test_package_installs_only_the_nested_pmt_entry_point() -> None:
     """Replace the legacy underscore scripts with one discoverable command."""
     project = tomllib.loads((Path(__file__).parents[1] / 'pyproject.toml').read_text())
-    assert project['project']['scripts'] == {'pm': 'paperminer.cli:main'}
+    assert project['project']['scripts'] == {'pmt': 'paperminertoolkit.cli:main'}
 
 
 def test_main_command_exposes_discoverable_nested_groups() -> None:
@@ -824,7 +824,7 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
 
 
 def test_enrich_passes_sources_batch_size_and_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Forward every pm enrich option to the enrichment worker."""
+    """Forward every pmt enrich option to the enrichment worker."""
     calls = {}
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')

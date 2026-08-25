@@ -14,7 +14,7 @@ The notebooks are runnable templates and are rendered without execution during d
 - {doc}`lda_trends` predicts with the fixed model and produces annual, block, and rolling trend plots.
 - {doc}`lda_filtering` stores model scores and combines topic and regex filters.
 
-Shell cells intentionally use the installed `pm_*` commands: this makes notebook steps directly transferable to terminals and scheduler scripts.
+Shell cells intentionally use the installed `pmt_*` commands: this makes notebook steps directly transferable to terminals and scheduler scripts.
 
 ```{toctree}
 :maxdepth: 1

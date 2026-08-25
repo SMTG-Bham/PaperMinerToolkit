@@ -1,6 +1,6 @@
-paperminer.providers.biorxiv
+paperminertoolkit.providers.biorxiv
 ========================================
 
-.. automodule:: paperminer.providers.biorxiv
+.. automodule:: paperminertoolkit.providers.biorxiv
    :members:
    :show-inheritance:

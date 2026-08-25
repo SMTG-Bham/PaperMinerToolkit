@@ -1,4 +1,4 @@
-# paperminer.workflows
+# paperminertoolkit.workflows
 
 End-to-end operations for discovering, acquiring, enriching, importing, and analysing papers.
 

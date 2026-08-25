@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.extraction.store.
+"""Unit tests for paperminertoolkit.extraction.store.
 
 This module tests storing temporary scraped material rows into the final
 materials CSV, including missing inputs, empty inputs, column matching, optional
@@ -13,8 +13,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import paperminer.corpus.database as corpus
-import paperminer.extraction.store as store
+import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.extraction.store as store
 
 
 def sample_recipe() -> dict[str, Any]:
@@ -161,7 +161,7 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
     assert 'Skipping unmatched column in noninteractive mode: Unknown' in output
     assert not in_path.exists()
     assert papers['store_status'].tolist() == ['stored', 'pending', 'pending']
-    assert not list(tmp_path.glob('.paperminer-converted-*'))
+    assert not list(tmp_path.glob('.paperminertoolkit-converted-*'))
 
 
 def test_store_results_raises_for_unmatched_columns_in_interactive_mode(
@@ -243,7 +243,7 @@ def test_store_results_keeps_files_when_user_rejects_conversions(
 
     assert not out_path.exists()
     assert in_path.exists()
-    assert not list(tmp_path.glob('.paperminer-converted-*'))
+    assert not list(tmp_path.glob('.paperminertoolkit-converted-*'))
 
 
 def test_store_results_requires_paper_ids(
@@ -322,7 +322,7 @@ def test_store_results_preserves_existing_output_when_atomic_replace_fails(
     assert in_path.exists()
     assert read_papers_corpus(papers_path)['store_status'].tolist() == ['pending', 'pending', 'pending']
     assert not list(tmp_path.glob('.materials.csv.*'))
-    assert not list(tmp_path.glob('.paperminer-converted-*'))
+    assert not list(tmp_path.glob('.paperminertoolkit-converted-*'))
 
 
 def test_store_results_rejects_identical_input_and_output_paths(tmp_path: Path) -> None:

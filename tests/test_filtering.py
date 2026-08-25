@@ -10,11 +10,11 @@ from typing import Any, NoReturn
 import pytest
 from click.testing import CliRunner
 
-import paperminer.cli as cli
-import paperminer.corpus.database as corpus
-import paperminer.corpus.filtering as filtering
-import paperminer.extraction.scrape as scrape
-from paperminer.workflows import topics
+import paperminertoolkit.cli as cli
+import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.corpus.filtering as filtering
+import paperminertoolkit.extraction.scrape as scrape
+from paperminertoolkit.workflows import topics
 
 
 def _write_rules(

@@ -1,6 +1,6 @@
-paperminer.providers.pubmed
+paperminertoolkit.providers.pubmed
 ========================================
 
-.. automodule:: paperminer.providers.pubmed
+.. automodule:: paperminertoolkit.providers.pubmed
    :members:
    :show-inheritance:

@@ -1,6 +1,6 @@
-paperminer.providers.rxiv
+paperminertoolkit.providers.rxiv
 ========================================
 
-.. automodule:: paperminer.providers.rxiv
+.. automodule:: paperminertoolkit.providers.rxiv
    :members:
    :show-inheritance:

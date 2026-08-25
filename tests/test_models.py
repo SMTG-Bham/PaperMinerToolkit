@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.extraction.models.
+"""Unit tests for paperminertoolkit.extraction.models.
 
 This module tests model configuration, provider selection, image encoding,
 OpenAI Responses clients, Anthropic Messages clients, OpenAI-compatible chat
@@ -14,8 +14,8 @@ from typing import Any, NoReturn
 
 import pytest
 
-from paperminer.extraction.compression import CompressionConfig
-import paperminer.extraction.models as models
+from paperminertoolkit.extraction.compression import CompressionConfig
+import paperminertoolkit.extraction.models as models
 
 
 def test_anthropic_error_detail_handles_every_response_shape() -> None:

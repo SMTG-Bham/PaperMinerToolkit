@@ -1,9 +1,9 @@
 # Workflow
 
-PaperMiner keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
+PaperMinerToolkit keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
 
 ```{mermaid}
-:alt: PaperMiner workflow arranged around a central SQLite corpus. Search enters from above, enrichment and downloading form return loops below it, LDA topic analysis descends on the left, and LLM extraction descends on the right.
+:alt: PaperMinerToolkit workflow arranged around a central SQLite corpus. Search enters from above, enrichment and downloading form return loops below it, LDA topic analysis descends on the left, and LLM extraction descends on the right.
 :align: center
 
 %%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 42}}}%%

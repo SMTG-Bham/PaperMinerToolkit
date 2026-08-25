@@ -1,6 +1,6 @@
-paperminer.providers.core
+paperminertoolkit.providers.core
 ========================================
 
-.. automodule:: paperminer.providers.core
+.. automodule:: paperminertoolkit.providers.core
    :members:
    :show-inheritance:

@@ -1,6 +1,6 @@
-paperminer.corpus.documents
+paperminertoolkit.corpus.documents
 ========================================
 
-.. automodule:: paperminer.corpus.documents
+.. automodule:: paperminertoolkit.corpus.documents
    :members:
    :show-inheritance:

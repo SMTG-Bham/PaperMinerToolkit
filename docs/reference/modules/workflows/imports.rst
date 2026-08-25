@@ -1,6 +1,6 @@
-paperminer.workflows.imports
+paperminertoolkit.workflows.imports
 ========================================
 
-.. automodule:: paperminer.workflows.imports
+.. automodule:: paperminertoolkit.workflows.imports
    :members:
    :show-inheritance:

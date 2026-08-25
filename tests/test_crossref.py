@@ -11,10 +11,10 @@ import pandas as pd
 import pytest
 import requests
 
-import paperminer.corpus.database as corpus
-import paperminer.providers.crossref as crossref
-import paperminer.workflows.enrichment as enrichment
-from paperminer.providers import base as provider
+import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.providers.crossref as crossref
+import paperminertoolkit.workflows.enrichment as enrichment
+from paperminertoolkit.providers import base as provider
 
 from tests.doubles import FakeResponse
 
@@ -269,7 +269,7 @@ def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch
     assert crossref.resolve_email(None) == 'stored@example.com'
 
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
-    with pytest.raises(ValueError, match='pm config crossref-email'):
+    with pytest.raises(ValueError, match='pmt config crossref-email'):
         crossref.resolve_email(None)
 
 

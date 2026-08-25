@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the PaperMiner environment on Sol, ready for the Gaudi example.
+# Build the PaperMinerToolkit environment on Sol, ready for the Gaudi example.
 #
 # Submit this once, before anything else, from this directory:
 #
@@ -19,10 +19,10 @@
 # login node. No accelerator is requested — this only installs an HTTP client.
 #
 # Options:
-#   PM_ENV=paperminer            name of the environment to create
-#   PM_FORCE=0                     reuse an existing environment instead of rebuilding
-#   PM_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507   model whose tokenizer to pre-cache
-#   PM_PREFETCH_WEIGHTS=1          also download the model weights (~61 GB for the default)
+#   PMT_ENV=paperminertoolkit            name of the environment to create
+#   PMT_FORCE=0                     reuse an existing environment instead of rebuilding
+#   PMT_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507   model whose tokenizer to pre-cache
+#   PMT_PREFETCH_WEIGHTS=1          also download the model weights (~61 GB for the default)
 #
 # When it finishes, from this same directory:
 #
@@ -39,19 +39,19 @@
 
 set -euo pipefail
 
-PM_ENV="${PM_ENV:-paperminer}"
-PM_FORCE="${PM_FORCE:-1}"
+PMT_ENV="${PMT_ENV:-paperminertoolkit}"
+PMT_FORCE="${PMT_FORCE:-1}"
 # Keep in step with the default in scrape_gaudi.sbatch: this only pre-caches
 # the tokenizer that sizes text chunks, and a tokenizer for the wrong model is
 # no better than none, since the lookup at scrape time misses and falls back to
 # a character estimate.
-PM_MODEL="${PM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
-PM_PREFETCH_WEIGHTS="${PM_PREFETCH_WEIGHTS:-0}"
+PMT_MODEL="${PMT_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+PMT_PREFETCH_WEIGHTS="${PMT_PREFETCH_WEIGHTS:-0}"
 
 # Never touch ASU's shared vLLM environment. It is Python 3.10 (below this
 # package's floor) and pip would replace Habana's patched PyTorch with a stock
 # wheel, breaking HPU support for everyone else on the cluster.
-if [[ "$PM_ENV" == "gaudi-pytorch-vllm" ]]; then
+if [[ "$PMT_ENV" == "gaudi-pytorch-vllm" ]]; then
   echo "ERROR: refusing to install into the shared vLLM environment." >&2
   exit 1
 fi
@@ -76,7 +76,7 @@ find_repo_root() {
 
 submit_dir="$(cd "${SLURM_SUBMIT_DIR:-$PWD}" && pwd -P)"
 if ! REPO_ROOT="$(find_repo_root "$submit_dir")"; then
-  echo "ERROR: no PaperMiner checkout found at or above $submit_dir." >&2
+  echo "ERROR: no PaperMinerToolkit checkout found at or above $submit_dir." >&2
   echo "       Submit from the example directory inside the checkout:" >&2
   echo "         cd examples/sol_gaudi && sbatch install.sbatch" >&2
   exit 1
@@ -98,7 +98,7 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/scratch/$USER/pip}"
 mkdir -p "$HF_HOME" "$PIP_CACHE_DIR"
 
 echo "=== Job ${SLURM_JOB_ID:-interactive} on $(hostname) ==="
-echo "env=$PM_ENV  HF_HOME=$HF_HOME"
+echo "env=$PMT_ENV  HF_HOME=$HF_HOME"
 
 # Module and conda activation scripts reference unset variables, which would
 # abort the job under `set -u`. Relax it around them only.
@@ -129,62 +129,62 @@ if (( ${#shadowing[@]} )); then
   echo "         Clear them by hand, with no environment active:"
   echo "           python3 -m pip uninstall -y torch torchvision torchaudio"
   echo "         This script does not touch ~/.local: it is shared by everything"
-  echo "         you run on this account, not just PaperMiner."
+  echo "         you run on this account, not just PaperMinerToolkit."
 fi
 
 # --- 1. Create the environment, from scratch --------------------------------
 # Rebuilding is the default. Reusing an environment preserves exactly the state
 # this script exists to rule out: a torch wheel swapped by hand, a half-finished
-# pip install, a dependency pinned by an older environment.yml. Set PM_FORCE=0
+# pip install, a dependency pinned by an older environment.yml. Set PMT_FORCE=0
 # to reuse one instead.
 #
-# Only $PM_ENV is touched. No other environment on the account is removed, and
+# Only $PMT_ENV is touched. No other environment on the account is removed, and
 # the guard above keeps the shared vLLM environment out of reach entirely.
 env_exists() {
   mamba env list | awk '{print $1}' | grep -Fxq "$1"
 }
 
-if env_exists "$PM_ENV"; then
-  if [[ "$PM_FORCE" == "0" ]]; then
-    echo "=== Reusing existing environment $PM_ENV (PM_FORCE=1 to rebuild) ==="
+if env_exists "$PMT_ENV"; then
+  if [[ "$PMT_FORCE" == "0" ]]; then
+    echo "=== Reusing existing environment $PMT_ENV (PMT_FORCE=1 to rebuild) ==="
   else
     # $NF is the prefix column of `mamba env list`.
-    PM_PREFIX="$(mamba env list | awk -v name="$PM_ENV" '$1 == name {print $NF}')"
+    PMT_PREFIX="$(mamba env list | awk -v name="$PMT_ENV" '$1 == name {print $NF}')"
 
     # Never remove an environment belonging to someone else: ASU's shared envs
-    # live under /packages and a typo in PM_ENV must not reach them.
-    if [[ -n "$PM_PREFIX" && ! -O "$PM_PREFIX" ]]; then
-      echo "ERROR: $PM_ENV lives at $PM_PREFIX, which you do not own." >&2
-      echo "       Refusing to remove it. Pick a different PM_ENV." >&2
+    # live under /packages and a typo in PMT_ENV must not reach them.
+    if [[ -n "$PMT_PREFIX" && ! -O "$PMT_PREFIX" ]]; then
+      echo "ERROR: $PMT_ENV lives at $PMT_PREFIX, which you do not own." >&2
+      echo "       Refusing to remove it. Pick a different PMT_ENV." >&2
       exit 1
     fi
 
-    echo "=== Removing existing environment $PM_ENV (${PM_PREFIX:-prefix unknown}) ==="
-    mamba env remove -n "$PM_ENV" -y
+    echo "=== Removing existing environment $PMT_ENV (${PMT_PREFIX:-prefix unknown}) ==="
+    mamba env remove -n "$PMT_ENV" -y
 
     # mamba leaves the prefix behind when it holds files it did not install, and
     # `env create` then refuses with "prefix already exists". Clear the remains,
     # but only ever a path mamba itself reported for this environment.
-    case "$PM_PREFIX" in
+    case "$PMT_PREFIX" in
       ''|'/'|"$HOME")
         ;;
       *)
-        if [[ -d "$PM_PREFIX" ]]; then
-          echo "=== Clearing leftover prefix $PM_PREFIX ==="
-          rm -rf "$PM_PREFIX"
+        if [[ -d "$PMT_PREFIX" ]]; then
+          echo "=== Clearing leftover prefix $PMT_PREFIX ==="
+          rm -rf "$PMT_PREFIX"
         fi
         ;;
     esac
   fi
 fi
 
-if ! env_exists "$PM_ENV"; then
-  echo "=== Creating $PM_ENV ==="
-  mamba env create -f build_tools/environment.yml -n "$PM_ENV"
+if ! env_exists "$PMT_ENV"; then
+  echo "=== Creating $PMT_ENV ==="
+  mamba env create -f build_tools/environment.yml -n "$PMT_ENV"
 fi
 
 set +u
-source activate "$PM_ENV"
+source activate "$PMT_ENV"
 set -u
 echo "python: $(python --version) at $(command -v python)"
 
@@ -192,13 +192,13 @@ echo "python: $(python --version) at $(command -v python)"
 # headroom-ai[ml] requires torch, which resolves to the CUDA build on x86_64
 # Linux and drags in ~15 nvidia-* wheels plus triton — several GB that are dead
 # weight on a Gaudi node, and confusing to have beside Habana's runtime.
-# PaperMiner only touches torch through a lazy transformers import used for
+# PaperMinerToolkit only touches torch through a lazy transformers import used for
 # token counting, so the CPU build satisfies it completely. Installing it first
 # means pip sees the constraint as already met and never considers a CUDA wheel.
 echo "=== Installing CPU-only torch ==="
 pip install --index-url https://download.pytorch.org/whl/cpu torch
 
-echo "=== Installing PaperMiner ==="
+echo "=== Installing PaperMinerToolkit ==="
 pip install -e ".[test]"
 
 # --- 3. Assert the install is actually CUDA-free ----------------------------
@@ -225,14 +225,14 @@ if [[ "$cuda_pkgs" != "0" ]]; then
 fi
 echo "CUDA packages: 0"
 
-command -v pm >/dev/null || { echo "ERROR: pm not on PATH" >&2; exit 1; }
+command -v pmt >/dev/null || { echo "ERROR: pmt not on PATH" >&2; exit 1; }
 for command_name in search download scrape store status reset; do
-  pm "$command_name" --help >/dev/null
+  pmt "$command_name" --help >/dev/null
 done
 for group_name in corpus filter topics import config; do
-  pm "$group_name" --help >/dev/null
+  pmt "$group_name" --help >/dev/null
 done
-echo "pm command hierarchy: OK"
+echo "pmt command hierarchy: OK"
 
 echo "=== Test suite ==="
 # Needs no credentials and no accelerator: the network and slow markers are
@@ -240,34 +240,34 @@ echo "=== Test suite ==="
 pytest -q
 
 # --- 4. Pre-cache the tokenizer --------------------------------------------
-# For a local provider PaperMiner sizes its text chunks with
+# For a local provider PaperMinerToolkit sizes its text chunks with
 # transformers.AutoTokenizer.from_pretrained(<model name>), and silently falls
 # back to a len/3 character estimate if that lookup fails. Caching it here, on a
 # node with reliable outbound access, keeps the Gaudi job off the network.
-echo "=== Pre-caching tokenizer for $PM_MODEL ==="
+echo "=== Pre-caching tokenizer for $PMT_MODEL ==="
 if python -c "
 from transformers import AutoTokenizer
-AutoTokenizer.from_pretrained('$PM_MODEL')
+AutoTokenizer.from_pretrained('$PMT_MODEL')
 print('tokenizer cached')
 "; then
   echo "tokenizer: OK"
 else
-  echo "WARNING: could not cache the tokenizer for $PM_MODEL."
+  echo "WARNING: could not cache the tokenizer for $PMT_MODEL."
   echo "         The scrape will still run but will size chunks by character"
   echo "         estimate. Check outbound access and the model name."
 fi
 
-if [[ "$PM_PREFETCH_WEIGHTS" == "1" ]]; then
+if [[ "$PMT_PREFETCH_WEIGHTS" == "1" ]]; then
   # Downloading weights here rather than in the Gaudi job keeps tens of GB of
   # transfer out of a four-hour accelerator allocation - ~61 GB for the default
   # 30B model, which is worth doing once before the first scrape. Into the cache, not
   # --local-dir: a path-style --model would break the tokenizer lookup above.
-  echo "=== Pre-fetching weights for $PM_MODEL ==="
-  hf download "$PM_MODEL"
+  echo "=== Pre-fetching weights for $PMT_MODEL ==="
+  hf download "$PMT_MODEL"
 fi
 
 echo
-echo "=== Done. Environment '$PM_ENV' is ready. ==="
+echo "=== Done. Environment '$PMT_ENV' is ready. ==="
 echo "Next, from $submit_dir:"
 echo "  sbatch fetch_corpus.sbatch"
 echo "  sbatch scrape_gaudi.sbatch"

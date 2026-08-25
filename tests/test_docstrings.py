@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-PYTHON_ROOTS = (ROOT / 'paperminer', ROOT / 'tests')
+PYTHON_ROOTS = (ROOT / 'paperminertoolkit', ROOT / 'tests')
 DEFINITION_TYPES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 NON_NUMPY_HEADINGS = re.compile(
     r'^\s*(Args|Arguments|Asserts|Attributes|Returns|Yields|Raises|Warns):\s*$',

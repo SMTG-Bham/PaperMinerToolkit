@@ -1,6 +1,6 @@
-paperminer.extraction.store
+paperminertoolkit.extraction.store
 ========================================
 
-.. automodule:: paperminer.extraction.store
+.. automodule:: paperminertoolkit.extraction.store
    :members:
    :show-inheritance:

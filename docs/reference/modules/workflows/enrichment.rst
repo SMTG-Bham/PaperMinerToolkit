@@ -1,6 +1,6 @@
-paperminer.workflows.enrichment
+paperminertoolkit.workflows.enrichment
 ========================================
 
-.. automodule:: paperminer.workflows.enrichment
+.. automodule:: paperminertoolkit.workflows.enrichment
    :members:
    :show-inheritance:

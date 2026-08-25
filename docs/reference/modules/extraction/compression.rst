@@ -1,6 +1,6 @@
-paperminer.extraction.compression
+paperminertoolkit.extraction.compression
 ========================================
 
-.. automodule:: paperminer.extraction.compression
+.. automodule:: paperminertoolkit.extraction.compression
    :members:
    :show-inheritance:

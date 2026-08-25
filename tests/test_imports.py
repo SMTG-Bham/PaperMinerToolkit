@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.workflows.imports.
+"""Unit tests for paperminertoolkit.workflows.imports.
 
 This module tests importing local PDF files into the paper corpus, including
 folder validation, empty-folder handling, metadata mapping, and merging imported
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import paperminer.corpus.database as corpus
-import paperminer.workflows.imports as imports
+import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.workflows.imports as imports
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'

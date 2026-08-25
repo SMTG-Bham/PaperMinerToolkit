@@ -1,4 +1,4 @@
-# paperminer.corpus
+# paperminertoolkit.corpus
 
 Persistent corpus storage, document handling, metadata normalization, and paper filtering.
 

@@ -1,6 +1,6 @@
-paperminer.providers.crossref
+paperminertoolkit.providers.crossref
 ========================================
 
-.. automodule:: paperminer.providers.crossref
+.. automodule:: paperminertoolkit.providers.crossref
    :members:
    :show-inheritance:

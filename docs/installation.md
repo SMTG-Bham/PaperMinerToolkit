@@ -1,14 +1,14 @@
 # Installation
 
-PaperMiner requires Python 3.11 or newer. Create an isolated environment before installing it.
+PaperMinerToolkit requires Python 3.11 or newer. Create an isolated environment before installing it.
 
 ## Development installation
 
 Clone the repository, activate your environment, and install the package in editable mode:
 
 ```bash
-git clone https://github.com/SMTG-Bham/PaperMiner.git
-cd PaperMiner
+git clone https://github.com/SMTG-Bham/PaperMinerToolkit.git
+cd PaperMinerToolkit
 python -m pip install -e .
 ```
 
@@ -35,22 +35,22 @@ python -m pip install --no-deps -e .
 make -C docs html
 ```
 
-Sphinx mocks runtime-only scientific and model libraries while reading docstrings. Use the normal editable installation when running PaperMiner itself.
+Sphinx mocks runtime-only scientific and model libraries while reading docstrings. Use the normal editable installation when running PaperMinerToolkit itself.
 
 ## Verify the installation
 
 Every command should be available after installation:
 
 ```bash
-pm status --help
-pm search --help
-pm scrape --help
-pm topics train --help
+pmt status --help
+pmt search --help
+pmt scrape --help
+pmt topics train --help
 ```
 
 ## HPC environments
 
-Install PaperMiner in a login or build job rather than repeatedly installing it in compute jobs. Local vLLM deployments may need accelerator-specific PyTorch and vLLM builds, so install PaperMiner without dependency resolution when those packages are already managed by the cluster environment:
+Install PaperMinerToolkit in a login or build job rather than repeatedly installing it in compute jobs. Local vLLM deployments may need accelerator-specific PyTorch and vLLM builds, so install PaperMinerToolkit without dependency resolution when those packages are already managed by the cluster environment:
 
 ```bash
 python -m pip install -e . --no-deps

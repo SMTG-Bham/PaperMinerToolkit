@@ -1,6 +1,6 @@
-paperminer.workflows.topics
+paperminertoolkit.workflows.topics
 ========================================
 
-.. automodule:: paperminer.workflows.topics
+.. automodule:: paperminertoolkit.workflows.topics
    :members:
    :show-inheritance:

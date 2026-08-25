@@ -1,6 +1,6 @@
-paperminer.workflows.search
+paperminertoolkit.workflows.search
 ========================================
 
-.. automodule:: paperminer.workflows.search
+.. automodule:: paperminertoolkit.workflows.search
    :members:
    :show-inheritance:

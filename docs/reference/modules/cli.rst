@@ -1,6 +1,6 @@
-paperminer.cli
+paperminertoolkit.cli
 ========================================
 
-.. automodule:: paperminer.cli
+.. automodule:: paperminertoolkit.cli
    :members:
    :show-inheritance:

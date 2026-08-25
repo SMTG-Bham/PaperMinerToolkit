@@ -1,4 +1,4 @@
-"""Sphinx configuration for the PaperMiner documentation."""
+"""Sphinx configuration for the PaperMinerToolkit documentation."""
 
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -6,12 +6,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-project = "PaperMiner"
-author = "PaperMiner contributors"
-copyright = "2026, PaperMiner contributors"
+project = "PaperMinerToolkit"
+author = "PaperMinerToolkit contributors"
+copyright = "2026, PaperMinerToolkit contributors"
 
 try:
-    release = version("paperminer")
+    release = version("paperminertoolkit")
 except PackageNotFoundError:
     release = "0.0.1"
 version = release
@@ -76,13 +76,13 @@ napoleon_use_rtype = True
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static", "../assets"]
 html_css_files = ["custom.css"]
-html_title = f"PaperMiner {release}"
-html_favicon = "../assets/Paper_Miner.svg"
+html_title = f"PaperMinerToolkit {release}"
+html_favicon = "../assets/Paper_Miner_Toolkit.svg"
 html_theme_options = {
     "logo": {
-        "image_light": "Paper_Miner_banner_large_text_light.svg",
-        "image_dark": "Paper_Miner_banner_large_text_dark.svg",
-        "alt_text": "PaperMiner",
+        "image_light": "Paper_Miner_Toolkit_acronym_light.svg",
+        "image_dark": "Paper_Miner_Toolkit_acronym_dark.svg",
+        "alt_text": "PaperMinerToolkit",
     },
     "header_links_before_dropdown": 6,
     "show_toc_level": 2,
@@ -92,7 +92,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/SMTG-Bham/PaperMiner",
+            "url": "https://github.com/SMTG-Bham/PaperMinerToolkit",
             "icon": "fa-brands fa-github",
             "type": "fontawesome",
         }
@@ -100,7 +100,7 @@ html_theme_options = {
 }
 html_context = {
     "github_user": "SMTG-Bham",
-    "github_repo": "PaperMiner",
+    "github_repo": "PaperMinerToolkit",
     "github_version": "main",
     "doc_path": "docs",
 }

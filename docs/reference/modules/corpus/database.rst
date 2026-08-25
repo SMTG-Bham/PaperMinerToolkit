@@ -1,6 +1,6 @@
-paperminer.corpus.database
+paperminertoolkit.corpus.database
 ========================================
 
-.. automodule:: paperminer.corpus.database
+.. automodule:: paperminertoolkit.corpus.database
    :members:
    :show-inheritance:

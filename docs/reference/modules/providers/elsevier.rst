@@ -1,6 +1,6 @@
-paperminer.providers.elsevier
+paperminertoolkit.providers.elsevier
 ========================================
 
-.. automodule:: paperminer.providers.elsevier
+.. automodule:: paperminertoolkit.providers.elsevier
    :members:
    :show-inheritance:

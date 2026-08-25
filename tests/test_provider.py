@@ -8,16 +8,16 @@ import xml.etree.ElementTree as ET
 import pytest
 import requests
 
-import paperminer.providers.arxiv as arxiv
-import paperminer.providers.biorxiv as biorxiv
-import paperminer.providers.core as core
-import paperminer.providers.elsevier as elsevier
-import paperminer.providers.medrxiv as medrxiv
-import paperminer.providers.crossref as crossref
-import paperminer.providers.openalex as openalex
-import paperminer.providers.pubmed as pubmed
-from paperminer.providers import base as provider
-from paperminer.providers import rxiv as _rxiv
+import paperminertoolkit.providers.arxiv as arxiv
+import paperminertoolkit.providers.biorxiv as biorxiv
+import paperminertoolkit.providers.core as core
+import paperminertoolkit.providers.elsevier as elsevier
+import paperminertoolkit.providers.medrxiv as medrxiv
+import paperminertoolkit.providers.crossref as crossref
+import paperminertoolkit.providers.openalex as openalex
+import paperminertoolkit.providers.pubmed as pubmed
+from paperminertoolkit.providers import base as provider
+from paperminertoolkit.providers import rxiv as _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -60,7 +60,7 @@ def limiter() -> provider.RateLimiter:
 
 def test_user_agent_carries_the_package_version_and_an_optional_address() -> None:
     """Build both the plain and the polite-pool user agent from one version."""
-    assert provider.USER_AGENT == f'PaperMiner/{provider.__version__}'
+    assert provider.USER_AGENT == f'PaperMinerToolkit/{provider.__version__}'
     assert provider.user_agent() == provider.USER_AGENT
     assert provider.user_agent('me@example.com') == f'{provider.USER_AGENT} (mailto:me@example.com)'
     assert provider.default_headers() == {'User-Agent': provider.USER_AGENT}

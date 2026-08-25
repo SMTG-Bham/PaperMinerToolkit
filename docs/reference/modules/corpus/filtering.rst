@@ -1,6 +1,6 @@
-paperminer.corpus.filtering
+paperminertoolkit.corpus.filtering
 ========================================
 
-.. automodule:: paperminer.corpus.filtering
+.. automodule:: paperminertoolkit.corpus.filtering
    :members:
    :show-inheritance:

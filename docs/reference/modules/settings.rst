@@ -1,6 +1,6 @@
-paperminer.settings
+paperminertoolkit.settings
 ========================================
 
-.. automodule:: paperminer.settings
+.. automodule:: paperminertoolkit.settings
    :members:
    :show-inheritance:

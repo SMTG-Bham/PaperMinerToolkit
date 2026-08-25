@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-import paperminer.providers.biorxiv as biorxiv
-import paperminer.providers.medrxiv as medrxiv
-from paperminer.providers import rxiv as _rxiv
+import paperminertoolkit.providers.biorxiv as biorxiv
+import paperminertoolkit.providers.medrxiv as medrxiv
+from paperminertoolkit.providers import rxiv as _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
 

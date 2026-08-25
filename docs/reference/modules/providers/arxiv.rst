@@ -1,6 +1,6 @@
-paperminer.providers.arxiv
+paperminertoolkit.providers.arxiv
 ========================================
 
-.. automodule:: paperminer.providers.arxiv
+.. automodule:: paperminertoolkit.providers.arxiv
    :members:
    :show-inheritance:

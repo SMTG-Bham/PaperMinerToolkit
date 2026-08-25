@@ -1,6 +1,6 @@
-paperminer.extraction.scrape
+paperminertoolkit.extraction.scrape
 ========================================
 
-.. automodule:: paperminer.extraction.scrape
+.. automodule:: paperminertoolkit.extraction.scrape
    :members:
    :show-inheritance:

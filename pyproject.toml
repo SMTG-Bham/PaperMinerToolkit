@@ -3,13 +3,16 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "paperminer"
+name = "paperminertoolkit"
 dynamic = ["version"]
 description = "A package for extracting structured information from scientific papers with configurable language and vision models."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Louie", email = "louies@hotmail.co.uk" }]
+authors = [
+  { name = "Oskar Soulas", email = "oskar.soulas@gmail.com" },
+  { name = "Louie", email = "louies@hotmail.co.uk" },
+]
 keywords = ["research", "scientific-papers", "materials", "text-mining", "llm"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -57,22 +60,22 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SMTG-Bham/PaperMiner"
-Repository = "https://github.com/SMTG-Bham/PaperMiner"
-Issues = "https://github.com/SMTG-Bham/PaperMiner/issues"
+Homepage = "https://github.com/SMTG-Bham/PaperMinerToolkit"
+Repository = "https://github.com/SMTG-Bham/PaperMinerToolkit"
+Issues = "https://github.com/SMTG-Bham/PaperMinerToolkit/issues"
 
 [project.scripts]
-pm = "paperminer.cli:main"
+pmt = "paperminertoolkit.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "paperminer._version.__version__" }
+version = { attr = "paperminertoolkit._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["paperminer*"]
+include = ["paperminertoolkit*"]
 
 [tool.setuptools.package-data]
-"paperminer" = ["resources/*.json"]
+"paperminertoolkit" = ["resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -95,7 +98,7 @@ ignore = ["ANN401"]
 convention = "numpy"
 
 [tool.coverage.run]
-source = ["paperminer"]
+source = ["paperminertoolkit"]
 
 [tool.coverage.report]
 show_missing = true

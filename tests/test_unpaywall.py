@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-import paperminer.providers.unpaywall as unpaywall
-from paperminer.providers import base as provider
+import paperminertoolkit.providers.unpaywall as unpaywall
+from paperminertoolkit.providers import base as provider
 
 from tests.doubles import FakeResponse, FakeSession
 

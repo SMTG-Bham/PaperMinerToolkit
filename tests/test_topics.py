@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from paperminer.corpus import database as corpus, filtering
-from paperminer.workflows import topics
+from paperminertoolkit.corpus import database as corpus, filtering
+from paperminertoolkit.workflows import topics
 
 
 THEME_TEXTS = [
@@ -841,7 +841,7 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(
 
     def without_filtering(name: str, *args: Any, **kwargs: Any) -> Any:
         """Simulate a minimal installation without the optional filtering import."""
-        if name == 'paperminer.corpus.filtering':
+        if name == 'paperminertoolkit.corpus.filtering':
             raise ImportError('filtering unavailable')
         return original_import(name, *args, **kwargs)
 

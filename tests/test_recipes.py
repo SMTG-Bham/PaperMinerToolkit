@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.extraction.recipes.
+"""Unit tests for paperminertoolkit.extraction.recipes.
 
 This module tests recipe validation, loading bundled and file-based recipes,
 building output columns, alias collection, and canonical column matching.
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-import paperminer.extraction.recipes as recipes
+import paperminertoolkit.extraction.recipes as recipes
 
 
 def sample_recipe() -> dict[str, Any]:

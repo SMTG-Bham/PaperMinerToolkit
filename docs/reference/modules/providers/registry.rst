@@ -1,6 +1,6 @@
-paperminer.providers.registry
+paperminertoolkit.providers.registry
 ========================================
 
-.. automodule:: paperminer.providers.registry
+.. automodule:: paperminertoolkit.providers.registry
    :members:
    :show-inheritance:

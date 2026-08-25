@@ -35,15 +35,15 @@ jobs:
 
       - name: Run unit tests
         run: |
-          pytest --cov=paperminer --cov-report=term-missing --cov-report=xml
+          pytest --cov=paperminertoolkit --cov-report=term-missing --cov-report=xml
 
       - name: Validate docstrings and function annotations
         run: |
-          ruff check paperminer tests
+          ruff check paperminertoolkit tests
 
       - name: Compile Python sources and examples
         run: |
-          python -m compileall paperminer examples
+          python -m compileall paperminertoolkit examples
 
       - name: Upload coverage report artifact
         uses: actions/upload-artifact@v7
