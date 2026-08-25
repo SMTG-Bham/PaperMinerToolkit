@@ -56,4 +56,4 @@ Install PaperMiner in a login or build job rather than repeatedly installing it 
 python -m pip install -e . --no-deps
 ```
 
-See {doc}`../user-guide/hpc` for the supplied Intel Gaudi scripts.
+See {doc}`workflow/hpc` for the supplied Intel Gaudi scripts.

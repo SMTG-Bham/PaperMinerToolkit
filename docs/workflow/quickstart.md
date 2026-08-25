@@ -44,4 +44,4 @@ pm_store \
 pm_status papers.db
 ```
 
-Use the same recipe for scraping and storage so fields and unit conversions agree. Continue with {doc}`../user-guide/corpus`, {doc}`../user-guide/filtering`, and {doc}`../user-guide/scraping` for production workflows.
+Use the same recipe for scraping and storage so fields and unit conversions agree. Continue with {doc}`corpus`, {doc}`filtering`, and {doc}`scraping` for production workflows.

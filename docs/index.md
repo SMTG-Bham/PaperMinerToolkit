@@ -4,7 +4,7 @@
 
 PaperMiner searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and supplements what it finds from Crossref; downloads abstracts, full text, and PDFs; filters papers; and extracts recipe-defined records. Metadata, source documents, processing state, filters, and topic-model predictions live together in a portable SQLite corpus.
 
-Start with {doc}`getting-started/installation`, then follow the {doc}`workflow` for a small end-to-end scrape, including LDA model selection, training, trends, and topic filtering. Runnable workflows are collected under {doc}`examples/index`.
+Start with {doc}`installation`, then follow the {doc}`workflow/index` for a small end-to-end scrape, including LDA model selection, training, trends, and topic filtering. Runnable workflows are collected under {doc}`examples/index`.
 
 ## From discovery to dataset
 
@@ -60,11 +60,11 @@ flowchart TB
 
 ```{toctree}
 :hidden:
-:maxdepth: 2
+:maxdepth: 1
 
-Installation <getting-started/installation>
-Workflow <workflow>
+Installation <installation>
+Workflow <workflow/index>
 Examples <examples/index>
-FAQ <user-guide/troubleshooting>
+FAQ <faq>
 API <reference/index>
 ```

@@ -36,14 +36,14 @@ PaperMiner enforces itself; a search or enrichment run that spans many pages wil
 noticeable part of its time waiting, and that is expected rather than a fault.
 
 medRxiv and bioRxiv need no credentials either, and publish no rate limit. They are one service
-under two names, so PaperMiner paces each at one request a second, which matters more here than
+under two names, so PaperMiner paces each at one request per second, which matters more here than
 for the other providers: neither has a search endpoint, so a search reads the posting archive a
 page at a time and a broad query spends most of its run waiting between pages. Narrowing the query
 is what makes either search quick, and it matters most for bioRxiv, whose archive opened in 2013
-and is several times the size of medRxiv's; see [Build a corpus](../user-guide/corpus.md).
+and is several times the size of medRxiv's; see [Build a corpus](corpus.md).
 
 chemRxiv needs no credentials and publishes no rate limit either, and PaperMiner paces it at
-one request a second as well. Unlike medRxiv and bioRxiv it does have a search endpoint, so a
+one request per second as well. Unlike medRxiv and bioRxiv it does have a search endpoint, so a
 broad query costs pages rather than a walk of the archive, and narrowing one saves the server
 work rather than saving you a long read. chemrxiv.org is fronted by a bot challenge that can
 refuse a client outright; PaperMiner does not try to get around it, and reports the refusal as

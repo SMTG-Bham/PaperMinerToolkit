@@ -278,7 +278,7 @@ pm_download papers.db --format text --source pubmed
 Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
 subset reports that no full text is offered rather than failing. An NCBI API key raises the PubMed
 request rate from three to ten per second, which matters most on large download runs; see
-[Credentials and model configuration](../getting-started/configuration.md).
+[Credentials and model configuration](configuration.md).
 
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.

@@ -55,12 +55,12 @@ For a first run, follow the quickstart. The remaining pages explain each product
 ```{toctree}
 :maxdepth: 1
 
-getting-started/quickstart
-getting-started/configuration
-user-guide/corpus
-user-guide/filtering
-user-guide/recipes
-user-guide/scraping
-user-guide/topics
-user-guide/hpc
+quickstart
+configuration
+corpus
+topics
+filtering
+recipes
+scraping
+hpc
 ```
