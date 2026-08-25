@@ -8,16 +8,16 @@ import xml.etree.ElementTree as ET
 import pytest
 import requests
 
-import paperminer.arxiv as arxiv
-import paperminer.biorxiv as biorxiv
-import paperminer.core as core
-import paperminer.elsevier as elsevier
-import paperminer.medrxiv as medrxiv
-import paperminer.crossref as crossref
-import paperminer.openalex as openalex
-import paperminer.pubmed as pubmed
-from paperminer import provider
-from paperminer import _rxiv
+import paperminer.providers.arxiv as arxiv
+import paperminer.providers.biorxiv as biorxiv
+import paperminer.providers.core as core
+import paperminer.providers.elsevier as elsevier
+import paperminer.providers.medrxiv as medrxiv
+import paperminer.providers.crossref as crossref
+import paperminer.providers.openalex as openalex
+import paperminer.providers.pubmed as pubmed
+from paperminer.providers import base as provider
+from paperminer.providers import rxiv as _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
 

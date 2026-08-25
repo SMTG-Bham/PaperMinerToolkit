@@ -9,10 +9,10 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-import paperminer.biorxiv as biorxiv
-import paperminer.chemrxiv as chemrxiv
-from paperminer import provider
-import paperminer.medrxiv as medrxiv
+import paperminer.providers.biorxiv as biorxiv
+import paperminer.providers.chemrxiv as chemrxiv
+from paperminer.providers import base as provider
+import paperminer.providers.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -110,7 +110,7 @@ def test_normalize_chemrxiv_doi_preserves_the_version_the_registry_issued() -> N
     ``10.26434/chemrxiv.8011268.v1`` resolves while the bare form only
     redirects. Normalizing the version away would strand most of the archive,
     so this test exists to stop that being reintroduced for consistency with
-    :mod:`paperminer.biorxiv`.
+    :mod:`paperminer.providers.biorxiv`.
     """
     for doi in ['10.26434/chemrxiv.15007737/v1', '10.26434/chemrxiv.8011268.v1',
                 '10.26434/chemrxiv-2025-0dxhw/v4']:
@@ -542,7 +542,7 @@ def test_parse_query_rejects_a_bound_that_is_not_an_iso_date() -> None:
 def test_the_module_publishes_no_archive_walk_or_full_text_surface() -> None:
     """Confirm chemRxiv answers by search rather than by an archive walk.
 
-    The absent names are the ones :func:`paperminer.search._rxiv_search`
+    The absent names are the ones :func:`paperminer.workflows.search._rxiv_search`
     requires. chemRxiv has a search endpoint and no machine-readable full text,
     so implementing them would mean reading the archive to answer a query the
     server already answers, and promising a text source that does not exist.

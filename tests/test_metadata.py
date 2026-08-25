@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.metadata.
+"""Unit tests for paperminer.corpus.metadata.
 
 This module tests DOI cleanup and extraction from text, embedded PDF metadata,
 PDF page text fallback, Crossref date formatting, and Crossref metadata
@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.crossref as crossref
-import paperminer.metadata as metadata
+import paperminer.corpus.database as corpus
+import paperminer.providers.crossref as crossref
+import paperminer.corpus.metadata as metadata
 
 DATA_DIR = Path(__file__).parent / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'

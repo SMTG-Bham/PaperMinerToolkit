@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.store.
+"""Unit tests for paperminer.extraction.store.
 
 This module tests storing temporary scraped material rows into the final
 materials CSV, including missing inputs, empty inputs, column matching, optional
@@ -13,8 +13,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.store as store
+import paperminer.corpus.database as corpus
+import paperminer.extraction.store as store
 
 
 def sample_recipe() -> dict[str, Any]:

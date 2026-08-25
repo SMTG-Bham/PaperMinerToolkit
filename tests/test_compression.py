@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-import paperminer.compression as compression
+import paperminer.extraction.compression as compression
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
 IMAGE_DIR = DATA_DIR / 'images'

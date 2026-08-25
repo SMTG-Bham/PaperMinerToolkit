@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import paperminer.cli as cli
-import paperminer.corpus as corpus
+import paperminer.corpus.database as corpus
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:

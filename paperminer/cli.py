@@ -9,21 +9,21 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import click
-from paperminer import sources
-from paperminer.corpus import connect, corpus_stats, enrichment_stats
-from paperminer.crossref import import_author_works
-from paperminer.search import search_for_papers
-from paperminer.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
-from paperminer.download import download_papers
-from paperminer.enrichment import enrich_corpus
-from paperminer.filtering import (apply_regex_filter,
+from paperminer.providers import registry as sources
+from paperminer.corpus.database import connect, corpus_stats, enrichment_stats
+from paperminer.providers.crossref import import_author_works
+from paperminer.workflows.search import search_for_papers
+from paperminer.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
+from paperminer.workflows.download import download_papers
+from paperminer.workflows.enrichment import enrich_corpus
+from paperminer.corpus.filtering import (apply_regex_filter,
                                     apply_topic_filter,
                                     filter_overview,
                                     reset_filters)
-from paperminer.imports import import_pdfs
-from paperminer.scrape import SCRAPE_ORDERS, scrape_papers
-from paperminer.store import store_results
-from paperminer.topics import (aggregate_topic_trends,
+from paperminer.workflows.imports import import_pdfs
+from paperminer.extraction.scrape import SCRAPE_ORDERS, scrape_papers
+from paperminer.extraction.store import store_results
+from paperminer.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
                                  set_topic_name,
@@ -44,7 +44,7 @@ from paperminer.settings import (get_model_profile,
                                    update_openai_key,
                                    update_openalex_key,
                                    update_unpaywall_email)
-from paperminer.utilities import reset, status
+from paperminer.workflows.utilities import reset, status
 
 # A download may fetch a PDF, full text, or an abstract, so its choices are
 # the union of the three, kept in PDF order because that is the one a caller

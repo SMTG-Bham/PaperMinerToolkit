@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.search.
+"""Unit tests for paperminer.workflows.search.
 
 This module tests provider-specific search helpers, CORE and Elsevier row
 normalization, pagination behavior, request headers, and merging search results
@@ -15,8 +15,8 @@ from typing import Any, NoReturn, Self
 import pandas as pd
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.search as search
+import paperminer.corpus.database as corpus
+import paperminer.workflows.search as search
 
 
 def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

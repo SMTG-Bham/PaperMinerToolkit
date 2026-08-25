@@ -11,10 +11,10 @@ import pandas as pd
 import pytest
 import requests
 
-import paperminer.corpus as corpus
-import paperminer.crossref as crossref
-import paperminer.enrichment as enrichment
-from paperminer import provider
+import paperminer.corpus.database as corpus
+import paperminer.providers.crossref as crossref
+import paperminer.workflows.enrichment as enrichment
+from paperminer.providers import base as provider
 
 from tests.doubles import FakeResponse
 

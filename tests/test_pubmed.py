@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperminer.pubmed as pubmed
-from paperminer import provider
+import paperminer.providers.pubmed as pubmed
+from paperminer.providers import base as provider
 
 from tests.doubles import FakeResponse, FakeSession
 

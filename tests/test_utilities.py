@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.utilities.
+"""Unit tests for paperminer.workflows.utilities.
 
 This module tests the small SQLite corpus maintenance helpers used by the
 command-line interface to reset pipeline state and print progress.
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import paperminer.corpus as corpus
-import paperminer.utilities as utilities
-from paperminer.corpus import PIPELINE_COLUMNS
+import paperminer.corpus.database as corpus
+import paperminer.workflows.utilities as utilities
+from paperminer.corpus.database import PIPELINE_COLUMNS
 
 
 def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path: Path) -> None:

@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import paperminer.arxiv as arxiv
-from paperminer import provider
+import paperminer.providers.arxiv as arxiv
+from paperminer.providers import base as provider
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -330,6 +330,18 @@ def test_request_xml_raises_on_the_error_feed_arxiv_returns_with_a_200() -> None
     session = FakeSession([FakeResponse(text=error_feed())])
     with pytest.raises(RuntimeError, match='incorrect id format for bogus'):
         arxiv.request_xml(session=session)
+
+
+def test_request_xml_accepts_an_ordinary_single_entry_feed() -> None:
+    """Do not mistake a one-result search response for an arXiv error feed."""
+    single_entry = '''<feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><id>http://arxiv.org/abs/2301.12345v2</id></entry>
+    </feed>'''
+    session = FakeSession([FakeResponse(text=single_entry)])
+
+    root = arxiv.request_xml(session=session)
+
+    assert root is not None
 
 
 def test_request_xml_reports_malformed_bodies_and_skips_empty_ones() -> None:

@@ -11,10 +11,10 @@ import pytest
 from click.testing import CliRunner
 
 import paperminer.cli as cli
-import paperminer.corpus as corpus
-import paperminer.filtering as filtering
-import paperminer.scrape as scrape
-from paperminer import topics
+import paperminer.corpus.database as corpus
+import paperminer.corpus.filtering as filtering
+import paperminer.extraction.scrape as scrape
+from paperminer.workflows import topics
 
 
 def _write_rules(

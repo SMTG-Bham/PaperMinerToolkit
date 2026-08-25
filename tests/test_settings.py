@@ -372,11 +372,11 @@ def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
 ) -> None:
     """Validate a key through the Elsevier module rather than inline here.
 
-    settings used to import paperminer.elsevier at module level for this one
+    settings used to import paperminer.providers.elsevier at module level for this one
     function, which was the single edge stopping the Elsevier client from
     importing settings the way every other source module does.
     """
-    import paperminer.elsevier as elsevier
+    import paperminer.providers.elsevier as elsevier
 
     calls = []
     monkeypatch.setattr(elsevier, 'check_api_key',

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 import paperminer.settings as settings
-import paperminer.tokenizer as tokenizer
+import paperminer.extraction.tokenizer as tokenizer
 
 
 def config(

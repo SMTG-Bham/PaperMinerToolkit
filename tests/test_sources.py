@@ -7,21 +7,21 @@ from types import SimpleNamespace
 import pytest
 
 import paperminer.cli as cli
-import paperminer.download as download
-import paperminer.enrichment as enrichment
-import paperminer.search as search
-from paperminer import sources
+import paperminer.workflows.download as download
+import paperminer.workflows.enrichment as enrichment
+import paperminer.workflows.search as search
+from paperminer.providers import registry as sources
 
 
 def test_registry_rejects_invalid_dynamic_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     """Validate malformed, non-callable, absent, and unsupported registry targets."""
     with pytest.raises(ValueError, match='capability must be one of'):
-        sources.Source('x', 'X', 'paperminer.core', frozenset()).handler('bad')
-    malformed = sources.Source('bad', 'Bad', 'paperminer.core', frozenset({sources.SEARCH}), search_handler='not-a-target')
+        sources.Source('x', 'X', 'paperminer.providers.core', frozenset()).handler('bad')
+    malformed = sources.Source('bad', 'Bad', 'paperminer.providers.core', frozenset({sources.SEARCH}), search_handler='not-a-target')
     monkeypatch.setitem(sources.SOURCES, 'bad', malformed)
     with pytest.raises(ValueError, match='invalid search handler'):
         sources.resolve_handler('bad', sources.SEARCH)
-    non_callable = sources.Source('value', 'Value', 'paperminer.core', frozenset({sources.SEARCH}), search_handler='fake.module:value', text_reachable='fake.module:value')
+    non_callable = sources.Source('value', 'Value', 'paperminer.providers.core', frozenset({sources.SEARCH}), search_handler='fake.module:value', text_reachable='fake.module:value')
     monkeypatch.setitem(sources.SOURCES, 'value', non_callable)
     monkeypatch.setattr(sources.importlib, 'import_module', lambda name: SimpleNamespace(value=1))
     with pytest.raises(TypeError, match='not callable'):
@@ -30,11 +30,11 @@ def test_registry_rejects_invalid_dynamic_targets(monkeypatch: pytest.MonkeyPatc
         sources.resolve_reachability('value', sources.TEXT)
     with pytest.raises(ValueError, match='only for text and abstract'):
         sources.resolve_reachability('value', sources.PDF)
-    absent = sources.Source('none', 'None', 'paperminer.core', frozenset({sources.TEXT}))
+    absent = sources.Source('none', 'None', 'paperminer.providers.core', frozenset({sources.TEXT}))
     monkeypatch.setitem(sources.SOURCES, 'none', absent)
     assert sources.resolve_reachability('none', sources.TEXT) is None
     assert sources.labels(['none']) == ['None']
-    invalid = sources.Source('reach', 'Reach', 'paperminer.core', frozenset({sources.TEXT}), text_reachable='invalid')
+    invalid = sources.Source('reach', 'Reach', 'paperminer.providers.core', frozenset({sources.TEXT}), text_reachable='invalid')
     monkeypatch.setitem(sources.SOURCES, 'reach', invalid)
     with pytest.raises(ValueError, match='invalid text reachability'):
         sources.resolve_reachability('reach', sources.TEXT)

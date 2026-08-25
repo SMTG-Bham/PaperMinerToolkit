@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from paperminer import chemrxiv, provider
+from paperminer.providers import base as provider, chemrxiv
 
 
 @pytest.fixture(autouse=True)

@@ -14,17 +14,17 @@ from typing import Any
 
 import pytest
 
-import paperminer.arxiv as arxiv
-import paperminer.biorxiv as biorxiv
-import paperminer.chemrxiv as chemrxiv
-import paperminer.core as core
-import paperminer.crossref as crossref
-import paperminer.elsevier as elsevier
-import paperminer.medrxiv as medrxiv
-import paperminer.openalex as openalex
-import paperminer.pubmed as pubmed
-from paperminer import sources
-from paperminer.corpus import ENRICHMENT_COLUMNS, PAPER_FIELDS
+import paperminer.providers.arxiv as arxiv
+import paperminer.providers.biorxiv as biorxiv
+import paperminer.providers.chemrxiv as chemrxiv
+import paperminer.providers.core as core
+import paperminer.providers.crossref as crossref
+import paperminer.providers.elsevier as elsevier
+import paperminer.providers.medrxiv as medrxiv
+import paperminer.providers.openalex as openalex
+import paperminer.providers.pubmed as pubmed
+from paperminer.providers import registry as sources
+from paperminer.corpus.database import ENRICHMENT_COLUMNS, PAPER_FIELDS
 
 # The keys every source must supply, whatever it is and whatever it holds.
 CORE_KEYS = ('paper_id', 'doi', 'title', 'journal', 'publication_date',
@@ -143,7 +143,7 @@ def test_every_abstract_bearing_source_supplies_the_key(name: str) -> None:
 
 def test_a_record_survives_being_written_to_the_corpus_schema() -> None:
     """Keep every mapper's output loadable, extras and all."""
-    from paperminer.corpus import normalize_paper
+    from paperminer.corpus.database import normalize_paper
 
     for name, record in records().items():
         normalized = normalize_paper(record)

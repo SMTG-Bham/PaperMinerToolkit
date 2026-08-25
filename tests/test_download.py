@@ -1,4 +1,4 @@
-"""Unit tests for paperminer.download.
+"""Unit tests for paperminer.workflows.download.
 
 This module tests download helper behavior without calling live APIs, including
 Elsevier text/PDF helpers, open-access PDF source selection, filename creation,
@@ -16,8 +16,8 @@ from typing import Any, NoReturn, Self
 import pytest
 import requests
 
-import paperminer.corpus as corpus
-import paperminer.download as download
+import paperminer.corpus.database as corpus
+import paperminer.workflows.download as download
 
 
 def write_corpus(db_path: str | Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -1696,7 +1696,7 @@ def test_download_unpaywall_pdf_uses_real_api(tmp_path: Path) -> None:
 @pytest.mark.network
 def test_download_openalex_pdf_uses_real_api(tmp_path: Path) -> None:
     """Download OpenAlex PDF uses real API."""
-    from paperminer import openalex
+    from paperminer.providers import openalex
 
     payload = openalex.request_json(openalex.WORKS_URL,
                                     params={
@@ -1723,7 +1723,7 @@ def test_download_core_pdf_uses_real_api_when_configured(tmp_path: Path) -> None
     assert download._core_headers().get('Authorization'), (
         'Set core_api_key in ~/.config/.paperminerrc.json or CORE_API_KEY before running network tests.'
     )
-    from paperminer.search import core_search
+    from paperminer.workflows.search import core_search
 
     candidates = core_search('solid electrolyte', count=5)
     last_error = 'no CORE candidates were returned'

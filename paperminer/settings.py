@@ -468,7 +468,7 @@ def _check_elsevier_api_key(api_key: str) -> bool:
     bool
         ``True`` when the request succeeds, otherwise ``False``.
     """
-    from paperminer.elsevier import check_api_key
+    from paperminer.providers.elsevier import check_api_key
     return check_api_key(api_key)
 
 
@@ -622,7 +622,7 @@ def _check_openalex_api_key(api_key: str) -> bool:
         failures return ``True`` so transient outages do not block saving a
         key.
     """
-    from paperminer import openalex
+    from paperminer.providers import openalex
 
     try:
         response = requests.get(openalex.RATE_LIMIT_URL,
