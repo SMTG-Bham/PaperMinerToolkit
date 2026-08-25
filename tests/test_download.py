@@ -10,9 +10,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 import os
 from pathlib import Path
-from typing import Any, Self
+from types import SimpleNamespace
+from typing import Any, NoReturn, Self
 
 import pytest
+import requests
 
 import paperminer.corpus as corpus
 import paperminer.download as download
@@ -29,6 +31,163 @@ def read_corpus(db_path: str | Path) -> list[dict[str, Any]]:
     """Read paper rows from a temporary test corpus."""
     with corpus.connect(db_path) as conn:
         return corpus.paper_rows(conn)
+
+
+def test_download_parsers_cover_unusual_link_and_abstract_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normalize dict links, malformed serialized links, nested abstracts, and direct URLs."""
+    assert download._link_values({'@href': 'url'}) == [{'@href': 'url'}]
+    assert download._link_values('{broken') == ['{broken']
+    assert download._full_text_uri_from_link_value(1) is None
+    endpoint = 'https://api.elsevier.com/content/article/doi/10.1/x'
+    assert download._full_text_uri_from_link_value(endpoint) == endpoint
+    assert download._full_text_uri_from_link_value('https://example/full-text') == (
+        'https://example/full-text'
+    )
+    assert download._abstract_from_mapping([{}, {'nested': {'description': 'Abstract'}}]) == 'Abstract'
+    urls = download._elsevier_abstract_urls({
+        'paper_id': 'SCOPUS_ID:123',
+        'elsevier_link': {'@ref': 'abstract', '@href': 'https://example/abstract'},
+    })
+    assert urls == [
+        'https://example/abstract',
+        'https://api.elsevier.com/content/abstract/scopus_id/123',
+    ]
+    with pytest.raises(KeyError, match='Unknown pipeline'):
+        download._set_status({}, 'unknown', 'failed')
+    monkeypatch.setattr(download.unpaywall, 'configured_email', lambda settings=None: '')
+    assert download._unpaywall_email({}) is None
+
+
+def test_pubmed_download_helpers_report_resolution_and_service_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Return actionable errors for PMC and PubMed lookup failures."""
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
+    monkeypatch.setattr(
+        download.pubmed, 'resolve_pmcid',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('resolve failed')),
+    )
+    assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'resolve failed')
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'resolve failed')
+
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: 'PMC1')
+    monkeypatch.setattr(
+        download.pubmed, 'oa_package_urls',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('oa failed')),
+    )
+    assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'oa failed')
+    monkeypatch.setattr(
+        download.pubmed, 'pmc_full_text',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('text failed')),
+    )
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'text failed')
+
+    monkeypatch.setattr(
+        download.pubmed, 'resolve_pmid',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('abstract failed')),
+    )
+    assert download._download_pubmed_abstract({}) == (False, 'abstract failed', '')
+
+
+@pytest.mark.parametrize(
+    ('record_name', 'url_name', 'expected'),
+    [
+        ('_medrxiv_record', 'medrxiv', 'missing medRxiv DOI'),
+        ('_biorxiv_record', 'biorxiv', 'missing bioRxiv DOI'),
+    ],
+)
+def test_preprint_pdf_helpers_report_missing_provider_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    record_name: str,
+    url_name: str,
+    expected: str,
+) -> None:
+    """Report a missing DOI when a preprint record cannot produce a PDF URL."""
+    monkeypatch.setattr(download, record_name, lambda paper: ({}, ''))
+    monkeypatch.setattr(getattr(download, url_name), 'pdf_url', lambda *args: '')
+    function = getattr(download, f'_download_{url_name}_pdf')
+    assert function({}, tmp_path / 'paper.pdf') == (False, expected)
+
+
+@pytest.mark.parametrize(
+    ('record_name', 'module_name', 'function_name', 'message'),
+    [
+        ('_medrxiv_record', 'medrxiv', '_download_medrxiv_text', 'med text failed'),
+        ('_biorxiv_record', 'biorxiv', '_download_biorxiv_text', 'bio text failed'),
+    ],
+)
+def test_preprint_text_helpers_report_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    record_name: str,
+    module_name: str,
+    function_name: str,
+    message: str,
+) -> None:
+    """Preserve provider errors raised while downloading preprint full text."""
+    monkeypatch.setattr(download, record_name, lambda paper: ({'doi': 'x'}, ''))
+
+    def fail(entry: object) -> str:
+        """Raise the configured provider failure."""
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(getattr(download, module_name), 'full_text', fail)
+    assert getattr(download, function_name)({}, tmp_path / 'paper.txt') == (False, message)
+
+
+def test_chemrxiv_and_arxiv_helpers_report_empty_or_failed_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fail clearly when preprint identifiers or abstract responses are unusable."""
+    monkeypatch.setattr(download, '_chemrxiv_record', lambda paper: ({}, ''))
+    monkeypatch.setattr(download.chemrxiv, 'pdf_url', lambda value: '')
+    assert download._download_chemrxiv_pdf({}, tmp_path / 'paper.pdf') == (
+        False, 'missing chemRxiv DOI'
+    )
+    monkeypatch.setattr(download, '_arxiv_identifier', lambda paper: '1234.5')
+    monkeypatch.setattr(
+        download.arxiv, 'fetch_ids',
+        lambda values: (_ for _ in ()).throw(RuntimeError('arxiv failed')),
+    )
+    assert download._download_arxiv_abstract({}) == (False, 'arxiv failed', '')
+    monkeypatch.setattr(download.arxiv, 'fetch_ids', lambda values: '<feed/>')
+    monkeypatch.setattr(download.arxiv, 'parse_entries', lambda value: [{'abstract': ''}])
+    assert download._download_arxiv_abstract({}) == (
+        False, 'no arXiv abstract found for 1234.5', ''
+    )
+
+
+def test_elsevier_abstract_errors_and_invalid_asset_role(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Handle absent endpoints, HTTP failures, connection failures, and invalid roles."""
+    assert download._download_elsevier_abstract({}) == (
+        False, 'missing Elsevier abstract URL', ''
+    )
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
+    errors = [
+        requests.HTTPError(response=SimpleNamespace(status_code=404)),
+        requests.ConnectionError('offline'),
+    ]
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        """Raise successive Elsevier request failures."""
+        raise errors.pop(0)
+
+    monkeypatch.setattr(download.elsevier, 'get_content', fail)
+    paper = {'elsevier_link': [
+        'https://api.elsevier.com/content/abstract/doi/one',
+        'https://api.elsevier.com/content/abstract/doi/two',
+    ]}
+    assert download._download_elsevier_abstract(paper) == (False, 'offline', '')
+    with pytest.raises(ValueError, match='role must be'):
+        download._store_downloaded_asset(None, {}, tmp_path / 'x', 'image', 'source')
 
 
 
@@ -583,6 +742,47 @@ def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
         download._download_paper(conn, {'paper_id': 'doi:10.1234/x', 'doi': '10.1234/x'},
                                  tmp_path, 'text', ['medrxiv'], download_abstract=False)
     assert attempts == []
+
+
+def test_download_paper_records_unexpected_abstract_and_text_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep processing a paper when an individual downloader raises unexpectedly."""
+    db_path = tmp_path / 'papers.db'
+    paper = {
+        'paper_id': 'doi:10.1101/2024.03.01.24303596',
+        'medrxiv_doi': '10.1101/2024.03.01.24303596',
+    }
+    write_corpus(db_path, [paper])
+
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Simulate an unexpected provider implementation failure."""
+        raise RuntimeError('provider exploded')
+
+    monkeypatch.setattr(download, '_download_abstract', fail)
+    monkeypatch.setattr(download, '_download_text_from_sources', fail)
+    with download.connect(db_path) as conn:
+        download._download_paper(
+            conn, paper, tmp_path, 'text', ['medrxiv'], download_abstract=True
+        )
+    assert paper['abstract_download_status'] == 'failed'
+    assert paper['text_download_status'] == 'failed'
+    assert paper['last_error'] == 'provider exploded'
+
+
+def test_pubmed_download_helpers_keep_the_last_failure_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report a failed OA package URL and a missing PMC identifier precisely."""
+    monkeypatch.setattr(download, '_pubmed_credentials', lambda: ('', 'person@example.org'))
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: 'PMC1')
+    monkeypatch.setattr(download.pubmed, 'oa_package_urls', lambda *args, **kwargs: ['paper.pdf'])
+    monkeypatch.setattr(download, '_download_url_to_pdf', lambda *args, **kwargs: (False, 'bad PDF'))
+    assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'bad PDF')
+    monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: '')
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'missing PMC ID')
 
 
 def test_download_abstract_honours_the_requested_sources(
