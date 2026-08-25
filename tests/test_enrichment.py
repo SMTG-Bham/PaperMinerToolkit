@@ -1813,3 +1813,69 @@ def test_enrich_batch_skips_chemrxiv_for_a_row_carrying_only_a_published_doi(
     with open_corpus(db_path) as conn:
         candidates = corpus.enrichment_candidates(conn)
         enrichment._enrich_batch(conn, candidates, ['chemrxiv'], '')
+
+
+def test_enrichment_helpers_ignore_blank_and_duplicate_subject_data(
+    tmp_path: Path,
+) -> None:
+    """Skip unusable identifiers while retaining unique provider subjects."""
+    assert enrichment._partition_candidates([{}, {'paper_id': ''}]) == ({}, {}, [])
+    assert enrichment._pubmed_subject_rows('p', {'mesh': [{'id': ''}, {'id': ''}]}) == []
+    assert enrichment._arxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._medrxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._biorxiv_subject_rows('p', {'categories': [{'id': ''}]}) == []
+    assert enrichment._chemrxiv_subject_rows(
+        'p', {'categories': [{'id': ''}], 'keywords': ['']}
+    ) == []
+    subjects = enrichment._subject_rows('p', {
+        'primary_topic': {},
+        'topics': [
+            {'id': 'https://openalex.org/T1', 'display_name': 'One'},
+            {'id': 'https://openalex.org/T1', 'display_name': 'Duplicate'},
+            {},
+        ],
+    })
+    assert len(subjects) == 1
+
+    context = enrichment._FetchContext(
+        dois=[], identifiers=[], email='', api_key=None,
+        openalex_session=None, crossref_session=None, pace=0,
+    )
+    assert enrichment._fetch_crossref(context) == {}
+    assert enrichment._json_text('already-json') == 'already-json'
+    with corpus.connect(tmp_path / 'empty.db') as conn:
+        assert enrichment._enrich_batch(conn, [], ['crossref'], '')['succeeded'] == 0
+        enrichment._enrich_from_crossref_message(conn, '', {})
+
+
+def test_enrichment_entry_points_use_optional_pubmed_identity_and_reference_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve optional NCBI settings and run reference linking on request."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'paper_id': 'p', 'title': 'Paper'}])
+    monkeypatch.setattr(enrichment.pubmed, 'configured_email', lambda: 'ncbi@example.org')
+    monkeypatch.setattr(enrichment.pubmed, 'configured_api_key', lambda: 'ncbi-key')
+    monkeypatch.setattr(enrichment.openalex, 'configured_api_key', lambda: '')
+    with open_corpus(db_path) as conn:
+        summary = enrichment.enrich_papers(conn, [], sources=['pubmed'])
+    assert summary['succeeded'] == 0
+    assert enrichment._selected_statuses(False, True) == ('pending', 'failed')
+
+    resolved = []
+    monkeypatch.setattr(enrichment, '_resolve_reference_targets', lambda conn: resolved.append(True))
+    enrichment.enrich_corpus(
+        db_path, sources=['pubmed'], resolve_references=True,
+        email='', pubmed_api_key=None,
+    )
+    assert resolved == [True]
+
+    with open_corpus(db_path) as conn:
+        conn.execute(
+            "INSERT INTO paper_references (paper_id, source, reference_rank, referenced_openalex_id) "
+            "VALUES ('p', 'openalex', 0, 'W404')"
+        )
+        conn.commit()
+    monkeypatch.setattr(enrichment.openalex, 'works_batch', lambda *args, **kwargs: {})
+    assert enrichment.resolve_reference_dois(db_path) == 0
