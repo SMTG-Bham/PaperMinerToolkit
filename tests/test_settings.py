@@ -480,6 +480,39 @@ def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch: pytest
     monkeypatch.setattr(settings.requests, 'get', lambda *_, **__: FakeResponse(200))
     assert settings._check_openalex_api_key('good-key') is True
 
+
+def test_display_helpers_and_ncbi_updates_cover_optional_values(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mask short secrets and save optional NCBI identity settings."""
+    assert settings._mask_secret('short') == '********'
+    settings._show_current_setting({}, 'email', 'email', secret=False)
+    assert 'Current email: not set' in capsys.readouterr().out
+
+    key_settings: dict[str, object] = {}
+    email_settings: dict[str, object] = {}
+    answers = iter(['ncbi-key', 'person@example.org'])
+    monkeypatch.setattr('builtins.input', lambda _: next(answers))
+    settings.update_ncbi_key(key_settings)
+    settings.update_ncbi_email(email_settings)
+    assert key_settings['ncbi_api_key'] == 'ncbi-key'
+    assert email_settings['ncbi_email'] == 'person@example.org'
+
+    loaded: dict[str, object] = {}
+    monkeypatch.setattr(settings, 'load_settings', lambda: loaded)
+    monkeypatch.setattr('builtins.input', lambda _: 'loaded-key')
+    settings.update_ncbi_key()
+    assert loaded['ncbi_api_key'] == 'loaded-key'
+    monkeypatch.setattr('builtins.input', lambda _: 'loaded@example.org')
+    settings.update_ncbi_email()
+    assert loaded['ncbi_email'] == 'loaded@example.org'
+
+    monkeypatch.setattr('builtins.input', lambda _: 'invalid')
+    with pytest.raises(ValueError, match='valid email'):
+        settings.update_ncbi_email({})
+
     def unreachable(*_: object, **__: object) -> NoReturn:
         """Simulate an unreachable OpenAlex API."""
         raise settings.requests.ConnectionError('offline')
