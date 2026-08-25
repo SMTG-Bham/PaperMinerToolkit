@@ -552,6 +552,52 @@ def test_the_module_publishes_no_archive_walk_or_full_text_surface() -> None:
         assert not hasattr(chemrxiv, name)
 
 
+def test_chemrxiv_mapping_helpers_accept_sparse_and_mixed_api_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normalize the permissive shapes returned by several chemRxiv API versions."""
+    assert chemrxiv.request_headers()['User-Agent']
+    assert chemrxiv.item_url('item') == f'{chemrxiv.BASE_URL}/items/item'
+    assert chemrxiv.chemrxiv_stem(None) == ''
+    assert chemrxiv.chemrxiv_version(None) == ''
+    assert chemrxiv._authors(' Ada  Lovelace ') == 'Ada Lovelace'
+    assert chemrxiv._authors(['Grace Hopper', {'firstName': 'Dorothy', 'lastName': 'Hodgkin'}, 1]) == (
+        'Grace Hopper; Dorothy Hodgkin'
+    )
+    assert chemrxiv._categories({'categories': 'Catalysis'}) == [
+        {'id': 'catalysis', 'name': 'Catalysis', 'is_primary': True}
+    ]
+    assert chemrxiv._categories({'categories': ['', {'name': 'Theory'}]}) == [
+        {'id': 'theory', 'name': 'Theory', 'is_primary': True}
+    ]
+    assert chemrxiv._keywords({'keywords': ' catalysis '}) == ['catalysis']
+    assert chemrxiv._published_doi({'vor': {}}) == ''
+    assert chemrxiv._asset_url({'asset': {'url': 'https://example.org/paper.pdf'}}).endswith('paper.pdf')
+
+    assert chemrxiv.parse_records({'itemHits': 'invalid'}) == []
+    assert len(chemrxiv.parse_records({'itemHits': [None, {'item': items()[0]}]})) == 1
+    assert chemrxiv.latest_versions([{}]) == []
+
+    monkeypatch.setattr(
+        chemrxiv,
+        'request_payload',
+        lambda *args, **kwargs: {'data': [None, {'id': 'c1', 'name': 'Catalysis'}]},
+    )
+    chemrxiv.reset_categories_cache()
+    assert chemrxiv.categories() == [{'id': 'c1', 'name': 'Catalysis'}]
+
+
+def test_fetch_item_handles_blank_missing_and_present_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Avoid blank item requests and return the first normalized API record."""
+    assert chemrxiv.fetch_item(' ') is None
+    monkeypatch.setattr(chemrxiv, 'request_json', lambda *args, **kwargs: {'itemHits': []})
+    assert chemrxiv.fetch_item('missing') is None
+    monkeypatch.setattr(chemrxiv, 'request_json', lambda *args, **kwargs: {'item': items()[0]})
+    assert chemrxiv.fetch_item('present')['chemrxiv_doi'] == '10.26434/chemrxiv-2022-w08rh'
+
+
 @pytest.fixture
 def live_chemrxiv() -> None:
     """Skip a live test when the chemRxiv API cannot be reached.
