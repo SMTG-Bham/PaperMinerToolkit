@@ -8,6 +8,8 @@
 <p align="center">
   <a href="https://github.com/SMTG-Bham/PaperMinerToolkit/actions/workflows/tests.yml"><img src="https://github.com/SMTG-Bham/PaperMinerToolkit/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <a href="https://codecov.io/gh/SMTG-Bham/PaperMinerToolkit"><img src="https://codecov.io/gh/SMTG-Bham/PaperMinerToolkit/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://pypi.org/project/paperminertoolkit/"><img src="https://img.shields.io/pypi/v/paperminertoolkit?logo=pypi&amp;logoColor=white" alt="PyPI version"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 or newer"></a>
   <a href="https://paperminertoolkit.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF?logo=readthedocs&amp;logoColor=white" alt="Documentation"></a>
 </p>
 
