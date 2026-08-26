@@ -21,7 +21,7 @@ authors:
 version: 1.0.0
 license: MIT
 repository-code: https://github.com/SMTG-Bham/PaperMinerToolkit
-url: https://paperminertoolkit.readthedocs.io/en/latest/
+url: https://paperminertoolkit.readthedocs.io/
 keywords:
   - research
   - scientific-papers

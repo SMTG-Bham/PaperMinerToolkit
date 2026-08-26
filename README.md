@@ -1,23 +1,24 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/Paper_Miner_Toolkit_banner_dark.svg">
-    <img src="assets/Paper_Miner_Toolkit_banner_light.svg" alt="PaperMinerToolkit banner" width="640">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/SMTG-Bham/PaperMinerToolkit/main/assets/Paper_Miner_Toolkit_banner_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/SMTG-Bham/PaperMinerToolkit/main/assets/Paper_Miner_Toolkit_banner_light.svg">
+    <img src="https://raw.githubusercontent.com/SMTG-Bham/PaperMinerToolkit/main/assets/Paper_Miner_Toolkit_banner_light.svg" alt="PaperMinerToolkit banner" width="640">
   </picture>
 </p>
 
 <p align="center">
   <a href="https://github.com/SMTG-Bham/PaperMinerToolkit/actions/workflows/tests.yml"><img src="https://github.com/SMTG-Bham/PaperMinerToolkit/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <a href="https://codecov.io/gh/SMTG-Bham/PaperMinerToolkit"><img src="https://codecov.io/gh/SMTG-Bham/PaperMinerToolkit/branch/main/graph/badge.svg" alt="Coverage"></a>
-  <a href="https://pypi.org/project/paperminertoolkit/"><img src="https://img.shields.io/pypi/v/paperminertoolkit?logo=pypi&amp;logoColor=white" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/paperminertoolkit/"><img src="https://img.shields.io/pypi/v/paperminertoolkit?cacheSeconds=300&amp;logo=pypi&amp;logoColor=white" alt="PyPI version"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 or newer"></a>
-  <a href="https://paperminertoolkit.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF?logo=readthedocs&amp;logoColor=white" alt="Documentation"></a>
+  <a href="https://paperminertoolkit.readthedocs.io/"><img src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF?logo=readthedocs&amp;logoColor=white" alt="Documentation"></a>
 </p>
 
 # PaperMinerToolkit
 
 PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
-The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/en/latest/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
+The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
 
 ## Installation
 
