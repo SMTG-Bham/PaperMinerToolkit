@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it using these metadata.
+title: PaperMinerToolkit
+abstract: >-
+  PaperMinerToolkit builds scientific-paper corpora and extracts structured,
+  recipe-defined data with configurable text and vision models. It searches
+  Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and
+  chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv,
+  medRxiv, bioRxiv, and chemRxiv; downloads abstracts, full text, and PDFs;
+  supports persistent regex and LDA topic filters; and stores source content
+  and pipeline state in SQLite.
+type: software
+authors:
+  - given-names: Oskar
+    family-names: Soulas
+    email: oskar.soulas@gmail.com
+  - given-names: Louie
+    family-names: Slocombe
+    email: louies@hotmail.co.uk
+    affiliation: University of Birmingham
+version: 1.0.0
+license: MIT
+repository-code: https://github.com/SMTG-Bham/PaperMinerToolkit
+url: https://paperminertoolkit.readthedocs.io/en/latest/
+keywords:
+  - research
+  - scientific-papers
+  - materials
+  - text-mining
+  - llm
