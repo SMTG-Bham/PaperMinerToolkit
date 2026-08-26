@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import paperminertoolkit.providers.openalex as openalex
+from paperminertoolkit._version import __version__
 from paperminertoolkit.providers import base as provider
 
 from tests.doubles import FakeResponse, FakeSession
@@ -126,7 +127,7 @@ def test_get_work_builds_doi_and_id_urls() -> None:
 
     assert session.calls[0]['url'] == 'https://api.openalex.org/works/doi:10.1234/example.one'
     assert session.calls[0]['params']['api_key'] == 'oa-key'
-    assert session.calls[0]['headers']['User-Agent'] == 'PaperMinerToolkit/0.0.1'
+    assert session.calls[0]['headers']['User-Agent'] == f'PaperMinerToolkit/{__version__}'
     assert session.calls[1]['url'] == 'https://api.openalex.org/works/W123'
     assert 'api_key' not in session.calls[1]['params']
 
