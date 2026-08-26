@@ -25,9 +25,7 @@ The complete user guide, CLI reference, Python API, HPC instructions, and render
 PaperMinerToolkit requires Python 3.11 or newer:
 
 ```bash
-git clone https://github.com/SMTG-Bham/PaperMinerToolkit.git
-cd PaperMinerToolkit
-python -m pip install -e .
+pip install paperminertoolkit
 ```
 
 ## Quickstart
