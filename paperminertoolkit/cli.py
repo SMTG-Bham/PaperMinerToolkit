@@ -19,6 +19,10 @@ from paperminertoolkit.corpus.database import (connect,
 from paperminertoolkit.providers.crossref import import_author_works
 from paperminertoolkit.workflows.search import search_for_papers
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
+from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
+                                                  build_reconciliation_prompt,
+                                                  build_text_extraction_prompt)
+from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.workflows.download import download_papers
 from paperminertoolkit.workflows.enrichment import enrich_corpus
 from paperminertoolkit.corpus.filtering import (apply_regex_filter,
@@ -922,6 +926,43 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
+@click.command('prompt')
+@click.argument('recipe', default='sse', type=str)
+@click.option(
+    '--kind',
+    type=click.Choice(['text', 'image', 'image-context', 'reconciliation']),
+    default='text',
+    show_default=True,
+    help='Prompt variant to render.',
+)
+@click.option('--outfile', default=None, type=click.Path(dir_okay=False),
+              help='Write the prompt to this file instead of standard output.')
+def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
+    """Render the exact LLM system prompt generated from a recipe."""
+    try:
+        loaded = load_recipe(recipe)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    if kind == 'text':
+        prompt = build_text_extraction_prompt(loaded)
+    elif kind == 'image':
+        prompt = build_image_extraction_prompt(loaded)
+    elif kind == 'image-context':
+        prompt = build_image_extraction_prompt(loaded, with_context=True)
+    else:
+        prompt = build_reconciliation_prompt(loaded)
+
+    if outfile is None:
+        click.echo(prompt)
+        return
+    try:
+        Path(outfile).write_text(prompt + '\n', encoding='utf-8')
+    except OSError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Prompt written to {outfile}.')
+
+
 def update_elsevier_api_key() -> None:
     """Prompt for and save an Elsevier API key."""
     update_elsevier_key()
@@ -1064,6 +1105,11 @@ def config_group() -> None:
     """Configure model profiles and provider credentials."""
 
 
+@click.group('recipe')
+def recipe_group() -> None:
+    """Inspect extraction recipes and their generated prompts."""
+
+
 main.add_command(paper_search, 'search')
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
@@ -1108,3 +1154,6 @@ config_group.add_command(click.command('ncbi-email')(update_ncbi_api_email))
 config_group.add_command(click.command('openai-key')(update_openai_api_key))
 config_group.add_command(click.command('anthropic-key')(update_anthropic_api_key))
 main.add_command(config_group)
+
+recipe_group.add_command(recipe_prompt, 'prompt')
+main.add_command(recipe_group)

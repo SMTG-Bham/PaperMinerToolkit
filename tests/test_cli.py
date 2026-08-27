@@ -27,10 +27,11 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     root_help = runner.invoke(cli.main, ['--help'])
     filter_help = runner.invoke(cli.main, ['filter', '--help'])
     topics_help = runner.invoke(cli.main, ['topics', '--help'])
+    recipe_help = runner.invoke(cli.main, ['recipe', '--help'])
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
-                    'config', 'scrape', 'store', 'status', 'reset']:
+                    'config', 'recipe', 'scrape', 'store', 'status', 'reset']:
         assert command in root_help.output
     assert filter_help.exit_code == 0
     assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}
@@ -39,21 +40,87 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     assert set(cli.topics_group.commands) == {
         'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models',
     }
+    assert recipe_help.exit_code == 0
+    assert 'prompt' in recipe_help.output
 
 
 def test_nested_groups_register_every_command_at_its_public_path() -> None:
     """Keep the installed command hierarchy from drifting from its design."""
     assert set(cli.corpus_group.commands) == {'stats', 'searches'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
+    assert set(cli.recipe_group.commands) == {'prompt'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'elsevier-key', 'core-key', 'unpaywall-email',
         'crossref-email', 'openalex-key', 'ncbi-key', 'ncbi-email',
         'openai-key', 'anthropic-key',
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
-                  cli.import_group, cli.config_group]:
+                  cli.import_group, cli.config_group, cli.recipe_group]:
         for public_name, command in group.commands.items():
             assert command.name == public_name
+
+
+@pytest.mark.parametrize(
+    ('kind', 'builder', 'expected_kwargs'),
+    [
+        ('text', 'build_text_extraction_prompt', {}),
+        ('image', 'build_image_extraction_prompt', {}),
+        ('image-context', 'build_image_extraction_prompt', {'with_context': True}),
+        ('reconciliation', 'build_reconciliation_prompt', {}),
+    ],
+)
+def test_recipe_prompt_renders_each_prompt_kind(
+    kind: str,
+    builder: str,
+    expected_kwargs: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Render each recipe prompt without making a model request."""
+    recipe = {'recipe': 'data'}
+    calls: dict[str, Any] = {}
+    monkeypatch.setattr(cli, 'load_recipe', lambda name: recipe if name == 'custom' else None)
+
+    def build(loaded: dict[str, str], **kwargs: Any) -> str:
+        """Capture the selected recipe and builder options."""
+        calls.update({'recipe': loaded, 'kwargs': kwargs})
+        return f'{kind} prompt'
+
+    monkeypatch.setattr(cli, builder, build)
+
+    result = CliRunner().invoke(cli.recipe_prompt, ['custom', '--kind', kind])
+
+    assert result.exit_code == 0
+    assert result.output == f'{kind} prompt\n'
+    assert calls == {'recipe': recipe, 'kwargs': expected_kwargs}
+
+
+def test_recipe_prompt_writes_an_output_file_and_reports_recipe_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Write long prompts to a file and present loading failures cleanly."""
+    output = tmp_path / 'prompt.txt'
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {})
+    monkeypatch.setattr(cli, 'build_text_extraction_prompt', lambda _: 'rendered prompt')
+
+    result = CliRunner().invoke(cli.recipe_prompt, ['custom', '--outfile', str(output)])
+
+    assert result.exit_code == 0
+    assert output.read_text() == 'rendered prompt\n'
+    assert result.output == f'Prompt written to {output}.\n'
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: (_ for _ in ()).throw(ValueError('bad recipe')))
+    invalid = CliRunner().invoke(cli.recipe_prompt, ['custom'])
+    assert invalid.exit_code == 1
+    assert 'Error: bad recipe' in invalid.output
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {})
+    unwritable = CliRunner().invoke(
+        cli.recipe_prompt,
+        ['custom', '--outfile', str(tmp_path / 'missing' / 'prompt.txt')],
+    )
+    assert unwritable.exit_code == 1
+    assert 'Error:' in unwritable.output
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:

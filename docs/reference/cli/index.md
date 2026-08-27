@@ -29,6 +29,7 @@ pmt filter regex --help
 | `pmt topics` | Train, compare, inspect, name, apply, and store LDA models. |
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
+| `pmt recipe` | Inspect recipes and render their LLM prompts. |
 
 Exact arguments and options are generated from the installed commands on the pages below. For task-oriented instructions, use the {doc}`../../workflow/index` and the {doc}`../../examples/index`.
 
@@ -41,4 +42,5 @@ filtering
 topics
 imports
 configuration
+recipes
 ```
