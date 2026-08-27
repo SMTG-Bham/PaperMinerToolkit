@@ -20,7 +20,16 @@ from tqdm import tqdm
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed)
 from paperminertoolkit.workflows.enrichment import enrich_papers
-from paperminertoolkit.corpus.database import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
+from paperminertoolkit.corpus.database import (PAPER_FIELDS,
+                                               add_asset,
+                                               add_search_result,
+                                               begin_search_run,
+                                               connect,
+                                               find_paper,
+                                               finish_search_run,
+                                               normalize_paper,
+                                               upsert_paper,
+                                               upsert_papers)
 from paperminertoolkit.providers import registry as sources
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
@@ -850,24 +859,88 @@ def search_for_papers(query: str,
         rest, because a partial corpus is more useful than none.
     """
     requested = sources.resolve_names([source], sources.SEARCH)
-    frames = []
+    with connect(db_path) as conn:
+        search_id = begin_search_run(
+            conn,
+            query,
+            source,
+            requested,
+            count,
+            store_abstract=store_abstract,
+            enrich=enrich,
+        )
+
+    frames: list[tuple[str, pd.DataFrame]] = []
+    source_results: dict[str, dict[str, Any]] = {}
     for name in requested:
         try:
-            frames.append(_source_search(name)(query, count=count))
+            frame = _source_search(name)(query, count=count)
+            frames.append((name, frame))
+            source_results[name] = {'status': 'completed', 'result_count': len(frame)}
         except Exception as e:
+            source_results[name] = {
+                'status': 'failed',
+                'result_count': 0,
+                'error_type': type(e).__name__,
+                'error': str(e),
+            }
             if len(requested) == 1:
+                with connect(db_path) as conn:
+                    finish_search_run(conn, search_id, 'failed', source_results)
                 raise
             print(f'{sources.SOURCES[name].label} search skipped: {e}')
 
-    new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
+    new_papers = (
+        pd.concat([frame for _, frame in frames], ignore_index=True)
+        if frames
+        else pd.DataFrame(columns=SEARCH_FIELDS)
+    )
+    records = new_papers.to_dict('records')
+    result_count = len(records)
+    added = updated = abstract_count = 0
+    enrichment_summary: dict[str, int] = {}
+    failed_sources = sum(
+        result['status'] == 'failed' for result in source_results.values()
+    )
+    if failed_sources == len(source_results):
+        final_status = 'failed'
+    elif failed_sources:
+        final_status = 'partial'
+    else:
+        final_status = 'completed'
+    try:
+        with connect(db_path) as conn:
+            if records:
+                added, updated = upsert_papers(conn, records)
+                abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
+                enrichment_summary = enrich_papers(conn, records) if enrich else {}
+                for provider_name, frame in frames:
+                    for result_rank, paper in enumerate(frame.to_dict('records')):
+                        add_search_result(conn, search_id, paper, provider_name, result_rank)
+            finish_search_run(
+                conn,
+                search_id,
+                final_status,
+                source_results,
+                result_count=result_count,
+                papers_added=added,
+                papers_updated=updated,
+                abstracts_stored=abstract_count,
+            )
+    except Exception as error:
+        source_results['corpus'] = {
+            'status': 'failed',
+            'result_count': 0,
+            'error_type': type(error).__name__,
+            'error': str(error),
+        }
+        with connect(db_path) as conn:
+            finish_search_run(conn, search_id, 'failed', source_results)
+        raise
+
     if new_papers.empty:
         print('Document search found 0 new results.')
         return
-    with connect(db_path) as conn:
-        records = new_papers.to_dict('records')
-        added, updated = upsert_papers(conn, records)
-        abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
-        enrichment_summary = enrich_papers(conn, records) if enrich else {}
     print(f'Document search found {added} new results and updated {updated} existing rows.')
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')

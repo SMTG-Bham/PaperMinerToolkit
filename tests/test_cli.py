@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
@@ -42,7 +43,7 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
 
 def test_nested_groups_register_every_command_at_its_public_path() -> None:
     """Keep the installed command hierarchy from drifting from its design."""
-    assert set(cli.corpus_group.commands) == {'stats'}
+    assert set(cli.corpus_group.commands) == {'stats', 'searches'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'elsevier-key', 'core-key', 'unpaywall-email',
@@ -259,6 +260,50 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output
+
+
+def test_corpus_searches_prints_recent_queries_and_failures(tmp_path: Path) -> None:
+    """Show reproducible search settings, outcomes, and an empty-history message."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        empty_result = CliRunner().invoke(cli.corpus_searches, [str(db_path)])
+        search_id = corpus.begin_search_run(conn, 'solid   electrolyte', 'all', ['core'], 10)
+        corpus.finish_search_run(
+            conn,
+            search_id,
+            'partial',
+            {'core': {'status': 'failed', 'result_count': 0, 'error': 'service unavailable'}},
+        )
+
+    result = CliRunner().invoke(cli.corpus_searches, [str(db_path), '--limit', '1'])
+    json_path = tmp_path / 'searches.json'
+    suffixed_path = tmp_path / 'searches-copy.json'
+    json_result = CliRunner().invoke(
+        cli.corpus_searches,
+        [str(db_path), '--limit', '1', '--outfile', str(json_path)],
+    )
+    suffixed_result = CliRunner().invoke(
+        cli.corpus_searches,
+        [str(db_path), '--limit', '1', '--outfile', str(tmp_path / 'searches-copy')],
+    )
+
+    assert empty_result.exit_code == 0
+    assert 'No searches recorded.' in empty_result.output
+    assert result.exit_code == 0
+    assert f'Corpus searches: {db_path}' in result.output
+    assert f'#{search_id}' in result.output
+    assert 'partial | source=all | requested=10 | results=0 | added=0 | updated=0' in result.output
+    assert 'solid electrolyte' in result.output
+    assert 'core failed: service unavailable' in result.output
+    assert json_result.exit_code == 0
+    assert f'Search history written to {json_path}.' in json_result.output
+    json_rows = json.loads(json_path.read_text())
+    assert json_rows[0]['query'] == 'solid   electrolyte'
+    assert json_rows[0]['sources'] == ['core']
+    assert json_rows[0]['source_results']['core']['error'] == 'service unavailable'
+    assert suffixed_result.exit_code == 0
+    assert suffixed_path.exists()
+    assert json.loads(suffixed_path.read_text()) == json_rows
 
 
 def test_import_author_translates_service_failures(monkeypatch: pytest.MonkeyPatch) -> None:

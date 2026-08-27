@@ -6,11 +6,16 @@ download, scrape, store, configuration, and maintenance functions.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import click
 from paperminertoolkit.providers import registry as sources
-from paperminertoolkit.corpus.database import connect, corpus_stats, enrichment_stats
+from paperminertoolkit.corpus.database import (connect,
+                                               corpus_stats,
+                                               enrichment_stats,
+                                               search_history)
 from paperminertoolkit.providers.crossref import import_author_works
 from paperminertoolkit.workflows.search import search_for_papers
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
@@ -294,6 +299,50 @@ def corpus_status(db_path: str) -> None:
                f'({enrichment["authors_with_orcid"]} with ORCID)')
     click.echo(f'Subject records: {enrichment["subject_records"]}')
     click.echo(f'Reference records: {enrichment["reference_records"]}')
+
+
+@click.command('searches')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--limit', default=20, type=click.IntRange(min=1), show_default=True,
+              help='Maximum number of recent searches to show.')
+@click.option('--outfile', default=None, type=click.Path(dir_okay=False),
+              help='Write the complete search history to a JSON file.')
+def corpus_searches(db_path: str, limit: int, outfile: str | None) -> None:
+    """Print the searches recorded in a paper corpus.
+
+    Parameters
+    ----------
+    db_path : str
+        Corpus database to inspect.
+    limit : int
+        Maximum number of recent searches to display.
+    outfile : str or None
+        Optional JSON output path. A ``.json`` suffix is appended when absent.
+    """
+    with connect(db_path) as conn:
+        searches = search_history(conn, limit=limit)
+    if outfile is not None:
+        output_path = Path(outfile)
+        if output_path.suffix.lower() != '.json':
+            output_path = Path(f'{output_path}.json')
+        output_path.write_text(f'{json.dumps(searches, indent=2)}\n', encoding='utf-8')
+        click.echo(f'Search history written to {output_path}.')
+        return
+    click.echo(f'Corpus searches: {db_path}')
+    if not searches:
+        click.echo('No searches recorded.')
+        return
+    for item in searches:
+        click.echo(
+            f'#{item["search_id"]} {item["started_at"]} {item["status"]} | '
+            f'source={item["requested_source"]} | requested={item["requested_count"]} | '
+            f'results={item["result_count"]} | added={item["papers_added"]} | '
+            f'updated={item["papers_updated"]}'
+        )
+        click.echo(f'  {" ".join(item["query"].split())}')
+        for source_name, outcome in item['source_results'].items():
+            if outcome['status'] == 'failed':
+                click.echo(f'  {source_name} failed: {outcome.get("error", "unknown error")}', err=True)
 
 
 def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
@@ -1017,6 +1066,7 @@ main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
 
 corpus_group.add_command(corpus_status, 'stats')
+corpus_group.add_command(corpus_searches, 'searches')
 main.add_command(corpus_group)
 
 filter_group.add_command(filter_regex, 'regex')

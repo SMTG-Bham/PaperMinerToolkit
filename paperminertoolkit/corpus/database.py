@@ -13,14 +13,14 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 PAPER_COLUMNS = [
     'paper_id',
@@ -215,6 +215,38 @@ def init_corpus(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_blobs_sha256 ON blobs(sha256);
         CREATE INDEX IF NOT EXISTS idx_assets_paper_role ON paper_assets(paper_id, role);
 
+        CREATE TABLE IF NOT EXISTS search_runs (
+            search_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            requested_source TEXT NOT NULL,
+            sources_json TEXT NOT NULL,
+            requested_count INTEGER NOT NULL,
+            store_abstract INTEGER NOT NULL,
+            enrich INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            papers_added INTEGER NOT NULL DEFAULT 0,
+            papers_updated INTEGER NOT NULL DEFAULT 0,
+            abstracts_stored INTEGER NOT NULL DEFAULT 0,
+            source_results_json TEXT NOT NULL DEFAULT '{{}}',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            CHECK (status IN ('running', 'completed', 'partial', 'failed'))
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_search_results (
+            search_id INTEGER NOT NULL,
+            paper_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            result_rank INTEGER NOT NULL,
+            PRIMARY KEY (search_id, paper_id, source),
+            FOREIGN KEY (search_id) REFERENCES search_runs(search_id) ON DELETE CASCADE,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_search_runs_started_at ON search_runs(started_at);
+        CREATE INDEX IF NOT EXISTS idx_search_results_paper ON paper_search_results(paper_id);
+
         CREATE TABLE IF NOT EXISTS corpus_filters (
             filter_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
@@ -384,6 +416,223 @@ def init_corpus(conn: sqlite3.Connection) -> None:
     conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_enrichment ON papers(enrichment_status)')
     conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
     conn.commit()
+
+
+def begin_search_run(
+    conn: sqlite3.Connection,
+    query: str,
+    requested_source: str,
+    sources: Sequence[str],
+    requested_count: int,
+    store_abstract: bool = False,
+    enrich: bool = False,
+) -> int:
+    """Start a persistent record of one corpus search invocation.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    query : str
+        Search expression submitted by the user.
+    requested_source : str
+        Source selector supplied by the user, including ``all``.
+    sources : collections.abc.Sequence[str]
+        Concrete provider names resolved from ``requested_source``.
+    requested_count : int
+        Maximum number of records requested from each provider.
+    store_abstract : bool, default=False
+        Whether search-time abstracts were requested as corpus assets.
+    enrich : bool, default=False
+        Whether metadata enrichment was requested after searching.
+
+    Returns
+    -------
+    int
+        Database identifier for the new running search.
+    """
+    cursor = conn.execute(
+        """
+        INSERT INTO search_runs (
+            query, requested_source, sources_json, requested_count,
+            store_abstract, enrich, status, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+        """,
+        (
+            query,
+            requested_source,
+            json.dumps(list(sources)),
+            int(requested_count),
+            int(store_abstract),
+            int(enrich),
+            utc_now(),
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def finish_search_run(
+    conn: sqlite3.Connection,
+    search_id: int,
+    status: str,
+    source_results: Mapping[str, Mapping[str, Any]],
+    result_count: int = 0,
+    papers_added: int = 0,
+    papers_updated: int = 0,
+    abstracts_stored: int = 0,
+) -> None:
+    """Complete a search record with its provider and corpus outcomes.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    search_id : int
+        Identifier returned by :func:`begin_search_run`.
+    status : {'completed', 'partial', 'failed'}
+        Final state of the search invocation.
+    source_results : collections.abc.Mapping[str, collections.abc.Mapping[str, Any]]
+        Per-provider status, result count, and optional error details.
+    result_count : int, default=0
+        Total provider rows returned before corpus deduplication.
+    papers_added : int, default=0
+        Number of new corpus rows created.
+    papers_updated : int, default=0
+        Number of existing corpus rows updated.
+    abstracts_stored : int, default=0
+        Number of search-time abstract assets stored.
+
+    Raises
+    ------
+    ValueError
+        If ``status`` is not a terminal search state.
+    """
+    if status not in {'completed', 'partial', 'failed'}:
+        raise ValueError("status must be 'completed', 'partial', or 'failed'")
+    conn.execute(
+        """
+        UPDATE search_runs
+        SET status = ?, result_count = ?, papers_added = ?, papers_updated = ?,
+            abstracts_stored = ?, source_results_json = ?, completed_at = ?
+        WHERE search_id = ?
+        """,
+        (
+            status,
+            int(result_count),
+            int(papers_added),
+            int(papers_updated),
+            int(abstracts_stored),
+            json.dumps(source_results, sort_keys=True),
+            utc_now(),
+            int(search_id),
+        ),
+    )
+
+
+def add_search_result(
+    conn: sqlite3.Connection,
+    search_id: int,
+    paper: Mapping[str, Any],
+    source: str,
+    result_rank: int,
+) -> bool:
+    """Link one provider result to its resolved corpus paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    search_id : int
+        Search invocation that returned the paper.
+    paper : collections.abc.Mapping[str, Any]
+        Provider result used to resolve the stored paper.
+    source : str
+        Provider that returned the result.
+    result_rank : int
+        Zero-based position of the result within that provider's response.
+
+    Returns
+    -------
+    bool
+        Whether a stored paper could be resolved and linked.
+    """
+    matched = find_paper(conn, paper)
+    if matched is None:
+        return False
+    conn.execute(
+        """
+        INSERT INTO paper_search_results (search_id, paper_id, source, result_rank)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(search_id, paper_id, source) DO UPDATE SET
+            result_rank = MIN(result_rank, excluded.result_rank)
+        """,
+        (int(search_id), matched['paper_id'], source, int(result_rank)),
+    )
+    return True
+
+
+def search_history(conn: sqlite3.Connection, limit: int | None = None) -> list[dict[str, Any]]:
+    """Return recorded corpus searches in reverse chronological order.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    limit : int or None, default=None
+        Maximum number of recent searches to return, or all searches when
+        omitted.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Search records with decoded provider and outcome JSON fields.
+    """
+    sql = 'SELECT * FROM search_runs ORDER BY search_id DESC'
+    parameters: tuple[int, ...] = ()
+    if limit is not None:
+        sql += ' LIMIT ?'
+        parameters = (max(int(limit), 0),)
+    rows = []
+    for stored in conn.execute(sql, parameters).fetchall():
+        row = dict(stored)
+        row['sources'] = json.loads(row.pop('sources_json'))
+        row['source_results'] = json.loads(row.pop('source_results_json'))
+        row['store_abstract'] = bool(row['store_abstract'])
+        row['enrich'] = bool(row['enrich'])
+        rows.append(row)
+    return rows
+
+
+def paper_search_history(conn: sqlite3.Connection, paper_id: str) -> list[dict[str, Any]]:
+    """Return searches that contributed a specific corpus paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Stored paper identifier.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Search identifier, provider, and result rank for each contributing
+        search, newest first.
+    """
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT result.search_id, result.source, result.result_rank,
+                   run.query, run.started_at
+            FROM paper_search_results AS result
+            JOIN search_runs AS run USING (search_id)
+            WHERE result.paper_id = ?
+            ORDER BY result.search_id DESC, result.source
+            """,
+            (paper_id,),
+        ).fetchall()
+    ]
 
 
 def _paper_column_type(column: str) -> str:

@@ -200,7 +200,7 @@ def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: 
     assert {
         'corpus_filters', 'paper_filter_results', 'paper_filter_state',
         'topic_models', 'topic_definitions', 'paper_topic_predictions',
-        'paper_topic_scores',
+        'paper_topic_scores', 'search_runs', 'paper_search_results',
     } <= tables
 
 
@@ -578,6 +578,60 @@ def test_enrichment_stats_reports_status_and_child_counts(tmp_path: Path) -> Non
     assert stats['reference_records'] == 1
 
 
+def test_search_history_records_runs_outcomes_and_paper_provenance(tmp_path: Path) -> None:
+    """Persist search settings, provider outcomes, and contributing paper links."""
+    db_path = tmp_path / 'searches.db'
+    with open_corpus(db_path) as conn:
+        search_id = corpus.begin_search_run(
+            conn,
+            'solid electrolyte',
+            'all',
+            ['core', 'openalex'],
+            25,
+            store_abstract=True,
+            enrich=False,
+        )
+        corpus.upsert_paper(conn, sample_paper())
+        assert corpus.add_search_result(conn, search_id, sample_paper(), 'core', 3) is True
+        assert corpus.add_search_result(conn, search_id, {'title': 'missing'}, 'openalex', 0) is False
+        corpus.finish_search_run(
+            conn,
+            search_id,
+            'partial',
+            {
+                'core': {'status': 'completed', 'result_count': 1},
+                'openalex': {'status': 'failed', 'result_count': 0, 'error': 'unavailable'},
+            },
+            result_count=1,
+            papers_added=1,
+            abstracts_stored=1,
+        )
+        history = corpus.search_history(conn)
+        limited = corpus.search_history(conn, limit=0)
+        paper_history = corpus.paper_search_history(conn, 'demo:1')
+
+        with pytest.raises(ValueError, match='status must be'):
+            corpus.finish_search_run(conn, search_id, 'running', {})
+
+    assert limited == []
+    assert len(history) == 1
+    assert history[0]['search_id'] == search_id
+    assert history[0]['query'] == 'solid electrolyte'
+    assert history[0]['sources'] == ['core', 'openalex']
+    assert history[0]['store_abstract'] is True
+    assert history[0]['enrich'] is False
+    assert history[0]['status'] == 'partial'
+    assert history[0]['papers_added'] == 1
+    assert history[0]['source_results']['openalex']['error'] == 'unavailable'
+    assert paper_history == [{
+        'search_id': search_id,
+        'source': 'core',
+        'result_rank': 3,
+        'query': 'solid electrolyte',
+        'started_at': history[0]['started_at'],
+    }]
+
+
 V5_PAPER_FIELDS = V4_PAPER_FIELDS + ['enrichment_status']
 V6_PAPER_FIELDS = V5_PAPER_FIELDS + ['pmid', 'pmcid']
 V7_PAPER_FIELDS = V6_PAPER_FIELDS + ['arxiv_id']
@@ -595,7 +649,7 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 10
+    assert version == corpus.SCHEMA_VERSION == 11
     assert {'pmid', 'pmcid'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -613,7 +667,7 @@ def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: 
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 10
+    assert version == corpus.SCHEMA_VERSION == 11
     assert 'arxiv_id' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -630,7 +684,7 @@ def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 10
+    assert version == corpus.SCHEMA_VERSION == 11
     assert 'medrxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -647,7 +701,7 @@ def test_corpus_migrates_version_eight_biorxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 10
+    assert version == corpus.SCHEMA_VERSION == 11
     assert 'biorxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -664,7 +718,7 @@ def test_corpus_migrates_version_nine_chemrxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 10
+    assert version == corpus.SCHEMA_VERSION == 11
     assert 'chemrxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'

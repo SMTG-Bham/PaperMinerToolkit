@@ -119,6 +119,26 @@ papers stay reachable through the `openalex` and `crossref` sources.
 
 `--count` is applied to each selected provider. Add `--store-abstract` to retain abstracts returned in search records immediately; otherwise abstracts can be fetched during downloading.
 
+Every search invocation is recorded in the corpus, including the exact query, requested source and
+count, resolved providers, options, timestamps, provider failures, and the numbers of returned,
+added, and updated papers. Each returned paper is also linked to the search and provider that found
+it. This history includes successful zero-result searches and partial multi-provider searches, so
+the origin and coverage of a corpus remain auditable. Inspect the most recent searches with:
+
+```bash
+pmt corpus searches papers.db
+pmt corpus searches papers.db --limit 100
+```
+
+The default is a compact terminal summary. Use `--outfile` to write the same history, including
+nested per-provider outcomes, as JSON. A `.json` suffix is added when the supplied filename does
+not already have one:
+
+```bash
+pmt corpus searches papers.db --outfile searches
+pmt corpus searches papers.db --outfile searches.json
+```
+
 ## Import local PDFs
 
 Import every PDF in a directory:

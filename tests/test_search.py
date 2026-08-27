@@ -581,8 +581,21 @@ def test_search_for_papers_merges_and_writes_results(
 
     with corpus.connect(db_path) as conn:
         written = corpus.paper_rows(conn)
+        searches = corpus.search_history(conn)
+        provenance = corpus.paper_search_history(conn, 'SCOPUS_ID:1')
     output = capsys.readouterr().out
     assert written[0]['paper_id'] == 'SCOPUS_ID:1'
+    assert searches[0]['query'] == 'query'
+    assert searches[0]['requested_source'] == 'elsevier'
+    assert searches[0]['requested_count'] == 1
+    assert searches[0]['status'] == 'completed'
+    assert searches[0]['result_count'] == 1
+    assert searches[0]['papers_added'] == 1
+    assert searches[0]['source_results'] == {
+        'elsevier': {'status': 'completed', 'result_count': 1},
+    }
+    assert provenance[0]['source'] == 'elsevier'
+    assert provenance[0]['result_rank'] == 0
     assert '1 new results and updated 0 existing rows' in output
 
 
@@ -618,6 +631,40 @@ def test_search_for_papers_merges_into_existing_corpus(
     assert written[0]['title'] == 'Existing title'
     assert written[0]['journal'] == 'Updated Journal'
     assert '0 new results and updated 1 existing rows' in output
+
+
+def test_search_for_papers_records_a_corpus_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mark a search failed when its provider results cannot be written."""
+    db_path = tmp_path / 'papers.db'
+    rows = search._elsevier_rows(pd.DataFrame([{
+        'dc:identifier': 'SCOPUS_ID:1',
+        'dc:title': 'Unwritable result',
+    }]))
+    monkeypatch.setattr(search, '_document_search', lambda *_, **__: pd.DataFrame())
+    monkeypatch.setattr(search, '_elsevier_rows', lambda _: rows)
+    monkeypatch.setattr(
+        search,
+        'upsert_papers',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('database write failed')),
+    )
+
+    with pytest.raises(RuntimeError, match='database write failed'):
+        search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
+
+    with corpus.connect(db_path) as conn:
+        searches = corpus.search_history(conn)
+        papers = corpus.paper_rows(conn)
+    assert papers == []
+    assert searches[0]['status'] == 'failed'
+    assert searches[0]['source_results']['corpus'] == {
+        'status': 'failed',
+        'result_count': 0,
+        'error_type': 'RuntimeError',
+        'error': 'database write failed',
+    }
 
 
 def test_search_for_papers_stores_search_time_abstract_assets(
@@ -667,7 +714,14 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(
     search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
     assert 'Document search found 0 new results.' in capsys.readouterr().out
-    assert not db_path.exists()
+    assert db_path.exists()
+    with corpus.connect(db_path) as conn:
+        searches = corpus.search_history(conn)
+    assert searches[0]['status'] == 'completed'
+    assert searches[0]['result_count'] == 0
+    assert searches[0]['source_results'] == {
+        'core': {'status': 'completed', 'result_count': 0},
+    }
 
 
 def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_source(
@@ -691,7 +745,33 @@ def test_search_for_papers_skips_failed_source_for_all_but_raises_for_selected_s
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='elsevier down'):
-        search.search_for_papers('query', source='elsevier', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='elsevier', count=1
+        )
+
+
+def test_search_for_papers_marks_a_run_failed_when_every_source_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Distinguish a wholly failed search from a partial provider result."""
+    db_path = tmp_path / 'papers.db'
+
+    def failed_search(_: str) -> Any:
+        """Return a provider function that always fails."""
+        return lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('offline'))
+
+    monkeypatch.setattr(search, '_source_search', failed_search)
+
+    search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
+
+    with corpus.connect(db_path) as conn:
+        searches = corpus.search_history(conn)
+    assert searches[0]['status'] == 'failed'
+    assert all(
+        result['status'] == 'failed'
+        for result in searches[0]['source_results'].values()
+    )
 
 
 def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
@@ -721,7 +801,9 @@ def test_search_for_papers_skips_failed_core_for_all_but_raises_for_core(
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='core down'):
-        search.search_for_papers('query', source='core', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='core', count=1
+        )
 
 
 def test_search_for_papers_skips_a_core_failure_that_is_not_an_http_error(
@@ -781,7 +863,9 @@ def test_search_for_papers_skips_failed_openalex_for_all_but_raises_for_openalex
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='openalex down'):
-        search.search_for_papers('query', source='openalex', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='openalex', count=1
+        )
 
 
 @pytest.mark.network
@@ -990,7 +1074,9 @@ def test_search_for_papers_skips_failed_pubmed_for_all_but_raises_for_pubmed(
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='pubmed down'):
-        search.search_for_papers('query', source='pubmed', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='pubmed', count=1
+        )
 
 
 def arxiv_entries(count: int, start: int = 0) -> list[dict[str, Any]]:
@@ -1155,7 +1241,9 @@ def test_search_for_papers_skips_failed_arxiv_for_all_but_raises_for_arxiv(
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='arxiv down'):
-        search.search_for_papers('query', source='arxiv', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='arxiv', count=1
+        )
 
 
 def medrxiv_records(count: int, start: int = 0, version: str = '1',
@@ -1368,7 +1456,9 @@ def test_search_for_papers_skips_failed_medrxiv_for_all_but_raises_for_medrxiv(
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='medrxiv down'):
-        search.search_for_papers('query', source='medrxiv', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='medrxiv', count=1
+        )
 
 
 def biorxiv_records(count: int, start: int = 0, version: str = '1',
@@ -1579,7 +1669,9 @@ def test_search_for_papers_skips_failed_biorxiv_for_all_but_raises_for_biorxiv(
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='biorxiv down'):
-        search.search_for_papers('query', source='biorxiv', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='biorxiv', count=1
+        )
 
 
 @pytest.mark.network
@@ -1787,4 +1879,6 @@ def test_search_for_papers_skips_failed_chemrxiv_for_all_but_raises_for_chemrxiv
     assert db_path.exists()
 
     with pytest.raises(RuntimeError, match='chemrxiv down'):
-        search.search_for_papers('query', source='chemrxiv', count=1)
+        search.search_for_papers(
+            'query', db_path=str(tmp_path / 'failed.db'), source='chemrxiv', count=1
+        )
