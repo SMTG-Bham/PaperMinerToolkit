@@ -10,6 +10,24 @@ Search all configured providers:
 pmt search "Lithium solid electrolyte" papers.db --count 200
 ```
 
+Providers are searched sequentially by default. Add `--parallel` to overlap them when several are
+selected:
+
+```bash
+pmt search "Lithium solid electrolyte" papers.db --count 200 --parallel
+```
+
+By default, parallel mode allows one worker per selected provider. Use `--workers` to cap the
+number of providers searched at once; specifying it also opts into parallel mode:
+
+```bash
+pmt search "Lithium solid electrolyte" papers.db --count 200 --workers 4
+```
+
+The effective worker count cannot exceed the number of selected providers. Every provider still
+performs its own pagination, retries, and rate-limit delays sequentially, so provider-level request
+concurrency does not increase.
+
 Select a single provider when you need reproducible source coverage:
 
 ```bash

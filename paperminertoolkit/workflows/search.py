@@ -11,6 +11,7 @@ import datetime
 import html
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import Any
 import pandas as pd
@@ -824,7 +825,9 @@ def search_for_papers(query: str,
                       source: str = 'all',
                       count: int = 200,
                       store_abstract: bool = False,
-                      enrich: bool = False) -> None:
+                      enrich: bool = False,
+                      parallel: bool = False,
+                      workers: int | None = None) -> None:
     """Search providers and merge results into a corpus.
 
     Parameters
@@ -842,6 +845,12 @@ def search_for_papers(query: str,
     enrich : bool, default=False
         Whether to supplement stored rows with metadata from the configured
         enrichment providers.
+    parallel : bool, default=False
+        Whether to search selected providers concurrently. Each provider still
+        performs its own requests sequentially.
+    workers : int or None, default=None
+        Maximum provider workers. Supplying a value enables parallel mode;
+        otherwise ``parallel=True`` uses one worker per selected provider.
 
     Returns
     -------
@@ -852,13 +861,17 @@ def search_for_papers(query: str,
     ------
     ValueError
         If ``source`` is unsupported or required provider configuration is
-        missing.
+        missing, or if ``workers`` is less than one.
     Exception
         Whatever the provider raised, when exactly one source was selected. A
         run over several sources reports a failing one and carries on with the
         rest, because a partial corpus is more useful than none.
     """
     requested = sources.resolve_names([source], sources.SEARCH)
+    if workers is not None and workers < 1:
+        raise ValueError('workers must be at least 1')
+    parallel = parallel or workers is not None
+    worker_count = min(workers or len(requested), len(requested)) if parallel else 1
     with connect(db_path) as conn:
         search_id = begin_search_run(
             conn,
@@ -868,27 +881,45 @@ def search_for_papers(query: str,
             count,
             store_abstract=store_abstract,
             enrich=enrich,
+            parallel=parallel,
+            workers=worker_count,
         )
 
-    frames: list[tuple[str, pd.DataFrame]] = []
+    frames_by_source: dict[str, pd.DataFrame] = {}
     source_results: dict[str, dict[str, Any]] = {}
-    for name in requested:
-        try:
-            frame = _source_search(name)(query, count=count)
-            frames.append((name, frame))
-            source_results[name] = {'status': 'completed', 'result_count': len(frame)}
-        except Exception as e:
-            source_results[name] = {
-                'status': 'failed',
-                'result_count': 0,
-                'error_type': type(e).__name__,
-                'error': str(e),
-            }
-            if len(requested) == 1:
-                with connect(db_path) as conn:
-                    finish_search_run(conn, search_id, 'failed', source_results)
-                raise
-            print(f'{sources.SOURCES[name].label} search skipped: {e}')
+    provider_errors: dict[str, Exception] = {}
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix='pmt-search') as executor:
+        future_sources = {
+            executor.submit(_source_search(name), query, count=count): name
+            for name in requested
+        }
+        for future in as_completed(future_sources):
+            name = future_sources[future]
+            try:
+                frame = future.result()
+                frames_by_source[name] = frame
+                source_results[name] = {'status': 'completed', 'result_count': len(frame)}
+            except Exception as error:
+                provider_errors[name] = error
+                source_results[name] = {
+                    'status': 'failed',
+                    'result_count': 0,
+                    'error_type': type(error).__name__,
+                    'error': str(error),
+                }
+                if len(requested) > 1:
+                    print(f'{sources.SOURCES[name].label} search skipped: {error}')
+
+    if len(requested) == 1 and provider_errors:
+        with connect(db_path) as conn:
+            finish_search_run(conn, search_id, 'failed', source_results)
+        raise provider_errors[requested[0]]
+
+    frames = [
+        (name, frames_by_source[name])
+        for name in requested
+        if name in frames_by_source
+    ]
 
     new_papers = (
         pd.concat([frame for _, frame in frames], ignore_index=True)

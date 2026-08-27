@@ -7,6 +7,7 @@ into the paper corpus.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -561,6 +562,79 @@ def test_search_for_papers_rejects_invalid_source() -> None:
     with pytest.raises(ValueError, match='source must be one of'):
         search.search_for_papers('query', source='bad')
 
+    with pytest.raises(ValueError, match='workers must be at least 1'):
+        search.search_for_papers('query', source='openalex', workers=0)
+
+
+def test_search_for_papers_limits_provider_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker limit opts into parallel mode and is stored with the run."""
+    requested = search.sources.resolve_names(['all'], search.sources.SEARCH)
+    real_executor = search.ThreadPoolExecutor
+    configured_workers: list[int] = []
+
+    def executor(*, max_workers: int, thread_name_prefix: str) -> Any:
+        """Record the configured limit and return a real executor."""
+        configured_workers.append(max_workers)
+        return real_executor(
+            max_workers=max_workers,
+            thread_name_prefix=thread_name_prefix,
+        )
+
+    def provider_search(_: str) -> Any:
+        """Return an empty provider response."""
+        return lambda query, count: pd.DataFrame(columns=search.SEARCH_FIELDS)
+
+    monkeypatch.setattr(search, 'ThreadPoolExecutor', executor)
+    monkeypatch.setattr(search, '_source_search', provider_search)
+    db_path = tmp_path / 'papers.db'
+
+    search.search_for_papers(
+        'query', db_path=str(db_path), source='all', count=1, workers=2,
+    )
+
+    with corpus.connect(db_path) as conn:
+        run = corpus.search_history(conn)[0]
+    assert configured_workers == [min(2, len(requested))]
+    assert run['parallel'] is True
+    assert run['workers'] == min(2, len(requested))
+
+
+def test_search_for_papers_runs_selected_providers_in_parallel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlap providers while keeping each provider in a single worker."""
+    requested = search.sources.resolve_names(['all'], search.sources.SEARCH)
+    barrier = threading.Barrier(len(requested), timeout=5)
+    worker_names: set[str] = set()
+    lock = threading.Lock()
+
+    def provider_search(_: str) -> Any:
+        """Return a provider search that waits until every worker has started."""
+        def run(query: str, count: int) -> pd.DataFrame:
+            """Record the worker and synchronize all provider calls."""
+            assert query == 'query'
+            assert count == 1
+            with lock:
+                worker_names.add(threading.current_thread().name)
+            barrier.wait()
+            return pd.DataFrame(columns=search.SEARCH_FIELDS)
+
+        return run
+
+    monkeypatch.setattr(search, '_source_search', provider_search)
+
+    search.search_for_papers(
+        'query', db_path=str(tmp_path / 'papers.db'), source='all', count=1,
+        parallel=True,
+    )
+
+    assert len(worker_names) == len(requested)
+    assert all(name.startswith('pmt-search') for name in worker_names)
+
 
 def test_search_for_papers_merges_and_writes_results(
     tmp_path: Path,
@@ -588,6 +662,7 @@ def test_search_for_papers_merges_and_writes_results(
     assert searches[0]['query'] == 'query'
     assert searches[0]['requested_source'] == 'elsevier'
     assert searches[0]['requested_count'] == 1
+    assert searches[0]['parallel'] is False
     assert searches[0]['status'] == 'completed'
     assert searches[0]['result_count'] == 1
     assert searches[0]['papers_added'] == 1

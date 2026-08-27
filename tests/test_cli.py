@@ -62,18 +62,21 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: calls.update({
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: calls.update({
             'query': query,
             'db_path': path,
             'source': source,
             'count': count,
             'store_abstract': store_abstract,
             'enrich': enrich,
+            'parallel': parallel,
+            'workers': workers,
         }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.db', '--source', 'core',
-                                                   '--count', '10', '--store-abstract', '--enrich'])
+                                                   '--count', '10', '--store-abstract', '--enrich',
+                                                   '--parallel', '--workers', '2'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -83,6 +86,8 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
         'count': 10,
         'store_abstract': True,
         'enrich': True,
+        'parallel': True,
+        'workers': 2,
     }
 
 
@@ -185,13 +190,17 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'openalex'])
 
     assert result.exit_code == 0
     assert search_calls['source'] == 'openalex'
+    assert search_calls['parallel'] is False
+    assert search_calls['workers'] is None
 
     download_calls = {}
     db_path = tmp_path / 'papers.db'
@@ -292,7 +301,8 @@ def test_corpus_searches_prints_recent_queries_and_failures(tmp_path: Path) -> N
     assert result.exit_code == 0
     assert f'Corpus searches: {db_path}' in result.output
     assert f'#{search_id}' in result.output
-    assert 'partial | source=all | requested=10 | results=0 | added=0 | updated=0' in result.output
+    assert ('partial | source=all | requested=10 | parallel=no | workers=1 | '
+            'results=0 | added=0 | updated=0') in result.output
     assert 'solid electrolyte' in result.output
     assert 'core failed: service unavailable' in result.output
     assert json_result.exit_code == 0
@@ -981,7 +991,9 @@ def test_search_download_and_enrich_source_choices_accept_arxiv(
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'arxiv'])
@@ -1028,7 +1040,9 @@ def test_search_download_and_enrich_source_choices_accept_pubmed(
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'pubmed'])

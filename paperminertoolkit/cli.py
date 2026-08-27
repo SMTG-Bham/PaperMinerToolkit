@@ -92,11 +92,17 @@ def _format_bytes(size: int) -> str:
               is_flag=True,
               default=False,
               help='Supplement newly stored papers with all enrichment providers.')
+@click.option('--parallel', is_flag=True, default=False,
+              help='Search selected providers concurrently.')
+@click.option('--workers', default=None, type=click.IntRange(min=1),
+              help='Maximum provider workers; also enables parallel search.')
 def paper_search(query: str, db_path: str, source: str, count: int,
-                 store_abstract: bool, enrich_metadata: bool) -> None:
+                 store_abstract: bool, enrich_metadata: bool, parallel: bool,
+                 workers: int | None) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
     search_for_papers(query, db_path, source=source, count=count,
-                      store_abstract=store_abstract, enrich=enrich_metadata)
+                      store_abstract=store_abstract, enrich=enrich_metadata,
+                      parallel=parallel, workers=workers)
 
 
 @click.command('pdfs')
@@ -336,6 +342,7 @@ def corpus_searches(db_path: str, limit: int, outfile: str | None) -> None:
         click.echo(
             f'#{item["search_id"]} {item["started_at"]} {item["status"]} | '
             f'source={item["requested_source"]} | requested={item["requested_count"]} | '
+            f'parallel={"yes" if item["parallel"] else "no"} | workers={item["workers"]} | '
             f'results={item["result_count"]} | added={item["papers_added"]} | '
             f'updated={item["papers_updated"]}'
         )

@@ -264,6 +264,39 @@ def test_corpus_migration_is_idempotent(tmp_path: Path) -> None:
     assert first == second
 
 
+def test_corpus_adds_parallel_fields_to_early_search_history_schema(tmp_path: Path) -> None:
+    """Add opt-in parallel settings to a prerelease version-eleven corpus."""
+    db_path = tmp_path / 'early-v11.db'
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.executescript(
+            """
+            PRAGMA user_version = 11;
+            CREATE TABLE search_runs (
+                search_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                requested_source TEXT NOT NULL,
+                sources_json TEXT NOT NULL,
+                requested_count INTEGER NOT NULL,
+                store_abstract INTEGER NOT NULL,
+                enrich INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                result_count INTEGER NOT NULL DEFAULT 0,
+                papers_added INTEGER NOT NULL DEFAULT 0,
+                papers_updated INTEGER NOT NULL DEFAULT 0,
+                abstracts_stored INTEGER NOT NULL DEFAULT 0,
+                source_results_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            """
+        )
+
+    with open_corpus(db_path) as conn:
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(search_runs)')}
+
+    assert {'parallel', 'workers'} <= columns
+
+
 def test_enrichment_columns_are_absent_from_paper_fields() -> None:
     """Keep enrichment columns outside the normalized paper field set."""
     assert not set(corpus.ENRICHMENT_COLUMNS) & set(corpus.PAPER_FIELDS)
@@ -590,6 +623,8 @@ def test_search_history_records_runs_outcomes_and_paper_provenance(tmp_path: Pat
             25,
             store_abstract=True,
             enrich=False,
+            parallel=True,
+            workers=2,
         )
         corpus.upsert_paper(conn, sample_paper())
         assert corpus.add_search_result(conn, search_id, sample_paper(), 'core', 3) is True
@@ -620,6 +655,8 @@ def test_search_history_records_runs_outcomes_and_paper_provenance(tmp_path: Pat
     assert history[0]['sources'] == ['core', 'openalex']
     assert history[0]['store_abstract'] is True
     assert history[0]['enrich'] is False
+    assert history[0]['parallel'] is True
+    assert history[0]['workers'] == 2
     assert history[0]['status'] == 'partial'
     assert history[0]['papers_added'] == 1
     assert history[0]['source_results']['openalex']['error'] == 'unavailable'

@@ -223,6 +223,8 @@ def init_corpus(conn: sqlite3.Connection) -> None:
             requested_count INTEGER NOT NULL,
             store_abstract INTEGER NOT NULL,
             enrich INTEGER NOT NULL,
+            parallel INTEGER NOT NULL,
+            workers INTEGER NOT NULL,
             status TEXT NOT NULL,
             result_count INTEGER NOT NULL DEFAULT 0,
             papers_added INTEGER NOT NULL DEFAULT 0,
@@ -413,6 +415,18 @@ def init_corpus(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE papers SET enrichment_status = 'pending' WHERE enrichment_status IS NULL"
         )
+    search_columns = {
+        row['name'] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute('PRAGMA table_info(search_runs)').fetchall()
+    }
+    if 'parallel' not in search_columns:
+        conn.execute(
+            'ALTER TABLE search_runs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 0'
+        )
+    if 'workers' not in search_columns:
+        conn.execute(
+            'ALTER TABLE search_runs ADD COLUMN workers INTEGER NOT NULL DEFAULT 1'
+        )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_enrichment ON papers(enrichment_status)')
     conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
     conn.commit()
@@ -426,6 +440,8 @@ def begin_search_run(
     requested_count: int,
     store_abstract: bool = False,
     enrich: bool = False,
+    parallel: bool = False,
+    workers: int = 1,
 ) -> int:
     """Start a persistent record of one corpus search invocation.
 
@@ -445,6 +461,10 @@ def begin_search_run(
         Whether search-time abstracts were requested as corpus assets.
     enrich : bool, default=False
         Whether metadata enrichment was requested after searching.
+    parallel : bool, default=False
+        Whether providers were searched concurrently.
+    workers : int, default=1
+        Effective number of provider workers used by the search.
 
     Returns
     -------
@@ -455,8 +475,8 @@ def begin_search_run(
         """
         INSERT INTO search_runs (
             query, requested_source, sources_json, requested_count,
-            store_abstract, enrich, status, started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+            store_abstract, enrich, parallel, workers, status, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
         """,
         (
             query,
@@ -465,6 +485,8 @@ def begin_search_run(
             int(requested_count),
             int(store_abstract),
             int(enrich),
+            int(parallel),
+            int(workers),
             utc_now(),
         ),
     )
@@ -599,6 +621,7 @@ def search_history(conn: sqlite3.Connection, limit: int | None = None) -> list[d
         row['source_results'] = json.loads(row.pop('source_results_json'))
         row['store_abstract'] = bool(row['store_abstract'])
         row['enrich'] = bool(row['enrich'])
+        row['parallel'] = bool(row['parallel'])
         rows.append(row)
     return rows
 
