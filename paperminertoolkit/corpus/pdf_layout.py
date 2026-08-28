@@ -267,15 +267,30 @@ def _render_box(
     box: BoundingBox | None,
     padding: float,
     fitz: Any,
+    caption_boxes: Sequence[BoundingBox] = (),
 ) -> object:
-    """Build a page-clamped PyMuPDF clip rectangle."""
+    """Build a page-clamped PyMuPDF clip rectangle that excludes the caption.
+
+    Padding is clamped on whichever side the caption sits so the rendered
+    crop never bleeds into caption text, even when the caption sits closer
+    to the region than ``padding``.
+    """
     if box is None:
         return page.rect
+    top = max(float(page.rect.y0), box.y0 - padding)
+    bottom = min(float(page.rect.y1), box.y1 + padding)
+    if caption_boxes:
+        caption_top = min(caption.y0 for caption in caption_boxes)
+        caption_bottom = max(caption.y1 for caption in caption_boxes)
+        if caption_top >= box.y1:
+            bottom = min(bottom, caption_top)
+        elif caption_bottom <= box.y0:
+            top = max(top, caption_bottom)
     return fitz.Rect(
         max(float(page.rect.x0), box.x0 - padding),
-        max(float(page.rect.y0), box.y0 - padding),
+        top,
         min(float(page.rect.x1), box.x1 + padding),
-        min(float(page.rect.y1), box.y1 + padding),
+        bottom,
     )
 
 
@@ -335,7 +350,7 @@ def render_pdf_figures(
                 raise ValueError(f'figure {figure.identifier!r} has no page provenance')
             page_number = region.page if region is not None else pages[0]
             page = document[page_number - 1]
-            clip = _render_box(page, region, padding, fitz)
+            clip = _render_box(page, region, padding, fitz, figure.caption_boxes)
             pixmap = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
             filename = f'{stem}_figure-{index}_page-{page_number}.png'
             filepath = os.path.join(destination, filename)

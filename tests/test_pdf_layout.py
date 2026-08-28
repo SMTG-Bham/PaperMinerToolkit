@@ -199,6 +199,46 @@ def test_render_pdf_figures_clips_confident_regions_and_falls_back_to_pages(
     assert page_width == 600
 
 
+def test_render_box_clamps_padding_at_a_nearby_caption() -> None:
+    """Stop padding at a caption edge that sits closer than the requested padding."""
+    fitz = pytest.importorskip('fitz')
+
+    class Page:
+        """Expose a fixed page rectangle."""
+
+        rect = fitz.Rect(0, 0, 600, 800)
+
+    region = BoundingBox(1, 40, 80, 270, 250)
+
+    caption_below = (BoundingBox(1, 40, 255, 270, 270),)
+    clip = pdf_layout._render_box(Page(), region, 12.0, fitz, caption_below)
+    assert (clip.y0, clip.y1) == (68.0, 255.0)
+
+    caption_above = (BoundingBox(1, 40, 60, 270, 75),)
+    clip = pdf_layout._render_box(Page(), region, 12.0, fitz, caption_above)
+    assert (clip.y0, clip.y1) == (75.0, 262.0)
+
+    unclamped = pdf_layout._render_box(Page(), region, 12.0, fitz)
+    assert (unclamped.y0, unclamped.y1) == (68.0, 262.0)
+
+
+def test_render_pdf_figures_default_padding_stops_before_the_caption(tmp_path: Path) -> None:
+    """Default padding must not bleed into a caption closer than the padding."""
+    pdf_path = tmp_path / 'layout.pdf'
+    _write_layout_pdf(pdf_path)
+    layout = pdf_layout.detect_pdf_layout(pdf_path)
+
+    rendered_path = Path(pdf_layout.render_pdf_figures(
+        pdf_path, layout, tmp_path / 'clamped', dpi=72,
+    )[0])
+    with Image.open(rendered_path) as image:
+        size = image.size
+
+    # The caption sits 10pt below the region (250 -> 260); the default 12pt
+    # padding must stop at the caption instead of overshooting to 262.
+    assert size == (254, 192)
+
+
 def test_pdf_layout_validates_options_and_page_provenance(tmp_path: Path) -> None:
     """Reject invalid thresholds, rendering options, and unlocated figures."""
     pdf_path = tmp_path / 'layout.pdf'
