@@ -143,6 +143,7 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
             mime_type='text/plain',
             source='demo',
             original_filename='demo_1.txt',
+            metadata={'language': 'en'},
         )
         second_blob = corpus.add_asset(
             conn,
@@ -164,17 +165,152 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     assert asset['mime_type'] == 'text/plain'
     assert asset_metadata['blob_id'] == first_blob
     assert asset_metadata['role'] == 'text'
+    assert asset['metadata'] == {'language': 'en'}
+    assert asset_metadata['metadata'] == {'language': 'en'}
     assert 'content' not in asset_metadata
     assert missing_metadata is None
     assert stats['papers'] == 2
     assert stats['papers_with_text'] == 2
     assert stats['papers_with_pdf'] == 0
     assert stats['papers_with_abstract'] == 0
+    assert stats['papers_with_structured_documents'] == 0
     assert stats['papers_with_chunked_text'] == 0
     assert stats['papers_with_chunked_abstracts'] == 0
     assert stats['blobs'] == 1
     assert stats['stored_size'] < stats['original_size']
     assert stats['savings_fraction'] > 0
+
+
+def test_corpus_stores_and_filters_structured_documents(tmp_path: Path) -> None:
+    """Store raw structured documents with extensible provenance metadata."""
+    db_path = tmp_path / 'structured.db'
+    paper = sample_paper('demo:structured')
+    jats = b'<article><body><fig id="fig1"/></body></article>'
+    tei = b'<TEI><text><figure xml:id="fig1"/></text></TEI>'
+
+    with corpus.connect(db_path) as conn:
+        jats_blob = corpus.add_structured_document(
+            conn,
+            paper,
+            jats,
+            document_format=' JATS ',
+            source='pubmed',
+            original_filename='article.nxml',
+            metadata={'license': 'cc-by', 'document_format': 'wrong'},
+        )
+        duplicate_blob = corpus.add_structured_document(
+            conn,
+            sample_paper('demo:duplicate'),
+            jats,
+            document_format='jats',
+            source='biorxiv',
+            original_filename='article.xml',
+        )
+        corpus.add_structured_document(
+            conn,
+            paper,
+            tei,
+            document_format='tei',
+            source='openalex',
+            original_filename='article.tei.xml',
+            mime_type='text/xml',
+        )
+
+        documents = corpus.get_structured_documents(conn, 'demo:structured')
+        jats_documents = corpus.get_structured_documents(
+            conn,
+            'demo:structured',
+            source='pubmed',
+            document_format='JATS',
+        )
+        stats = corpus.corpus_stats(conn)
+
+        assert corpus.has_structured_document(conn, 'demo:structured') is True
+        assert corpus.has_structured_document(
+            conn, 'demo:structured', source='openalex', document_format='tei',
+        ) is True
+        assert corpus.has_structured_document(
+            conn, 'demo:structured', source='openalex', document_format='jats',
+        ) is False
+        assert corpus.has_structured_document(conn, 'missing') is False
+
+    assert duplicate_blob == jats_blob
+    assert len(documents) == 2
+    assert documents[0]['metadata']['document_format'] == 'tei'
+    assert documents[0]['mime_type'] == 'text/xml'
+    assert documents[0]['content'] == tei
+    assert len(jats_documents) == 1
+    assert jats_documents[0]['role'] == corpus.STRUCTURED_DOCUMENT_ROLE
+    assert jats_documents[0]['kind'] == 'structured-document'
+    assert jats_documents[0]['mime_type'] == 'application/xml'
+    assert jats_documents[0]['metadata'] == {
+        'document_format': 'jats',
+        'license': 'cc-by',
+    }
+    assert jats_documents[0]['content'] == jats
+    assert stats['papers_with_structured_documents'] == 2
+
+
+def test_structured_documents_require_format_and_source(tmp_path: Path) -> None:
+    """Reject structured assets without the provenance needed for reuse."""
+    with corpus.connect(tmp_path / 'structured.db') as conn:
+        with pytest.raises(ValueError, match='document_format must not be empty'):
+            corpus.add_structured_document(
+                conn, sample_paper(), '<article/>', document_format=' ', source='pubmed',
+            )
+        with pytest.raises(ValueError, match='source must not be empty'):
+            corpus.add_structured_document(
+                conn, sample_paper(), '<article/>', document_format='jats', source=' ',
+            )
+
+
+def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:
+    """Add asset metadata to a version-eleven corpus without losing links."""
+    db_path = tmp_path / 'v11.db'
+    write_legacy_corpus(db_path, V4_PAPER_FIELDS, version=11)
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.executescript(
+            """
+            CREATE TABLE blobs (
+                blob_id TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                compression TEXT NOT NULL,
+                original_size INTEGER NOT NULL,
+                stored_size INTEGER NOT NULL,
+                content BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE paper_assets (
+                paper_id TEXT NOT NULL,
+                blob_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                source TEXT,
+                original_filename TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (paper_id, role, source, original_filename)
+            );
+            INSERT INTO blobs VALUES (
+                'text:legacy', 'legacy-sha', 'text', 'text/plain', 'none',
+                6, 6, X'6c6567616379', '2026-01-01'
+            );
+            INSERT INTO paper_assets VALUES (
+                'legacy:1', 'text:legacy', 'text', 'legacy', 'legacy.txt', '2026-01-01'
+            );
+            """
+        )
+
+    with corpus.connect(db_path) as conn:
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(paper_assets)')}
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        asset = corpus.get_asset_metadata(conn, 'legacy:1', 'text')
+
+    assert version == corpus.SCHEMA_VERSION == 12
+    assert 'metadata_json' in columns
+    assert asset is not None
+    assert asset['blob_id'] == 'text:legacy'
+    assert asset['metadata'] == {}
 
 
 def test_corpus_migrates_version_one_chunk_counts_without_losing_rows(tmp_path: Path) -> None:
@@ -363,6 +499,7 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path
             kind='text',
             mime_type='text/plain',
             source='second',
+            metadata={'version': 2},
         )
         corpus.add_asset(conn, paper, 'full text', role='text', kind='text', mime_type='text/plain')
         assets = corpus.latest_assets(conn, ['abstract'])
@@ -370,6 +507,7 @@ def test_latest_assets_bulk_loads_only_the_newest_requested_roles(tmp_path: Path
     assert set(assets) == {('demo:assets', 'abstract')}
     assert assets[('demo:assets', 'abstract')]['content'] == b'newer abstract'
     assert assets[('demo:assets', 'abstract')]['source'] == 'second'
+    assert assets[('demo:assets', 'abstract')]['metadata'] == {'version': 2}
 
 
 def test_corpus_rejects_unknown_compression_and_decompression_codecs(tmp_path: Path) -> None:
@@ -686,7 +824,7 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 11
+    assert version == corpus.SCHEMA_VERSION == 12
     assert {'pmid', 'pmcid'} <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -704,7 +842,7 @@ def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: 
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 11
+    assert version == corpus.SCHEMA_VERSION == 12
     assert 'arxiv_id' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -721,7 +859,7 @@ def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 11
+    assert version == corpus.SCHEMA_VERSION == 12
     assert 'medrxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -738,7 +876,7 @@ def test_corpus_migrates_version_eight_biorxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 11
+    assert version == corpus.SCHEMA_VERSION == 12
     assert 'biorxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -755,7 +893,7 @@ def test_corpus_migrates_version_nine_chemrxiv_column_without_losing_rows(tmp_pa
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 11
+    assert version == corpus.SCHEMA_VERSION == 12
     assert 'chemrxiv_doi' in columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'

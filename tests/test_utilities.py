@@ -72,12 +72,20 @@ def test_status_prints_pipeline_progress_summary(
             'num_text_materials': 3,
             'num_image_materials': 4,
         })
+        corpus.add_structured_document(
+            conn,
+            next(paper for paper in corpus.paper_rows(conn) if paper['paper_id'] == 'paper-1'),
+            '<article/>',
+            document_format='jats',
+            source='pubmed',
+        )
 
     utilities.status(str(db_path))
 
     output = capsys.readouterr().out
     assert 'PaperMinerToolkit Progress Summary' in output
     assert 'Total papers: 2' in output
+    assert 'Papers with structured documents: 1' in output
     assert 'Metadata retrieved: 2' in output
     assert 'Text downloaded: 1' in output
     assert 'Failed PDF downloads: 1' in output

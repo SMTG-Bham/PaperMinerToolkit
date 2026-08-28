@@ -1,6 +1,6 @@
 # Building a corpus
 
-A PaperMinerToolkit corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
+A PaperMinerToolkit corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Assets can include abstracts, plain text, PDFs, and raw structured article documents such as publisher XML, JATS, or TEI. Structured documents remain alongside derived plain text so later workflows can retain sections, figures, captions, tables, and source provenance. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
 
 ## Search literature services
 

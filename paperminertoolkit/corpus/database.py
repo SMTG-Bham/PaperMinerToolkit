@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
+STRUCTURED_DOCUMENT_ROLE = 'structured'
 PAPER_COLUMNS = [
     'paper_id',
     'doi',
@@ -205,6 +206,7 @@ def init_corpus(conn: sqlite3.Connection) -> None:
             role TEXT NOT NULL,
             source TEXT,
             original_filename TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{{}}',
             created_at TEXT NOT NULL,
             PRIMARY KEY (paper_id, role, source, original_filename),
             FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE,
@@ -426,6 +428,14 @@ def init_corpus(conn: sqlite3.Connection) -> None:
     if 'workers' not in search_columns:
         conn.execute(
             'ALTER TABLE search_runs ADD COLUMN workers INTEGER NOT NULL DEFAULT 1'
+        )
+    asset_columns = {
+        row['name'] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute('PRAGMA table_info(paper_assets)').fetchall()
+    }
+    if 'metadata_json' not in asset_columns:
+        conn.execute(
+            "ALTER TABLE paper_assets ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
         )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_enrichment ON papers(enrichment_status)')
     conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
@@ -1572,7 +1582,8 @@ def link_asset(conn: sqlite3.Connection,
                blob_id: str,
                role: str,
                source: str = '',
-               original_filename: str = '') -> None:
+               original_filename: str = '',
+               metadata: Mapping[str, Any] | None = None) -> None:
     """Link a stored blob to a paper asset role.
 
     Parameters
@@ -1589,15 +1600,25 @@ def link_asset(conn: sqlite3.Connection,
         Provider or acquisition source.
     original_filename : str, optional
         Original asset filename.
+    metadata : Mapping[str, Any] or None, optional
+        Extensible metadata associated with this paper-to-blob link.
     """
     conn.execute(
         """
         INSERT OR REPLACE INTO paper_assets (
-            paper_id, blob_id, role, source, original_filename, created_at
+            paper_id, blob_id, role, source, original_filename, metadata_json, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (paper_id, blob_id, role, source, original_filename, utc_now()),
+        (
+            paper_id,
+            blob_id,
+            role,
+            source,
+            original_filename,
+            json.dumps(dict(metadata or {}), sort_keys=True),
+            utc_now(),
+        ),
     )
     conn.commit()
 
@@ -1610,7 +1631,8 @@ def add_asset(conn: sqlite3.Connection,
               mime_type: str,
               source: str = '',
               original_filename: str = '',
-              compression: str = 'gzip') -> str:
+              compression: str = 'gzip',
+              metadata: Mapping[str, Any] | None = None) -> str:
     """Store and link an asset for a paper.
 
     Parameters
@@ -1633,6 +1655,8 @@ def add_asset(conn: sqlite3.Connection,
         Original asset filename.
     compression : str, optional
         Storage compression codec.
+    metadata : Mapping[str, Any] or None, optional
+        Extensible metadata associated with the paper asset.
 
     Returns
     -------
@@ -1641,8 +1665,38 @@ def add_asset(conn: sqlite3.Connection,
     """
     paper_id = upsert_paper(conn, paper)
     blob_id = store_blob(conn, content, kind=kind, mime_type=mime_type, compression=compression)
-    link_asset(conn, paper_id, blob_id, role=role, source=source, original_filename=original_filename)
+    link_asset(
+        conn,
+        paper_id,
+        blob_id,
+        role=role,
+        source=source,
+        original_filename=original_filename,
+        metadata=metadata,
+    )
     return blob_id
+
+
+def _asset_dict(row: sqlite3.Row, include_content: bool = False) -> _Asset:
+    """Decode one database asset row.
+
+    Parameters
+    ----------
+    row : sqlite3.Row
+        Joined paper, asset-link, and blob row.
+    include_content : bool, default=False
+        Whether to decompress the selected content column.
+
+    Returns
+    -------
+    _Asset
+        Decoded asset metadata and optional content.
+    """
+    asset = dict(row)
+    asset['metadata'] = json.loads(asset.pop('metadata_json'))
+    if include_content:
+        asset['content'] = _decompress(asset['content'], asset['compression'])
+    return asset
 
 
 def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | None:
@@ -1666,6 +1720,7 @@ def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | No
         """
         SELECT
             p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            a.metadata_json,
             b.blob_id, b.kind, b.mime_type, b.compression, b.original_size,
             b.stored_size, b.content
         FROM paper_assets AS a
@@ -1679,9 +1734,7 @@ def get_asset(conn: sqlite3.Connection, paper_id: str, role: str) -> _Asset | No
     ).fetchone()
     if row is None:
         return None
-    data = dict(row)
-    data['content'] = _decompress(data['content'], data['compression'])
-    return data
+    return _asset_dict(row, include_content=True)
 
 
 def get_asset_metadata(
@@ -1709,6 +1762,7 @@ def get_asset_metadata(
         """
         SELECT
             p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            a.metadata_json,
             b.blob_id, b.kind, b.mime_type, b.original_size, b.stored_size,
             a.created_at
         FROM paper_assets AS a
@@ -1720,7 +1774,7 @@ def get_asset_metadata(
         """,
         (paper_id, role),
     ).fetchone()
-    return dict(row) if row is not None else None
+    return _asset_dict(row) if row is not None else None
 
 
 def latest_assets(
@@ -1747,10 +1801,10 @@ def latest_assets(
     placeholders = ', '.join('?' for _ in roles)
     rows = conn.execute(
         f"""
-        SELECT paper_id, role, source, original_filename, compression, content
+        SELECT paper_id, role, source, original_filename, metadata_json, compression, content
         FROM (
             SELECT
-                a.paper_id, a.role, a.source, a.original_filename,
+                a.paper_id, a.role, a.source, a.original_filename, a.metadata_json,
                 a.created_at, a.rowid AS asset_rowid,
                 b.compression, b.content,
                 ROW_NUMBER() OVER (
@@ -1767,10 +1821,182 @@ def latest_assets(
     ).fetchall()
     assets = {}
     for row in rows:
-        asset = dict(row)
-        asset['content'] = _decompress(asset['content'], asset.pop('compression'))
+        asset = _asset_dict(row, include_content=True)
+        asset.pop('compression')
         assets[(asset['paper_id'], asset['role'])] = asset
     return assets
+
+
+def add_structured_document(
+    conn: sqlite3.Connection,
+    paper: _PaperInput,
+    content: _BlobContent,
+    *,
+    document_format: str,
+    source: str,
+    original_filename: str = '',
+    mime_type: str = 'application/xml',
+    metadata: Mapping[str, Any] | None = None,
+    compression: str = 'gzip',
+) -> str:
+    """Store a structured article document in the corpus.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Owning paper metadata.
+    content : _BlobContent
+        Raw structured document content.
+    document_format : str
+        Provider-neutral format name, such as ``"jats"`` or ``"tei"``.
+    source : str
+        Provider or repository from which the document was acquired.
+    original_filename : str, optional
+        Original asset filename.
+    mime_type : str, default='application/xml'
+        MIME type of the uncompressed document.
+    metadata : Mapping[str, Any] or None, optional
+        Additional asset provenance. ``document_format`` is always taken from
+        the explicit argument.
+    compression : str, default='gzip'
+        Storage compression codec.
+
+    Returns
+    -------
+    str
+        Identifier of the linked content blob.
+
+    Raises
+    ------
+    ValueError
+        If ``document_format`` or ``source`` is empty.
+    """
+    normalized_format = document_format.strip().lower()
+    normalized_source = source.strip()
+    if not normalized_format:
+        raise ValueError('document_format must not be empty')
+    if not normalized_source:
+        raise ValueError('source must not be empty')
+    asset_metadata = dict(metadata or {})
+    asset_metadata['document_format'] = normalized_format
+    return add_asset(
+        conn,
+        paper,
+        content,
+        role=STRUCTURED_DOCUMENT_ROLE,
+        kind='structured-document',
+        mime_type=mime_type,
+        source=normalized_source,
+        original_filename=original_filename,
+        compression=compression,
+        metadata=asset_metadata,
+    )
+
+
+def _structured_document_assets(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    source: str | None,
+    document_format: str | None,
+    *,
+    include_content: bool,
+) -> list[_Asset]:
+    """Query structured documents with optional source and format filters."""
+    content_columns = ', b.compression, b.content' if include_content else ''
+    query = f"""
+        SELECT
+            p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            a.metadata_json, a.created_at,
+            b.blob_id, b.kind, b.mime_type, b.original_size, b.stored_size
+            {content_columns}
+        FROM paper_assets AS a
+        JOIN papers AS p ON p.paper_id = a.paper_id
+        JOIN blobs AS b ON b.blob_id = a.blob_id
+        WHERE a.paper_id = ? AND a.role = ?
+        ORDER BY a.created_at DESC, a.rowid DESC
+    """
+    rows = conn.execute(query, (paper_id, STRUCTURED_DOCUMENT_ROLE)).fetchall()
+    wanted_source = source.strip() if source is not None else None
+    wanted_format = document_format.strip().lower() if document_format is not None else None
+    assets = []
+    for row in rows:
+        asset = _asset_dict(row, include_content=include_content)
+        if wanted_source is not None and asset['source'] != wanted_source:
+            continue
+        if wanted_format is not None and asset['metadata'].get('document_format') != wanted_format:
+            continue
+        assets.append(asset)
+    return assets
+
+
+def get_structured_documents(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    *,
+    source: str | None = None,
+    document_format: str | None = None,
+) -> list[_Asset]:
+    """Load structured documents linked to one paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    source : str or None, optional
+        Restrict results to one acquisition source.
+    document_format : str or None, optional
+        Restrict results to one structured-document format.
+
+    Returns
+    -------
+    list[_Asset]
+        Matching assets with decompressed content, newest first.
+    """
+    return _structured_document_assets(
+        conn,
+        paper_id,
+        source,
+        document_format,
+        include_content=True,
+    )
+
+
+def has_structured_document(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    *,
+    source: str | None = None,
+    document_format: str | None = None,
+) -> bool:
+    """Return whether a matching structured document is already stored.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    source : str or None, optional
+        Restrict the check to one acquisition source.
+    document_format : str or None, optional
+        Restrict the check to one structured-document format.
+
+    Returns
+    -------
+    bool
+        Whether at least one matching asset exists.
+    """
+    return bool(_structured_document_assets(
+        conn,
+        paper_id,
+        source,
+        document_format,
+        include_content=False,
+    ))
 
 
 def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
@@ -1793,7 +2019,7 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
             'SELECT COUNT(DISTINCT paper_id) FROM paper_assets WHERE role = ?',
             (role,),
         ).fetchone()[0]
-        for role in ['abstract', 'text', 'pdf']
+        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE]
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
     chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
@@ -1805,6 +2031,7 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
         'papers_with_abstract': asset_counts['abstract'],
         'papers_with_text': asset_counts['text'],
         'papers_with_pdf': asset_counts['pdf'],
+        'papers_with_structured_documents': asset_counts[STRUCTURED_DOCUMENT_ROLE],
         'papers_with_chunked_text': chunked_text,
         'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,

@@ -316,6 +316,14 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
             kind='pdf',
             mime_type='application/pdf',
         )
+        corpus.add_structured_document(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            '<article/>',
+            document_format='jats',
+            source='pubmed',
+            original_filename='paper.nxml',
+        )
         papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
         papers['paper:1']['num_text_chunks'] = 3
         papers['paper:2']['num_abstract_chunks'] = 2
@@ -330,9 +338,10 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
     assert 'Papers with abstracts: 1' in result.output
     assert 'Papers with text: 1' in result.output
     assert 'Papers with PDFs: 1' in result.output
+    assert 'Papers with structured documents: 1' in result.output
     assert 'Text scrapes split into chunks: 1' in result.output
     assert 'Abstract scrapes split into chunks: 1' in result.output
-    assert 'Blobs: 3' in result.output
+    assert 'Blobs: 4' in result.output
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output

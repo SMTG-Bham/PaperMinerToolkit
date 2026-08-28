@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from os import PathLike
 
-from paperminertoolkit.corpus.database import PIPELINE_COLUMNS, connect, paper_rows, upsert_paper
+from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
+                                               connect,
+                                               corpus_stats,
+                                               paper_rows,
+                                               upsert_paper)
 
 
 def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
@@ -47,9 +51,11 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     """
     with connect(db_path) as conn:
         papers = paper_rows(conn)
+        stats = corpus_stats(conn)
     print('\nPaperMinerToolkit Progress Summary')
     print('---------------------------')
     print(f'Total papers: {len(papers)}')
+    print(f'Papers with structured documents: {stats["papers_with_structured_documents"]}')
     rows = [
         ('Metadata retrieved', 'metadata_status', 'retrieved'),
         ('Metadata enriched', 'enrichment_status', 'succeeded'),

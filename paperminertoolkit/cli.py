@@ -296,6 +296,10 @@ def corpus_status(db_path: str) -> None:
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
     click.echo(f'Papers with text: {stats["papers_with_text"]}')
     click.echo(f'Papers with PDFs: {stats["papers_with_pdf"]}')
+    click.echo(
+        f'Papers with structured documents: '
+        f'{stats["papers_with_structured_documents"]}'
+    )
     click.echo(f'Text scrapes split into chunks: {stats["papers_with_chunked_text"]}')
     click.echo(f'Abstract scrapes split into chunks: {stats["papers_with_chunked_abstracts"]}')
     click.echo(f'Blobs: {stats["blobs"]}')
