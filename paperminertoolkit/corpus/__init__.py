@@ -1,1 +1,1 @@
-"""Corpus storage, document handling, metadata, and filtering."""
+"""Corpus storage, document layouts, file handling, metadata, and filtering."""

@@ -1,11 +1,12 @@
 # paperminertoolkit.corpus
 
-Persistent corpus storage, document handling, metadata normalization, and paper filtering.
+Persistent corpus storage, provider-neutral document layouts, file handling, metadata normalization, and paper filtering.
 
 ```{toctree}
 :maxdepth: 1
 
 database
+layout
 documents
 metadata
 filtering
