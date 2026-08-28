@@ -546,6 +546,27 @@ def test_pmc_full_text_document_preserves_the_jats_from_the_same_request() -> No
     assert len(session.calls) == 1
 
 
+def test_pmc_full_text_document_handles_absent_and_proseless_articles() -> None:
+    """Return empty documents for invalid IDs, absent records, and JATS without prose."""
+    invalid = pubmed.pmc_full_text_document('', session=FakeSession([]))
+    missing = pubmed.pmc_full_text_document(
+        'PMC1', session=FakeSession([FakeResponse(status_code=404)]),
+    )
+    proseless = pubmed.pmc_full_text_document(
+        'PMC1',
+        session=FakeSession([FakeResponse(text='<pmc-articleset><article/></pmc-articleset>')]),
+    )
+    assert invalid.has_structured_content is False
+    assert missing.has_structured_content is False
+    assert proseless.has_structured_content is False
+
+
+def test_jats_plain_text_reports_ncbi_error_envelopes() -> None:
+    """Surface a successful HTTP response that contains an NCBI XML error."""
+    with pytest.raises(RuntimeError, match='NCBI rejected the request: denied'):
+        pubmed.jats_plain_text('<response><ERROR>denied</ERROR></response>', label='NCBI')
+
+
 def test_pmc_full_text_returns_empty_for_a_missing_identifier_or_body() -> None:
     """Return no text when there is nothing to fetch or no body to flatten."""
     assert pubmed.pmc_full_text('', session=FakeSession([])) == ''

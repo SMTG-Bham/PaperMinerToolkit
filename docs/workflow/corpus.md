@@ -349,6 +349,28 @@ but not publisher-authored: multi-column reading order, figures, references, and
 be missing or wrong; scanned or image-only PDFs may yield no usable text. `parse_tei_layout`
 normalizes the available TEI structure and coordinates without treating it as native XML.
 
+### Download structured-document figures
+
+The structured layouts also make their linked figure files retrievable without scraping pixels
+from a PDF. `download_structured_figures` resolves relative graphic paths against the stored
+document URL, follows safe HTTP redirects, verifies the response is a supported image, and writes
+each successful result back to the corpus:
+
+```python
+from paperminertoolkit.workflows.figures import download_structured_figures
+
+summary = download_structured_figures("papers.db", "doi:10.1000/example")
+print(summary.downloaded, summary.skipped, summary.failed)
+```
+
+Each figure asset records its parsed figure identifier, caption, graphic identifier, section,
+requested and final source URLs, MIME type, SHA-256 checksum, and article licence when available.
+The blob store deduplicates identical image content even when several URLs refer to it, while each
+figure keeps its own link and provenance. Re-running the workflow skips completed figure links;
+pass `force=True` only when intentionally refreshing them. Unsafe URL schemes, local network
+addresses, empty or oversized responses, unsupported formats, MIME mismatches, and active SVG
+content are rejected and reported in the returned summary without stopping the remaining figures.
+
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.
 

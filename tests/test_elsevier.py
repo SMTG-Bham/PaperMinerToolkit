@@ -176,6 +176,22 @@ def test_full_text_document_requests_and_preserves_native_xml() -> None:
     assert session.calls[0]['params'] == {'httpAccept': 'text/xml', 'view': 'FULL'}
 
 
+def test_full_text_document_handles_missing_and_proseless_xml() -> None:
+    """Return an empty document when Elsevier has no usable article prose."""
+    missing = elsevier.full_text_document(
+        'https://api.elsevier.com/content/article/doi/missing',
+        'key',
+        session=FakeSession([FakeResponse(status_code=404)]),
+    )
+    proseless = elsevier.full_text_document(
+        'https://api.elsevier.com/content/article/doi/empty',
+        'key',
+        session=FakeSession([FakeResponse(text='<article/>')]),
+    )
+    assert missing.has_structured_content is False
+    assert proseless.has_structured_content is False
+
+
 def test_elsevier_xml_rejects_malformed_and_error_documents() -> None:
     """Fail clearly for invalid XML and successful HTTP error envelopes."""
     with pytest.raises(RuntimeError, match='malformed article XML'):

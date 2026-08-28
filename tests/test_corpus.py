@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import hashlib
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -174,6 +175,7 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     assert stats['papers_with_pdf'] == 0
     assert stats['papers_with_abstract'] == 0
     assert stats['papers_with_structured_documents'] == 0
+    assert stats['papers_with_figure_assets'] == 0
     assert stats['papers_with_chunked_text'] == 0
     assert stats['papers_with_chunked_abstracts'] == 0
     assert stats['blobs'] == 1
@@ -262,6 +264,90 @@ def test_structured_documents_require_format_and_source(tmp_path: Path) -> None:
             corpus.add_structured_document(
                 conn, sample_paper(), '<article/>', document_format='jats', source=' ',
             )
+
+
+def test_corpus_stores_linked_and_deduplicated_figure_assets(tmp_path: Path) -> None:
+    """Keep figure provenance on links while deduplicating identical image bytes."""
+    image = b'\x89PNG\r\n\x1a\nshared image'
+    with corpus.connect(tmp_path / 'figures.db') as conn:
+        first_blob = corpus.add_figure_asset(
+            conn,
+            sample_paper('demo:figure'),
+            image,
+            figure_id='fig-1',
+            caption='Crystal structure.',
+            source='pubmed',
+            source_url='https://cdn.example/fig-1.png',
+            mime_type='image/png; charset=binary',
+            original_filename='fig-1.png',
+            license='CC BY 4.0',
+            metadata={'requested_url': 'https://repo.example/images/fig-1'},
+        )
+        second_blob = corpus.add_figure_asset(
+            conn,
+            sample_paper('demo:figure'),
+            image,
+            figure_id='fig-2',
+            caption='The same image reused.',
+            source='pubmed',
+            source_url='https://cdn.example/fig-2.png',
+            mime_type='image/png',
+            original_filename='fig-2.png',
+        )
+        assets = corpus.get_figure_assets(
+            conn, 'demo:figure', figure_id='fig-1', include_content=True,
+        )
+        stats = corpus.corpus_stats(conn)
+
+        assert corpus.has_figure_asset(
+            conn, 'demo:figure', 'https://repo.example/images/fig-1', figure_id='fig-1',
+        ) is True
+        assert corpus.has_figure_asset(
+            conn, 'demo:figure', 'https://cdn.example/fig-1.png', figure_id='fig-1',
+        ) is True
+        assert corpus.has_figure_asset(
+            conn, 'demo:figure', 'https://repo.example/images/fig-1', figure_id='fig-2',
+        ) is False
+        assert corpus.has_figure_asset(conn, 'demo:figure', '') is False
+
+    assert first_blob == second_blob
+    assert len(assets) == 1
+    assert assets[0]['content'] == image
+    assert assets[0]['sha256'] == hashlib.sha256(image).hexdigest()
+    assert assets[0]['kind'] == 'image'
+    assert assets[0]['mime_type'] == 'image/png'
+    assert assets[0]['metadata']['figure_id'] == 'fig-1'
+    assert assets[0]['metadata']['caption'] == 'Crystal structure.'
+    assert assets[0]['metadata']['license'] == 'CC BY 4.0'
+    assert stats['papers_with_figure_assets'] == 1
+
+
+@pytest.mark.parametrize(
+    ('kwargs', 'message'),
+    [
+        ({'figure_id': ' '}, 'figure_id must not be empty'),
+        ({'source': ' '}, 'source must not be empty'),
+        ({'source_url': ' '}, 'source_url must not be empty'),
+        ({'mime_type': 'text/html'}, 'mime_type must identify an image'),
+    ],
+)
+def test_figure_assets_require_image_provenance(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    """Reject figure assets whose required identity or media type is absent."""
+    arguments = {
+        'figure_id': 'fig-1',
+        'caption': '',
+        'source': 'pubmed',
+        'source_url': 'https://example.org/fig.png',
+        'mime_type': 'image/png',
+        **kwargs,
+    }
+    with corpus.connect(tmp_path / 'figures.db') as conn:
+        with pytest.raises(ValueError, match=message):
+            corpus.add_figure_asset(conn, sample_paper(), b'image', **arguments)
 
 
 def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:

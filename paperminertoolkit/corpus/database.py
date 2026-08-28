@@ -23,6 +23,7 @@ from typing import Any, TypeAlias
 SCHEMA_VERSION = 12
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 STRUCTURED_DOCUMENT_ROLE = 'structured'
+FIGURE_ASSET_ROLE = 'figure'
 PAPER_COLUMNS = [
     'paper_id',
     'doi',
@@ -1999,6 +2000,191 @@ def has_structured_document(
     ))
 
 
+def add_figure_asset(
+    conn: sqlite3.Connection,
+    paper: _PaperInput,
+    content: _BlobContent,
+    *,
+    figure_id: str,
+    caption: str,
+    source: str,
+    source_url: str,
+    mime_type: str,
+    original_filename: str = '',
+    license: str = '',
+    metadata: Mapping[str, Any] | None = None,
+    compression: str = 'gzip',
+) -> str:
+    """Store an image linked to its paper, figure, caption, and source.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : _PaperInput
+        Owning paper metadata.
+    content : _BlobContent
+        Raw image content.
+    figure_id : str
+        Identifier assigned to the containing figure by the layout parser.
+    caption : str
+        Figure caption, which may be empty when the source omits it.
+    source : str
+        Provider or repository from which the image was acquired.
+    source_url : str
+        Final URL from which the image content was retrieved.
+    mime_type : str
+        Validated image media type.
+    original_filename : str, optional
+        Source filename or a stable generated filename.
+    license : str, optional
+        Licence reported for the article or image.
+    metadata : Mapping[str, Any] or None, optional
+        Additional provenance. Explicit arguments take precedence.
+    compression : str, default='gzip'
+        Storage compression codec.
+
+    Returns
+    -------
+    str
+        Identifier of the content-addressed image blob.
+
+    Raises
+    ------
+    ValueError
+        If required provenance is empty or ``mime_type`` is not an image.
+    """
+    normalized_figure_id = figure_id.strip()
+    normalized_source = source.strip()
+    normalized_url = source_url.strip()
+    normalized_mime_type = mime_type.split(';', 1)[0].strip().lower()
+    if not normalized_figure_id:
+        raise ValueError('figure_id must not be empty')
+    if not normalized_source:
+        raise ValueError('source must not be empty')
+    if not normalized_url:
+        raise ValueError('source_url must not be empty')
+    if not normalized_mime_type.startswith('image/'):
+        raise ValueError('mime_type must identify an image')
+    asset_metadata = dict(metadata or {})
+    asset_metadata.update({
+        'figure_id': normalized_figure_id,
+        'caption': caption.strip(),
+        'source_url': normalized_url,
+    })
+    if license.strip():
+        asset_metadata['license'] = license.strip()
+    return add_asset(
+        conn,
+        paper,
+        content,
+        role=FIGURE_ASSET_ROLE,
+        kind='image',
+        mime_type=normalized_mime_type,
+        source=normalized_source,
+        original_filename=original_filename,
+        compression=compression,
+        metadata=asset_metadata,
+    )
+
+
+def get_figure_assets(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    *,
+    figure_id: str | None = None,
+    include_content: bool = False,
+) -> list[_Asset]:
+    """Load figure images linked to one paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str or None, optional
+        Restrict results to one parsed figure.
+    include_content : bool, default=False
+        Whether to decompress and include image bytes.
+
+    Returns
+    -------
+    list[_Asset]
+        Matching image assets, newest first, including their SHA-256 checksum.
+    """
+    content_columns = ', b.compression, b.content' if include_content else ''
+    rows = conn.execute(
+        f"""
+        SELECT
+            p.paper_id, p.doi, p.title, a.role, a.source, a.original_filename,
+            a.metadata_json, a.created_at,
+            b.blob_id, b.sha256, b.kind, b.mime_type, b.original_size, b.stored_size
+            {content_columns}
+        FROM paper_assets AS a
+        JOIN papers AS p ON p.paper_id = a.paper_id
+        JOIN blobs AS b ON b.blob_id = a.blob_id
+        WHERE a.paper_id = ? AND a.role = ?
+        ORDER BY a.created_at DESC, a.rowid DESC
+        """,
+        (paper_id, FIGURE_ASSET_ROLE),
+    ).fetchall()
+    wanted_figure = figure_id.strip() if figure_id is not None else None
+    assets = []
+    for row in rows:
+        asset = _asset_dict(row, include_content=include_content)
+        if wanted_figure is not None and asset['metadata'].get('figure_id') != wanted_figure:
+            continue
+        assets.append(asset)
+    return assets
+
+
+def has_figure_asset(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    source_url: str,
+    *,
+    figure_id: str | None = None,
+) -> bool:
+    """Return whether a figure URL has already been downloaded for a paper.
+
+    Both the requested and final redirected URLs are checked so interrupted
+    runs resume without requesting completed images again.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    source_url : str
+        Requested or final image URL.
+    figure_id : str or None, optional
+        Restrict the check to one parsed figure. This keeps one image URL
+        linkable from multiple figures without redownloading completed links.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset is already linked.
+    """
+    wanted_url = source_url.strip()
+    if not wanted_url:
+        return False
+    wanted_figure = figure_id.strip() if figure_id is not None else None
+    rows = conn.execute(
+        'SELECT metadata_json FROM paper_assets WHERE paper_id = ? AND role = ?',
+        (paper_id, FIGURE_ASSET_ROLE),
+    ).fetchall()
+    for row in rows:
+        metadata = json.loads(row['metadata_json'])
+        if wanted_figure is not None and metadata.get('figure_id') != wanted_figure:
+            continue
+        if wanted_url in {metadata.get('source_url'), metadata.get('requested_url')}:
+            return True
+    return False
+
+
 def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
     """Calculate corpus storage statistics.
 
@@ -2019,7 +2205,7 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
             'SELECT COUNT(DISTINCT paper_id) FROM paper_assets WHERE role = ?',
             (role,),
         ).fetchone()[0]
-        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE]
+        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE, FIGURE_ASSET_ROLE]
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
     chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
@@ -2032,6 +2218,7 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
         'papers_with_text': asset_counts['text'],
         'papers_with_pdf': asset_counts['pdf'],
         'papers_with_structured_documents': asset_counts[STRUCTURED_DOCUMENT_ROLE],
+        'papers_with_figure_assets': asset_counts[FIGURE_ASSET_ROLE],
         'papers_with_chunked_text': chunked_text,
         'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,

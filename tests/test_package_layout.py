@@ -37,6 +37,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.providers.unpaywall',
     'paperminertoolkit.workflows.download',
     'paperminertoolkit.workflows.enrichment',
+    'paperminertoolkit.workflows.figures',
     'paperminertoolkit.workflows.imports',
     'paperminertoolkit.workflows.search',
     'paperminertoolkit.workflows.topics',
