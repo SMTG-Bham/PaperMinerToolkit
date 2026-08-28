@@ -45,7 +45,6 @@ which is the difference between a slow search and one that looks hung.
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
@@ -808,16 +807,62 @@ def resolve_doi(server: RxivServer, paper: Mapping[str, Any]) -> str:
     return ''
 
 
-def full_text(server: RxivServer,
-              entry: Mapping[str, Any],
-              session: provider.HTTPClient | None = None) -> str:
-    """Fetch and flatten a preprint's JATS full text.
+def full_text_document(
+    server: RxivServer,
+    entry: Mapping[str, Any],
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch a preprint's JATS and derive its plain text in memory.
 
     Every record names a JATS document, which is the same format PubMed Central
     serves, so :mod:`paperminertoolkit.providers.pubmed`'s flattener is reused rather than
     reimplemented. Taking the text from JATS rather than from the PDF also
     skips a scrape: the structure this walks is the one the archive published,
     not one recovered from a page layout.
+
+    Parameters
+    ----------
+    server : RxivServer
+        Archive being addressed.
+    entry : Mapping[str, Any]
+        Normalized record from :func:`record_to_paper`.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Plain text and the untouched JATS response, or an empty result when no
+        document body is available.
+
+    Raises
+    ------
+    RuntimeError
+        If the request cannot be completed or the payload is not well-formed.
+    """
+    url = provider.clean_text(entry.get('jatsxml'))
+    if not url:
+        return provider.FullTextDocument('')
+    response = request(server, url, session=session)
+    if response is None:
+        return provider.FullTextDocument('')
+    content = response.text or ''
+    text = pubmed.jats_plain_text(content, label=server.label)
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='jats',
+        source_url=url,
+        source_identifier=str(entry.get(server.id_column) or ''),
+    )
+
+
+def full_text(server: RxivServer,
+              entry: Mapping[str, Any],
+              session: provider.HTTPClient | None = None) -> str:
+    """Fetch and flatten a preprint's JATS full text.
 
     Parameters
     ----------
@@ -838,24 +883,7 @@ def full_text(server: RxivServer,
     RuntimeError
         If the request cannot be completed or the payload is not well-formed.
     """
-    url = provider.clean_text(entry.get('jatsxml'))
-    if not url:
-        return ''
-    response = request(server, url, session=session)
-    if response is None:
-        return ''
-    text = response.text or ''
-    if not text.strip():
-        return ''
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as error:
-        raise RuntimeError(f'{server.label} returned malformed JATS XML: {error}') from error
-    title = pubmed._element_text(root.find('.//article-title'))
-    body = pubmed._jats_body_text(root)
-    if not body:
-        return ''
-    return f'{title}\n\n{body}'.strip() if title else body
+    return full_text_document(server, entry, session=session).text
 
 
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:

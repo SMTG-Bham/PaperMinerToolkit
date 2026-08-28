@@ -25,12 +25,14 @@ from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
 from typing import Any, TypeAlias
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed, unpaywall)
-from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS, add_asset, connect,
+from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS, add_asset,
+                                add_structured_document, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
+from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
 from paperminertoolkit.settings import load_settings
 
@@ -40,6 +42,7 @@ DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT
 # Providers that serve a machine-readable full text rather than only a PDF.
 TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
+_TextDownloadResult: TypeAlias = tuple[bool, str, provider.FullTextDocument | None]
 
 
 def _elsevier_string_formatter(text: str) -> str:
@@ -462,7 +465,7 @@ def _should_try_pmc_text(paper: Mapping[str, Any]) -> bool:
 def _download_pmc_text(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
-) -> tuple[bool, str]:
+) -> _TextDownloadResult:
     """Write PubMed Central open-access full text for one paper row.
 
     Parameters
@@ -474,8 +477,9 @@ def _download_pmc_text(
 
     Returns
     -------
-    tuple[bool, str]
-        Success flag, and an empty string or a failure reason.
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, an empty string or failure reason, and the retrieved JATS
+        document when successful.
 
     Raises
     ------
@@ -486,15 +490,15 @@ def _download_pmc_text(
     try:
         pmcid = pubmed.resolve_pmcid(paper, api_key=api_key, email=email)
         if not pmcid:
-            return False, 'missing PMC ID'
-        text = pubmed.pmc_full_text(pmcid, api_key=api_key, email=email)
+            return False, 'missing PMC ID', None
+        document = pubmed.pmc_full_text_document(pmcid, api_key=api_key, email=email)
     except RuntimeError as e:
-        return False, str(e)
-    if not text:
-        return False, f'no open-access full text for {pmcid}'
+        return False, str(e), None
+    if not document.text:
+        return False, f'no open-access full text for {pmcid}', None
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(text)
-    return True, ''
+        out_file.write(document.text)
+    return True, '', document
 
 
 def _download_pubmed_abstract(
@@ -621,7 +625,7 @@ def _download_medrxiv_pdf(
 def _download_medrxiv_text(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
-) -> tuple[bool, str]:
+) -> _TextDownloadResult:
     """Write medRxiv JATS full text for one paper row.
 
     Parameters
@@ -633,8 +637,9 @@ def _download_medrxiv_text(
 
     Returns
     -------
-    tuple[bool, str]
-        Success flag, and an empty string or a failure reason.
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, an empty string or failure reason, and the retrieved JATS
+        document when successful.
 
     Raises
     ------
@@ -643,16 +648,16 @@ def _download_medrxiv_text(
     """
     entry, error = _medrxiv_record(paper)
     if entry is None:
-        return False, error
+        return False, error, None
     try:
-        text = medrxiv.full_text(entry)
+        document = medrxiv.full_text_document(entry)
     except RuntimeError as e:
-        return False, str(e)
-    if not text:
-        return False, f'no medRxiv full text for {entry.get("medrxiv_doi")}'
+        return False, str(e), None
+    if not document.text:
+        return False, f'no medRxiv full text for {entry.get("medrxiv_doi")}', None
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(text)
-    return True, ''
+        out_file.write(document.text)
+    return True, '', document
 
 
 def _download_medrxiv_abstract(
@@ -764,7 +769,7 @@ def _download_biorxiv_pdf(
 def _download_biorxiv_text(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
-) -> tuple[bool, str]:
+) -> _TextDownloadResult:
     """Write bioRxiv JATS full text for one paper row.
 
     Parameters
@@ -776,8 +781,9 @@ def _download_biorxiv_text(
 
     Returns
     -------
-    tuple[bool, str]
-        Success flag, and an empty string or a failure reason.
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, an empty string or failure reason, and the retrieved JATS
+        document when successful.
 
     Raises
     ------
@@ -786,16 +792,16 @@ def _download_biorxiv_text(
     """
     entry, error = _biorxiv_record(paper)
     if entry is None:
-        return False, error
+        return False, error, None
     try:
-        text = biorxiv.full_text(entry)
+        document = biorxiv.full_text_document(entry)
     except RuntimeError as e:
-        return False, str(e)
-    if not text:
-        return False, f'no bioRxiv full text for {entry.get("biorxiv_doi")}'
+        return False, str(e), None
+    if not document.text:
+        return False, f'no bioRxiv full text for {entry.get("biorxiv_doi")}', None
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(text)
-    return True, ''
+        out_file.write(document.text)
+    return True, '', document
 
 
 def _download_biorxiv_abstract(
@@ -1420,7 +1426,7 @@ def _download_text_from_sources(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
     sources: Iterable[str],
-) -> tuple[bool, str, str]:
+) -> _TextDownloadResult:
     """Try each requested full-text source in order and report the outcome.
 
     Elsevier is one of these sources rather than a separate flag threaded
@@ -1438,9 +1444,9 @@ def _download_text_from_sources(
 
     Returns
     -------
-    tuple[bool, str, str]
-        Success flag, provider name or joined failure reasons, and an empty
-        string reserved for a source URL.
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, provider name or joined failure reasons, and any
+        structured document returned alongside the plain text.
     """
     requested = set(sources)
     errors = []
@@ -1451,13 +1457,15 @@ def _download_text_from_sources(
             continue
         try:
             downloader = registry.resolve_handler(name, registry.TEXT)
-            ok, detail = downloader(paper, filepath)
+            result = downloader(paper, filepath)
+            ok, detail = result[:2]
+            document = result[2] if len(result) > 2 else None
             if ok:
-                return True, name, ''
+                return True, name, document
             errors.append(f'{name}: {detail}')
         except Exception as e:
             errors.append(f'{name}: {e}')
-    return False, '; '.join(errors) or 'no full-text source available', ''
+    return False, '; '.join(errors) or 'no full-text source available', None
 
 
 def _should_try_elsevier_text(paper: Mapping[str, Any]) -> bool:
@@ -1522,6 +1530,54 @@ def _store_downloaded_asset(
         mime_type=mime_type,
         source=source,
         original_filename=os.path.basename(filepath),
+    )
+
+
+def _store_structured_text_document(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    source: str,
+    document: provider.FullTextDocument | None,
+) -> None:
+    """Store structured content returned with a successful text download.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : Mapping[str, Any]
+        Owning corpus paper.
+    source : str
+        Provider name selected by the download workflow.
+    document : provider.FullTextDocument or None
+        Provider result carrying the original structured content.
+
+    Returns
+    -------
+    None
+        A structured asset is linked when content is available.
+    """
+    if not isinstance(document, provider.FullTextDocument) or not document.has_structured_content:
+        return
+    filename = Path(urlparse(document.source_url).path).name
+    if not filename:
+        identifier = document.source_identifier or paper.get('paper_id') or 'article'
+        filename = f'{str(identifier).replace("/", "_")}.xml'
+    metadata = dict(document.metadata)
+    metadata.update({
+        'source_url': document.source_url,
+        'source_identifier': document.source_identifier,
+        'publisher_native': True,
+    })
+    add_structured_document(
+        conn,
+        paper,
+        document.content,
+        document_format=document.document_format,
+        source=source,
+        original_filename=filename,
+        mime_type=document.mime_type,
+        metadata=metadata,
     )
 
 
@@ -1689,7 +1745,7 @@ def _download_paper(
     if text_attempt_needed:
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
         try:
-            ok, text_source_or_error, _ = _download_text_from_sources(
+            ok, text_source_or_error, structured_document = _download_text_from_sources(
                 paper, text_filepath, sources)
             if ok:
                 paper['text_path'] = ''
@@ -1697,6 +1753,12 @@ def _download_paper(
                 _set_status(paper, 'text_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, text_filepath, role='text',
                                         source=text_source_or_error)
+                _store_structured_text_document(
+                    conn,
+                    paper,
+                    text_source_or_error,
+                    structured_document,
+                )
                 summary['texts'] += 1
             else:
                 _set_status(paper, 'text_download_status', 'failed', text_source_or_error)

@@ -1232,6 +1232,97 @@ def _jats_body_text(root: ET.Element) -> str:
     return '\n\n'.join(blocks)
 
 
+def jats_plain_text(content: str, label: str = 'JATS') -> str:
+    """Derive plain article text from a complete JATS document.
+
+    Parameters
+    ----------
+    content : str
+        Complete JATS XML document.
+    label : str, default='JATS'
+        Provider label used in malformed-document errors.
+
+    Returns
+    -------
+    str
+        Article title and body prose, or an empty string when no body exists.
+
+    Raises
+    ------
+    RuntimeError
+        If ``content`` is not well-formed XML.
+    """
+    if not content.strip():
+        return ''
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        raise RuntimeError(f'{label} returned malformed JATS XML: {error}') from error
+    error_text = _error_text(root)
+    if error_text:
+        raise RuntimeError(f'{label} rejected the request: {error_text}')
+    title = _element_text(root.find('.//article-title'))
+    body = _jats_body_text(root)
+    if not body:
+        return ''
+    return f'{title}\n\n{body}'.strip() if title else body
+
+
+def pmc_full_text_document(
+    pmcid: str,
+    api_key: str | None = None,
+    email: str = '',
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch one PMC JATS document and derive its plain text in memory.
+
+    Parameters
+    ----------
+    pmcid : str
+        PubMed Central identifier.
+    api_key : str or None, optional
+        NCBI API key to attach.
+    email : str, default=''
+        Contact email address sent with the request.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Plain text and the untouched JATS response. Both are empty when the
+        identifier or article body is unavailable.
+
+    Raises
+    ------
+    RuntimeError
+        If the E-utilities request fails or returns malformed JATS.
+    """
+    identifier = normalize_pmcid(pmcid)
+    if not identifier:
+        return provider.FullTextDocument('')
+    response = request(
+        EFETCH_URL,
+        params={'db': 'pmc', 'id': identifier[3:], 'retmode': 'xml'},
+        api_key=api_key,
+        email=email,
+        session=session,
+    )
+    if response is None or not (response.text or '').strip():
+        return provider.FullTextDocument('')
+    content = response.text
+    text = jats_plain_text(content, label='NCBI')
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='jats',
+        source_url=EFETCH_URL,
+        source_identifier=identifier,
+    )
+
+
 def pmc_full_text(pmcid: str,
                   api_key: str | None = None,
                   email: str = '',

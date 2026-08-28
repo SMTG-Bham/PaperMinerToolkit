@@ -532,6 +532,20 @@ def test_pmc_full_text_flattens_prose_and_skips_tables_figures_and_references() 
     assert session.calls[0]['params']['id'] == '9876543'
 
 
+def test_pmc_full_text_document_preserves_the_jats_from_the_same_request() -> None:
+    """Return untouched JATS and derived text without fetching the paper twice."""
+    content = jats_article()
+    session = FakeSession([FakeResponse(text=content)])
+
+    document = pubmed.pmc_full_text_document('PMC9876543', session=session)
+
+    assert document.content == content
+    assert document.document_format == 'jats'
+    assert document.source_identifier == 'PMC9876543'
+    assert 'Conductivity reached 1 mS/cm.' in document.text
+    assert len(session.calls) == 1
+
+
 def test_pmc_full_text_returns_empty_for_a_missing_identifier_or_body() -> None:
     """Return no text when there is nothing to fetch or no body to flatten."""
     assert pubmed.pmc_full_text('', session=FakeSession([])) == ''

@@ -318,6 +318,13 @@ subset reports that no full text is offered rather than failing. An NCBI API key
 request rate from three to ten per second, which matters most on large download runs; see
 [Credentials and model configuration](configuration.md).
 
+PMC, bioRxiv, and medRxiv text downloads retain the complete JATS response as a compressed
+structured-document asset as well as deriving the plain-text asset used by existing workflows.
+Both representations come from the same provider response, so preserving figures, captions, and
+tables does not spend a second request. The structured asset records its repository, source URL,
+source identifier, and JATS format; inspect it with the corpus asset API when building layout-aware
+workflows.
+
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.
 

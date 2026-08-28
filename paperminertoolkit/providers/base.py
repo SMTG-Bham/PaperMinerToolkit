@@ -30,6 +30,7 @@ from __future__ import annotations
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import requests
@@ -49,6 +50,44 @@ NOT_AVAILABLE = frozenset({'', 'na', 'n/a', 'none', 'null'})
 # Every limiter ever built, so a test run can reopen all of their windows
 # without having to know which source modules it happened to import.
 _LIMITERS: list['RateLimiter'] = []
+
+
+@dataclass(frozen=True, slots=True)
+class FullTextDocument:
+    """Hold derived text and its original structured article document.
+
+    Parameters
+    ----------
+    text : str
+        Plain text derived from the provider document.
+    content : str, optional
+        Unmodified structured article response. Empty when the provider only
+        supplies plain text.
+    document_format : str, optional
+        Provider-neutral structured format name, such as ``"jats"``,
+        ``"elsevier-xml"``, or ``"tei"``.
+    source_url : str, optional
+        URL from which the structured document was retrieved.
+    source_identifier : str, optional
+        Provider-native identifier for the retrieved document.
+    mime_type : str, default='application/xml'
+        Media type of ``content``.
+    metadata : Mapping[str, object] or None, optional
+        Additional provenance supplied by the provider.
+    """
+
+    text: str
+    content: str = ''
+    document_format: str = ''
+    source_url: str = ''
+    source_identifier: str = ''
+    mime_type: str = 'application/xml'
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def has_structured_content(self) -> bool:
+        """Return whether this result carries a structured source document."""
+        return bool(self.content.strip() and self.document_format.strip())
 
 
 class ResponseLike(Protocol):

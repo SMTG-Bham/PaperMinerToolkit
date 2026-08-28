@@ -33,6 +33,17 @@ def read_corpus(db_path: str | Path) -> list[dict[str, Any]]:
         return corpus.paper_rows(conn)
 
 
+def jats_download(text: str = 'Title\n\nBody text.') -> download.provider.FullTextDocument:
+    """Return one structured full-text result for download workflow tests."""
+    return download.provider.FullTextDocument(
+        text=text,
+        content='<article><body><p>Body text.</p></body></article>',
+        document_format='jats',
+        source_url='https://example.test/article.xml',
+        source_identifier='article-1',
+    )
+
+
 def test_download_parsers_cover_unusual_link_and_abstract_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -71,7 +82,8 @@ def test_pubmed_download_helpers_report_resolution_and_service_failures(
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('resolve failed')),
     )
     assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'resolve failed')
-    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'resolve failed')
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (
+        False, 'resolve failed', None)
 
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: 'PMC1')
     monkeypatch.setattr(
@@ -80,10 +92,11 @@ def test_pubmed_download_helpers_report_resolution_and_service_failures(
     )
     assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'oa failed')
     monkeypatch.setattr(
-        download.pubmed, 'pmc_full_text',
+        download.pubmed, 'pmc_full_text_document',
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('text failed')),
     )
-    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'text failed')
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (
+        False, 'text failed', None)
 
     monkeypatch.setattr(
         download.pubmed, 'resolve_pmid',
@@ -131,12 +144,13 @@ def test_preprint_text_helpers_report_provider_failures(
     """Preserve provider errors raised while downloading preprint full text."""
     monkeypatch.setattr(download, record_name, lambda paper: ({'doi': 'x'}, ''))
 
-    def fail(entry: object) -> str:
+    def fail(entry: object) -> download.provider.FullTextDocument:
         """Raise the configured provider failure."""
         raise RuntimeError(message)
 
-    monkeypatch.setattr(getattr(download, module_name), 'full_text', fail)
-    assert getattr(download, function_name)({}, tmp_path / 'paper.txt') == (False, message)
+    monkeypatch.setattr(getattr(download, module_name), 'full_text_document', fail)
+    assert getattr(download, function_name)({}, tmp_path / 'paper.txt') == (
+        False, message, None)
 
 
 def test_chemrxiv_and_arxiv_helpers_report_empty_or_failed_results(
@@ -782,7 +796,8 @@ def test_pubmed_download_helpers_keep_the_last_failure_reason(
     monkeypatch.setattr(download, '_download_url_to_pdf', lambda *args, **kwargs: (False, 'bad PDF'))
     assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'bad PDF')
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: '')
-    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (False, 'missing PMC ID')
+    assert download._download_pmc_text({}, tmp_path / 'paper.txt') == (
+        False, 'missing PMC ID', None)
 
 
 def test_download_abstract_honours_the_requested_sources(
@@ -1907,20 +1922,24 @@ def test_download_medrxiv_text_writes_the_flattened_jats(
 ) -> None:
     """Store the JATS full text medRxiv publishes beside every record."""
     monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
-    monkeypatch.setattr(download.medrxiv, 'full_text',
-                        lambda *_, **__: 'Title\n\nBody text.')
+    document = jats_download()
+    monkeypatch.setattr(download.medrxiv, 'full_text_document',
+                        lambda *_, **__: document)
     filepath = tmp_path / 'out.txt'
 
     assert download._download_medrxiv_text(
-        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, filepath) == (True, '')
+        {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, filepath) == (
+        True, '', document)
     assert filepath.read_text(encoding='utf-8') == 'Title\n\nBody text.'
 
-    monkeypatch.setattr(download.medrxiv, 'full_text', lambda *_, **__: '')
+    monkeypatch.setattr(download.medrxiv, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_medrxiv_text(
         {'medrxiv_doi': '10.1101/2024.03.01.24303596'}, filepath) == (
-        False, 'no medRxiv full text for 10.1101/2024.03.01.24303596')
+        False, 'no medRxiv full text for 10.1101/2024.03.01.24303596', None)
 
-    assert download._download_medrxiv_text({}, filepath) == (False, 'missing medRxiv DOI')
+    assert download._download_medrxiv_text({}, filepath) == (
+        False, 'missing medRxiv DOI', None)
 
 
 def test_download_medrxiv_helpers_report_a_failed_lookup(
@@ -1938,7 +1957,7 @@ def test_download_medrxiv_helpers_report_a_failed_lookup(
     assert download._download_medrxiv_abstract(row) == (
         False, 'medRxiv request failed after 4 attempts', '')
     assert download._download_medrxiv_text(row, tmp_path / 'out.txt') == (
-        False, 'medRxiv request failed after 4 attempts')
+        False, 'medRxiv request failed after 4 attempts', None)
 
     monkeypatch.setattr(download.medrxiv, 'fetch_doi', lambda *_, **__: None)
     assert download._download_medrxiv_abstract(row) == (
@@ -2027,7 +2046,7 @@ def test_download_text_from_sources_falls_through_pubmed_to_medrxiv(
 
     row = {'medrxiv_doi': '10.1101/2024.03.01.24303596'}
     assert download._download_text_from_sources(
-        row, tmp_path / 'out.txt', ['pubmed', 'medrxiv']) == (True, 'medrxiv', '')
+        row, tmp_path / 'out.txt', ['pubmed', 'medrxiv']) == (True, 'medrxiv', None)
 
     # A row with no medRxiv DOI never reaches the provider at all.
     ok, reason, _ = download._download_text_from_sources(
@@ -2140,20 +2159,24 @@ def test_download_biorxiv_text_writes_the_flattened_jats(
 ) -> None:
     """Store the JATS full text bioRxiv publishes beside every record."""
     monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
-    monkeypatch.setattr(download.biorxiv, 'full_text',
-                        lambda *_, **__: 'Title\n\nBody text.')
+    document = jats_download()
+    monkeypatch.setattr(download.biorxiv, 'full_text_document',
+                        lambda *_, **__: document)
     filepath = tmp_path / 'out.txt'
 
     assert download._download_biorxiv_text(
-        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, filepath) == (True, '')
+        {'biorxiv_doi': '10.1101/2023.12.01.569634'}, filepath) == (
+        True, '', document)
     assert filepath.read_text(encoding='utf-8') == 'Title\n\nBody text.'
 
-    monkeypatch.setattr(download.biorxiv, 'full_text', lambda *_, **__: '')
+    monkeypatch.setattr(download.biorxiv, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_biorxiv_text(
         {'biorxiv_doi': '10.1101/2023.12.01.569634'}, filepath) == (
-        False, 'no bioRxiv full text for 10.1101/2023.12.01.569634')
+        False, 'no bioRxiv full text for 10.1101/2023.12.01.569634', None)
 
-    assert download._download_biorxiv_text({}, filepath) == (False, 'missing bioRxiv DOI')
+    assert download._download_biorxiv_text({}, filepath) == (
+        False, 'missing bioRxiv DOI', None)
 
 
 def test_download_biorxiv_helpers_report_a_failed_lookup(
@@ -2171,7 +2194,7 @@ def test_download_biorxiv_helpers_report_a_failed_lookup(
     assert download._download_biorxiv_abstract(row) == (
         False, 'bioRxiv request failed after 4 attempts', '')
     assert download._download_biorxiv_text(row, tmp_path / 'out.txt') == (
-        False, 'bioRxiv request failed after 4 attempts')
+        False, 'bioRxiv request failed after 4 attempts', None)
 
     monkeypatch.setattr(download.biorxiv, 'fetch_doi', lambda *_, **__: None)
     assert download._download_biorxiv_abstract(row) == (
@@ -2265,7 +2288,7 @@ def test_download_text_from_sources_falls_through_medrxiv_to_biorxiv(
 
     row = {'biorxiv_doi': '10.1101/2023.12.01.569634'}
     assert download._download_text_from_sources(
-        row, tmp_path / 'out.txt', ['medrxiv', 'biorxiv']) == (True, 'biorxiv', '')
+        row, tmp_path / 'out.txt', ['medrxiv', 'biorxiv']) == (True, 'biorxiv', None)
 
     # A row with no bioRxiv DOI never reaches the provider at all.
     ok, reason, _ = download._download_text_from_sources(
@@ -2498,15 +2521,62 @@ def test_download_pmc_text_writes_open_access_full_text(
     """Write PMC full text to disk and report an absent record cleanly."""
     monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *_, **__: 'PMC1')
-    monkeypatch.setattr(download.pubmed, 'pmc_full_text', lambda *_, **__: 'Full text body.')
+    document = jats_download('Full text body.')
+    monkeypatch.setattr(download.pubmed, 'pmc_full_text_document',
+                        lambda *_, **__: document)
 
     filepath = tmp_path / 'paper.txt'
-    assert download._download_pmc_text({'pmcid': 'PMC1'}, filepath) == (True, '')
+    assert download._download_pmc_text({'pmcid': 'PMC1'}, filepath) == (
+        True, '', document)
     assert filepath.read_text(encoding='utf-8') == 'Full text body.'
 
-    monkeypatch.setattr(download.pubmed, 'pmc_full_text', lambda *_, **__: '')
+    monkeypatch.setattr(download.pubmed, 'pmc_full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_pmc_text({'pmcid': 'PMC1'}, filepath) == (
-        False, 'no open-access full text for PMC1')
+        False, 'no open-access full text for PMC1', None)
+
+
+def test_download_paper_stores_plain_text_and_original_jats(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Persist both representations returned by one full-text acquisition."""
+    db_path = tmp_path / 'papers.db'
+    paper = {'paper_id': 'pmcid:PMC1', 'pmcid': 'PMC1'}
+    write_corpus(db_path, [paper])
+    document = jats_download('Derived text.')
+
+    def download_text(
+        row: Mapping[str, Any],
+        filepath: str | os.PathLike[str],
+        sources: Iterable[str],
+    ) -> tuple[bool, str, download.provider.FullTextDocument]:
+        """Write derived text and return the single acquired JATS document."""
+        Path(filepath).write_text(document.text, encoding='utf-8')
+        return True, 'pubmed', document
+
+    monkeypatch.setattr(download, '_download_text_from_sources', download_text)
+    monkeypatch.setattr(download, '_source_reachable', lambda *args: True)
+
+    with corpus.connect(db_path) as conn:
+        summary = download._download_paper(
+            conn,
+            paper,
+            tmp_path,
+            'text',
+            ['pubmed'],
+            download_abstract=False,
+        )
+        text_asset = corpus.get_asset(conn, paper['paper_id'], 'text')
+        documents = corpus.get_structured_documents(conn, paper['paper_id'])
+
+    assert summary['texts'] == 1
+    assert text_asset is not None and text_asset['content'] == b'Derived text.'
+    assert len(documents) == 1
+    assert documents[0]['content'].decode() == document.content
+    assert documents[0]['source'] == 'pubmed'
+    assert documents[0]['metadata']['document_format'] == 'jats'
+    assert documents[0]['metadata']['source_url'] == document.source_url
 
 
 def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
@@ -2521,7 +2591,7 @@ def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
 
     filepath = tmp_path / 'paper.txt'
     assert download._download_text_from_sources(
-        {'pmid': '1'}, filepath, ['elsevier', 'pubmed']) == (True, 'pubmed', '')
+        {'pmid': '1'}, filepath, ['elsevier', 'pubmed']) == (True, 'pubmed', None)
 
     monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (False, 'not open access'))
     ok, detail, _ = download._download_text_from_sources(
@@ -2535,7 +2605,7 @@ def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
     assert detail == 'pubmed: not open access'
 
     assert download._download_text_from_sources({}, filepath, []) == (
-        False, 'no full-text source available', '')
+        False, 'no full-text source available', None)
 
 
 def test_download_papers_allows_text_without_elsevier_when_pubmed_is_selected(
