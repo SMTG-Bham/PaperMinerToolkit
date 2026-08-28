@@ -493,6 +493,7 @@ def xml_plain_text(content: str) -> str:
     blocks: list[str] = []
 
     def walk(node: ET.Element) -> None:
+        """Append prose blocks from one non-skipped XML subtree."""
         name = _local_name(node.tag)
         if name in skip:
             return

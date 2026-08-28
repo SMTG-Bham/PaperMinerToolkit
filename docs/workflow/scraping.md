@@ -49,6 +49,14 @@ pmt scrape papers.db sse \
 
 When both modes produce records, the text model reconciles matching records into `text+image` rows. Image extraction uses embedded PDF images when possible and otherwise renders pages. Override this with `--image-extraction embedded` or `--image-extraction pages`. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
 
+The Python API also provides `detect_pdf_layout` and `render_pdf_figures` in
+`paperminertoolkit.corpus.pdf_layout`. This deterministic PyMuPDF fallback detects `Figure`,
+`Fig.`, and `Table` captions, joins wrapped captions within a column, and associates them with
+nearby raster or vector geometry. Confident figure regions are rendered with configurable padding
+and resolution; uncertain associations render the complete source page. Panel detection is not
+performed. CLI vision integration is introduced separately so existing image modes retain their
+current behavior until the layout-aware path is selected explicitly.
+
 ## Context limits and compression
 
 PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.

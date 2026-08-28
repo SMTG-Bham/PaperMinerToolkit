@@ -13,6 +13,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.corpus.filtering',
     'paperminertoolkit.corpus.layout',
     'paperminertoolkit.corpus.metadata',
+    'paperminertoolkit.corpus.pdf_layout',
     'paperminertoolkit.extraction.compression',
     'paperminertoolkit.extraction.extract',
     'paperminertoolkit.extraction.models',
