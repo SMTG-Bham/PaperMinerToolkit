@@ -185,13 +185,15 @@ SOURCES: dict[str, Source] = {
                 credential='crossref_email', credential_env='CROSSREF_EMAIL',
                 setup_command='pmt config crossref-email',
                 enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_crossref'),
-        _source('openalex', 'OpenAlex', 'openalex', [SEARCH, ENRICH, PDF, ABSTRACT],
+        _source('openalex', 'OpenAlex', 'openalex', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='openalex_id', credential='openalex_api_key',
                 credential_env='OPENALEX_API_KEY', setup_command='pmt config openalex-key',
                 open_access=True,
                 search_handler='paperminertoolkit.workflows.search:openalex_search',
                 enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_openalex',
                 pdf_handler='paperminertoolkit.workflows.download:_download_openalex_pdf',
+                text_handler='paperminertoolkit.workflows.download:_download_openalex_tei_text',
+                text_reachable='paperminertoolkit.workflows.download:_should_try_openalex_tei',
                 abstract_handler='paperminertoolkit.workflows.download:_download_openalex_abstract',
                 abstract_reachable='paperminertoolkit.workflows.download:_openalex_identifier'),
         _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
@@ -268,16 +270,17 @@ SOURCES: dict[str, Source] = {
 # Search puts arXiv last because a published record should win over its
 # preprint. PDF download leads with the open-access resolvers, which are both
 # free and most likely to hold something. Abstracts lead with the providers that
-# serve one directly from metadata already in hand. Text lists only the four
-# sources that serve machine-readable full text rather than a PDF. Enrichment
-# order is also the field precedence: Crossref is the registration authority, so
-# it wins, and the preprint servers fill in behind everything else.
+# serve one directly from metadata already in hand. Text puts native structured
+# sources first and OpenAlex GROBID TEI last because it is PDF-derived and
+# metered. Enrichment order is also the field precedence: Crossref is the
+# registration authority, so it wins, and the preprint servers fill in behind
+# everything else.
 SEARCH_ORDER = ('elsevier', 'core', 'openalex', 'pubmed', 'arxiv',
                 'medrxiv', 'biorxiv', 'chemrxiv')
 ENRICH_ORDER = ('crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv')
 PDF_ORDER = ('unpaywall', 'openalex', 'core', 'elsevier', 'pubmed',
              'medrxiv', 'biorxiv', 'chemrxiv', 'arxiv')
-TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv')
+TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv', 'openalex')
 ABSTRACT_ORDER = ('openalex', 'pubmed', 'medrxiv', 'biorxiv', 'chemrxiv',
                   'arxiv', 'core', 'elsevier')
 ORDERS: dict[str, tuple[str, ...]] = {

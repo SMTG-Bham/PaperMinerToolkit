@@ -363,6 +363,49 @@ def _download_openalex_pdf(
     return False, last_error
 
 
+def _should_try_openalex_tei(paper: Mapping[str, Any]) -> bool:
+    """Return whether a paper can be checked for OpenAlex GROBID content."""
+    return _openalex_identifier(paper) is not None
+
+
+def _download_openalex_tei_text(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> _TextDownloadResult:
+    """Download metered OpenAlex GROBID TEI as the final text fallback.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a DOI or OpenAlex identifier.
+    filepath : str or os.PathLike[str]
+        Destination for TEI-derived plain text.
+
+    Returns
+    -------
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, failure detail, and PDF-derived TEI when successful.
+    """
+    identifier = _openalex_identifier(paper)
+    if identifier is None:
+        return False, 'missing DOI or OpenAlex ID', None
+    api_key = openalex.configured_api_key()
+    if not api_key:
+        return False, 'OpenAlex GROBID downloads require an API key', None
+    try:
+        work = openalex.get_work(identifier, api_key=api_key)
+        if not work:
+            return False, f'no OpenAlex work found for {identifier}', None
+        document = openalex.full_text_document(work, api_key)
+    except (RuntimeError, ValueError) as error:
+        return False, str(error), None
+    if not document.text:
+        return False, f'no OpenAlex GROBID XML found for {identifier}', None
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(document.text)
+    return True, '', document
+
+
 def _pubmed_identifier(paper: Mapping[str, Any]) -> str | None:
     """Resolve a stored PubMed identifier for a paper row.
 
@@ -1634,7 +1677,8 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     'Text download requires an Elsevier API key, the pubmed source, or a '
                     'preprint-server source. Run pmt config elsevier-key first, pass --source pubmed '
                     'for PubMed Central open-access full text, or pass --source medrxiv or '
-                    '--source biorxiv for preprint JATS full text.'
+                    '--source biorxiv for preprint JATS full text. OpenAlex GROBID TEI can be used '
+                    'as a paid fallback with --source openalex and a configured OpenAlex key.'
                 )
         if download_format in {'pdf', 'both'} and not sources:
             missing_pdf = force or any(

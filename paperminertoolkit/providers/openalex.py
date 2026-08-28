@@ -20,6 +20,7 @@ from paperminertoolkit.settings import load_settings
 BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
+CONTENT_BASE_URL = 'https://content.openalex.org/works'
 # OpenAlex documents ten requests a second; pacing at that rate keeps a long
 # cursor walk inside the published limit instead of relying on it not noticing.
 OPENALEX_MIN_INTERVAL = 0.1
@@ -38,6 +39,8 @@ WORK_SELECT_FIELDS = (
     'primary_location',
     'best_oa_location',
     'open_access',
+    'has_content',
+    'content_urls',
     'authorships',
     'is_authors_truncated',
     'cited_by_count',
@@ -469,3 +472,133 @@ def pdf_candidates(work: Mapping[str, Any]) -> list[str]:
         candidates.append((location or {}).get('pdf_url'))
     candidates.append((work.get('open_access') or {}).get('oa_url'))
     return list(dict.fromkeys(url for url in candidates if url))
+
+
+def grobid_xml_url(work: Mapping[str, Any]) -> str:
+    """Return the paid OpenAlex GROBID TEI endpoint for one work.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record containing ``has_content`` or ``content_urls``.
+
+    Returns
+    -------
+    str
+        TEI content URL, or an empty string when no GROBID parse is available.
+    """
+    content_urls = work.get('content_urls') or {}
+    if isinstance(content_urls, Mapping) and content_urls.get('grobid_xml'):
+        return str(content_urls['grobid_xml'])
+    has_content = work.get('has_content') or {}
+    if not isinstance(has_content, Mapping) or not has_content.get('grobid_xml'):
+        return ''
+    identifier = work_id(work)
+    return f'{CONTENT_BASE_URL}/{identifier}.grobid-xml' if identifier else ''
+
+
+def request_content(
+    url: str,
+    api_key: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+    attempts: int = 4,
+) -> provider.ResponseLike | None:
+    """Download one metered OpenAlex full-text content object.
+
+    Parameters
+    ----------
+    url : str
+        URL under ``content.openalex.org``.
+    api_key : str
+        OpenAlex API key. Content downloads do not support keyless access.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : float, default=60
+        Request timeout in seconds.
+    attempts : int, default=4
+        Maximum request attempts.
+
+    Returns
+    -------
+    provider.ResponseLike or None
+        Content response, or ``None`` for a missing object.
+
+    Raises
+    ------
+    ValueError
+        If no API key is supplied.
+    RuntimeError
+        If the request is rejected or cannot be completed.
+    """
+    if not api_key.strip():
+        raise ValueError('OpenAlex GROBID downloads require an API key')
+    return provider.request(
+        url,
+        label='OpenAlex content',
+        limiter=LIMITER,
+        params={'api_key': api_key},
+        headers=request_headers(),
+        session=session,
+        timeout=timeout,
+        attempts=attempts,
+        client_error=_terminal_error,
+    )
+
+
+def full_text_document(
+    work: Mapping[str, Any],
+    api_key: str,
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch OpenAlex GROBID TEI and derive text and layout-safe metadata.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record advertising GROBID content.
+    api_key : str
+        OpenAlex API key used by the metered content endpoint.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        PDF-derived TEI and plain text, or an empty result when unavailable.
+
+    Raises
+    ------
+    ValueError
+        If the API key is absent or the response is not TEI.
+    RuntimeError
+        If the content request fails.
+    """
+    url = grobid_xml_url(work)
+    if not url:
+        return provider.FullTextDocument('')
+    response = request_content(url, api_key, session=session)
+    if response is None or not (response.text or '').strip():
+        return provider.FullTextDocument('')
+    content = response.text
+    identifier = work_id(work)
+    from paperminertoolkit.corpus.xml_layout import parse_tei_layout
+    layout = parse_tei_layout(content, f'openalex:{identifier}', source_identifier=identifier)
+    parts = [layout.title]
+    parts.extend(block.text for block in layout.iter_text_blocks())
+    text = '\n\n'.join(part for part in parts if part).strip()
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='tei',
+        source_url=url,
+        source_identifier=identifier,
+        metadata={
+            'publisher_native': False,
+            'derived_from': 'pdf',
+            'parser': 'grobid',
+            'estimated_cost_usd': 0.01,
+        },
+    )

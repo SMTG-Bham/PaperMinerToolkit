@@ -334,6 +334,21 @@ that explicitly cross-references a figure or table. Namespace prefixes and missi
 identifiers are handled locally so one sparse element does not discard the rest of the article;
 an XML document that is not well formed is rejected explicitly.
 
+When Elsevier, PMC, bioRxiv, and medRxiv cannot supply native structured full text, OpenAlex can
+provide GROBID TEI generated from a cached PDF:
+
+```bash
+pmt download papers.db --format text --source openalex
+```
+
+This fallback requires an OpenAlex API key and the content service currently charges **$0.01 per
+download**. Native providers remain ahead of OpenAlex when several sources are selected. Existing
+text is not sent to the paid fallback unless `--force` is used. Stored TEI metadata records that it
+is PDF-derived, the GROBID parser, source URL, and estimated request cost. GROBID output is useful
+but not publisher-authored: multi-column reading order, figures, references, and coordinates can
+be missing or wrong; scanned or image-only PDFs may yield no usable text. `parse_tei_layout`
+normalizes the available TEI structure and coordinates without treating it as native XML.
+
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.
 

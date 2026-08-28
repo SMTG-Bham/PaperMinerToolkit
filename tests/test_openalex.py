@@ -82,6 +82,70 @@ def test_work_to_paper_without_doi_uses_openalex_identifier() -> None:
     assert openalex.work_to_paper({})['paper_id'] == ''
 
 
+def test_grobid_content_urls_use_metadata_then_the_canonical_endpoint() -> None:
+    """Prefer API-provided URLs and build one only when availability is explicit."""
+    record = work()
+    record['content_urls'] = {'grobid_xml': 'https://content.openalex.org/custom.xml'}
+    assert openalex.grobid_xml_url(record) == 'https://content.openalex.org/custom.xml'
+
+    record['content_urls'] = None
+    record['has_content'] = {'grobid_xml': True}
+    assert openalex.grobid_xml_url(record) == (
+        'https://content.openalex.org/works/W123.grobid-xml'
+    )
+    record['has_content'] = {'grobid_xml': False}
+    assert openalex.grobid_xml_url(record) == ''
+    assert openalex.grobid_xml_url({'has_content': {'grobid_xml': True}}) == ''
+
+
+def test_full_text_document_downloads_metered_tei_and_records_cost() -> None:
+    """Fetch TEI once with the key and identify it as a paid PDF-derived parse."""
+    tei = '''<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><fileDesc>
+      <titleStmt><title>Parsed paper</title></titleStmt></fileDesc></teiHeader>
+      <text><body><div><head>Results</head><p>Measured text.</p></div></body></text>
+    </TEI>'''
+    record = work()
+    record['has_content'] = {'grobid_xml': True}
+    session = FakeSession([FakeResponse(text=tei)])
+
+    document = openalex.full_text_document(record, 'openalex-key', session=session)
+
+    assert document.content == tei
+    assert document.document_format == 'tei'
+    assert document.source_identifier == 'W123'
+    assert document.text == 'Parsed paper\n\nMeasured text.'
+    assert document.metadata['publisher_native'] is False
+    assert document.metadata['derived_from'] == 'pdf'
+    assert document.metadata['estimated_cost_usd'] == 0.01
+    assert len(session.calls) == 1
+    assert session.calls[0]['params'] == {'api_key': 'openalex-key'}
+
+
+def test_openalex_content_requires_a_key_and_handles_missing_content() -> None:
+    """Reject keyless paid access and return empty results for absent objects."""
+    with pytest.raises(ValueError, match='require an API key'):
+        openalex.request_content('https://content.openalex.org/works/W1.grobid-xml', '')
+    assert openalex.full_text_document(work(), 'key').text == ''
+
+    record = work()
+    record['has_content'] = {'grobid_xml': True}
+    assert openalex.full_text_document(
+        record,
+        'key',
+        session=FakeSession([FakeResponse(status_code=404)]),
+    ).text == ''
+    assert openalex.full_text_document(
+        record,
+        'key',
+        session=FakeSession([FakeResponse(text='   ')]),
+    ).text == ''
+    assert openalex.full_text_document(
+        record,
+        'key',
+        session=FakeSession([FakeResponse(text='<TEI xmlns="http://www.tei-c.org/ns/1.0"/>')]),
+    ).text == ''
+
+
 def test_request_json_honors_retry_after_and_backoff_delays(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sleep for Retry-After seconds when numeric and exponential backoff otherwise."""
     sleeps = []

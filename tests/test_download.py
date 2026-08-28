@@ -268,6 +268,30 @@ def test_full_text_uri_and_download_text_success_and_failure(
     assert download._download_text({'elsevier_link': ''}, str(out_path)) is False
 
 
+def test_download_elsevier_text_returns_native_document_and_clear_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Return the XML-bearing provider result from the registered text handler."""
+    filepath = tmp_path / 'paper.txt'
+    assert download._download_elsevier_text({}, filepath) == (
+        False, 'missing Elsevier full-text URL', None)
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
+    monkeypatch.setattr(download.elsevier, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
+    paper = {'doi': '10.1/x'}
+    assert download._download_elsevier_text(paper, filepath) == (
+        False, 'Elsevier text download failed', None)
+
+    document = download.provider.FullTextDocument(
+        'Derived text.', '<article/>', 'elsevier-xml', source_identifier='10.1/x',
+    )
+    monkeypatch.setattr(download.elsevier, 'full_text_document',
+                        lambda *_, **__: document)
+    assert download._download_elsevier_text(paper, filepath) == (True, '', document)
+    assert filepath.read_text(encoding='utf-8') == 'Derived text.'
+
+
 def test_pdf_urls_and_safe_filename_build_expected_values() -> None:
     """PDF URLs and safe filename build expected values."""
     paper = {'doi': '10.1234/a b', 'elsevier_link': "x 'uri' full-text"}
@@ -536,6 +560,91 @@ def test_download_openalex_abstract_reconstructs_inverted_index(
     )
 
 
+def test_download_openalex_tei_reports_failures_and_writes_derived_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Use GROBID only with a key and preserve the provider result on success."""
+    filepath = tmp_path / 'paper.txt'
+    assert download._download_openalex_tei_text({}, filepath) == (
+        False, 'missing DOI or OpenAlex ID', None)
+    monkeypatch.setattr(download.openalex, 'configured_api_key', lambda: None)
+    assert download._download_openalex_tei_text({'doi': '10.1/x'}, filepath) == (
+        False, 'OpenAlex GROBID downloads require an API key', None)
+
+    monkeypatch.setattr(download.openalex, 'configured_api_key', lambda: 'key')
+    monkeypatch.setattr(
+        download.openalex,
+        'get_work',
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError('budget exhausted')),
+    )
+    assert download._download_openalex_tei_text({'doi': '10.1/x'}, filepath) == (
+        False, 'budget exhausted', None)
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: None)
+    assert download._download_openalex_tei_text({'doi': '10.1/x'}, filepath) == (
+        False, 'no OpenAlex work found for doi:10.1/x', None)
+
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: {'id': 'W1'})
+    monkeypatch.setattr(download.openalex, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
+    assert download._download_openalex_tei_text({'doi': '10.1/x'}, filepath) == (
+        False, 'no OpenAlex GROBID XML found for doi:10.1/x', None)
+
+    document = download.provider.FullTextDocument(
+        'Derived GROBID text.',
+        '<TEI/>',
+        'tei',
+        'https://content.openalex.org/works/W1.grobid-xml',
+        'W1',
+        metadata={'publisher_native': False, 'estimated_cost_usd': 0.01},
+    )
+    monkeypatch.setattr(download.openalex, 'full_text_document',
+                        lambda *_, **__: document)
+    assert download._download_openalex_tei_text({'doi': '10.1/x'}, filepath) == (
+        True, '', document)
+    assert filepath.read_text(encoding='utf-8') == 'Derived GROBID text.'
+
+
+def test_openalex_tei_respects_existing_text_and_force(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Skip paid fallback for existing text unless the user explicitly forces it."""
+    db_path = tmp_path / 'papers.db'
+    paper = {'paper_id': 'doi:10.1/x', 'doi': '10.1/x'}
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(conn, paper, 'existing text', role='text', kind='text',
+                         mime_type='text/plain', source='pdf')
+    calls = []
+
+    def fake_openalex(
+        row: Mapping[str, Any],
+        filepath: str | os.PathLike[str],
+    ) -> tuple[bool, str, download.provider.FullTextDocument]:
+        """Record the paid fallback and return PDF-derived TEI."""
+        calls.append(row['paper_id'])
+        Path(filepath).write_text('new text', encoding='utf-8')
+        document = download.provider.FullTextDocument(
+            'new text', '<TEI/>', 'tei', source_identifier='W1',
+            metadata={'publisher_native': False, 'estimated_cost_usd': 0.01},
+        )
+        return True, '', document
+
+    monkeypatch.setattr(download, '_download_openalex_tei_text', fake_openalex)
+    with corpus.connect(db_path) as conn:
+        row = corpus.paper_rows(conn)[0]
+        download._download_paper(conn, row, tmp_path, 'text', ['openalex'],
+                                 download_abstract=False)
+        assert corpus.get_structured_documents(conn, row['paper_id']) == []
+        download._download_paper(conn, row, tmp_path, 'text', ['openalex'],
+                                 download_abstract=False, force=True)
+        documents = corpus.get_structured_documents(conn, row['paper_id'])
+
+    assert calls == ['doi:10.1/x']
+    assert documents[0]['metadata']['publisher_native'] is False
+    assert documents[0]['metadata']['estimated_cost_usd'] == 0.01
+
+
 def test_core_and_elsevier_abstract_downloads_parse_provider_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
     """CORE and Elsevier abstract downloads parse provider payloads."""
     class FakeResponse:
@@ -721,7 +830,7 @@ def test_download_papers_accepts_medrxiv_as_a_full_text_source(
 
     # Without a full-text provider the precondition still refuses the run, and
     # now names the preprint servers among the ways to satisfy it.
-    monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
+    monkeypatch.setattr(download, '_configured_sources', lambda _: ['arxiv'])
     with pytest.raises(ValueError, match='--source medrxiv or --source biorxiv'):
         download.download_papers(str(db_path), download_format='text', force=True)
 
@@ -1716,6 +1825,42 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
     assert papers[0]['text_download_status'] == 'succeeded'
     assert papers[0]['text_source'] == 'elsevier'
     assert papers[0]['text_path'] == ''
+
+
+def test_oa_pdf_followup_records_an_unavailable_elsevier_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Record the registered handler's failure after an open-access PDF succeeds."""
+    db_path = tmp_path / 'papers.db'
+    paper = {
+        'paper_id': 'doi:10.1/x',
+        'doi': '10.1/x',
+        'elsevier_link': 'has full-text link',
+    }
+    write_corpus(db_path, [paper])
+
+    def pdf_success(
+        row: Mapping[str, Any],
+        filepath: str | os.PathLike[str],
+        sources: Iterable[str],
+    ) -> tuple[bool, str, str]:
+        """Write an open-access PDF."""
+        Path(filepath).write_bytes(b'%PDF test')
+        return True, 'core', 'https://core.example/paper.pdf'
+
+    monkeypatch.setattr(download, '_download_pdf_from_sources', pdf_success)
+    monkeypatch.setattr(download, '_download_elsevier_text',
+                        lambda *_: (False, 'not entitled', None))
+    with corpus.connect(db_path) as conn:
+        row = corpus.paper_rows(conn)[0]
+        download._download_paper(
+            conn, row, tmp_path, 'pdf', ['core', 'elsevier'], download_abstract=False,
+        )
+
+    assert row['pdf_download_status'] == 'succeeded'
+    assert row['text_download_status'] == 'failed'
+    assert row['last_error'] == 'not entitled'
 
 
 @pytest.mark.network

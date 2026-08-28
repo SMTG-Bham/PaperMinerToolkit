@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 
 from paperminertoolkit.corpus.layout import (
+    BoundingBox,
     DocumentLayout,
     Figure,
     Graphic,
@@ -18,12 +19,12 @@ from paperminertoolkit.corpus.layout import (
     TextBlock,
 )
 
-_SECTION_TAGS = {'sec', 'section'}
+_SECTION_TAGS = {'sec', 'section', 'div'}
 _PARAGRAPH_TAGS = {'p', 'para', 'simple-para'}
 _FIGURE_TAGS = {'fig', 'figure'}
 _TABLE_TAGS = {'table-wrap', 'table'}
 _GRAPHIC_TAGS = {'graphic', 'media', 'link'}
-_REFERENCE_TAGS = {'xref', 'cross-ref'}
+_REFERENCE_TAGS = {'xref', 'cross-ref', 'ref'}
 
 
 def _local_name(tag: str) -> str:
@@ -64,7 +65,7 @@ def _document_title(root: ET.Element) -> str:
     article_title = _first_descendant(root, {'article-title'})
     if article_title is not None:
         return _text(article_title)
-    for container_name in ('coredata', 'title-group', 'head'):
+    for container_name in ('coredata', 'title-group', 'titlestmt', 'head'):
         container = _first_descendant(root, {container_name})
         if container is None:
             continue
@@ -76,13 +77,31 @@ def _document_title(root: ET.Element) -> str:
 
 def _caption(element: ET.Element) -> str:
     """Extract a figure or table caption while excluding its display label."""
-    caption = _first_descendant(element, {'caption'})
+    caption = _first_descendant(element, {'caption', 'figdesc'})
     return _text(caption)
 
 
 def _label(element: ET.Element) -> str:
     """Extract a direct or nested display label."""
-    return _text(_first_descendant(element, {'label'}))
+    return _text(_first_descendant(element, {'label', 'head'}))
+
+
+def _coordinate_boxes(element: ET.Element) -> tuple[BoundingBox, ...]:
+    """Decode GROBID ``page,x,y,width,height`` coordinate groups."""
+    value = _attribute(element, 'coords', 'coordinates')
+    if not value:
+        return ()
+    boxes = []
+    for group in value.split(';'):
+        try:
+            page_text, x_text, y_text, width_text, height_text = group.split(',')
+            page = int(page_text)
+            x, y = float(x_text), float(y_text)
+            width, height = float(width_text), float(height_text)
+            boxes.append(BoundingBox(page, x, y, x + width, y + height))
+        except (TypeError, ValueError):
+            continue
+    return tuple(boxes)
 
 
 def _graphic_resources(element: ET.Element) -> tuple[Graphic, ...]:
@@ -92,7 +111,7 @@ def _graphic_resources(element: ET.Element) -> tuple[Graphic, ...]:
     for node in element.iter():
         if _local_name(node.tag) not in _GRAPHIC_TAGS:
             continue
-        uri = _attribute(node, 'href', 'locator', 'src')
+        uri = _attribute(node, 'href', 'locator', 'src', 'url')
         if not uri or uri in seen:
             continue
         seen.add(uri)
@@ -104,18 +123,24 @@ def _graphic_resources(element: ET.Element) -> tuple[Graphic, ...]:
             identifier=_attribute(node, 'id') or f'graphic-{len(graphics) + 1}',
             uri=uri,
             mime_type=mime_type,
+            boxes=_coordinate_boxes(node),
         ))
     return tuple(graphics)
 
 
 def _parse_figure(element: ET.Element, section_id: str, index: int) -> Figure:
     """Normalize one figure, tolerating absent identifiers and captions."""
+    graphics = _graphic_resources(element)
+    boxes = _coordinate_boxes(element) or tuple(
+        box for graphic in graphics for box in graphic.boxes
+    )
     return Figure(
         identifier=_attribute(element, 'id') or f'figure-{index}',
         label=_label(element),
         caption=_caption(element),
         section_id=section_id,
-        graphics=_graphic_resources(element),
+        boxes=boxes,
+        graphics=graphics,
     )
 
 
@@ -126,6 +151,7 @@ def _parse_table(element: ET.Element, section_id: str, index: int, format_name: 
         label=_label(element),
         caption=_caption(element),
         section_id=section_id,
+        boxes=_coordinate_boxes(element),
         content=ET.tostring(element, encoding='unicode'),
         content_format=format_name,
     )
@@ -143,6 +169,9 @@ def _collect_objects(
     current_section = section_id
     if name in _SECTION_TAGS:
         current_section = _attribute(node, 'id') or section_id
+    if name in _FIGURE_TAGS and _attribute(node, 'type').lower() == 'table':
+        tables.append(_parse_table(node, current_section, len(tables) + 1, format_name))
+        return
     if name in _FIGURE_TAGS:
         figures.append(_parse_figure(node, current_section, len(figures) + 1))
         return
@@ -165,7 +194,7 @@ def _parse_section(
 ) -> Section:
     """Parse one nested section while keeping direct paragraphs in order."""
     identifier = _section_identifier(element, path)
-    title = _text(_direct_child(element, {'title', 'section-title'}))
+    title = _text(_direct_child(element, {'title', 'section-title', 'head'}))
     blocks = []
     children = []
     child_number = 0
@@ -232,10 +261,10 @@ def _reference_targets(paragraph: ET.Element) -> tuple[str, ...]:
     for node in paragraph.iter():
         if _local_name(node.tag) not in _REFERENCE_TAGS:
             continue
-        reference_type = _attribute(node, 'ref-type', 'ref-type-name').lower()
-        target = _attribute(node, 'rid', 'refid')
+        reference_type = _attribute(node, 'ref-type', 'ref-type-name', 'type').lower()
+        target = _attribute(node, 'rid', 'refid', 'target')
         if target and (not reference_type or reference_type in {'fig', 'figure', 'table'}):
-            targets.extend(part for part in re.split(r'\s+', target) if part)
+            targets.extend(part.lstrip('#') for part in re.split(r'\s+', target) if part)
     return tuple(dict.fromkeys(targets))
 
 
@@ -386,4 +415,48 @@ def parse_elsevier_layout(
         source_identifier,
         'elsevier-xml',
         'elsevier-xml',
+    )
+
+
+def parse_tei_layout(
+    content: str,
+    document_id: str,
+    *,
+    source_identifier: str = '',
+) -> DocumentLayout:
+    """Parse OpenAlex GROBID TEI into a PDF-derived document layout.
+
+    Parameters
+    ----------
+    content : str
+        Complete GROBID TEI XML document.
+    document_id : str
+        Owning corpus paper identifier.
+    source_identifier : str, optional
+        OpenAlex work identifier or content URL.
+
+    Returns
+    -------
+    DocumentLayout
+        PDF-derived sections, figures, captions, tables, coordinates, and
+        references normalized into the common layout model.
+
+    Raises
+    ------
+    ValueError
+        If the document is malformed or its root is not TEI.
+    """
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        raise ValueError(f'malformed tei document: {error}') from error
+    if _local_name(root.tag) != 'tei':
+        raise ValueError('OpenAlex GROBID content must have a TEI root element')
+    return _parse_xml_layout(
+        content,
+        document_id,
+        'openalex-grobid',
+        source_identifier,
+        'tei',
+        'grobid-tei',
     )

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from paperminertoolkit.corpus.layout import Figure, Graphic, Section, Table
-from paperminertoolkit.corpus.xml_layout import parse_elsevier_layout, parse_jats_layout
+from paperminertoolkit.corpus.layout import BoundingBox, Figure, Graphic, Section, Table
+from paperminertoolkit.corpus.xml_layout import (
+    parse_elsevier_layout,
+    parse_jats_layout,
+    parse_tei_layout,
+)
 
 
 JATS = '''<article xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -47,6 +51,20 @@ ELSEVIER = '''<full-text-retrieval-response
     </ce:table>
   </ce:section></ce:sections></body></originalText>
 </full-text-retrieval-response>'''
+
+
+TEI = '''<TEI xmlns="http://www.tei-c.org/ns/1.0">
+  <teiHeader><fileDesc><titleStmt><title>GROBID example</title></titleStmt></fileDesc></teiHeader>
+  <text><body><div xml:id="d1"><head>Results</head>
+    <p>See <ref type="figure" target="#fig_1">Figure 1</ref>.</p>
+    <figure xml:id="fig_1"><head>Figure 1</head><figDesc>PDF-derived plot.</figDesc>
+      <graphic url="figure-1.png" type="image/png" coords="2,10,20,200,100;bad"/>
+    </figure>
+    <figure type="table" xml:id="tab_1" coords="3,30,40,300,120">
+      <head>Table 1</head><figDesc>PDF-derived table.</figDesc><table><row><cell>A</cell></row></table>
+    </figure>
+  </div></body></text>
+</TEI>'''
 
 
 def test_parse_jats_layout_retains_hierarchy_objects_and_references() -> None:
@@ -142,3 +160,26 @@ def test_xml_layout_tolerates_sparse_elements_and_rejects_broken_xml() -> None:
         parse_jats_layout('<article', 'paper:broken')
     with pytest.raises(ValueError, match='malformed elsevier-xml document'):
         parse_elsevier_layout('<article', 'paper:broken')
+
+
+def test_parse_tei_layout_marks_pdf_derived_structure_and_coordinates() -> None:
+    """Normalize GROBID TEI sections, references, graphics, and coordinate groups."""
+    layout = parse_tei_layout(TEI, 'openalex:W1', source_identifier='W1')
+
+    assert layout.title == 'GROBID example'
+    assert layout.provenance.source == 'openalex-grobid'
+    assert layout.provenance.document_format == 'tei'
+    assert layout.provenance.parser == 'grobid-tei'
+    assert layout.sections[0].identifier == 'd1'
+    assert layout.sections[0].title == 'Results'
+    assert layout.figures[0].caption == 'PDF-derived plot.'
+    assert layout.figures[0].boxes[0] == BoundingBox(2, 10, 20, 210, 120)
+    assert layout.figures[0].graphics[0].uri == 'figure-1.png'
+    assert layout.figures[0].reference_sentences[0].text == 'See Figure 1.'
+    assert layout.tables[0].identifier == 'tab_1'
+    assert layout.tables[0].boxes[0] == BoundingBox(3, 30, 40, 330, 160)
+
+    with pytest.raises(ValueError, match='malformed tei document'):
+        parse_tei_layout('<TEI', 'paper:broken')
+    with pytest.raises(ValueError, match='TEI root'):
+        parse_tei_layout('<article/>', 'paper:not-tei')
