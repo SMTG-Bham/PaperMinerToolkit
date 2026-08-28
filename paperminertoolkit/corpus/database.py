@@ -2036,7 +2036,9 @@ def add_figure_asset(
     mime_type : str
         Validated image media type.
     original_filename : str, optional
-        Source filename or a stable generated filename.
+        Source filename or a stable generated filename. Defaults to a name
+        derived from ``figure_id``, because the asset link is keyed partly on
+        this value and figures sharing one would otherwise replace each other.
     license : str, optional
         Licence reported for the article or image.
     metadata : Mapping[str, Any] or None, optional
@@ -2082,7 +2084,7 @@ def add_figure_asset(
         kind='image',
         mime_type=normalized_mime_type,
         source=normalized_source,
-        original_filename=original_filename,
+        original_filename=original_filename or f'{normalized_figure_id}.image',
         compression=compression,
         metadata=asset_metadata,
     )
@@ -2183,6 +2185,70 @@ def has_figure_asset(
         if wanted_url in {metadata.get('source_url'), metadata.get('requested_url')}:
             return True
     return False
+
+
+def set_figure_extraction_status(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    figure_id: str,
+    status: str,
+    *,
+    error: str = '',
+) -> bool:
+    """Record whether one figure has been analysed by an extraction run.
+
+    The status lives in the figure asset's existing metadata rather than in a
+    new table, so an interrupted image-extraction run resumes per figure
+    instead of per paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str
+        Parsed figure identifier assigned by a layout parser.
+    status : str
+        Extraction outcome, such as ``"succeeded"`` or ``"failed"``.
+    error : str, optional
+        Failure detail stored alongside a non-successful status.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset was found and updated.
+
+    Raises
+    ------
+    ValueError
+        If ``figure_id`` or ``status`` is empty.
+    """
+    wanted_figure = figure_id.strip()
+    normalized_status = status.strip()
+    if not wanted_figure:
+        raise ValueError('figure_id must not be empty')
+    if not normalized_status:
+        raise ValueError('status must not be empty')
+    rows = conn.execute(
+        'SELECT rowid, metadata_json FROM paper_assets WHERE paper_id = ? AND role = ?',
+        (paper_id, FIGURE_ASSET_ROLE),
+    ).fetchall()
+    updated = False
+    for row in rows:
+        metadata = json.loads(row['metadata_json'])
+        if metadata.get('figure_id') != wanted_figure:
+            continue
+        metadata['extraction_status'] = normalized_status
+        metadata['extraction_error'] = error.strip()
+        conn.execute(
+            'UPDATE paper_assets SET metadata_json = ? WHERE rowid = ?',
+            (json.dumps(metadata), row['rowid']),
+        )
+        updated = True
+    if updated:
+        conn.commit()
+    return updated
 
 
 def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:

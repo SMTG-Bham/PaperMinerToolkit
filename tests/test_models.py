@@ -8,6 +8,7 @@ clients, and public query helpers without calling live model APIs.
 from __future__ import annotations
 
 import types
+from collections.abc import Sequence
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, NoReturn
@@ -465,6 +466,7 @@ def test_query_helpers_delegate_to_selected_client(monkeypatch: pytest.MonkeyPat
             context: str,
             max_output_tokens: int,
             compression_config: CompressionConfig | None = None,
+            image_labels: Sequence[str] | None = None,
         ) -> str:
             """Validate an image request and return a result."""
             assert prompt == 'look'
@@ -472,9 +474,128 @@ def test_query_helpers_delegate_to_selected_client(monkeypatch: pytest.MonkeyPat
             assert context == 'context'
             assert max_output_tokens == 7
             assert compression_config is None
+            assert image_labels in (None, ['Figure 1: Caption.'])
             return 'image result'
 
     monkeypatch.setattr(models, 'get_model_client', lambda config=None: FakeClient())
 
     assert models.query_text([{'role': 'user', 'content': 'hello'}], max_output_tokens=5) == 'text result'
     assert models.query_images('look', ['image.png'], context='context', max_output_tokens=7) == 'image result'
+    assert models.query_images('look', ['image.png'], context='context', max_output_tokens=7,
+                               image_labels=['Figure 1: Caption.']) == 'image result'
+
+
+def test_image_labels_precede_their_image_in_every_provider_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Send each figure's label immediately before its own image block.
+
+    A label must sit next to the image it describes so a multi-figure request
+    stays attributable, and a missing or blank label must not shift the
+    remaining images out of alignment.
+    """
+    first_image = tmp_path / 'first.png'
+    second_image = tmp_path / 'second.png'
+    for image in (first_image, second_image):
+        image.write_bytes(b'image bytes')
+    paths = [str(first_image), str(second_image)]
+    labels = ['Figure 1: Conductivity.', '   ']
+
+    class FakeResponses:
+        """Capture OpenAI Responses payloads."""
+
+        def __init__(self) -> None:
+            """Initialize payload capture."""
+            self.calls = []
+
+        def create(self, **kwargs: Any) -> types.SimpleNamespace:
+            """Record a payload and return fixed text."""
+            self.calls.append(kwargs)
+            return types.SimpleNamespace(output_text='ok')
+
+    class FakeOpenAI:
+        """Expose shared fake Responses and chat resources."""
+
+        responses = FakeResponses()
+
+        def __init__(self, **kwargs: Any) -> None:
+            """Attach the shared Responses resource."""
+            self.responses = FakeOpenAI.responses
+
+    monkeypatch.setattr(models.openai, 'OpenAI', FakeOpenAI)
+    responses_client = models.OpenAIResponsesClient(text_config(capabilities={'text', 'vision'}))
+    assert responses_client.query_with_images('look', paths, image_labels=labels) == 'ok'
+    responses_content = FakeOpenAI.responses.calls[0]['input'][0]['content']
+
+    anthropic_calls = []
+
+    class FakeAnthropicResponse:
+        """Provide a successful Anthropic response."""
+
+        def raise_for_status(self) -> None:
+            """Accept the fake status."""
+            return None
+
+        def json(self) -> dict[str, Any]:
+            """Return one text block."""
+            return {'content': [{'type': 'text', 'text': 'ok'}]}
+
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeAnthropicResponse:
+        """Record an Anthropic payload."""
+        anthropic_calls.append(json)
+        return FakeAnthropicResponse()
+
+    monkeypatch.setattr(models.requests, 'post', fake_post)
+    anthropic_client = models.AnthropicMessagesClient(
+        text_config(provider='anthropic', capabilities={'text', 'vision'}),
+    )
+    assert anthropic_client.query_with_images('look', paths, image_labels=labels) == 'ok'
+    anthropic_content = anthropic_calls[0]['messages'][0]['content']
+
+    chat_calls = []
+
+    class FakeCompletions:
+        """Capture OpenAI-compatible chat payloads."""
+
+        def create(self, **kwargs: Any) -> types.SimpleNamespace:
+            """Record a payload and return fixed text."""
+            chat_calls.append(kwargs)
+            message = types.SimpleNamespace(content='ok')
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    class FakeChatOpenAI:
+        """Expose a fake chat completions resource."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            """Attach the fake chat resource."""
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(models.openai, 'OpenAI', FakeChatOpenAI)
+    chat_client = models.OpenAICompatibleChatClient(
+        text_config(provider='local', base_url='http://localhost:8000/v1', capabilities={'text', 'vision'}),
+    )
+    assert chat_client.query_with_images('look', paths, image_labels=labels) == 'ok'
+    chat_content = chat_calls[0]['messages'][0]['content']
+
+    # prompt, label, image, image: the blank second label adds no block.
+    assert [block['type'] for block in responses_content] == [
+        'input_text', 'input_text', 'input_image', 'input_image',
+    ]
+    assert responses_content[1] == {'type': 'input_text', 'text': 'Figure 1: Conductivity.'}
+    assert [block['type'] for block in anthropic_content] == ['text', 'text', 'image', 'image']
+    assert anthropic_content[1] == {'type': 'text', 'text': 'Figure 1: Conductivity.'}
+    assert [block['type'] for block in chat_content] == ['text', 'text', 'image_url', 'image_url']
+    assert chat_content[1] == {'type': 'text', 'text': 'Figure 1: Conductivity.'}
+
+
+def test_image_label_helper_tolerates_short_and_missing_label_sequences() -> None:
+    """Return an empty label when no description covers an image position."""
+    assert models._image_label(None, 0) == ''
+    assert models._image_label(['first'], 1) == ''
+    assert models._image_label(['  spaced  '], 0) == 'spaced'

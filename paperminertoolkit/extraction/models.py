@@ -11,6 +11,7 @@ import base64
 import mimetypes
 import openai
 import requests
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self, TypedDict, Unpack
 
@@ -179,6 +180,26 @@ def _image_to_data_url(path: str) -> str:
     return f'data:{mime_type};base64,{encoded}'
 
 
+def _image_label(image_labels: Sequence[str] | None, index: int) -> str:
+    """Return the label describing one image in a vision request.
+
+    Parameters
+    ----------
+    image_labels : Sequence[str] or None
+        Per-image descriptions aligned with the request's image order.
+    index : int
+        Position of the image within the request.
+
+    Returns
+    -------
+    str
+        Label text, or an empty string when the image has no description.
+    """
+    if image_labels is None or index >= len(image_labels):
+        return ''
+    return str(image_labels[index]).strip()
+
+
 class BaseModelClient:
     """Abstract interface implemented by concrete model provider clients."""
 
@@ -219,7 +240,8 @@ class BaseModelClient:
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send a vision request with local images.
 
         Parameters
@@ -234,6 +256,10 @@ class BaseModelClient:
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions, such as a figure label and caption, sent
+            immediately before their image so the model can attribute
+            findings to a specific figure.
 
         Returns
         -------
@@ -333,7 +359,8 @@ class OpenAIResponsesClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through OpenAI Responses.
 
         Parameters
@@ -348,6 +375,8 @@ class OpenAIResponsesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -365,7 +394,10 @@ class OpenAIResponsesClient(BaseModelClient):
         content = [{'type': 'input_text', 'text': prompt}]
         if context:
             content.append({'type': 'input_text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'input_text', 'text': label})
             content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
@@ -435,7 +467,8 @@ class AnthropicMessagesClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through Anthropic Messages.
 
         Parameters
@@ -450,6 +483,8 @@ class AnthropicMessagesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -469,7 +504,10 @@ class AnthropicMessagesClient(BaseModelClient):
         content = [{'type': 'text', 'text': prompt}]
         if context:
             content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'text', 'text': label})
             mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
             with open(image_path, 'rb') as image_file:
                 encoded = base64.b64encode(image_file.read()).decode('ascii')
@@ -621,7 +659,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send images as OpenAI-compatible chat content.
 
         Parameters
@@ -636,6 +675,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -653,7 +694,10 @@ class OpenAICompatibleChatClient(BaseModelClient):
         content = [{'type': 'text', 'text': prompt}]
         if context:
             content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'text', 'text': label})
             content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
@@ -756,7 +800,8 @@ def query_images(prompt: str,
                  config: ModelConfig | None = None,
                  context: str | None = None,
                  max_output_tokens: int = 10000,
-                 compression_config: CompressionConfig | None = None) -> str:
+                 compression_config: CompressionConfig | None = None,
+                 image_labels: Sequence[str] | None = None) -> str:
     """Send an image request through a configured provider.
 
     Parameters
@@ -773,6 +818,8 @@ def query_images(prompt: str,
         Maximum number of tokens to generate.
     compression_config : CompressionConfig | None, optional
         Compression policy for the provider payload.
+    image_labels : Sequence[str] or None, optional
+        Per-image descriptions sent immediately before their image.
 
     Returns
     -------
@@ -781,4 +828,5 @@ def query_images(prompt: str,
     """
     return get_model_client(config).query_with_images(prompt, image_paths, context=context,
                                                       max_output_tokens=max_output_tokens,
-                                                      compression_config=compression_config)
+                                                      compression_config=compression_config,
+                                                      image_labels=image_labels)

@@ -801,10 +801,10 @@ def topics_models(db_path: str, batch_size: int) -> None:
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction',
-              type=click.Choice(['auto', 'embedded', 'pages']),
+              type=click.Choice(['auto', 'embedded', 'pages', 'layout']),
               default='auto',
               show_default=True,
-              help='How to turn PDFs into images for vision analysis.')
+              help='How to choose images for vision analysis. "layout" sends figures with their captions.')
 @click.option('--image-dpi', default=200, type=int, show_default=True,
               help='DPI for rendered page images when page rendering is used.')
 @click.option('--image-batch-size', default='1', show_default=True,

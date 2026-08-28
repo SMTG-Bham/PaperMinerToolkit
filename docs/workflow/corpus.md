@@ -371,6 +371,27 @@ pass `force=True` only when intentionally refreshing them. Unsafe URL schemes, l
 addresses, empty or oversized responses, unsupported formats, MIME mismatches, and active SVG
 content are rejected and reported in the returned summary without stopping the remaining figures.
 
+Elsevier's native XML references its graphics as bare internal tokens such as `gr1` rather than
+paths, so those are resolved through Elsevier's object endpoint using the article's own `eid`
+before download. A graphic reference that is already an absolute URL is used unchanged.
+
+Papers with no structured document can still contribute figures. `store_pdf_layout_figures`
+detects them from PDF geometry and stores them as figure assets alongside the downloaded ones,
+recording `pdf-layout` as the source so both origins stay distinguishable:
+
+```python
+from paperminertoolkit.corpus.database import connect
+from paperminertoolkit.workflows.figures import store_pdf_layout_figures
+
+with connect("papers.db") as conn:
+    summary = store_pdf_layout_figures(conn, paper_row, "paper.pdf")
+```
+
+Because both origins use the same asset model, `get_figure_assets` returns them together and
+image extraction consumes either without knowing which produced a figure. Vision scraping also
+records its progress in this metadata, so `set_figure_extraction_status` lets an interrupted
+extraction run resume per figure. See the scraping guide's `--image-extraction layout` section.
+
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.
 

@@ -47,15 +47,37 @@ pmt scrape papers.db sse \
   --image-context paper-text
 ```
 
-When both modes produce records, the text model reconciles matching records into `text+image` rows. Image extraction uses embedded PDF images when possible and otherwise renders pages. Override this with `--image-extraction embedded` or `--image-extraction pages`. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
+When both modes produce records, the text model reconciles matching records into `text+image` rows. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
 
-The Python API also provides `detect_pdf_layout` and `render_pdf_figures` in
-`paperminertoolkit.corpus.pdf_layout`. This deterministic PyMuPDF fallback detects `Figure`,
-`Fig.`, and `Table` captions, joins wrapped captions within a column, and associates them with
-nearby raster or vector geometry. Confident figure regions are rendered with configurable padding
-and resolution; uncertain associations render the complete source page. Panel detection is not
-performed. CLI vision integration is introduced separately so existing image modes retain their
-current behavior until the layout-aware path is selected explicitly.
+### Choosing which images the model sees
+
+`--image-extraction` selects where images come from:
+
+- `layout` sends real figures with their captions. Structured figures already downloaded into the corpus are used first; a paper with none has its figures detected from PDF geometry and stored in the corpus, so a later run reuses them instead of detecting again. A paper with no figures from either route fails rather than falling back.
+- `auto` (the default) prefers those layout-aware figures, and uses embedded PDF images or rendered pages when a paper has none and none can be detected.
+- `embedded` extracts every raster image the PDF contains, including logos and decorative art.
+- `pages` renders one image per page.
+
+```bash
+pmt scrape papers.db sse --mode images --image-extraction layout
+```
+
+Layout mode changes what reaches the model and what comes back. Each image is preceded by its figure label and caption, so the model can attribute a value to a specific figure, and every extracted row records `Figure id`, `Figure label`, and `Figure source` alongside the existing `Source path`. Because a structured figure and its PDF-rendered equivalent would otherwise be analysed twice, detection runs only for papers whose corpus holds no figures yet.
+
+Progress is checkpointed per figure rather than per paper: a figure analysed successfully is skipped on the next run, a figure whose request failed is retried, and `--force` reanalyses every figure. An interrupted run therefore resumes without paying for the figures it already processed.
+
+### Detecting figures directly
+
+The Python API exposes the same detection used by layout mode. `detect_pdf_layout` and
+`render_pdf_figures` in `paperminertoolkit.corpus.pdf_layout` detect `Figure`, `Fig.`, and `Table`
+captions, join wrapped captions within a column, and associate them with nearby raster or vector
+geometry. Confident figure regions are rendered with configurable padding and resolution, clamped
+so a crop never includes neighbouring caption text; uncertain associations render the complete
+source page. Panel detection is not performed.
+
+`paperminertoolkit.workflows.figures.store_pdf_layout_figures` wraps that detection and writes the
+results into the corpus as figure assets, which is what layout mode calls. Use
+`render_pdf_figures` directly when image files on disk are wanted instead.
 
 ## Context limits and compression
 

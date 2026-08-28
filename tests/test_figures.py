@@ -343,3 +343,119 @@ def test_layout_from_non_jats_structured_assets(
     )
     assert layout.document_id == 'paper:1'
     assert layout.provenance.document_format == document_format
+
+
+def _write_figure_pdf(path: Path) -> None:
+    """Create a small PDF with one detectable captioned figure region."""
+    fitz = pytest.importorskip('fitz')
+    document = fitz.open()
+    page = document.new_page(width=600, height=800)
+    page.draw_rect(fitz.Rect(40, 80, 270, 250), color=(0, 0, 0), fill=(0.8, 0.8, 0.8))
+    page.insert_textbox(
+        fitz.Rect(40, 260, 270, 282),
+        'Figure 1. Conductivity map for the sample.',
+        fontsize=9,
+    )
+    document.save(path)
+    document.close()
+
+
+def test_store_pdf_layout_figures_persists_resumes_and_refreshes(tmp_path: Path) -> None:
+    """Store detected PDF figures in the corpus, then resume and force around them."""
+    pdf_path = tmp_path / 'layout.pdf'
+    _write_figure_pdf(pdf_path)
+    db_path = tmp_path / 'pdf-layout.db'
+    paper = {
+        'paper_id': 'paper:pdf-layout',
+        'doi': '10.1000/pdf-layout',
+        'title': 'PDF layout paper',
+        'license': 'CC BY 4.0',
+    }
+
+    with database.connect(db_path) as conn:
+        database.upsert_paper(conn, paper)
+        stored = figures.store_pdf_layout_figures(conn, paper, pdf_path)
+        resumed = figures.store_pdf_layout_figures(conn, paper, pdf_path)
+        refreshed = figures.store_pdf_layout_figures(conn, paper, pdf_path, force=True)
+        assets = database.get_figure_assets(conn, 'paper:pdf-layout', include_content=True)
+
+    assert stored == figures.FigureDownloadSummary(1, 0, 0)
+    assert resumed == figures.FigureDownloadSummary(0, 1, 0)
+    assert refreshed == figures.FigureDownloadSummary(1, 0, 0)
+    assert len(assets) == 1
+    asset = assets[0]
+    assert asset['source'] == figures.PDF_LAYOUT_SOURCE
+    assert asset['mime_type'] == 'image/png'
+    assert asset['content'].startswith(b'\x89PNG\r\n\x1a\n')
+    assert asset['metadata']['figure_id'] == 'pdf-figure-1'
+    assert asset['metadata']['figure_label'] == 'Figure 1'
+    assert asset['metadata']['caption'] == 'Conductivity map for the sample.'
+    assert asset['metadata']['page_numbers'] == [1]
+    assert asset['metadata']['region_detected'] is True
+    assert asset['metadata']['license'] == 'CC BY 4.0'
+    assert asset['metadata']['source_url'] == figures.pdf_layout_figure_url(
+        'paper:pdf-layout', 'pdf-figure-1',
+    )
+
+
+def test_store_pdf_layout_figures_validates_input_and_reports_no_figures(tmp_path: Path) -> None:
+    """Require a paper identifier and report a PDF with no detectable figures."""
+    fitz = pytest.importorskip('fitz')
+    empty_path = tmp_path / 'empty.pdf'
+    document = fitz.open()
+    document.new_page(width=600, height=800)
+    document.save(empty_path)
+    document.close()
+
+    with database.connect(tmp_path / 'empty.db') as conn:
+        with pytest.raises(ValueError, match='paper must carry a paper_id'):
+            figures.store_pdf_layout_figures(conn, {'paper_id': ' '}, empty_path)
+        assert figures.store_pdf_layout_figures(
+            conn, {'paper_id': 'paper:empty'}, empty_path,
+        ) == figures.FigureDownloadSummary(0, 0, 0)
+
+
+def test_store_pdf_layout_figures_records_unreadable_render_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continue and report when a rendered figure cannot be read back."""
+    pdf_path = tmp_path / 'layout.pdf'
+    _write_figure_pdf(pdf_path)
+    paper = {'paper_id': 'paper:unreadable', 'doi': '10.1000/unreadable', 'title': 'Unreadable'}
+
+    def missing_render(*_: object, **__: object) -> list[str]:
+        """Report a rendered file that does not exist."""
+        return [str(tmp_path / 'absent.png')]
+
+    monkeypatch.setattr(figures, 'render_pdf_figures', missing_render)
+
+    with database.connect(tmp_path / 'unreadable.db') as conn:
+        database.upsert_paper(conn, paper)
+        summary = figures.store_pdf_layout_figures(conn, paper, pdf_path)
+
+    assert summary.downloaded == 0
+    assert summary.failed == 1
+    assert 'Figure 1' in summary.failures[0]
+
+
+def test_download_structured_figures_records_reference_sentences(tmp_path: Path) -> None:
+    """Keep figure-reference prose with the stored image for later context."""
+    db_path = tmp_path / 'references.db'
+    _add_jats(
+        db_path,
+        b'''<article xmlns:xlink="http://www.w3.org/1999/xlink"><body><sec id="results">
+        <p>Conductivity rose sharply, as <xref ref-type="fig" rid="fig-1">Figure 1</xref> shows.</p>
+        <fig id="fig-1"><label>Figure 1</label><caption><p>Conductivity.</p></caption>
+          <graphic xlink:href="images/first.png"/>
+        </fig></sec></body></article>''',
+    )
+    session = ImageSession([ImageResponse()])
+
+    figures.download_structured_figures(db_path, 'paper:figures', session=session)
+
+    with database.connect(db_path) as conn:
+        asset = database.get_figure_assets(conn, 'paper:figures')[0]
+    assert asset['metadata']['reference_sentences'] == [
+        'Conductivity rose sharply, as Figure 1 shows.',
+    ]

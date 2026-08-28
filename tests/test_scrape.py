@@ -899,3 +899,380 @@ def test_scrape_papers_records_image_failures(tmp_path: Path, monkeypatch: pytes
     assert papers.loc[0, 'image_scrape_status'] == 'failed'
     assert 'No PDF images could be extracted or rendered' in papers.loc[0, 'last_error']
     assert not output_path.exists()
+
+
+def _add_figure(
+    db_path: Path,
+    paper: Mapping[str, Any],
+    figure_id: str,
+    *,
+    caption: str,
+    label: str,
+    source: str = 'pubmed',
+) -> None:
+    """Attach one stored figure asset to a corpus paper for layout-mode tests."""
+    with corpus.connect(db_path) as conn:
+        corpus.add_figure_asset(
+            conn,
+            paper,
+            b'\x89PNG\r\n\x1a\n' + figure_id.encode('ascii'),
+            figure_id=figure_id,
+            caption=caption,
+            source=source,
+            source_url=f'https://example.org/{figure_id}.png',
+            mime_type='image/png',
+            original_filename=f'{figure_id}.png',
+            metadata={'figure_label': label},
+        )
+
+
+def test_scrape_papers_layout_mode_sends_captions_and_records_figure_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Send stored figures with their captions and trace records back to them."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='Conductivity map.', label='Figure 1')
+    _add_figure(db_path, paper, 'fig-2', caption='Arrhenius plot.', label='Figure 2')
+    calls = []
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    def fake_scrape_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Record the figure batch and return one material record."""
+        calls.append({'paths': list(image_paths), 'labels': list(image_labels or [])})
+        return [{'Name': f'material {len(calls)}'}]
+
+    monkeypatch.setattr(scrape, 'scrape_images', fake_scrape_images)
+
+    scrape.scrape_papers(
+        str(db_path),
+        output_path=str(output_path),
+        mode='images',
+        image_extraction='layout',
+        image_batch_size='all',
+        image_dir=str(tmp_path / 'images'),
+    )
+
+    materials = pd.read_csv(output_path, index_col=0)
+    papers = read_corpus(db_path)
+    with corpus.connect(db_path) as conn:
+        statuses = {
+            asset['metadata']['figure_id']: asset['metadata'].get('extraction_status')
+            for asset in corpus.get_figure_assets(conn, 'paper-1')
+        }
+
+    assert len(calls) == 1
+    assert calls[0]['labels'] == ['Figure 1: Conductivity map.', 'Figure 2: Arrhenius plot.']
+    assert [os.path.basename(path) for path in calls[0]['paths']] == ['fig-1.png', 'fig-2.png']
+    assert materials['Figure id'].tolist() == ['fig-1; fig-2']
+    assert materials['Figure label'].tolist() == ['Figure 1; Figure 2']
+    assert materials['Figure source'].tolist() == ['pubmed']
+    assert papers.loc[0, 'image_scrape_status'] == 'succeeded'
+    assert papers.loc[0, 'num_images'] == 2
+    assert statuses == {'fig-1': 'succeeded', 'fig-2': 'succeeded'}
+
+
+def test_scrape_papers_layout_mode_resumes_completed_figures_and_forces_reruns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip figures already analysed unless a forced run reanalyses them."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='Done already.', label='Figure 1')
+    _add_figure(db_path, paper, 'fig-2', caption='Still pending.', label='Figure 2')
+    with corpus.connect(db_path) as conn:
+        corpus.set_figure_extraction_status(conn, 'paper-1', 'fig-1', 'succeeded')
+    calls = []
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    def fake_scrape_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Record the analysed figure labels."""
+        calls.append(list(image_labels or []))
+        return [{'Name': 'material'}]
+
+    monkeypatch.setattr(scrape, 'scrape_images', fake_scrape_images)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_extraction='layout', image_batch_size='all',
+                         image_dir=str(tmp_path / 'images'))
+    resumed = list(calls)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_extraction='layout', image_batch_size='all', force=True,
+                         image_dir=str(tmp_path / 'images'))
+
+    assert resumed == [['Figure 2: Still pending.']]
+    assert calls[1] == ['Figure 1: Done already.', 'Figure 2: Still pending.']
+
+
+def test_scrape_papers_layout_mode_reports_when_no_figures_are_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail a layout-mode paper that has neither stored nor detectable figures."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    write_corpus(db_path, [{'paper_id': 'paper-1'}])
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_extraction='layout', image_dir=str(tmp_path / 'images'))
+
+    papers = read_corpus(db_path)
+    assert papers.loc[0, 'image_scrape_status'] == 'failed'
+    assert 'No layout-aware figures are available' in papers.loc[0, 'last_error']
+
+
+def test_scrape_papers_layout_mode_marks_figures_failed_when_the_model_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record a per-figure failure so a later run retries only those figures."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='Broken batch.', label='Figure 1')
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    def failing_scrape_images(*_: object, **__: object) -> list[dict[str, str]]:
+        """Fail the vision request for the batch."""
+        raise RuntimeError('vision provider refused the request')
+
+    monkeypatch.setattr(scrape, 'scrape_images', failing_scrape_images)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_extraction='layout', image_dir=str(tmp_path / 'images'))
+
+    papers = read_corpus(db_path)
+    with corpus.connect(db_path) as conn:
+        metadata = corpus.get_figure_assets(conn, 'paper-1')[0]['metadata']
+    assert papers.loc[0, 'image_scrape_status'] == 'failed'
+    assert metadata['extraction_status'] == 'failed'
+    assert 'vision provider refused' in metadata['extraction_error']
+
+
+def test_scrape_papers_auto_mode_prefers_stored_figures_over_embedded_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use layout-aware figures in automatic mode instead of raw PDF images."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    (papers_dir / 'paper-1.pdf').write_text('pdf bytes')
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='Structured figure.', label='Figure 1',
+                source='elsevier')
+    labels = []
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    def unexpected_extract(*_: object, **__: object) -> list[str]:
+        """Fail if automatic mode falls back to raw PDF image extraction."""
+        raise AssertionError('stored figures should be preferred over PDF extraction')
+
+    monkeypatch.setattr(scrape, 'extract_pdf_images', unexpected_extract)
+
+    def fake_scrape_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Record the labels sent with the figure batch."""
+        labels.append(list(image_labels or []))
+        return [{'Name': 'material'}]
+
+    monkeypatch.setattr(scrape, 'scrape_images', fake_scrape_images)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_dir=str(tmp_path / 'images'))
+
+    materials = pd.read_csv(output_path, index_col=0)
+    assert labels == [['Figure 1: Structured figure.']]
+    assert materials['Figure source'].tolist() == ['elsevier']
+
+
+def test_scrape_papers_auto_mode_falls_back_when_layout_detection_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the existing image strategies when a PDF yields no layout figures."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    (papers_dir / 'paper-1.pdf').write_text('not a real pdf')
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    image_path = tmp_path / 'embedded.png'
+    image_path.write_text('image')
+    write_corpus(db_path, [{'paper_id': 'paper-1'}])
+    calls = []
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
+
+    def fake_scrape_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Record that the legacy image path was used without labels."""
+        calls.append({'paths': list(image_paths), 'labels': image_labels})
+        return [{'Name': 'material'}]
+
+    monkeypatch.setattr(scrape, 'scrape_images', fake_scrape_images)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_dir=str(tmp_path / 'images'))
+
+    materials = pd.read_csv(output_path, index_col=0)
+    assert calls == [{'paths': [str(image_path)], 'labels': None}]
+    assert 'Figure id' not in materials.columns
+
+
+def test_layout_figure_packages_detect_pdf_figures_and_skip_unusable_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Detect figures for a paper with none stored and ignore identity-less assets."""
+    db_path = tmp_path / 'detect.db'
+    paper = {'paper_id': 'paper:detect', 'doi': '10.1/detect'}
+    detected = []
+
+    def fake_store(
+        conn: object,
+        stored_paper: Mapping[str, Any],
+        pdf_path: str,
+    ) -> None:
+        """Record a detection request without touching PyMuPDF."""
+        detected.append((stored_paper['paper_id'], pdf_path))
+
+    monkeypatch.setattr(scrape, 'store_pdf_layout_figures', fake_store)
+
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, paper)
+        packages = scrape._layout_figure_packages(
+            conn, paper, 'paper.pdf', tmp_path / 'images', force=False, required=False,
+        )
+
+    assert packages == []
+    assert detected == [('paper:detect', 'paper.pdf')]
+    assert scrape._figure_packages(
+        [{'metadata': {'figure_id': ''}, 'content': b'x', 'source': 'pubmed'}],
+        tmp_path / 'skipped',
+        force=False,
+    ) == []
+
+
+def test_layout_figure_packages_raise_for_an_explicit_layout_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Surface a detection failure when layout figures were explicitly requested."""
+    db_path = tmp_path / 'required.db'
+    paper = {'paper_id': 'paper:required'}
+
+    def failing_store(*_: object, **__: object) -> None:
+        """Fail figure detection."""
+        raise RuntimeError('PyMuPDF could not open the PDF')
+
+    monkeypatch.setattr(scrape, 'store_pdf_layout_figures', failing_store)
+
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, paper)
+        with pytest.raises(RuntimeError, match='could not open the PDF'):
+            scrape._layout_figure_packages(
+                conn, paper, 'paper.pdf', tmp_path / 'images', force=False, required=True,
+            )
+
+
+def test_figure_package_model_label_falls_back_to_the_figure_identifier() -> None:
+    """Describe a figure with no label or caption by its identifier."""
+    package = scrape._FigurePackage(
+        path='fig.png', figure_id='fig-9', label='', caption='', source='pubmed',
+    )
+    assert package.model_label == 'Figure fig-9'
+
+
+def test_figure_packages_restore_a_missing_image_extension(tmp_path: Path) -> None:
+    """Give an extension-less stored filename a usable image extension."""
+    packages = scrape._figure_packages(
+        [{
+            'metadata': {'figure_id': 'fig-1', 'caption': 'Caption.', 'figure_label': 'Figure 1'},
+            'content': b'image bytes',
+            'source': 'pubmed',
+            'original_filename': 'figure-one',
+        }],
+        tmp_path / 'images',
+        force=False,
+    )
+    assert len(packages) == 1
+    assert packages[0].path.endswith('figure-one.png')
+
+
+def test_scrape_papers_layout_mode_requires_a_pdf_for_paper_text_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report the missing PDF when layout figures need paper-text context."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='No PDF stored.', label='Figure 1')
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='images',
+                         image_extraction='layout', image_context='paper-text',
+                         image_dir=str(tmp_path / 'images'))
+
+    papers = read_corpus(db_path)
+    assert papers.loc[0, 'image_scrape_status'] == 'failed'
+    assert 'No downloaded PDF asset found for image context' in papers.loc[0, 'last_error']

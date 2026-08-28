@@ -350,6 +350,46 @@ def test_figure_assets_require_image_provenance(
             corpus.add_figure_asset(conn, sample_paper(), b'image', **arguments)
 
 
+def test_figure_extraction_status_marks_only_the_named_figure(tmp_path: Path) -> None:
+    """Record extraction progress per figure so a rerun resumes accurately."""
+    def figure(figure_id: str) -> dict[str, str]:
+        """Return the provenance arguments for one stored figure."""
+        return {
+            'figure_id': figure_id,
+            'caption': '',
+            'source': 'pubmed',
+            'source_url': f'https://example.org/{figure_id}.png',
+            'mime_type': 'image/png',
+        }
+
+    with corpus.connect(tmp_path / 'status.db') as conn:
+        corpus.add_figure_asset(conn, sample_paper(), b'first', **figure('fig-1'))
+        corpus.add_figure_asset(conn, sample_paper(), b'second', **figure('fig-2'))
+
+        assert corpus.set_figure_extraction_status(conn, 'demo:1', 'fig-1', 'succeeded') is True
+        assert corpus.set_figure_extraction_status(conn, 'demo:1', 'absent', 'succeeded') is False
+        assert corpus.set_figure_extraction_status(
+            conn, 'demo:1', 'fig-2', 'failed', error='vision request failed',
+        ) is True
+
+        statuses = {
+            asset['metadata']['figure_id']: (
+                asset['metadata'].get('extraction_status'),
+                asset['metadata'].get('extraction_error'),
+            )
+            for asset in corpus.get_figure_assets(conn, 'demo:1')
+        }
+        with pytest.raises(ValueError, match='figure_id must not be empty'):
+            corpus.set_figure_extraction_status(conn, 'demo:1', ' ', 'succeeded')
+        with pytest.raises(ValueError, match='status must not be empty'):
+            corpus.set_figure_extraction_status(conn, 'demo:1', 'fig-1', ' ')
+
+    assert statuses == {
+        'fig-1': ('succeeded', ''),
+        'fig-2': ('failed', 'vision request failed'),
+    }
+
+
 def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:
     """Add asset metadata to a version-eleven corpus without losing links."""
     db_path = tmp_path / 'v11.db'
