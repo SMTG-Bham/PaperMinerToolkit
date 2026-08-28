@@ -318,12 +318,14 @@ subset reports that no full text is offered rather than failing. An NCBI API key
 request rate from three to ten per second, which matters most on large download runs; see
 [Credentials and model configuration](configuration.md).
 
-PMC, bioRxiv, and medRxiv text downloads retain the complete JATS response as a compressed
-structured-document asset as well as deriving the plain-text asset used by existing workflows.
-Both representations come from the same provider response, so preserving figures, captions, and
-tables does not spend a second request. The structured asset records its repository, source URL,
-source identifier, and JATS format; inspect it with the corpus asset API when building layout-aware
-workflows.
+PMC, bioRxiv, and medRxiv text downloads retain the complete JATS response, and Elsevier downloads
+retain the native full-article XML response, as compressed structured-document assets. Each also
+derives the plain-text asset used by existing workflows. Both representations come from the same
+provider response, so preserving figures, captions, tables, and embedded objects does not spend a
+second request. Structured assets record their provider, source URL, source identifier, format,
+and whether the document is publisher-native; inspect them with the corpus asset API when building
+layout-aware workflows. Elsevier XML requires full-text entitlement and unavailable or
+abstract-only responses are reported as per-paper download failures.
 
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.

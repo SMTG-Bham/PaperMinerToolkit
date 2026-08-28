@@ -143,7 +143,7 @@ def _set_status(paper: _Paper, column: str, status: str, error: str | None = Non
 
 
 def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
-    """Download Elsevier full text for one paper row to ``filepath``.
+    """Download Elsevier XML-derived text for one paper row to ``filepath``.
 
     The payload is read in memory and written straight to the destination. It
     used to be staged through a ``data`` directory created in the working
@@ -165,13 +165,11 @@ def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> b
     uri = _full_text_uri(paper)
     if not uri:
         return False
-    payload = elsevier.request_json(uri, elsevier.configured_api_key(),
-                                    params={'httpAccept': 'application/json'})
-    text = elsevier.full_text(payload)
-    if not text:
+    document = elsevier.full_text_document(uri, elsevier.configured_api_key())
+    if not document.text:
         return False
     with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(_elsevier_string_formatter(text))
+        out_file.write(document.text)
     return True
 
 
@@ -1402,7 +1400,7 @@ def _download_pdf_from_sources(
 
 
 def _download_elsevier_text(paper: Mapping[str, Any],
-                            filepath: str | PathLike[str]) -> tuple[bool, str]:
+                            filepath: str | PathLike[str]) -> _TextDownloadResult:
     """Fetch a paper's full text through the Elsevier article route.
 
     Parameters
@@ -1414,12 +1412,18 @@ def _download_elsevier_text(paper: Mapping[str, Any],
 
     Returns
     -------
-    tuple[bool, str]
-        Success flag, and the failure reason when unsuccessful.
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, failure reason, and native Elsevier XML when successful.
     """
-    if os.path.isfile(filepath) or _download_text(paper, filepath):
-        return True, ''
-    return False, 'Elsevier text download failed'
+    uri = _full_text_uri(paper)
+    if not uri:
+        return False, 'missing Elsevier full-text URL', None
+    document = elsevier.full_text_document(uri, elsevier.configured_api_key())
+    if not document.text:
+        return False, 'Elsevier text download failed', None
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(document.text)
+    return True, '', document
 
 
 def _download_text_from_sources(
@@ -1567,8 +1571,8 @@ def _store_structured_text_document(
     metadata.update({
         'source_url': document.source_url,
         'source_identifier': document.source_identifier,
-        'publisher_native': True,
     })
+    metadata.setdefault('publisher_native', True)
     add_structured_document(
         conn,
         paper,
@@ -1798,12 +1802,24 @@ def _download_paper(
     ):
         text_filepath = os.path.join(download_dir, f'{filename}.txt')
         try:
-            if os.path.isfile(text_filepath) or _download_text(paper, text_filepath):
+            ok, detail, structured_document = _download_elsevier_text(
+                paper,
+                text_filepath,
+            )
+            if ok:
                 paper['text_path'] = ''
                 paper['text_source'] = 'elsevier'
                 _set_status(paper, 'text_download_status', 'succeeded')
                 _store_downloaded_asset(conn, paper, text_filepath, role='text', source='elsevier')
+                _store_structured_text_document(
+                    conn,
+                    paper,
+                    'elsevier',
+                    structured_document,
+                )
                 summary['texts'] += 1
+            else:
+                _set_status(paper, 'text_download_status', 'failed', detail)
         except Exception as e:
             _set_status(paper, 'text_download_status', 'failed', str(e))
     upsert_paper(conn, paper)

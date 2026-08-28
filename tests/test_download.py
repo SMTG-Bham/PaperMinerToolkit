@@ -248,8 +248,13 @@ def test_full_text_uri_and_download_text_success_and_failure(
     }) == 'json-full-text-link'
 
     monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
-    monkeypatch.setattr(download.elsevier, 'request_json',
-                        lambda *_, **__: {'originalText': 'downloaded text'})
+    document = download.provider.FullTextDocument(
+        'downloaded text',
+        '<article><body><p>downloaded text</p></body></article>',
+        'elsevier-xml',
+    )
+    monkeypatch.setattr(download.elsevier, 'full_text_document',
+                        lambda *_, **__: document)
     out_path = tmp_path / 'paper.txt'
     assert download._download_text(paper, str(out_path)) is True
     assert out_path.read_text() == 'downloaded text'
@@ -257,7 +262,8 @@ def test_full_text_uri_and_download_text_success_and_failure(
     # Nothing is written to the working directory any more.
     assert not (tmp_path / 'data').exists()
 
-    monkeypatch.setattr(download.elsevier, 'request_json', lambda *_, **__: {'originalText': {}})
+    monkeypatch.setattr(download.elsevier, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_text(paper, str(out_path)) is False
     assert download._download_text({'elsevier_link': ''}, str(out_path)) is False
 
@@ -914,11 +920,14 @@ def test_download_papers_updates_text_and_pdf_statuses(
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
 
-    def fake_download_text(paper: Mapping[str, Any], filepath: str) -> bool:
+    def fake_download_text(
+        paper: Mapping[str, Any],
+        filepath: str,
+    ) -> tuple[bool, str, None]:
         """Provide fake text download behavior for this test."""
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('text')
-        return True
+        return True, '', None
 
     def fake_download_pdf_from_sources(
         paper: Mapping[str, Any],
@@ -930,7 +939,7 @@ def test_download_papers_updates_text_and_pdf_statuses(
             f.write(b'%PDF text')
         return True, 'unpaywall', 'https://oa/pdf'
 
-    monkeypatch.setattr(download, '_download_text', fake_download_text)
+    monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
     download.download_papers(str(db_path), download_format='both', download_abstract=False)
@@ -1067,7 +1076,7 @@ def test_download_papers_supports_abstract_only(
     )
     monkeypatch.setattr(
         download,
-        '_download_text',
+        '_download_elsevier_text',
         lambda *args, **kwargs: pytest.fail('text download was attempted'),
     )
     monkeypatch.setattr(
@@ -1187,7 +1196,7 @@ def test_download_papers_skips_every_requested_existing_content_type(
     )
     monkeypatch.setattr(
         download,
-        '_download_text',
+        '_download_elsevier_text',
         lambda *_: (_ for _ in ()).throw(AssertionError('text provider called')),
     )
     monkeypatch.setattr(
@@ -1268,12 +1277,15 @@ def test_download_papers_force_redownloads_existing_content(
 
     calls = []
 
-    def fake_text(_paper: Mapping[str, Any], filepath: str | os.PathLike[str]) -> bool:
+    def fake_text(
+        _paper: Mapping[str, Any],
+        filepath: str | os.PathLike[str],
+    ) -> tuple[bool, str, None]:
         """Write replacement full text for a forced download."""
         calls.append('text')
         with open(filepath, 'w', encoding='utf-8') as out_file:
             out_file.write('new text')
-        return True
+        return True, '', None
 
     def fake_pdf(
         _paper: Mapping[str, Any],
@@ -1293,7 +1305,7 @@ def test_download_papers_force_redownloads_existing_content(
         download,
         '_download_abstract', lambda *_, **__: calls.append('abstract') or (True, 'openalex', 'new abstract'),
     )
-    monkeypatch.setattr(download, '_download_text', fake_text)
+    monkeypatch.setattr(download, '_download_elsevier_text', fake_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_pdf)
 
     download.download_papers(str(db_path), download_format='both', force=True)
@@ -1321,7 +1333,8 @@ def test_full_text_uri_and_download_text_handle_malformed_or_empty_retrieval(
     assert download._full_text_uri({'elsevier_link': 'full-text without quoted uri'}) is None
 
     monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
-    monkeypatch.setattr(download.elsevier, 'request_json', lambda *_, **__: None)
+    monkeypatch.setattr(download.elsevier, 'full_text_document',
+                        lambda *_, **__: download.provider.FullTextDocument(''))
 
     assert download._download_text({'elsevier_link': "x 'uri' full-text"}, str(tmp_path / 'paper.txt')) is False
 
@@ -1516,7 +1529,8 @@ def test_download_papers_records_text_and_pdf_failures(
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(download, '_download_text', lambda *_: False)
+    monkeypatch.setattr(download, '_download_elsevier_text',
+                        lambda *_: (False, 'Elsevier text download failed', None))
     monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (False, 'no pdf', ''))
 
     download.download_papers(str(db_path), download_format='both', download_abstract=False)
@@ -1560,7 +1574,11 @@ def test_download_papers_records_initial_text_download_exception(
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
     monkeypatch.setattr(download, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(download, '_download_text', lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')))
+    monkeypatch.setattr(
+        download,
+        '_download_elsevier_text',
+        lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')),
+    )
 
     download.download_papers(str(db_path), download_format='text', download_abstract=False)
 
@@ -1614,12 +1632,15 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
             f.write(b'%PDF data')
         return True, 'core', 'https://core/pdf'
 
-    def fake_download_text(paper: Mapping[str, Any], filepath: str) -> bool:
+    def fake_download_text(
+        paper: Mapping[str, Any],
+        filepath: str,
+    ) -> tuple[bool, str, None]:
         """Provide fake text download behavior for this test."""
         raise RuntimeError('text exploded')
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
-    monkeypatch.setattr(download, '_download_text', fake_download_text)
+    monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
 
     download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
 
@@ -1677,13 +1698,16 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
-    def fake_download_text(paper: Mapping[str, Any], filepath: str) -> bool:
+    def fake_download_text(
+        paper: Mapping[str, Any],
+        filepath: str,
+    ) -> tuple[bool, str, None]:
         """Provide fake text download behavior for this test."""
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('elsevier text')
-        return True
+        return True, '', None
 
-    monkeypatch.setattr(download, '_download_text', fake_download_text)
+    monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
 
     download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
 
@@ -2585,7 +2609,7 @@ def test_download_text_from_sources_falls_back_from_elsevier_to_pmc(
 ) -> None:
     """Try Elsevier first, then PMC, and join the reasons when both fail."""
     monkeypatch.setattr(download, '_should_try_elsevier_text', lambda _: True)
-    monkeypatch.setattr(download, '_download_text',
+    monkeypatch.setattr(download, '_download_elsevier_text',
                         lambda *_: (_ for _ in ()).throw(RuntimeError('elsevier down')))
     monkeypatch.setattr(download, '_download_pmc_text', lambda *_: (True, ''))
 

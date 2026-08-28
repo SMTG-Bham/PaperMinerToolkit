@@ -18,6 +18,7 @@ cursor helper.
 from __future__ import annotations
 
 import os
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import quote_plus
@@ -453,3 +454,105 @@ def full_text(payload: Mapping[str, Any] | None) -> str:
     if text is None:
         text = (payload.get('full-text-retrieval-response') or {}).get('originalText')
     return text if isinstance(text, str) else ''
+
+
+def _local_name(tag: str) -> str:
+    """Return an XML tag name without its namespace or prefix."""
+    return tag.rsplit('}', 1)[-1].rsplit(':', 1)[-1].lower()
+
+
+def xml_plain_text(content: str) -> str:
+    """Derive readable article prose from native Elsevier XML.
+
+    Parameters
+    ----------
+    content : str
+        Complete Elsevier article XML.
+
+    Returns
+    -------
+    str
+        Titles and paragraphs in document order, excluding figures, tables,
+        references, and embedded objects.
+
+    Raises
+    ------
+    RuntimeError
+        If the response is malformed XML or represents an Elsevier error.
+    """
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        raise RuntimeError(f'Elsevier returned malformed article XML: {error}') from error
+    root_name = _local_name(root.tag)
+    if root_name in {'error-response', 'service-error', 'error'}:
+        message = ' '.join(''.join(root.itertext()).split())
+        raise RuntimeError(f'Elsevier full text is unavailable: {message or "unknown error"}')
+    skip = {'bibliography', 'figure', 'fig', 'table', 'table-wrap', 'object', 'attachment'}
+    block_tags = {'title', 'section-title', 'para', 'p'}
+    blocks: list[str] = []
+
+    def walk(node: ET.Element) -> None:
+        name = _local_name(node.tag)
+        if name in skip:
+            return
+        if name in block_tags:
+            text = ' '.join(''.join(node.itertext()).split())
+            if text and (not blocks or blocks[-1] != text):
+                blocks.append(text)
+            return
+        for child in node:
+            walk(child)
+
+    walk(root)
+    return '\n\n'.join(blocks)
+
+
+def full_text_document(
+    url: str,
+    api_key: str,
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Retrieve native Elsevier XML and derive plain text from one response.
+
+    Parameters
+    ----------
+    url : str
+        Elsevier article-retrieval endpoint.
+    api_key : str
+        Configured Elsevier API key.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Native XML and derived text, or an empty result when no article is
+        available.
+
+    Raises
+    ------
+    RuntimeError
+        If the request fails, entitlement is refused, or the XML is malformed.
+    """
+    response = request(
+        url,
+        api_key,
+        accept='text/xml',
+        params={'httpAccept': 'text/xml', 'view': 'FULL'},
+        session=session,
+    )
+    if response is None or not (response.text or '').strip():
+        return provider.FullTextDocument('')
+    content = response.text
+    text = xml_plain_text(content)
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='elsevier-xml',
+        source_url=url,
+        source_identifier=url.rsplit('/', 1)[-1],
+        metadata={'publisher_native': True},
+    )

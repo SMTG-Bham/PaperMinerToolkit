@@ -149,6 +149,41 @@ def test_request_json_sends_the_key_as_a_header() -> None:
     assert session.calls[0]['params'] == {}
 
 
+def test_full_text_document_requests_and_preserves_native_xml() -> None:
+    """Request the full XML view and derive prose without discarding markup."""
+    xml = '''<full-text-retrieval-response xmlns:ce="urn:ce">
+      <coredata><title>Example article</title></coredata>
+      <originalText><body><ce:sections><ce:section>
+        <ce:section-title>Results</ce:section-title>
+        <ce:para>Measured prose.</ce:para>
+        <ce:figure id="f1"><ce:caption>Retained caption.</ce:caption></ce:figure>
+        <ce:table><ce:para>Retained table.</ce:para></ce:table>
+      </ce:section></ce:sections></body></originalText>
+    </full-text-retrieval-response>'''
+    session = FakeSession([FakeResponse(text=xml)])
+
+    document = elsevier.full_text_document(
+        'https://api.elsevier.com/content/article/doi/10.1/x',
+        'key',
+        session=session,
+    )
+
+    assert document.content == xml
+    assert document.document_format == 'elsevier-xml'
+    assert document.text == 'Example article\n\nResults\n\nMeasured prose.'
+    assert len(session.calls) == 1
+    assert session.calls[0]['headers']['Accept'] == 'text/xml'
+    assert session.calls[0]['params'] == {'httpAccept': 'text/xml', 'view': 'FULL'}
+
+
+def test_elsevier_xml_rejects_malformed_and_error_documents() -> None:
+    """Fail clearly for invalid XML and successful HTTP error envelopes."""
+    with pytest.raises(RuntimeError, match='malformed article XML'):
+        elsevier.xml_plain_text('<article')
+    with pytest.raises(RuntimeError, match='full text is unavailable: denied'):
+        elsevier.xml_plain_text('<service-error>denied</service-error>')
+
+
 def test_search_payload_helpers_read_the_envelope() -> None:
     """Read the count, the entries, and the next link out of one payload."""
     payload = {'search-results': {
