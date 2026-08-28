@@ -130,6 +130,40 @@ def test_parse_elsevier_layout_produces_the_same_model_types() -> None:
     assert layout.tables[0].content_format == 'elsevier-xml'
 
 
+def test_parse_elsevier_layout_resolves_bare_locators_using_the_document_eid() -> None:
+    """Rewrite native ``gr1``-style locators into object-retrieval URLs.
+
+    Elsevier's own native XML embeds figure graphics as bare internal
+    reference tokens (``locator="gr1"``) rather than a path or URL. They are
+    not resolvable by joining them against the article endpoint; retrieving
+    the image requires the article's own ``eid`` plus Elsevier's
+    object-retrieval endpoint convention.
+    """
+    with_eid = '''<full-text-retrieval-response xmlns:ce="http://www.elsevier.com/xml/common/dtd">
+      <coredata><eid>1-s2.0-S000000000000X</eid></coredata>
+      <originalText><body><ce:sections><ce:section id="s1">
+        <ce:figure id="fA"><ce:label>Figure 1</ce:label>
+          <ce:link locator="gr1"/>
+          <ce:link locator="https://cdn.example/already-absolute.jpg"/>
+        </ce:figure>
+      </ce:section></ce:sections></body></originalText>
+    </full-text-retrieval-response>'''
+    layout = parse_elsevier_layout(with_eid, 'paper:eid')
+    uris = [graphic.uri for graphic in layout.figures[0].graphics]
+    assert uris == [
+        'https://api.elsevier.com/content/object/eid/1-s2.0-S000000000000X-gr1.jpg',
+        'https://cdn.example/already-absolute.jpg',
+    ]
+
+    without_eid = '''<full-text-retrieval-response xmlns:ce="http://www.elsevier.com/xml/common/dtd">
+      <originalText><body><ce:sections><ce:section id="s1">
+        <ce:figure id="fA"><ce:label>Figure 1</ce:label><ce:link locator="gr1"/></ce:figure>
+      </ce:section></ce:sections></body></originalText>
+    </full-text-retrieval-response>'''
+    unresolved = parse_elsevier_layout(without_eid, 'paper:no-eid')
+    assert unresolved.figures[0].graphics[0].uri == 'gr1'
+
+
 def test_xml_layout_tolerates_sparse_elements_and_rejects_broken_xml() -> None:
     """Use stable fallbacks for sparse objects but reject malformed documents."""
     sparse = '''<article><body><sec><p>Text without references.</p>

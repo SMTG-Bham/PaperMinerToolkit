@@ -381,6 +381,36 @@ def parse_jats_layout(
     )
 
 
+_ELSEVIER_OBJECT_URL = 'https://api.elsevier.com/content/object/eid/{eid}-{locator}.jpg'
+
+
+def _is_bare_elsevier_locator(value: str) -> bool:
+    """Return whether a ``ce:link`` locator is an internal reference token.
+
+    Native Elsevier XML embeds figure graphics as bare tokens such as
+    ``"gr1"`` rather than a resolvable path or URL. Retrieving the image
+    requires combining this token with the article's own ``eid`` through
+    Elsevier's object-retrieval endpoint; it is not a relative reference that
+    ``urljoin`` against the article URL can resolve.
+    """
+    return bool(value) and '/' not in value and '.' not in value
+
+
+def _resolve_elsevier_object_urls(figures: tuple[Figure, ...], eid: str) -> tuple[Figure, ...]:
+    """Rewrite bare Elsevier locator tokens into object-retrieval URLs."""
+    if not eid:
+        return figures
+    resolved = []
+    for figure in figures:
+        graphics = tuple(
+            replace(graphic, uri=_ELSEVIER_OBJECT_URL.format(eid=eid, locator=graphic.uri))
+            if _is_bare_elsevier_locator(graphic.uri) else graphic
+            for graphic in figure.graphics
+        )
+        resolved.append(replace(figure, graphics=graphics) if graphics != figure.graphics else figure)
+    return tuple(resolved)
+
+
 def parse_elsevier_layout(
     content: str,
     document_id: str,
@@ -388,6 +418,11 @@ def parse_elsevier_layout(
     source_identifier: str = '',
 ) -> DocumentLayout:
     """Parse native Elsevier article XML into a document layout.
+
+    Bare ``ce:link`` locator tokens (Elsevier's native graphic reference
+    form, such as ``"gr1"``) are rewritten into absolute object-retrieval
+    URLs using the article's own ``eid``, since they are not paths that
+    resolve against the article endpoint.
 
     Parameters
     ----------
@@ -401,14 +436,16 @@ def parse_elsevier_layout(
     Returns
     -------
     DocumentLayout
-        Normalized section, figure, table, graphic, and reference structure.
+        Normalized section, figure, table, graphic, and reference structure,
+        with graphic URIs resolvable to real image downloads where the
+        document's own ``eid`` is available.
 
     Raises
     ------
     ValueError
         If the document is not well-formed XML.
     """
-    return _parse_xml_layout(
+    layout = _parse_xml_layout(
         content,
         document_id,
         'elsevier',
@@ -416,6 +453,10 @@ def parse_elsevier_layout(
         'elsevier-xml',
         'elsevier-xml',
     )
+    root = ET.fromstring(content)  # already validated well-formed above
+    eid = _text(_first_descendant(root, {'eid'}))
+    figures = _resolve_elsevier_object_urls(layout.figures, eid)
+    return replace(layout, figures=figures) if figures != layout.figures else layout
 
 
 def parse_tei_layout(
