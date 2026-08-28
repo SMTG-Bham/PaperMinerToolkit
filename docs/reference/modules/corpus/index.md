@@ -8,6 +8,7 @@ Persistent corpus storage, provider-neutral document layouts, file handling, met
 database
 layout
 pdf_layout
+xml_layout
 documents
 metadata
 filtering

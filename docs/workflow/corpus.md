@@ -327,6 +327,13 @@ and whether the document is publisher-native; inspect them with the corpus asset
 layout-aware workflows. Elsevier XML requires full-text entitlement and unavailable or
 abstract-only responses are reported as per-paper download failures.
 
+Use `parse_jats_layout` or `parse_elsevier_layout` from
+`paperminertoolkit.corpus.xml_layout` to normalize a stored document into the common layout model.
+Both adapters preserve nested sections, figures, captions, tables, graphic references, and prose
+that explicitly cross-references a figure or table. Namespace prefixes and missing optional
+identifiers are handled locally so one sparse element does not discard the rest of the article;
+an XML document that is not well formed is rejected explicitly.
+
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.
 

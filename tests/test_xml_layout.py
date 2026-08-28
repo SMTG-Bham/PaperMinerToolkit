@@ -1,0 +1,144 @@
+"""Tests for JATS and Elsevier XML layout normalization."""
+
+from __future__ import annotations
+
+import pytest
+
+from paperminertoolkit.corpus.layout import Figure, Graphic, Section, Table
+from paperminertoolkit.corpus.xml_layout import parse_elsevier_layout, parse_jats_layout
+
+
+JATS = '''<article xmlns:xlink="http://www.w3.org/1999/xlink">
+  <front><article-meta><title-group><article-title>JATS example</article-title>
+  </title-group></article-meta></front>
+  <body>
+    <p>Unsectioned introduction.</p>
+    <sec id="results"><title>Results</title>
+      <p>As shown in <xref ref-type="fig" rid="fig1">Figure 1</xref> and
+      <xref ref-type="table" rid="tab1">Table 1</xref>, values increased.</p>
+      <fig id="fig1"><label>Figure 1</label><caption><p>Measured values.</p></caption>
+        <graphic id="g1" xlink:href="figures/f1.tif" mimetype="image" mime-subtype="tiff"/>
+        <graphic xlink:href="figures/f1.tif"/>
+      </fig>
+      <fig><graphic xlink:href="figures/unlabelled.png"/></fig>
+      <table-wrap id="tab1"><label>Table 1</label><caption><p>Tabulated values.</p></caption>
+        <table><tr><td>1</td></tr></table>
+      </table-wrap>
+      <sec><title>Nested</title><p>Nested prose.</p></sec>
+    </sec>
+  </body>
+</article>'''
+
+
+ELSEVIER = '''<full-text-retrieval-response
+  xmlns:ce="http://www.elsevier.com/xml/common/dtd"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <coredata><title>Elsevier example</title></coredata>
+  <originalText><body><ce:sections><ce:section id="s1">
+    <ce:section-title>Methods</ce:section-title>
+    <ce:para>See <ce:cross-ref refid="fA">Figure 2</ce:cross-ref>.</ce:para>
+    <ce:figure id="fA"><ce:label>Figure 2</ce:label>
+      <ce:caption><ce:simple-para>Instrument layout.</ce:simple-para></ce:caption>
+      <ce:link locator="https://cdn.example/fA.svg" mime-type="image/svg+xml"/>
+    </ce:figure>
+    <ce:table id="tA"><ce:label>Table 2</ce:label>
+      <ce:caption><ce:simple-para>Settings.</ce:simple-para></ce:caption>
+      <row><entry>A</entry></row>
+    </ce:table>
+  </ce:section></ce:sections></body></originalText>
+</full-text-retrieval-response>'''
+
+
+def test_parse_jats_layout_retains_hierarchy_objects_and_references() -> None:
+    """Normalize JATS sections, graphics, tables, and in-text references."""
+    layout = parse_jats_layout(
+        JATS,
+        'pmcid:PMC1',
+        source='pubmed',
+        source_identifier='PMC1',
+    )
+
+    assert layout.title == 'JATS example'
+    assert layout.provenance.source == 'pubmed'
+    assert layout.provenance.document_format == 'jats'
+    assert [section.identifier for section in layout.sections] == ['body', 'results']
+    assert layout.sections[0].blocks[0].text == 'Unsectioned introduction.'
+    assert layout.sections[1].children[0].identifier == 'section-1-1'
+    assert [block.reading_order for block in layout.iter_text_blocks()] == [0, 1, 2]
+
+    figure = layout.figures[0]
+    assert isinstance(figure, Figure)
+    assert figure.identifier == 'fig1'
+    assert figure.label == 'Figure 1'
+    assert figure.caption == 'Measured values.'
+    assert figure.graphics == (
+        Graphic('g1', 'figures/f1.tif', 'image/tiff'),
+    )
+    assert figure.reference_sentences[0].section_id == 'results'
+    assert 'values increased' in figure.reference_sentences[0].text
+    assert layout.figures[1].identifier == 'figure-2'
+    assert layout.figures[1].caption == ''
+
+    table = layout.tables[0]
+    assert isinstance(table, Table)
+    assert table.identifier == 'tab1'
+    assert table.caption == 'Tabulated values.'
+    assert table.content_format == 'jats'
+    assert '<table' in table.content
+    assert table.reference_sentences[0].section_id == 'results'
+
+
+def test_parse_elsevier_layout_produces_the_same_model_types() -> None:
+    """Normalize namespaced Elsevier XML through the common layout contract."""
+    layout = parse_elsevier_layout(
+        ELSEVIER,
+        'doi:10.1/example',
+        source_identifier='1-s2.0-example',
+    )
+
+    assert layout.title == 'Elsevier example'
+    assert layout.provenance.source == 'elsevier'
+    assert layout.provenance.document_format == 'elsevier-xml'
+    assert layout.provenance.source_identifier == '1-s2.0-example'
+    assert isinstance(layout.sections[0], Section)
+    assert layout.sections[0].title == 'Methods'
+    assert layout.sections[0].blocks[0].text == 'See Figure 2.'
+    assert isinstance(layout.figures[0], Figure)
+    assert layout.figures[0].graphics == (
+        Graphic('graphic-1', 'https://cdn.example/fA.svg', 'image/svg+xml'),
+    )
+    assert layout.figures[0].reference_sentences[0].text == 'See Figure 2.'
+    assert isinstance(layout.tables[0], Table)
+    assert layout.tables[0].content_format == 'elsevier-xml'
+
+
+def test_xml_layout_tolerates_sparse_elements_and_rejects_broken_xml() -> None:
+    """Use stable fallbacks for sparse objects but reject malformed documents."""
+    sparse = '''<article><body><sec><p>Text without references.</p>
+      <fig><caption/></fig><table-wrap><table/></table-wrap></sec></body></article>'''
+    layout = parse_jats_layout(sparse, 'paper:sparse')
+
+    assert layout.title == ''
+    assert layout.sections[0].identifier == 'section-1'
+    assert layout.figures[0].identifier == 'figure-1'
+    assert layout.figures[0].graphics == ()
+    assert layout.figures[0].reference_sentences == ()
+    assert layout.tables[0].identifier == 'table-1'
+    assert layout.tables[0].reference_sentences == ()
+
+    original_text = parse_elsevier_layout(
+        '<article><originalText><section id="s"><para>Text.</para></section>'
+        '</originalText></article>',
+        'paper:original-text',
+    )
+    root_sections = parse_jats_layout(
+        '<article><sec id="s"><p>Text.</p></sec></article>',
+        'paper:root-sections',
+    )
+    assert original_text.sections[0].identifier == 's'
+    assert root_sections.sections[0].identifier == 's'
+
+    with pytest.raises(ValueError, match='malformed jats document'):
+        parse_jats_layout('<article', 'paper:broken')
+    with pytest.raises(ValueError, match='malformed elsevier-xml document'):
+        parse_elsevier_layout('<article', 'paper:broken')

@@ -62,6 +62,7 @@ def test_pdf_layout_helpers_ignore_malformed_blocks_and_unusable_geometry() -> N
         """Return prepared text dictionaries."""
 
         def __init__(self, payload: object) -> None:
+            """Store the prepared text payload."""
             self.payload = payload
 
         def get_text(self, mode: str) -> object:
