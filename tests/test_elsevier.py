@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
-from typing import Any
 
 import pytest
 
@@ -25,76 +23,49 @@ def test_api_headers_include_key_accept_and_user_agent() -> None:
     assert elsevier.api_headers('elsevier-key', accept='application/pdf')['Accept'] == 'application/pdf'
 
 
-def test_get_json_requests_elsevier_json_and_raises_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Get JSON requests Elsevier JSON and raises status."""
-    calls = {}
+def test_get_json_delegates_to_the_paced_json_request() -> None:
+    """Send the JSON helper's request through the shared, paced client."""
+    session = FakeSession([FakeResponse(payload={'ok': True})])
 
-    class FakeResponse:
-        """Provide a response test double."""
-
-        def raise_for_status(self) -> None:
-            """Validate the prepared response status."""
-            calls['raised'] = True
-
-        def json(self) -> dict[str, bool]:
-            """Return the prepared JSON payload."""
-            return {'ok': True}
-
-    def fake_get(
-        url: str,
-        headers: Mapping[str, str],
-        params: Mapping[str, Any],
-        timeout: float,
-    ) -> FakeResponse:
-        """Provide a fake HTTP GET implementation."""
-        calls['url'] = url
-        calls['headers'] = headers
-        calls['params'] = params
-        calls['timeout'] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr(elsevier.requests, 'get', fake_get)
-
-    assert elsevier.get_json('elsevier-key', 'https://example.com/search', params={'count': 1}, timeout=5) == {
-        'ok': True,
-    }
-    assert calls['url'] == 'https://example.com/search'
-    assert calls['headers']['X-ELS-APIKey'] == 'elsevier-key'
-    assert calls['params'] == {'count': 1}
-    assert calls['timeout'] == 5
-    assert calls['raised'] is True
+    assert elsevier.get_json('elsevier-key', 'https://example.com/search',
+                             params={'count': 1}, session=session) == {'ok': True}
+    call = session.calls[0]
+    assert call['headers']['X-ELS-APIKey'] == 'elsevier-key'
+    assert call['params'] == {'count': 1}
+    # The quota is tracked here too, because this request spends one as well.
+    assert elsevier.quota_status() is None
 
 
-def test_get_content_requests_elsevier_raw_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Get content requests Elsevier raw response."""
-    calls = {}
+def test_get_content_is_paced_retried_and_never_returns_a_missing_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetch a PDF through the shared client rather than around it.
 
-    class FakeResponse:
-        """Provide a response test double."""
+    This is the path every Elsevier PDF and abstract arrives by, and it used to
+    call ``requests.get`` directly: unpaced, unretried, and deaf to
+    ``Retry-After``. It has to share the window with search and metadata,
+    because it shares the host and the weekly allowance with them.
+    """
+    waits: list[float | None] = []
+    monkeypatch.setattr(elsevier.LIMITER, 'wait', lambda interval=None: waits.append(interval))
+    session = FakeSession([
+        FakeResponse(text='%PDF data', status_code=429, headers={'Retry-After': '0'}),
+        FakeResponse(text='%PDF data'),
+    ])
 
-        def raise_for_status(self) -> None:
-            """Validate the prepared response status."""
-            calls['raised'] = True
+    response = elsevier.get_content('elsevier-key', 'https://example.com/article',
+                                    'application/pdf', session=session)
 
-    response = FakeResponse()
+    assert response.text == '%PDF data'
+    # Paced once per attempt, the retry included, through Elsevier's own window.
+    assert waits == [None, None]
+    assert session.calls[0]['headers']['Accept'] == 'application/pdf'
 
-    def fake_get(
-        url: str,
-        headers: Mapping[str, str],
-        params: Mapping[str, Any],
-        timeout: float,
-    ) -> FakeResponse:
-        """Provide a fake HTTP GET implementation."""
-        calls['headers'] = headers
-        calls['params'] = params
-        return response
-
-    monkeypatch.setattr(elsevier.requests, 'get', fake_get)
-
-    assert elsevier.get_content('elsevier-key', 'https://example.com/article', 'application/pdf') is response
-    assert calls['headers']['Accept'] == 'application/pdf'
-    assert calls['params'] == {}
-    assert calls['raised'] is True
+    # A missing document is raised rather than returned, so a caller working
+    # through candidate URLs handles every outcome the same way.
+    with pytest.raises(RuntimeError, match='rejected the request with 404'):
+        elsevier.get_content('elsevier-key', 'https://example.com/article', 'application/pdf',
+                             session=FakeSession([FakeResponse(text='', status_code=404)]))
 
 
 def test_elsevier_url_builders_quote_query_and_doi_values() -> None:

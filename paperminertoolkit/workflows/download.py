@@ -199,11 +199,9 @@ def _download_pdf(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bo
                     out_file.write(response.content)
                 return True
             last_error = f'non-PDF response from {url}'
-        except requests.HTTPError as e:
-            response = getattr(e, 'response', None)
-            status_code = response.status_code if response is not None else 'HTTP error'
-            last_error = f'{status_code} from {url}'
-        except requests.RequestException as e:
+        except RuntimeError as e:
+            # Paced and retried in elsevier.get_content, so reaching here means
+            # Elsevier refused this URL or kept failing; its message says which.
             last_error = str(e)
     if last_error:
         print(f'PDF download failed for {paper.get("paper_id")}: {last_error}')
@@ -1198,11 +1196,7 @@ def _download_elsevier_abstract(paper: Mapping[str, Any]) -> tuple[bool, str, st
             if abstract:
                 return True, 'elsevier', abstract
             last_error = f'no abstract in response from {url}'
-        except requests.HTTPError as e:
-            response = getattr(e, 'response', None)
-            status_code = response.status_code if response is not None else 'HTTP error'
-            last_error = f'{status_code} from {url}'
-        except requests.RequestException as e:
+        except RuntimeError as e:
             last_error = str(e)
     return False, last_error, ''
 

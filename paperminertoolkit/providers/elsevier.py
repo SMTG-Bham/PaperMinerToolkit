@@ -255,8 +255,13 @@ def get_json(
     url: str,
     params: Mapping[str, object] | None = None,
     timeout: float = provider.DEFAULT_TIMEOUT,
-) -> dict[str, Any]:
+    session: provider.HTTPClient | None = None,
+) -> dict[str, Any] | None:
     """Request and decode an Elsevier JSON endpoint.
+
+    Kept as a name callers may already use; :func:`request_json` is the same
+    request and is what this delegates to, so there is only one implementation
+    to keep paced.
 
     Parameters
     ----------
@@ -268,32 +273,36 @@ def get_json(
         Query parameters for the request.
     timeout : float, default=60.0
         Request timeout in seconds.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
 
     Returns
     -------
-    dict[str, Any]
-        Decoded JSON response body.
+    dict[str, Any] or None
+        Decoded JSON response body, or ``None`` for a 404 response.
 
     Raises
     ------
     RuntimeError
-        If Elsevier has reported that this key's quota is exhausted.
-    requests.RequestException
-        If the request fails or the response has an error status.
+        If Elsevier has reported that this key's quota is exhausted, the
+        request is rejected, or the body is not a JSON object.
     """
-    check_quota(api_key)
-    response = requests.get(url, headers=api_headers(api_key), params=params or {}, timeout=timeout)
-    record_quota(response, api_key)
-    response.raise_for_status()
-    return response.json()
+    return request_json(url, api_key, params=params, timeout=timeout, session=session)
 
 
 def get_content(api_key: str,
                 url: str,
                 accept: str,
                 params: Mapping[str, object] | None = None,
-                timeout: float = provider.DEFAULT_TIMEOUT) -> requests.Response:
+                timeout: float = provider.DEFAULT_TIMEOUT,
+                session: provider.HTTPClient | None = None) -> provider.ResponseLike:
     """Request raw content from an Elsevier endpoint.
+
+    This is the path a PDF or an abstract arrives by, and it is paced, retried
+    and quota-checked exactly as search and metadata are, because it is the
+    same host and the same weekly allowance. Every failure, a missing document
+    included, is raised rather than returned, so a caller working through
+    candidate URLs treats them all the same way.
 
     Parameters
     ----------
@@ -307,23 +316,27 @@ def get_content(api_key: str,
         Query parameters for the request.
     timeout : float, default=60.0
         Request timeout in seconds.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method. Defaults to :mod:`requests`.
 
     Returns
     -------
-    requests.Response
+    provider.ResponseLike
         Status-validated raw response.
 
     Raises
     ------
     RuntimeError
-        If Elsevier has reported that this key's quota is exhausted.
-    requests.RequestException
-        If the request fails or the response has an error status.
+        If Elsevier has reported that this key's quota is exhausted, the
+        document is absent, or the request is rejected or keeps failing.
     """
     check_quota(api_key)
-    response = requests.get(url, headers=api_headers(api_key, accept=accept), params=params or {}, timeout=timeout)
-    record_quota(response, api_key)
-    response.raise_for_status()
+    response = provider.request(url, label='Elsevier', limiter=LIMITER, params=params,
+                                headers=api_headers(api_key, accept=accept), session=session,
+                                timeout=timeout, missing_ok=False,
+                                on_response=lambda answer: record_quota(answer, api_key))
+    if response is None:  # pragma: no cover - missing_ok=False never returns None
+        raise RuntimeError(f'Elsevier returned no content from {url}')
     return response
 
 

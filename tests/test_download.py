@@ -10,11 +10,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 import os
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, NoReturn, Self
 
 import pytest
-import requests
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.download as download
@@ -185,9 +183,11 @@ def test_elsevier_abstract_errors_and_invalid_asset_role(
         False, 'missing Elsevier abstract URL', ''
     )
     monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
+    # elsevier.get_content raises RuntimeError for every outcome a caller has
+    # to move past, a missing document included, since it is paced and retried.
     errors = [
-        requests.HTTPError(response=SimpleNamespace(status_code=404)),
-        requests.ConnectionError('offline'),
+        RuntimeError('Elsevier rejected the request with 404 from one'),
+        RuntimeError('offline'),
     ]
 
     def fail(*args: Any, **kwargs: Any) -> Any:
@@ -1489,11 +1489,11 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(
         assert accept == 'application/pdf'
         assert params == {'httpAccept': 'application/pdf'}
         if url == 'bad-status':
-            error = download.requests.HTTPError('forbidden')
-            error.response = FakeResponse(status_code=403)
-            raise error
+            # elsevier.get_content is paced and retried, so a caller sees one
+            # RuntimeError carrying the reason rather than a transport error.
+            raise RuntimeError('Elsevier rejected the request with 403 from bad-status')
         if url == 'bad-request':
-            raise download.requests.RequestException('network down')
+            raise RuntimeError('Elsevier request failed after 4 attempts: network down')
         if url == 'bad-content':
             return FakeResponse(content=b'html', content_type='text/html')
         return FakeResponse()
