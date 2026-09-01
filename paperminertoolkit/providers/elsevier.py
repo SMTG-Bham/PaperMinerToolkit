@@ -13,13 +13,24 @@ may return a record whose full text the same key cannot fetch.
 Elsevier pages a search by handing back a link rather than by an offset the
 caller computes, which is why :func:`next_page_url` exists and why there is no
 cursor helper.
+
+Elsevier also meters a key by a quota over a period of days, not only by a rate
+per second, and it reports what is left of that quota on every authenticated
+response. A run that ignores those headers discovers exhaustion as a wall of
+refusals partway through, having spent the requests that got it there, so this
+module remembers what the last response said and refuses to make the next
+request once nothing is left. See :func:`check_quota`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -31,6 +42,190 @@ from paperminertoolkit.corpus.metadata import clean_doi
 BASE_URL = 'https://api.elsevier.com/content'
 ELSEVIER_MIN_INTERVAL = 0.2
 LIMITER = provider.RateLimiter(ELSEVIER_MIN_INTERVAL)
+# Elsevier's documented quota headers. They appear on authenticated responses
+# only, so an absent one means "nothing learned" rather than "nothing left".
+QUOTA_LIMIT_HEADER = 'X-RateLimit-Limit'
+QUOTA_REMAINING_HEADER = 'X-RateLimit-Remaining'
+QUOTA_RESET_HEADER = 'X-RateLimit-Reset'
+
+
+@dataclass(frozen=True, slots=True)
+class Quota:
+    """What Elsevier last reported about a key's remaining allowance.
+
+    Parameters
+    ----------
+    remaining : int
+        Requests left in the current period.
+    limit : int, default=-1
+        Requests the period allows, or ``-1`` when Elsevier did not say.
+    reset_at : float, default=0.0
+        Unix timestamp at which the allowance refills, or ``0.0`` when Elsevier
+        did not say.
+    key_fingerprint : str, default=''
+        Digest of the key the figures belong to. A quota is per key, so figures
+        observed for one key must not gate requests made with another. The
+        digest is stored rather than the key so no credential is held in module
+        state.
+    """
+
+    remaining: int
+    limit: int = -1
+    reset_at: float = 0.0
+    key_fingerprint: str = ''
+
+    @property
+    def exhausted(self) -> bool:
+        """Return whether the allowance is spent and has not yet refilled."""
+        if self.remaining > 0:
+            return False
+        return not self.reset_at or self.reset_at > time.time()
+
+    @property
+    def reset_text(self) -> str:
+        """Return the refill time as readable UTC, or an empty string."""
+        if not self.reset_at:
+            return ''
+        return datetime.fromtimestamp(self.reset_at, UTC).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+
+_quota: Quota | None = None
+
+
+def _key_fingerprint(api_key: str) -> str:
+    """Digest a key so quota state can be attributed without holding it.
+
+    Parameters
+    ----------
+    api_key : str
+        Elsevier API key.
+
+    Returns
+    -------
+    str
+        Truncated hex digest, or an empty string for an empty key.
+    """
+    return hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else ''
+
+
+def _header_int(headers: object, name: str) -> int | None:
+    """Read one integer response header.
+
+    Parameters
+    ----------
+    headers : object
+        Response headers, which need not be a mapping.
+    name : str
+        Header name to read.
+
+    Returns
+    -------
+    int or None
+        Header value, or ``None`` when it is absent or not an integer.
+    """
+    if not hasattr(headers, 'get'):
+        return None
+    value = headers.get(name)
+    if value is None:
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_quota(response: provider.ResponseLike, api_key: str = '') -> Quota | None:
+    """Remember what one Elsevier response said about the remaining quota.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        Response whose headers should be read.
+    api_key : str, default=''
+        Key the request was made with, recorded as a digest.
+
+    Returns
+    -------
+    Quota or None
+        Quota now remembered, or ``None`` when the response reported none.
+    """
+    global _quota
+    remaining = _header_int(getattr(response, 'headers', None), QUOTA_REMAINING_HEADER)
+    if remaining is None:
+        return _quota
+    limit = _header_int(getattr(response, 'headers', None), QUOTA_LIMIT_HEADER)
+    reset = _header_int(getattr(response, 'headers', None), QUOTA_RESET_HEADER)
+    _quota = Quota(remaining=max(remaining, 0),
+                   limit=limit if limit is not None else -1,
+                   reset_at=float(reset) if reset else 0.0,
+                   key_fingerprint=_key_fingerprint(api_key))
+    return _quota
+
+
+def quota_status() -> Quota | None:
+    """Return the last quota Elsevier reported, if any.
+
+    Returns
+    -------
+    Quota or None
+        Remembered quota, or ``None`` when no response has reported one.
+    """
+    return _quota
+
+
+def reset_quota() -> None:
+    """Forget the remembered quota.
+
+    Quota state outlives a single call by design, so a test run or a caller
+    starting again with different credentials clears it explicitly.
+
+    Returns
+    -------
+    None
+        The remembered quota is cleared in place.
+    """
+    global _quota
+    _quota = None
+
+
+def check_quota(api_key: str = '') -> None:
+    """Refuse a request Elsevier has already said it will not answer.
+
+    Elsevier reports a key's remaining allowance on every authenticated
+    response. Once that reaches zero, further requests are refused until the
+    allowance refills, so making them spends time and learns nothing. Raising
+    here reports the exhaustion once, in terms of when it lifts, rather than as
+    a run of identical failures.
+
+    Nothing is enforced until a response has actually reported a figure, and
+    figures observed under one key never gate a request made with another.
+
+    Parameters
+    ----------
+    api_key : str, default=''
+        Key the request is about to be made with.
+
+    Returns
+    -------
+    None
+        Nothing is returned when the request may proceed.
+
+    Raises
+    ------
+    RuntimeError
+        If the remembered quota for this key is exhausted.
+    """
+    quota = _quota
+    if quota is None or not quota.exhausted:
+        return
+    if quota.key_fingerprint != _key_fingerprint(api_key):
+        return
+    allowance = f' of {quota.limit}' if quota.limit >= 0 else ''
+    refill = f' It refills at {quota.reset_text}.' if quota.reset_text else ''
+    raise RuntimeError(
+        f'Elsevier reports 0{allowance} requests left for this API key, so this request was '
+        f'not sent.{refill} Wait for the allowance to refill, or use a key with a larger one.'
+    )
 
 
 def api_headers(api_key: str, accept: str = 'application/json') -> dict[str, str]:
@@ -81,10 +276,14 @@ def get_json(
 
     Raises
     ------
+    RuntimeError
+        If Elsevier has reported that this key's quota is exhausted.
     requests.RequestException
         If the request fails or the response has an error status.
     """
+    check_quota(api_key)
     response = requests.get(url, headers=api_headers(api_key), params=params or {}, timeout=timeout)
+    record_quota(response, api_key)
     response.raise_for_status()
     return response.json()
 
@@ -116,10 +315,14 @@ def get_content(api_key: str,
 
     Raises
     ------
+    RuntimeError
+        If Elsevier has reported that this key's quota is exhausted.
     requests.RequestException
         If the request fails or the response has an error status.
     """
+    check_quota(api_key)
     response = requests.get(url, headers=api_headers(api_key, accept=accept), params=params or {}, timeout=timeout)
+    record_quota(response, api_key)
     response.raise_for_status()
     return response
 
@@ -226,11 +429,14 @@ def request(url: str,
     Raises
     ------
     RuntimeError
-        If the request is rejected, or all request attempts fail.
+        If Elsevier has reported that this key's quota is exhausted, the
+        request is rejected, or all request attempts fail.
     """
+    check_quota(api_key)
     return provider.request(url, label='Elsevier', limiter=LIMITER, params=params,
                             headers=api_headers(api_key, accept=accept), session=session,
-                            timeout=timeout, attempts=attempts)
+                            timeout=timeout, attempts=attempts,
+                            on_response=lambda response: record_quota(response, api_key))
 
 
 def request_json(url: str,
@@ -264,11 +470,14 @@ def request_json(url: str,
     Raises
     ------
     RuntimeError
-        If the request is rejected, or the body is not a JSON object.
+        If Elsevier has reported that this key's quota is exhausted, the
+        request is rejected, or the body is not a JSON object.
     """
+    check_quota(api_key)
     return provider.request_mapping(url, label='Elsevier', limiter=LIMITER, params=params,
                                     headers=api_headers(api_key), session=session,
-                                    timeout=timeout, attempts=attempts)
+                                    timeout=timeout, attempts=attempts,
+                                    on_response=lambda response: record_quota(response, api_key))
 
 
 def next_page_url(payload: Mapping[str, Any] | None) -> str:

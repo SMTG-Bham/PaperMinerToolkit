@@ -309,6 +309,7 @@ def request(
     client_error: Callable[[ResponseLike], str] | None = None,
     missing_ok: bool = True,
     error_types: tuple[type[Exception], ...] = RETRY_ERRORS,
+    on_response: Callable[[ResponseLike], None] | None = None,
 ) -> ResponseLike | None:
     """Request a provider endpoint with courtesy pacing and bounded retries.
 
@@ -342,6 +343,12 @@ def request(
         instead.
     error_types : tuple of type, default=RETRY_ERRORS
         Exception types that count as a failed attempt rather than propagating.
+    on_response : callable or None, optional
+        Called with every response received, whatever its status and once per
+        attempt, before the status is interpreted. This is where a provider
+        reads what its response headers say about the state of the account,
+        such as a remaining quota, which is reported on a refusal as much as on
+        a success.
 
     Returns
     -------
@@ -361,6 +368,8 @@ def request(
         limiter.wait(interval)
         try:
             response = client.get(url, params=merged, headers=sent, timeout=timeout)
+            if on_response is not None:
+                on_response(response)
             if missing_ok and response.status_code == 404:
                 return None
             terminal = client_error(response) if client_error is not None else ''

@@ -98,7 +98,12 @@ Three consequences are worth knowing:
   service rather than taken on trust.
 - **Elsevier figures and Elsevier metadata share one budget.** Both come from `api.elsevier.com`,
   so they are paced by the same window and spend the same weekly quota. A large figure run reduces
-  the article retrievals left for that week.
+  the article retrievals left for that week. Elsevier reports what is left of that quota on every
+  authenticated response, and PaperMinerToolkit reads it: once nothing remains, the next request is
+  refused before it is sent, naming the allowance and when it refills. That turns exhaustion into
+  one clear error rather than a run of refusals that each cost a request. Nothing is enforced until
+  a response has actually reported a figure, so an unmetered endpoint or an unauthenticated
+  rejection never blocks a run.
 - **PMC text, PDFs, and figures no longer touch NCBI's limit.** They come from the PMC Cloud
   Service, a separate service from E-utilities, so an NCBI API key does not change their pace and
   their traffic does not consume the E-utilities allowance.
