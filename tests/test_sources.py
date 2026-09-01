@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -185,3 +187,34 @@ def test_the_pipelines_and_the_cli_read_the_same_source_lists() -> None:
     assert _choice_values(cli.paper_search, 'source') == sources.choices(sources.SEARCH)
     assert _choice_values(cli.enrich, 'source') == sources.choices(sources.ENRICH)
     assert set(_choice_values(cli.download, 'source')) == {'all', *download.DOWNLOAD_SOURCES}
+
+
+def test_documented_source_order_matches_the_registry() -> None:
+    """Keep the source-order table in the corpus guide true.
+
+    The prose this table replaced had drifted: it listed full text as coming
+    from Elsevier, PubMed Central, medRxiv or bioRxiv and omitted OpenAlex
+    entirely, so a reader could not tell that a metered source was in the
+    default set at all. A table is only worth more than that prose if it
+    cannot drift the same way.
+    """
+    guide = (Path(__file__).parents[1] / 'docs' / 'workflow' / 'corpus.md').read_text()
+    table = re.search(r'\| capability \| order tried \|\n\|[^\n]*\|\n((?:\|[^\n]*\|\n)+)', guide)
+    assert table is not None, 'the source-order table is no longer in the corpus guide'
+
+    # The guide names providers as people write them; the registry keys them.
+    labels = {label.lower().replace(' ', ''): name for name, source in sources.SOURCES.items()
+              for label in (name, source.label)}
+    labels['pubmedcentral'] = 'pubmed'
+
+    documented = {}
+    for line in table.group(1).strip().splitlines():
+        capability, order = (cell.strip() for cell in line.strip('|').split('|'))
+        names = [labels[part.strip().strip('*').lower().replace(' ', '')]
+                 for part in order.split(',')]
+        documented[capability.lower()] = tuple(names)
+
+    assert documented == {
+        capability: sources.names(capability) for capability in documented
+    }
+    assert set(documented) == set(sources.CAPABILITIES), 'a capability is undocumented'

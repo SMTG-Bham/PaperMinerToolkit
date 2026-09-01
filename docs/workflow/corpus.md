@@ -283,16 +283,41 @@ pmt download papers.db --format pdf
 pmt download papers.db --format both
 ```
 
-`--source` applies to abstracts, full text, and PDFs alike. Abstract retrieval tries OpenAlex,
-PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, and Elsevier in that order, skipping any source
-the run did not select and any the row cannot reach; PubMed is attempted for any row carrying a
-PMID or a DOI, and the preprint servers for any row carrying the identifier each issued. Full text
-comes from Elsevier, PubMed Central, medRxiv, or bioRxiv, in that order and likewise only from the
-selected sources -- so `--source elsevier --format text` uses Elsevier alone, and `--source pubmed`
-no longer also reaches for it. PDF retrieval can use Unpaywall, OpenAlex, CORE, Elsevier, PubMed
-Central, medRxiv, bioRxiv, chemRxiv, and arXiv, in that order. The four preprint
-servers are tried last because the other sources may hold the publisher's version of record while a preprint server
-holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
+### Default source order
+
+Each capability has its own order, and a source is only asked when every source before it has
+failed or been skipped. A run skips any source it did not select and any the row cannot reach:
+PubMed is attempted for a row carrying a PMID or a DOI, and each preprint server for a row carrying
+the identifier it issued.
+
+| capability | order tried |
+| --- | --- |
+| abstract | OpenAlex, PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, Elsevier |
+| text | Elsevier, PubMed Central, medRxiv, bioRxiv, **OpenAlex** |
+| PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv |
+| search | Elsevier, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+| enrich | Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+
+`--source` filters this order rather than replacing it, and applies to abstracts, full text, and
+PDFs alike. Passing `--source openalex --source pubmed` asks PubMed first for text, because that is
+where PubMed sits in the order, whichever way round you type them.
+
+The orders differ deliberately:
+
+- **Abstracts** lead with the providers that serve one straight from metadata already in hand.
+- **Text** puts the native structured sources first and OpenAlex last, because OpenAlex's is GROBID
+  TEI derived from a PDF rather than a publisher document, and it is the only metered full-text
+  source. It is genuinely a last resort: nothing reaches it unless the other four could not supply
+  the paper. See [Configuration](configuration.md) for what that costs.
+- **PDFs** lead with the open-access resolvers, which are free and most likely to hold something.
+  The four preprint servers come last, because the earlier sources may hold the publisher's version
+  of record while a preprint server holds the preprint, which is a different document.
+- **Search** puts arXiv and the preprint servers last, so a published record wins over its preprint.
+- **Enrichment** order is also the field precedence: Crossref is the registration authority, so its
+  values win, and the preprint servers fill in behind everything else.
+
+Naming one source restricts a run to it, so `--source elsevier --format text` uses Elsevier alone
+and `--source pubmed` no longer also reaches for it. Select sources by repeating `--source`:
 
 ```bash
 pmt download papers.db --format pdf \
