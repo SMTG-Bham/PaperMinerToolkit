@@ -364,6 +364,13 @@ nothing. Native providers remain ahead of OpenAlex when several sources are sele
 text is not sent to the fallback unless `--force` is used. Stored TEI metadata records that it is
 PDF-derived, the GROBID parser, source URL, and estimated request cost.
 
+This fallback earns its keep for a reason that is easy to miss: publishers refuse automated PDF
+requests routinely, open access or not. In a sample of works that OpenAlex holds GROBID text for,
+**44% had a PDF URL that did not actually yield a PDF** — mostly `403`s from Wiley, Elsevier,
+Science and similar. OpenAlex fetched and parsed those PDFs already, so it has the text when you
+cannot get it. Prefer the native providers and local PDF layout detection whenever the PDF is
+reachable; reach for this when the publisher refuses you.
+
 Two things about the TEI itself are worth knowing, both confirmed against real responses:
 
 - **It carries captions but no images.** GROBID recovers a figure's caption from the PDF, not the
