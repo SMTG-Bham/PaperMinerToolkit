@@ -459,3 +459,34 @@ def test_download_structured_figures_records_reference_sentences(tmp_path: Path)
     assert asset['metadata']['reference_sentences'] == [
         'Conductivity rose sharply, as Figure 1 shows.',
     ]
+
+
+def test_figure_limiter_routes_each_host_to_its_own_pace() -> None:
+    """Pace a figure download by the host serving it, sharing where apt.
+
+    A rate limit belongs to a host, so a figure request must reuse that host's
+    existing limiter rather than a second one: two limiters on one host would
+    permit twice the intended rate and, for Elsevier, spend one weekly quota
+    twice as fast.
+    """
+    from paperminertoolkit.providers import elsevier, pubmed, rxiv
+
+    assert figures.figure_limiter(
+        'https://api.elsevier.com/content/object/eid/1-s2.0-X-gr1.jpg',
+    ) is elsevier.LIMITER
+    assert figures.figure_limiter(
+        'https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/fig.webp',
+    ) is pubmed.CLOUD_LIMITER
+    assert figures.figure_limiter(
+        'https://www.biorxiv.org/content/biorxiv/early/2019/05/10/339747/F1.large.jpg',
+    ) is rxiv.CONTENT_LIMITER
+    assert figures.figure_limiter(
+        'https://www.medrxiv.org/content/x/F2.large.jpg',
+    ) is rxiv.CONTENT_LIMITER
+
+    # An unknown publisher host falls back to the general figure pace.
+    assert figures.figure_limiter('https://cdn.example.org/fig.png') is figures.FIGURE_LIMITER
+    assert figures.figure_limiter('') is figures.FIGURE_LIMITER
+
+    # The rxiv content pace must be the crawl delay those archives publish.
+    assert rxiv.CONTENT_LIMITER.min_interval == 7.0

@@ -48,6 +48,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
+from urllib.parse import urlsplit
 
 from paperminertoolkit.providers import base as provider, pubmed
 from paperminertoolkit.corpus.metadata import clean_doi
@@ -57,6 +58,16 @@ CATEGORY_BASE_URL = 'https://api.biorxiv.org'
 PAGE_SIZE = 100
 CATEGORY_PAGE_SIZE = 30
 RXIV_MIN_INTERVAL = 1.0
+# Both archives serve their metadata API and their content from different
+# hosts with different limits. The API publishes no rate limit, and one second
+# is the convention their own R client follows. The content host that serves
+# JATS, PDFs, and figures asks for seven seconds in its robots.txt:
+#     https://www.biorxiv.org/robots.txt   User-agent: * / Crawl-delay: 7
+#     https://www.medrxiv.org/robots.txt   User-agent: * / Crawl-delay: 7
+# It also sits behind bot management that answers 429 with Retry-After when
+# that pace is exceeded, so requesting faster costs more time than it saves.
+RXIV_CONTENT_MIN_INTERVAL = 7.0
+CONTENT_LIMITER = provider.RateLimiter(RXIV_CONTENT_MIN_INTERVAL)
 MAX_SCAN_RECORDS = 20000
 QUERY_PREFIXES = ('category', 'from', 'to')
 OK_STATUS = 'ok'
@@ -244,6 +255,33 @@ def pdf_url(server: RxivServer, doi: str, version: str = '') -> str:
     return f'{server.web_url}/content/{identifier}v{number}.full.pdf'
 
 
+def limiter_for(server: RxivServer, url: str) -> provider.RateLimiter:
+    """Choose the pacing window for one archive URL by the host it targets.
+
+    An archive's metadata API and its content host advertise different limits,
+    so the host decides the pace rather than the archive. Content URLs, which
+    serve JATS, PDFs, and figures, use the slower window their robots.txt asks
+    for. The API host shares the archive's registrable domain, so it is matched
+    exactly rather than by suffix; otherwise ``api.biorxiv.org`` would be paced
+    as though it were the content site.
+
+    Parameters
+    ----------
+    server : RxivServer
+        Archive being addressed.
+    url : str
+        URL about to be requested.
+
+    Returns
+    -------
+    provider.RateLimiter
+        Limiter for the host serving ``url``.
+    """
+    host = (urlsplit(url).hostname or '').lower().rstrip('.')
+    content_host = (urlsplit(server.web_url).hostname or '').lower()
+    return CONTENT_LIMITER if content_host and host == content_host else server.limiter
+
+
 def request(
     server: RxivServer,
     url: str,
@@ -279,7 +317,7 @@ def request(
     RuntimeError
         If the request is rejected, or all request attempts fail.
     """
-    return provider.request(url, label=server.label, limiter=server.limiter, params=params,
+    return provider.request(url, label=server.label, limiter=limiter_for(server, url), params=params,
                             session=session, timeout=timeout, attempts=attempts)
 
 

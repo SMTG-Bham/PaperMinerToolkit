@@ -35,12 +35,20 @@ for it. arXiv asks that clients leave three seconds between consecutive requests
 PaperMinerToolkit enforces itself; a search or enrichment run that spans many pages will spend a
 noticeable part of its time waiting, and that is expected rather than a fault.
 
-medRxiv and bioRxiv need no credentials either, and publish no rate limit. They are one service
-under two names, so PaperMinerToolkit paces each at one request per second, which matters more here than
-for the other providers: neither has a search endpoint, so a search reads the posting archive a
-page at a time and a broad query spends most of its run waiting between pages. Narrowing the query
-is what makes either search quick, and it matters most for bioRxiv, whose archive opened in 2013
-and is several times the size of medRxiv's; see [Build a corpus](corpus.md).
+medRxiv and bioRxiv need no credentials either, and their metadata APIs publish no rate limit.
+They are one service under two names, so PaperMinerToolkit paces each API at one request per
+second, which matters more here than for the other providers: neither has a search endpoint, so a
+search reads the posting archive a page at a time and a broad query spends most of its run waiting
+between pages. Narrowing the query is what makes either search quick, and it matters most for
+bioRxiv, whose archive opened in 2013 and is several times the size of medRxiv's; see
+[Build a corpus](corpus.md).
+
+Their content sites are a different matter. `www.biorxiv.org` and `www.medrxiv.org`, which serve
+the JATS full text, the PDFs, and the figures, each ask for seven seconds between requests in
+their `robots.txt`, and are fronted by bot management that answers `429` with a `Retry-After` when
+that pace is exceeded. PaperMinerToolkit honours the published delay, so downloading a preprint's
+figures is deliberately slow: an eight-figure preprint spends about a minute. Requesting faster
+does not help, because each refusal costs more waiting than the pace saved.
 
 chemRxiv needs no credentials and publishes no rate limit either, and PaperMinerToolkit paces it at
 one request per second as well. Unlike medRxiv and bioRxiv it does have a search endpoint, so a
@@ -49,6 +57,44 @@ work rather than saving you a long read. chemrxiv.org is fronted by a bot challe
 refuse a client outright; PaperMinerToolkit does not try to get around it, and reports the refusal as
 the reason a search or download failed. When that happens the same papers are still reachable
 through the `openalex` and `crossref` sources.
+
+## Request pacing
+
+A rate limit belongs to the host being asked, not to the kind of file being fetched, so
+PaperMinerToolkit paces each request by whichever host serves it. Several providers answer from one
+host for metadata and another for content, which is why one provider can appear twice below with
+two different delays.
+
+| provider | metadata | text | PDF | figures | published limit |
+|---|---|---|---|---|---|
+| arXiv | 3.0 s | | 3.0 s | | ~1 request per 3 s requested |
+| bioRxiv | 1.0 s | 7.0 s | 7.0 s | 7.0 s | API none; content `Crawl-delay: 7` |
+| medRxiv | 1.0 s | 7.0 s | 7.0 s | 7.0 s | API none; content `Crawl-delay: 7` |
+| chemRxiv | 1.0 s | | 1.0 s | | none published |
+| CORE | 1.0 s | | 1.0 s | | 5 single requests per 10 s |
+| Crossref | 0.34 s | | | | 5/s public pool, 10/s polite |
+| Elsevier | 0.2 s | 0.2 s | 0.2 s | 0.2 s | 10/s article retrieval, 50k/week |
+| OpenAlex | 0.1 s | 0.1 s | 0.1 s | | 10/s, 100k/day |
+| PubMed | 0.34 s | | | | 3/s, or 10/s with an API key |
+| PMC Cloud Service | | 0.1 s | 0.1 s | 0.1 s | none published |
+| Unpaywall | 0.1 s | | 0.1 s | | 100k/day |
+
+A blank cell means the provider does not serve that kind of file: arXiv, chemRxiv, CORE, Crossref,
+and Unpaywall publish no machine-readable structured document, so no figure reference of theirs is
+ever downloaded, and Crossref serves metadata only.
+
+Two consequences are worth knowing:
+
+- **Elsevier figures and Elsevier metadata share one budget.** Both come from `api.elsevier.com`,
+  so they are paced by the same window and spend the same weekly quota. A large figure run reduces
+  the article retrievals left for that week.
+- **PMC text, PDFs, and figures no longer touch NCBI's limit.** They come from the PMC Cloud
+  Service, a separate service from E-utilities, so an NCBI API key does not change their pace and
+  their traffic does not consume the E-utilities allowance.
+
+Where a provider answers `429` with a `Retry-After`, PaperMinerToolkit waits for the interval the
+service asks for rather than its own backoff curve, and retries. A refusal is therefore usually
+survivable rather than fatal, but it is slower than pacing correctly in the first place.
 
 ## Hosted model providers
 

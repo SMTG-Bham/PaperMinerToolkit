@@ -172,3 +172,25 @@ def test_categories_carry_the_single_primary_subject_the_archives_file_under() -
         {'id': 'infectious diseases', 'name': 'Infectious Diseases', 'is_primary': True}]
     assert _rxiv._categories({}) == []
     assert _rxiv._categories({'category': 'NA'}) == []
+
+
+def test_limiter_for_separates_the_api_host_from_the_content_host() -> None:
+    """Pace content requests by the crawl delay the archives publish.
+
+    The metadata API and the content site share a registrable domain but
+    advertise different limits, so the API host must not inherit the slower
+    content window.
+    """
+    for server in (biorxiv.SERVER_CONFIG, medrxiv.SERVER_CONFIG):
+        api_url = f'https://api.{server.web_host}/details/{server.name}/10.1101/1'
+        assert _rxiv.limiter_for(server, api_url) is server.limiter
+
+        for content_url in (
+            f'{server.web_url}/content/early/2019/05/10/339747.source.xml',
+            f'{server.web_url}/content/10.1101/339747v4.full.pdf',
+            f'{server.web_url}/content/biorxiv/early/2019/05/10/339747/F1.large.jpg',
+        ):
+            assert _rxiv.limiter_for(server, content_url) is _rxiv.CONTENT_LIMITER
+
+    assert _rxiv.CONTENT_LIMITER.min_interval == _rxiv.RXIV_CONTENT_MIN_INTERVAL == 7.0
+    assert _rxiv.limiter_for(biorxiv.SERVER_CONFIG, 'not a url') is biorxiv.SERVER_CONFIG.limiter

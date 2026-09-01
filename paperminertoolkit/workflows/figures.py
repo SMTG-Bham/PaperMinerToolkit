@@ -35,11 +35,22 @@ from paperminertoolkit.corpus.xml_layout import (
     parse_tei_layout,
 )
 from paperminertoolkit.providers import base as provider
-from paperminertoolkit.providers import elsevier
+from paperminertoolkit.providers import elsevier, pubmed, rxiv
 
 FIGURE_MIN_INTERVAL = 0.2
 DEFAULT_MAX_IMAGE_BYTES = 50 * 1024 * 1024
 PDF_LAYOUT_SOURCE = 'pdf-layout'
+# A rate limit belongs to the host being asked, not to the kind of file being
+# fetched, so a figure request is paced by whichever host serves it. Where that
+# host also serves a provider's metadata, its existing limiter is reused rather
+# than duplicated: two limiters on one host would allow twice the intended rate
+# and, for Elsevier, would spend the same weekly quota twice as fast.
+_HOST_LIMITERS: dict[str, provider.RateLimiter] = {
+    'api.elsevier.com': elsevier.LIMITER,
+    'pmc-oa-opendata.s3.amazonaws.com': pubmed.CLOUD_LIMITER,
+    'biorxiv.org': rxiv.CONTENT_LIMITER,
+    'medrxiv.org': rxiv.CONTENT_LIMITER,
+}
 FIGURE_LIMITER = provider.RateLimiter(FIGURE_MIN_INTERVAL)
 _ALLOWED_MIME_TYPES = frozenset({
     'image/gif',
@@ -111,6 +122,27 @@ def _safe_image_url(uri: str, base_url: str) -> str:
         if not address.is_global:
             raise ValueError('figure URL must use a public network address')
     return urlunsplit((parts.scheme.lower(), parts.netloc, parts.path, parts.query, ''))
+
+
+def figure_limiter(url: str) -> provider.RateLimiter:
+    """Choose the pacing window for one figure URL by the host serving it.
+
+    Parameters
+    ----------
+    url : str
+        Image URL about to be requested.
+
+    Returns
+    -------
+    provider.RateLimiter
+        The host's limiter, shared with that host's other traffic where one is
+        registered, or the general figure limiter otherwise.
+    """
+    host = (urlsplit(url).hostname or '').lower().rstrip('.')
+    for known, limiter in _HOST_LIMITERS.items():
+        if host == known or host.endswith(f'.{known}'):
+            return limiter
+    return FIGURE_LIMITER
 
 
 def _sniff_mime_type(content: bytes) -> str:
@@ -229,7 +261,7 @@ def _download_graphic(
     response = provider.request(
         requested_url,
         label=f'{source} figure',
-        limiter=FIGURE_LIMITER,
+        limiter=figure_limiter(requested_url),
         headers=_request_headers(source),
         session=session,
         missing_ok=False,
