@@ -516,3 +516,29 @@ def test_full_text_document_reports_no_document_when_there_is_none() -> None:
     work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
     assert openalex.full_text_document(
         work, 'openalex-key', session=FakeSession([FakeResponse(text='   ')])).text == ''
+
+
+def test_cached_pdf_url_is_separate_from_the_free_locations() -> None:
+    """Keep OpenAlex's own metered copy out of the free candidate list.
+
+    pdf_candidates lists publisher and repository locations, which cost
+    nothing. The cached copy is billed, so it is reported by its own function
+    and cannot be spent by a caller that only meant to try the free routes.
+    """
+    work = {'id': 'https://openalex.org/W1',
+            'best_oa_location': {'pdf_url': 'https://publisher.example/a.pdf'},
+            'content_urls': {'pdf': 'https://content.openalex.org/works/W1.pdf'}}
+
+    assert openalex.cached_pdf_url(work) == 'https://content.openalex.org/works/W1.pdf'
+    assert openalex.cached_pdf_url(work) not in openalex.pdf_candidates(work)
+    assert openalex.pdf_candidates(work) == ['https://publisher.example/a.pdf']
+
+    # Falls back to the conventional URL when only the availability flag is set.
+    assert openalex.cached_pdf_url(
+        {'id': 'https://openalex.org/W1', 'has_content': {'pdf': True}}
+    ) == 'https://content.openalex.org/works/W1.pdf'
+
+    # And reports nothing when OpenAlex holds no PDF, or cannot be identified.
+    assert openalex.cached_pdf_url({'has_content': {'pdf': False}}) == ''
+    assert openalex.cached_pdf_url({'has_content': {'pdf': True}}) == ''
+    assert openalex.cached_pdf_url({}) == ''

@@ -294,7 +294,7 @@ the identifier it issued.
 | --- | --- |
 | abstract | OpenAlex, PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, Elsevier |
 | text | Elsevier, PubMed Central, medRxiv, bioRxiv, **OpenAlex** |
-| PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv |
+| PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv, **OpenAlex cached PDF** |
 | search | Elsevier, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
 | enrich | Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
 
@@ -310,8 +310,11 @@ The orders differ deliberately:
   source. It is genuinely a last resort: nothing reaches it unless the other four could not supply
   the paper. See [Configuration](configuration.md) for what that costs.
 - **PDFs** lead with the open-access resolvers, which are free and most likely to hold something.
-  The four preprint servers come last, because the earlier sources may hold the publisher's version
-  of record while a preprint server holds the preprint, which is a different document.
+  The four preprint servers come next-to-last, because the earlier sources may hold the publisher's
+  version of record while a preprint server holds the preprint, which is a different document.
+  `openalex-content` is genuinely last, because it is the only metered PDF route: it fetches the
+  copy OpenAlex cached for itself, and is worth a credit only once every free route has failed.
+  It needs a free API key, and a run without one drops it rather than failing per paper.
 - **Search** puts arXiv and the preprint servers last, so a published record wins over its preprint.
 - **Enrichment** order is also the field precedence: Crossref is the registration authority, so its
   values win, and the preprint servers fill in behind everything else.

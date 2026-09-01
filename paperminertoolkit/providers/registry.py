@@ -196,6 +196,16 @@ SOURCES: dict[str, Source] = {
                 text_reachable='paperminertoolkit.workflows.download:_should_try_openalex_tei',
                 abstract_handler='paperminertoolkit.workflows.download:_download_openalex_abstract',
                 abstract_reachable='paperminertoolkit.workflows.download:_openalex_identifier'),
+        # OpenAlex's own cached PDF is a separate entry from OpenAlex itself
+        # because it is metered where the rest of OpenAlex is free, and being
+        # separate is what lets it sit last in the PDF order while OpenAlex
+        # keeps its place near the front. Its key is marked required so an
+        # unconfigured run drops it rather than failing once per paper.
+        _source('openalex-content', 'OpenAlex cached PDF', 'openalex', [PDF],
+                credential='openalex_api_key',
+                credential_env='OPENALEX_API_KEY', setup_command='pmt config openalex-key',
+                credential_required=True, open_access=True,
+                pdf_handler='paperminertoolkit.workflows.download:_download_openalex_cached_pdf'),
         _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='pmid', credential='ncbi_api_key',
                 credential_env='NCBI_API_KEY', setup_command='pmt config ncbi-key',
@@ -269,7 +279,9 @@ SOURCES: dict[str, Source] = {
 #
 # Search puts arXiv last because a published record should win over its
 # preprint. PDF download leads with the open-access resolvers, which are both
-# free and most likely to hold something. Abstracts lead with the providers that
+# free and most likely to hold something, and ends with OpenAlex's cached copy,
+# which is the only metered route and so is asked only once every free one has
+# failed. Abstracts lead with the providers that
 # serve one directly from metadata already in hand. Text puts native structured
 # sources first and OpenAlex GROBID TEI last because it is PDF-derived and
 # metered. Enrichment order is also the field precedence: Crossref is the
@@ -279,7 +291,7 @@ SEARCH_ORDER = ('elsevier', 'core', 'openalex', 'pubmed', 'arxiv',
                 'medrxiv', 'biorxiv', 'chemrxiv')
 ENRICH_ORDER = ('crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv')
 PDF_ORDER = ('unpaywall', 'openalex', 'core', 'elsevier', 'pubmed',
-             'medrxiv', 'biorxiv', 'chemrxiv', 'arxiv')
+             'medrxiv', 'biorxiv', 'chemrxiv', 'arxiv', 'openalex-content')
 TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv', 'openalex')
 ABSTRACT_ORDER = ('openalex', 'pubmed', 'medrxiv', 'biorxiv', 'chemrxiv',
                   'arxiv', 'core', 'elsevier')

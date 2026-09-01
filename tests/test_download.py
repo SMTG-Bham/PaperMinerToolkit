@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NoReturn, Self
 
 import pytest
@@ -2979,3 +2980,67 @@ def test_chemrxiv_is_not_a_full_text_source() -> None:
     assert 'chemrxiv' in download.DOWNLOAD_SOURCES
     assert 'chemrxiv' not in download.TEXT_SOURCES
     assert not hasattr(download, '_download_chemrxiv_text')
+
+
+def test_openalex_cached_pdf_is_the_last_resort_and_needs_a_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetch OpenAlex's cached PDF only as the final PDF source.
+
+    It is the one metered PDF route, so it sits last in the order and is
+    dropped entirely from an unscoped run that has no key, rather than being
+    asked once per paper only to refuse.
+    """
+    from paperminertoolkit.providers import registry
+
+    assert registry.names(registry.PDF)[-1] == 'openalex-content'
+    assert registry.SOURCES['openalex-content'].credential_required is True
+    monkeypatch.setattr(download.os, 'environ', {})
+    assert download._source_configured('openalex-content', {}) is False
+    assert download._source_configured('openalex-content', {'openalex_api_key': 'k'}) is True
+    # OpenAlex itself keeps its place near the front, where it is still free.
+    assert registry.names(registry.PDF)[1] == 'openalex'
+
+    out = tmp_path / 'paper.pdf'
+    paper = {'doi': '10.1234/example'}
+    monkeypatch.setattr(download.openalex, 'configured_api_key', lambda *_, **__: '')
+    ok, detail = download._download_openalex_cached_pdf(paper, out)
+    assert ok is False
+    assert 'free from https://openalex.org/users' in detail
+
+    monkeypatch.setattr(download.openalex, 'configured_api_key', lambda *_, **__: 'openalex-key')
+    monkeypatch.setattr(download.openalex, 'get_work',
+                        lambda *_, **__: {'id': 'https://openalex.org/W1',
+                                          'content_urls': {'pdf': 'https://content.example/W1.pdf'}})
+    monkeypatch.setattr(download.openalex, 'request_content',
+                        lambda *_, **__: SimpleNamespace(content=b'%PDF-1.7 body'))
+    ok, detail = download._download_openalex_cached_pdf(paper, out)
+    assert (ok, detail) == (True, 'https://content.example/W1.pdf')
+    assert out.read_bytes() == b'%PDF-1.7 body'
+
+    # A response that is not a PDF is refused rather than written to disk.
+    monkeypatch.setattr(download.openalex, 'request_content',
+                        lambda *_, **__: SimpleNamespace(content=b'<html>nope'))
+    ok, detail = download._download_openalex_cached_pdf(paper, out)
+    assert ok is False
+    assert 'non-PDF response' in detail
+
+    # And a work OpenAlex holds no PDF for costs nothing to discover.
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: {'id': 'W1'})
+    assert download._download_openalex_cached_pdf(paper, out)[1] == (
+        'OpenAlex holds no cached PDF for this work')
+    monkeypatch.setattr(download.openalex, 'get_work', lambda *_, **__: {})
+    assert 'no OpenAlex work found' in download._download_openalex_cached_pdf(paper, out)[1]
+    assert download._download_openalex_cached_pdf({}, out)[1] == 'missing DOI or OpenAlex ID'
+
+    # An exhausted budget or a refused request is reported, not raised: the
+    # run moves on to the next paper rather than stopping.
+    def refuse(*_: object, **__: object) -> NoReturn:
+        """Fail the way an exhausted OpenAlex budget does."""
+        raise RuntimeError('OpenAlex daily credit budget is exhausted, with 0 credits left.')
+
+    monkeypatch.setattr(download.openalex, 'get_work', refuse)
+    ok, detail = download._download_openalex_cached_pdf(paper, out)
+    assert ok is False
+    assert 'daily credit budget is exhausted' in detail

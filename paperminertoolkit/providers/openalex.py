@@ -630,6 +630,35 @@ def pdf_candidates(work: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for url in candidates if url))
 
 
+def cached_pdf_url(work: Mapping[str, Any]) -> str:
+    """Return OpenAlex's own copy of a work's PDF, if it holds one.
+
+    Deliberately separate from :func:`pdf_candidates`, which lists the free
+    publisher and repository locations. This one is metered, and it exists
+    because those free locations frequently are not actually servable:
+    publishers refuse automated PDF requests routinely, open access or not,
+    and OpenAlex has already fetched and cached what they refuse us.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record.
+
+    Returns
+    -------
+    str
+        Cached PDF URL, or an empty string when OpenAlex holds no PDF.
+    """
+    content_urls = work.get('content_urls') or {}
+    if isinstance(content_urls, Mapping) and content_urls.get('pdf'):
+        return str(content_urls['pdf'])
+    has_content = work.get('has_content') or {}
+    if not isinstance(has_content, Mapping) or not has_content.get('pdf'):
+        return ''
+    identifier = work_id(work)
+    return f'{CONTENT_BASE_URL}/{identifier}.pdf' if identifier else ''
+
+
 def grobid_xml_url(work: Mapping[str, Any]) -> str:
     """Return the paid OpenAlex GROBID TEI endpoint for one work.
 

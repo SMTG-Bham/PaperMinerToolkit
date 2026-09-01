@@ -361,6 +361,56 @@ def _download_openalex_pdf(
     return False, last_error
 
 
+def _download_openalex_cached_pdf(
+    paper: Mapping[str, Any],
+    filepath: str | PathLike[str],
+) -> tuple[bool, str]:
+    """Download OpenAlex's own cached copy of a PDF, as the last PDF source.
+
+    This is the only metered PDF route, which is why it is last: every free
+    source has already been asked and failed by the time it runs. It earns its
+    place because those free routes frequently fail for a reason a retry cannot
+    fix -- publishers refuse automated PDF requests routinely, open access or
+    not -- and OpenAlex holds a copy of what they refuse.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row containing a DOI or OpenAlex identifier.
+    filepath : str or os.PathLike[str]
+        Destination for the downloaded PDF.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag, and the source URL or the reason it failed.
+    """
+    identifier = _openalex_identifier(paper)
+    if identifier is None:
+        return False, 'missing DOI or OpenAlex ID'
+    api_key = openalex.configured_api_key()
+    if not api_key:
+        return False, ('OpenAlex cached PDFs require an API key, which is free from '
+                       'https://openalex.org/users: run pmt config openalex-key or set '
+                       'OPENALEX_API_KEY')
+    try:
+        work = openalex.get_work(identifier, api_key=api_key)
+        if not work:
+            return False, f'no OpenAlex work found for {identifier}'
+        url = openalex.cached_pdf_url(work)
+        if not url:
+            return False, 'OpenAlex holds no cached PDF for this work'
+        response = openalex.request_content(url, api_key)
+    except (RuntimeError, ValueError) as error:
+        return False, str(error)
+    content = getattr(response, 'content', b'') if response is not None else b''
+    if not content.startswith(b'%PDF'):
+        return False, f'non-PDF response from {url}'
+    with open(filepath, 'wb') as out_file:
+        out_file.write(content)
+    return True, url
+
+
 def _should_try_openalex_tei(paper: Mapping[str, Any]) -> bool:
     """Return whether a paper can be checked for OpenAlex GROBID content."""
     return _openalex_identifier(paper) is not None
