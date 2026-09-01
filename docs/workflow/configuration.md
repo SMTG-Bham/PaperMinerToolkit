@@ -15,9 +15,14 @@ PaperMinerToolkit keeps search/download credentials separate from the text and v
 | NCBI | `NCBI_API_KEY` | `pmt config ncbi-key` | Higher PubMed and PMC request rate |
 | NCBI | `NCBI_EMAIL` | `pmt config ncbi-email` | Contact address sent to PubMed and PMC |
 
-OpenAlex works without a key, but authenticated use has a substantially larger credit budget. The
-OpenAlex `mailto` parameter identifies your client but no longer affects throughput, so
-`pmt config openalex-key` is the only setting that raises your budget.
+OpenAlex works without a key, but a free one is worth ten times as much. Since February 2026
+OpenAlex has metered a daily credit budget rather than a request rate: a client with no key gets
+$0.10 of usage a day, and a free account with a key gets $1.00, both refilling at midnight UTC.
+Those figures are the size of the free allowance priced in the units paid usage is billed in, not a
+charge — the free tier needs no payment method, and exceeding it is refused rather than billed.
+The `mailto` parameter identifies your client but no longer affects anything, so
+`pmt config openalex-key` is the only setting that matters here, and like the Crossref address it
+costs nothing.
 
 Crossref has no API key. It asks automated clients to identify themselves with a contact address,
 which `pmt config crossref-email` stores once for `pmt import author`, `pmt enrich`, and the Crossref lookup
@@ -78,8 +83,8 @@ two different delays.
 | chemRxiv | 1.0 s | | 1.0 s | | none published |
 | CORE | 2.0 s | | 2.0 s | | 5 single or 1 batch request per 10 s |
 | Crossref | 0.2 s | | | | 5/s public pool, 10/s with a contact address |
-| Elsevier | 0.2 s | 0.2 s | 0.2 s | 0.2 s | 10/s article retrieval, 50k/week |
-| OpenAlex | 0.1 s | 0.1 s | 0.1 s | | 10/s, 100k/day |
+| Elsevier | 0.1 s | 0.1 s | 0.1 s | 0.1 s | 10/s article retrieval, 50k/week |
+| OpenAlex | 0.01 s | 0.01 s | 0.01 s | | 100/s, then a daily credit budget |
 | PubMed | 0.34 s | | | | 3/s, or 10/s with an API key |
 | PMC Cloud Service | | 0.1 s | 0.1 s | 0.1 s | none published |
 | Unpaywall | 0.1 s | | 0.1 s | | 100k/day |
@@ -88,8 +93,15 @@ A blank cell means the provider does not serve that kind of file: arXiv, chemRxi
 and Unpaywall publish no machine-readable structured document, so no figure reference of theirs is
 ever downloaded, and Crossref serves metadata only.
 
-Three consequences are worth knowing:
+Four consequences are worth knowing:
 
+- **OpenAlex is limited by its budget, not by its pace.** The `0.01 s` is the hundred requests a
+  second OpenAlex refuses above, but a run cannot sustain it for long: the daily credit budget runs
+  out first, and a key raises the budget rather than the rate. PaperMinerToolkit reads the remaining
+  credits from every response and refuses the next request once they are gone, naming when they
+  refill, rather than letting a run discover it as a wall of refusals. OpenAlex answers both of its
+  limits with `429`, so the two are told apart by the credits the response reports still available:
+  some left means slow down and retry, none left means wait for midnight UTC.
 - **A Crossref contact address halves the delay in the table.** The `0.2 s` shown is the public
   pool's pace, which is what an unconfigured client gets; `pmt config crossref-email` moves the run
   onto the polite pool at `0.1 s`, the same way an NCBI key moves PubMed from `0.34 s` to `0.11 s`.

@@ -284,7 +284,7 @@ def test_record_quota_reads_what_a_response_reports() -> None:
     assert not quota.exhausted
     assert quota.reset_text.endswith('UTC')
     # The key is identified by digest, so no credential is held in module state.
-    assert quota.key_fingerprint == elsevier._key_fingerprint('elsevier-key')
+    assert quota.owner_fingerprint == provider.fingerprint('elsevier-key')
     assert 'elsevier-key' not in repr(quota)
 
     elsevier.reset_quota()
@@ -312,7 +312,7 @@ def test_record_quota_ignores_a_response_that_reports_nothing() -> None:
     assert elsevier.record_quota(FakeResponse(headers=quota_headers(-3))).remaining == 0
     # Elsevier sends integers, but a float-shaped value is still a number.
     assert elsevier.record_quota(FakeResponse(headers=quota_headers('12.0'))).remaining == 12
-    assert elsevier._header_int(object(), elsevier.QUOTA_REMAINING_HEADER) is None
+    assert provider.header_int(object(), elsevier.QUOTA_REMAINING_HEADER) is None
 
 
 def test_check_quota_refuses_the_next_request_once_nothing_is_left() -> None:

@@ -27,10 +27,12 @@ hook that is consulted first.
 
 from __future__ import annotations
 
+import hashlib
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import requests
@@ -88,6 +90,96 @@ class FullTextDocument:
     def has_structured_content(self) -> bool:
         """Return whether this result carries a structured source document."""
         return bool(self.content.strip() and self.document_format.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class Budget:
+    """What a provider last reported about an allowance it meters.
+
+    Several providers cap a credential by an allowance over a period as well as
+    by a rate per second, and report what is left of it on every response.
+    Elsevier counts requests against a weekly quota and OpenAlex counts credits
+    against a daily one, but what a client does with either is the same, so the
+    state and the exhaustion rule live here and each provider supplies only its
+    own header names and wording.
+
+    Parameters
+    ----------
+    remaining : int
+        Units left in the current period.
+    limit : int, default=-1
+        Units the period allows, or ``-1`` when the provider did not say.
+    reset_at : float, default=0.0
+        Unix timestamp at which the allowance refills, or ``0.0`` when the
+        provider did not say. Providers reporting a delta convert it on the way
+        in, so this is always absolute.
+    owner_fingerprint : str, default=''
+        Digest of the credential the figures belong to. An allowance is per
+        credential, so figures observed for one must not gate requests made
+        with another. The digest is stored rather than the credential so none
+        is held in module state.
+    """
+
+    remaining: int
+    limit: int = -1
+    reset_at: float = 0.0
+    owner_fingerprint: str = ''
+
+    @property
+    def exhausted(self) -> bool:
+        """Return whether the allowance is spent and has not yet refilled."""
+        if self.remaining > 0:
+            return False
+        return not self.reset_at or self.reset_at > time.time()
+
+    @property
+    def reset_text(self) -> str:
+        """Return the refill time as readable UTC, or an empty string."""
+        if not self.reset_at:
+            return ''
+        return datetime.fromtimestamp(self.reset_at, UTC).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+
+def fingerprint(secret: str) -> str:
+    """Digest a credential so state can be attributed without holding it.
+
+    Parameters
+    ----------
+    secret : str
+        Credential to digest.
+
+    Returns
+    -------
+    str
+        Truncated hex digest, or an empty string for an empty credential.
+    """
+    return hashlib.sha256(secret.encode()).hexdigest()[:16] if secret else ''
+
+
+def header_int(headers: object, name: str) -> int | None:
+    """Read one integer response header.
+
+    Parameters
+    ----------
+    headers : object
+        Response headers, which need not be a mapping.
+    name : str
+        Header name to read.
+
+    Returns
+    -------
+    int or None
+        Header value, or ``None`` when it is absent or not an integer.
+    """
+    if not hasattr(headers, 'get'):
+        return None
+    value = headers.get(name)
+    if value is None:
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
 
 
 class ResponseLike(Protocol):

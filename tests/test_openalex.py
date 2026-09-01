@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -230,7 +231,7 @@ def test_request_json_raises_immediately_when_the_credit_budget_is_exhausted(
     with pytest.raises(RuntimeError, match='daily credit budget is exhausted') as excinfo:
         openalex.request_json(openalex.WORKS_URL, session=session)
 
-    assert 'resets in 9.1 hours' in str(excinfo.value)
+    assert 'refills in 9.1 hours' in str(excinfo.value)
     assert len(session.calls) == 1
 
     unlabelled = FakeResponse(payload={}, status_code=429)
@@ -341,3 +342,126 @@ def test_works_batch_rejects_an_invalid_batch_size() -> None:
         openalex.works_batch(['10.1/a'], batch_size=0, session=session)
 
     assert session.calls == []
+
+
+def budget_headers(remaining: object, limit: object = 10000, reset: object = 3600) -> dict[str, str]:
+    """Build the budget headers OpenAlex reports on every response.
+
+    Parameters
+    ----------
+    remaining : object
+        Value for the remaining-credits header.
+    limit : object, default=10000
+        Value for the daily allowance header.
+    reset : object, default=3600
+        Seconds until the budget refills at midnight UTC.
+
+    Returns
+    -------
+    dict[str, str]
+        Headers as OpenAlex would send them.
+    """
+    return {
+        openalex.BUDGET_REMAINING_HEADER: str(remaining),
+        openalex.BUDGET_LIMIT_HEADER: str(limit),
+        openalex.BUDGET_RESET_HEADER: str(reset),
+    }
+
+
+def test_openalex_paces_at_the_ceiling_it_refuses_above() -> None:
+    """Hold to OpenAlex's hundred requests a second rather than below it."""
+    assert openalex.OPENALEX_MAX_PER_SECOND == 100
+    assert openalex.OPENALEX_MIN_INTERVAL == pytest.approx(0.01)
+    assert openalex.LIMITER.min_interval == openalex.OPENALEX_MIN_INTERVAL
+
+
+def test_record_budget_converts_the_reset_delay_into_a_moment() -> None:
+    """Store an absolute refill time from a header counting seconds.
+
+    OpenAlex reports seconds until midnight UTC where Elsevier's header of the
+    same name is a timestamp, so the two cannot be read the same way.
+    """
+    before = time.time()
+    budget = openalex.record_budget(FakeResponse(headers=budget_headers(9_998, reset=7_200)),
+                                    'openalex-key')
+
+    assert budget == openalex.budget_status()
+    assert (budget.remaining, budget.limit) == (9_998, 10_000)
+    assert before + 7_200 <= budget.reset_at <= time.time() + 7_200
+    assert not budget.exhausted
+    assert budget.owner_fingerprint == provider.fingerprint('openalex-key')
+
+    # No reset reported means no moment to convert, and a response reporting
+    # nothing at all teaches nothing rather than reading as exhaustion.
+    assert openalex.record_budget(
+        FakeResponse(headers={openalex.BUDGET_REMAINING_HEADER: '5'})).reset_at == 0.0
+    openalex.reset_budget()
+    assert openalex.record_budget(FakeResponse()) is None
+    assert openalex.budget_status() is None
+    openalex.check_budget('openalex-key')
+
+
+def test_check_budget_refuses_the_next_request_once_the_credits_are_gone() -> None:
+    """Fail before spending a request the day's budget can no longer answer."""
+    openalex.record_budget(FakeResponse(headers=budget_headers(0, reset=7_200)), 'openalex-key')
+
+    with pytest.raises(RuntimeError, match='0 of 10000 credits left') as failure:
+        openalex.check_budget('openalex-key')
+    assert 'refills in 2.0 hours' in str(failure.value)
+    # A keyed run is already on the larger allowance, so it is not told to get
+    # a key; a keyless one is, because a free key is worth ten times as much.
+    assert 'free API key' not in str(failure.value)
+
+    openalex.record_budget(FakeResponse(headers=budget_headers(0)), None)
+    with pytest.raises(RuntimeError, match='free API key raises the budget tenfold'):
+        openalex.check_budget()
+
+    # A budget observed under one key cannot gate a request made with another.
+    openalex.record_budget(FakeResponse(headers=budget_headers(0)), 'openalex-key')
+    openalex.check_budget('other-key')
+
+    # A reported zero means the budget refills now, so the refusal lifts on its
+    # own; an absent reset header means the refill time is simply unknown, and
+    # with nothing to wait for the refusal stands.
+    openalex.record_budget(FakeResponse(headers=budget_headers(0, reset=0)), 'openalex-key')
+    openalex.check_budget('openalex-key')
+    openalex.record_budget(FakeResponse(headers={openalex.BUDGET_REMAINING_HEADER: '0'}),
+                           'openalex-key')
+    with pytest.raises(RuntimeError, match='budget is exhausted') as failure:
+        openalex.check_budget('openalex-key')
+    assert 'refills in' not in str(failure.value)
+
+
+def test_a_rate_trip_is_retried_but_an_exhausted_budget_is_not() -> None:
+    """Tell OpenAlex's two 429s apart by what the response says is left.
+
+    Both limits answer 429, but only one of them passes on a second attempt.
+    Retrying a spent budget cannot succeed before midnight UTC, and treating a
+    rate trip as exhaustion would end a run that only needed to slow down.
+    """
+    # Credits left, so the refusal was about the rate: retried, and it passes.
+    session = FakeSession([
+        FakeResponse(payload={}, status_code=429, headers=budget_headers(9_000)),
+        FakeResponse(payload={'id': 'W1'}, headers=budget_headers(8_990)),
+    ])
+    assert openalex.request_json(openalex.WORKS_URL, session=session) == {'id': 'W1'}
+    assert openalex.budget_status().remaining == 8_990
+
+    # No credits left, so retrying is pointless and the run is told why.
+    openalex.reset_budget()
+    with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
+        openalex.request_json(openalex.WORKS_URL, session=FakeSession([
+            FakeResponse(payload={}, status_code=429, headers=budget_headers(0))]))
+
+    # The next request is refused before it is sent, rather than repeating it.
+    with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
+        openalex.request_json(openalex.WORKS_URL, session=FakeSession([]))
+
+
+def test_content_downloads_check_the_budget_before_spending_one() -> None:
+    """Refuse the most expensive call OpenAlex bills once nothing is left."""
+    openalex.record_budget(FakeResponse(headers=budget_headers(0)), 'openalex-key')
+
+    with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
+        openalex.request_content('https://content.openalex.org/works/W1', 'openalex-key',
+                                 session=FakeSession([]))

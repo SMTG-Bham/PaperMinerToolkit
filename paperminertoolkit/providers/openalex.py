@@ -2,13 +2,25 @@
 
 This module centralizes OpenAlex HTTP details and the mapping from OpenAlex
 work records onto PaperMinerToolkit's paper schema so search and download code can
-share one implementation. OpenAlex meters access against a daily credit budget;
-requests without an API key still work but draw on a much smaller budget.
+share one implementation.
+
+OpenAlex meters access two ways, and they fail for different reasons. A daily
+credit budget, refilling at midnight UTC, is the one that binds: a key without
+one draws on a tenth of the allowance a free key gets, and either can run out
+partway through a corpus. Separately there is a ceiling of a hundred requests a
+second, which pacing keeps to. Both are answered with 429, so the two are told
+apart by what the response says is left rather than by the status alone --
+retrying a rate trip works, and retrying an exhausted budget cannot.
+
+The remaining budget is reported on every response, so a run refuses the next
+request once nothing is left rather than discovering it as a refusal. See
+:func:`check_budget`.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 from urllib.parse import quote
@@ -21,9 +33,12 @@ BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
 CONTENT_BASE_URL = 'https://content.openalex.org/works'
-# OpenAlex documents ten requests a second; pacing at that rate keeps a long
-# cursor walk inside the published limit instead of relying on it not noticing.
-OPENALEX_MIN_INTERVAL = 0.1
+# OpenAlex refuses above a hundred requests a second, so that is the ceiling
+# pacing holds to. It is rarely the binding constraint: the daily credit budget
+# runs out long before a run could sustain this rate, which is why exhausting
+# the budget, not exceeding the rate, is what a long run has to plan for.
+OPENALEX_MAX_PER_SECOND = 100
+OPENALEX_MIN_INTERVAL = 1 / OPENALEX_MAX_PER_SECOND
 MAX_FILTER_VALUES = 100
 WORK_SELECT_FIELDS = (
     'id',
@@ -55,6 +70,13 @@ WORK_SELECT_FIELDS = (
 )
 _OpenAlexRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(OPENALEX_MIN_INTERVAL)
+# OpenAlex's budget headers. X-RateLimit-Reset counts the seconds until the
+# budget refills at midnight UTC, so unlike Elsevier's header of the same name
+# it is a delay rather than a moment, and is converted on the way in.
+BUDGET_LIMIT_HEADER = 'X-RateLimit-Limit'
+BUDGET_REMAINING_HEADER = 'X-RateLimit-Remaining'
+BUDGET_RESET_HEADER = 'X-RateLimit-Reset'
+_budget: provider.Budget | None = None
 
 
 def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
@@ -120,51 +142,182 @@ def request_params(
     return merged
 
 
-def _budget_error(response: provider.ResponseLike) -> str:
-    """Describe an exhausted OpenAlex credit budget using the rate-limit headers.
+def record_budget(response: provider.ResponseLike, api_key: str | None = None) -> provider.Budget | None:
+    """Remember what one OpenAlex response said about the remaining budget.
 
     Parameters
     ----------
     response : provider.ResponseLike
-        The rate-limited response, read for its reset header.
+        Response whose headers should be read.
+    api_key : str or None, optional
+        Key the request was made with, recorded as a digest.
+
+    Returns
+    -------
+    provider.Budget or None
+        Budget now remembered, or ``None`` when the response reported none.
+    """
+    global _budget
+    headers = getattr(response, 'headers', None)
+    remaining = provider.header_int(headers, BUDGET_REMAINING_HEADER)
+    if remaining is None:
+        return _budget
+    limit = provider.header_int(headers, BUDGET_LIMIT_HEADER)
+    reset = provider.header_int(headers, BUDGET_RESET_HEADER)
+    _budget = provider.Budget(
+        remaining=max(remaining, 0),
+        limit=limit if limit is not None else -1,
+        # Seconds until midnight UTC, so it becomes a moment here. A reported
+        # zero is "refills now", which is different from an absent header
+        # meaning the refill time is simply unknown.
+        reset_at=time.time() + reset if reset is not None else 0.0,
+        owner_fingerprint=provider.fingerprint(api_key or ''),
+    )
+    return _budget
+
+
+def budget_status() -> provider.Budget | None:
+    """Return the last budget OpenAlex reported, if any.
+
+    Returns
+    -------
+    provider.Budget or None
+        Remembered budget, or ``None`` when no response has reported one.
+    """
+    return _budget
+
+
+def reset_budget() -> None:
+    """Forget the remembered budget.
+
+    Returns
+    -------
+    None
+        The remembered budget is cleared in place.
+    """
+    global _budget
+    _budget = None
+
+
+def check_budget(api_key: str | None = None) -> None:
+    """Refuse a request OpenAlex has already said it will not answer.
+
+    The daily credit budget refills at midnight UTC and nothing before then
+    changes it, so once it is gone every further request is a refusal. Raising
+    here reports that once, in terms of when it lifts, rather than as a run of
+    identical failures.
+
+    Nothing is enforced until a response has actually reported a figure, and
+    figures observed under one key never gate a request made with another.
+
+    Parameters
+    ----------
+    api_key : str or None, optional
+        Key the request is about to be made with.
+
+    Returns
+    -------
+    None
+        Nothing is returned when the request may proceed.
+
+    Raises
+    ------
+    RuntimeError
+        If the remembered budget for this key is exhausted.
+    """
+    budget = _budget
+    if budget is None or not budget.exhausted:
+        return
+    if budget.owner_fingerprint != provider.fingerprint(api_key or ''):
+        return
+    raise RuntimeError(_budget_error_text(budget.limit, budget.reset_at - time.time(),
+                                          keyed=bool(api_key)))
+
+
+def _budget_error_text(limit: int, seconds_until_reset: float, keyed: bool) -> str:
+    """Describe an exhausted OpenAlex credit budget.
+
+    Parameters
+    ----------
+    limit : int
+        Credits the day allows, or ``-1`` when OpenAlex did not say.
+    seconds_until_reset : float
+        Seconds until the budget refills, or a non-positive value when unknown.
+    keyed : bool
+        Whether the request carried an API key.
 
     Returns
     -------
     str
-        Message naming the reset window when the header supplies one.
+        Message naming the allowance, the wait, and the way to raise it.
     """
-    reset = response.headers.get('X-RateLimit-Reset')
-    try:
-        wait = f' Budget resets in {round(float(reset) / 3600, 1)} hours.' if reset else ''
-    except (TypeError, ValueError):
-        wait = ''
-    return ('OpenAlex daily credit budget is exhausted.'
-            f'{wait} Configure an API key with pmt config openalex-key or OPENALEX_API_KEY '
-            'to raise the budget.')
+    allowance = f' of {limit} credits' if limit >= 0 else ''
+    wait = (f' It refills in {round(seconds_until_reset / 3600, 1)} hours, at midnight UTC.'
+            if seconds_until_reset > 0 else '')
+    # A free key is worth ten times the keyless allowance and costs nothing, so
+    # it is the first thing to suggest to a run that ran out without one.
+    advice = ('' if keyed else
+              ' A free API key raises the budget tenfold at no cost: run pmt config openalex-key '
+              'or set OPENALEX_API_KEY.')
+    return f'OpenAlex daily credit budget is exhausted, with 0{allowance} left.{wait}{advice}'
 
 
-def _terminal_error(response: provider.ResponseLike) -> str:
+def _budget_error(response: provider.ResponseLike, api_key: str | None = None) -> str:
+    """Describe an exhausted OpenAlex credit budget from a refused response.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        The rate-limited response, read for its budget headers.
+    api_key : str or None, optional
+        Key the refused request carried.
+
+    Returns
+    -------
+    str
+        Message naming the allowance and the reset window the headers supply.
+    """
+    headers = getattr(response, 'headers', None)
+    limit = provider.header_int(headers, BUDGET_LIMIT_HEADER)
+    reset = provider.header_int(headers, BUDGET_RESET_HEADER) or 0
+    return _budget_error_text(limit if limit is not None else -1, float(reset),
+                              keyed=bool(api_key))
+
+
+def _terminal_error(response: provider.ResponseLike, api_key: str | None = None) -> str:
     """Report the OpenAlex statuses that are pointless to retry.
 
-    A rejected key stays rejected, and a 429 here means the daily credit budget
-    is gone rather than that the client is going too fast, so neither is worth
-    another attempt. Every other client error takes the shared rule.
+    A rejected key stays rejected. A 429 needs telling apart, because OpenAlex
+    answers both of its limits with one: exceeding a hundred requests a second
+    is worth another attempt after a pause, while an exhausted daily budget
+    cannot succeed again until midnight UTC and retrying only spends the wait.
+    The remaining-credit header separates them -- credits left means the refusal
+    was about the rate, none left means the budget is gone. A 429 that reports
+    no credits at all is read as exhaustion, which is the older behaviour and
+    the safer guess, since retrying a spent budget achieves nothing.
 
     Parameters
     ----------
     response : provider.ResponseLike
         Response to classify.
+    api_key : str or None, optional
+        Key the request carried, used to word the advice.
 
     Returns
     -------
     str
-        Failure message, or an empty string to fall through to the shared rule.
+        Failure message, or an empty string to fall through to the shared rule,
+        which retries.
     """
     if response.status_code == 401:
         return ('OpenAlex rejected the API key. Set a valid key with pmt config openalex-key or '
                 'OPENALEX_API_KEY, or unset it to use the smaller keyless budget.')
     if response.status_code == 429:
-        return _budget_error(response)
+        remaining = provider.header_int(getattr(response, 'headers', None),
+                                        BUDGET_REMAINING_HEADER)
+        if remaining is not None and remaining > 0:
+            return ''
+        return _budget_error(response, api_key)
     return ''
 
 
@@ -207,10 +360,12 @@ def request_json(
         If the API key is rejected, the credit budget is exhausted, or all
         request attempts fail.
     """
+    check_budget(api_key)
     return provider.request_mapping(url, label='OpenAlex', limiter=LIMITER,
                                     params=request_params(params, api_key, mailto),
                                     session=session, timeout=timeout, attempts=attempts,
-                                    client_error=_terminal_error)
+                                    client_error=lambda answer: _terminal_error(answer, api_key),
+                                    on_response=lambda answer: record_budget(answer, api_key))
 
 
 def work_url(identifier: str) -> str:
@@ -533,6 +688,9 @@ def request_content(
     """
     if not api_key.strip():
         raise ValueError('OpenAlex GROBID downloads require an API key')
+    # A content download is the most expensive call OpenAlex bills, so it is
+    # the one most worth refusing before it is sent.
+    check_budget(api_key)
     return provider.request(
         url,
         label='OpenAlex content',
@@ -542,7 +700,8 @@ def request_content(
         session=session,
         timeout=timeout,
         attempts=attempts,
-        client_error=_terminal_error,
+        client_error=lambda answer: _terminal_error(answer, api_key),
+        on_response=lambda answer: record_budget(answer, api_key),
     )
 
 

@@ -24,13 +24,9 @@ request once nothing is left. See :func:`check_quota`.
 
 from __future__ import annotations
 
-import hashlib
 import os
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -40,7 +36,7 @@ from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 
 BASE_URL = 'https://api.elsevier.com/content'
-ELSEVIER_MIN_INTERVAL = 0.2
+ELSEVIER_MIN_INTERVAL = 0.1
 LIMITER = provider.RateLimiter(ELSEVIER_MIN_INTERVAL)
 # Elsevier's documented quota headers. They appear on authenticated responses
 # only, so an absent one means "nothing learned" rather than "nothing left".
@@ -49,92 +45,10 @@ QUOTA_REMAINING_HEADER = 'X-RateLimit-Remaining'
 QUOTA_RESET_HEADER = 'X-RateLimit-Reset'
 
 
-@dataclass(frozen=True, slots=True)
-class Quota:
-    """What Elsevier last reported about a key's remaining allowance.
-
-    Parameters
-    ----------
-    remaining : int
-        Requests left in the current period.
-    limit : int, default=-1
-        Requests the period allows, or ``-1`` when Elsevier did not say.
-    reset_at : float, default=0.0
-        Unix timestamp at which the allowance refills, or ``0.0`` when Elsevier
-        did not say.
-    key_fingerprint : str, default=''
-        Digest of the key the figures belong to. A quota is per key, so figures
-        observed for one key must not gate requests made with another. The
-        digest is stored rather than the key so no credential is held in module
-        state.
-    """
-
-    remaining: int
-    limit: int = -1
-    reset_at: float = 0.0
-    key_fingerprint: str = ''
-
-    @property
-    def exhausted(self) -> bool:
-        """Return whether the allowance is spent and has not yet refilled."""
-        if self.remaining > 0:
-            return False
-        return not self.reset_at or self.reset_at > time.time()
-
-    @property
-    def reset_text(self) -> str:
-        """Return the refill time as readable UTC, or an empty string."""
-        if not self.reset_at:
-            return ''
-        return datetime.fromtimestamp(self.reset_at, UTC).strftime('%Y-%m-%d %H:%M:%S UTC')
+_quota: provider.Budget | None = None
 
 
-_quota: Quota | None = None
-
-
-def _key_fingerprint(api_key: str) -> str:
-    """Digest a key so quota state can be attributed without holding it.
-
-    Parameters
-    ----------
-    api_key : str
-        Elsevier API key.
-
-    Returns
-    -------
-    str
-        Truncated hex digest, or an empty string for an empty key.
-    """
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else ''
-
-
-def _header_int(headers: object, name: str) -> int | None:
-    """Read one integer response header.
-
-    Parameters
-    ----------
-    headers : object
-        Response headers, which need not be a mapping.
-    name : str
-        Header name to read.
-
-    Returns
-    -------
-    int or None
-        Header value, or ``None`` when it is absent or not an integer.
-    """
-    if not hasattr(headers, 'get'):
-        return None
-    value = headers.get(name)
-    if value is None:
-        return None
-    try:
-        return int(float(str(value).strip()))
-    except (TypeError, ValueError):
-        return None
-
-
-def record_quota(response: provider.ResponseLike, api_key: str = '') -> Quota | None:
+def record_quota(response: provider.ResponseLike, api_key: str = '') -> provider.Budget | None:
     """Remember what one Elsevier response said about the remaining quota.
 
     Parameters
@@ -146,28 +60,28 @@ def record_quota(response: provider.ResponseLike, api_key: str = '') -> Quota | 
 
     Returns
     -------
-    Quota or None
+    provider.Budget or None
         Quota now remembered, or ``None`` when the response reported none.
     """
     global _quota
-    remaining = _header_int(getattr(response, 'headers', None), QUOTA_REMAINING_HEADER)
+    remaining = provider.header_int(getattr(response, 'headers', None), QUOTA_REMAINING_HEADER)
     if remaining is None:
         return _quota
-    limit = _header_int(getattr(response, 'headers', None), QUOTA_LIMIT_HEADER)
-    reset = _header_int(getattr(response, 'headers', None), QUOTA_RESET_HEADER)
-    _quota = Quota(remaining=max(remaining, 0),
-                   limit=limit if limit is not None else -1,
-                   reset_at=float(reset) if reset else 0.0,
-                   key_fingerprint=_key_fingerprint(api_key))
+    limit = provider.header_int(getattr(response, 'headers', None), QUOTA_LIMIT_HEADER)
+    reset = provider.header_int(getattr(response, 'headers', None), QUOTA_RESET_HEADER)
+    _quota = provider.Budget(remaining=max(remaining, 0),
+                             limit=limit if limit is not None else -1,
+                             reset_at=float(reset) if reset else 0.0,
+                             owner_fingerprint=provider.fingerprint(api_key))
     return _quota
 
 
-def quota_status() -> Quota | None:
+def quota_status() -> provider.Budget | None:
     """Return the last quota Elsevier reported, if any.
 
     Returns
     -------
-    Quota or None
+    provider.Budget or None
         Remembered quota, or ``None`` when no response has reported one.
     """
     return _quota
@@ -218,7 +132,7 @@ def check_quota(api_key: str = '') -> None:
     quota = _quota
     if quota is None or not quota.exhausted:
         return
-    if quota.key_fingerprint != _key_fingerprint(api_key):
+    if quota.owner_fingerprint != provider.fingerprint(api_key):
         return
     allowance = f' of {quota.limit}' if quota.limit >= 0 else ''
     refill = f' It refills at {quota.reset_text}.' if quota.reset_text else ''
