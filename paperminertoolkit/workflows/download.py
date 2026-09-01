@@ -448,10 +448,12 @@ def _download_pubmed_pdf(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
 ) -> tuple[bool, str]:
-    """Download an open-access PDF through the PubMed Central OA service.
+    """Download an open-access PDF through the PMC Cloud Service.
 
     Only the open-access subset is redistributable, so a paper outside it
-    reports that no PDF is offered rather than failing.
+    reports that no PDF is offered rather than failing. The cloud service
+    replaced the OA web service NCBI retired, which had left every PubMed
+    Central PDF download failing.
 
     Parameters
     ----------
@@ -473,18 +475,13 @@ def _download_pubmed_pdf(
     if not pmcid:
         return False, 'missing PMC ID'
     try:
-        urls = pubmed.oa_package_urls(pmcid, api_key=api_key, email=email)
+        url = pubmed.pmc_cloud_pdf_url(pmcid)
     except RuntimeError as e:
         return False, str(e)
-    last_error = f'no open-access PDF offered for {pmcid}'
-    for url in urls:
-        if not url.lower().endswith('.pdf'):
-            continue
-        ok, error = _download_url_to_pdf(url, filepath)
-        if ok:
-            return True, url
-        last_error = error
-    return False, last_error
+    if not url:
+        return False, f'no open-access PDF offered for {pmcid}'
+    ok, error = _download_url_to_pdf(url, filepath)
+    return (True, url) if ok else (False, error)
 
 
 def _should_try_pmc_text(paper: Mapping[str, Any]) -> bool:

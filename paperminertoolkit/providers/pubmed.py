@@ -29,9 +29,6 @@ from paperminertoolkit.settings import load_settings
 BASE_URL = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
 ESEARCH_URL = f'{BASE_URL}/esearch.fcgi'
 EFETCH_URL = f'{BASE_URL}/efetch.fcgi'
-OA_URL = 'https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi'
-FTP_PREFIX = 'ftp://ftp.ncbi.nlm.nih.gov/pub/pmc'
-HTTPS_PREFIX = 'https://ftp.ncbi.nlm.nih.gov/pub/pmc'
 # The PMC Cloud Service replaced the retired OA web service. Its bucket is
 # world-readable over plain HTTPS, so no AWS SDK or credentials are needed.
 # Each open-access article is one prefix holding its XML, text, PDF, a JSON
@@ -1117,83 +1114,6 @@ def resolve_pmcid(paper: Mapping[str, Any],
     return _article_ids(records[0])['pmcid'] if records else ''
 
 
-def _https_urls(url: str) -> list[str]:
-    """Rewrite an NCBI FTP link to the HTTPS locations that may serve it.
-
-    The open-access service still advertises ``ftp://`` links, which the
-    :mod:`requests`-based downloaders cannot fetch. NCBI moved the article
-    datasets in 2026 and left the previous tree under a ``deprecated``
-    directory that it has announced it will remove, so both the current path
-    and that mirror are offered. Whichever one NCBI is serving answers; the
-    other returns a cheap 404.
-
-    Parameters
-    ----------
-    url : str
-        Link advertised by the open-access service.
-
-    Returns
-    -------
-    list[str]
-        HTTPS candidates in the order they should be tried, or the original
-        value alone when it is not an NCBI FTP link.
-    """
-    if not url.startswith(FTP_PREFIX):
-        return [url]
-    path = url[len(FTP_PREFIX):].lstrip('/')
-    return [f'{HTTPS_PREFIX}/deprecated/{path}', f'{HTTPS_PREFIX}/{path}']
-
-
-def oa_package_urls(pmcid: str,
-                    session: provider.HTTPClient | None = None,
-                    api_key: str | None = None,
-                    email: str = '',
-                    timeout: float = 60) -> list[str]:
-    """List the open-access service's links for a PubMed Central record.
-
-    Only the open-access subset is redistributable, so a record outside it
-    yields no links rather than an error worth retrying.
-
-    Parameters
-    ----------
-    pmcid : str
-        PubMed Central identifier.
-    session : provider.HTTPClient or None, optional
-        HTTP client exposing a ``get`` method.
-    api_key : str or None, optional
-        NCBI API key to attach.
-    email : str, default=''
-        Contact email address sent with the request.
-    timeout : int or float, default=60
-        Request timeout in seconds.
-
-    Returns
-    -------
-    list[str]
-        HTTPS links, PDF links first, or an empty list when none are offered.
-
-    Raises
-    ------
-    RuntimeError
-        If the open-access request cannot be completed.
-    """
-    identifier = normalize_pmcid(pmcid)
-    if not identifier:
-        return []
-    root = request_xml(OA_URL, params={'id': identifier}, api_key=api_key,
-                       email=email, session=session, timeout=timeout)
-    if root is None:
-        return []
-    pdfs, packages = [], []
-    for link in root.findall('.//record/link'):
-        href = (link.get('href') or '').strip()
-        if not href:
-            continue
-        target = pdfs if (link.get('format') or '').lower() == 'pdf' else packages
-        target.extend(_https_urls(href))
-    return list(dict.fromkeys(pdfs + packages))
-
-
 def _cloud_object_keys(
     prefix: str,
     session: provider.HTTPClient | None = None,
@@ -1292,6 +1212,37 @@ def pmc_cloud_files(
         return {}
     newest = versions[max(versions)]
     return {key.split('/', 1)[1]: f'{PMC_CLOUD_URL}/{key}' for key in newest}
+
+
+def pmc_cloud_pdf_url(
+    pmcid: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+) -> str:
+    """Return the cloud-service PDF URL for one open-access article.
+
+    Parameters
+    ----------
+    pmcid : str
+        PubMed Central identifier.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : int or float, default=60
+        Request timeout in seconds.
+
+    Returns
+    -------
+    str
+        PDF URL, or an empty string when the article is outside the
+        open-access subset or offers no PDF.
+
+    Raises
+    ------
+    RuntimeError
+        If the listing request cannot be completed.
+    """
+    files = pmc_cloud_files(pmcid, session=session, timeout=timeout)
+    return next((url for name, url in files.items() if name.lower().endswith('.pdf')), '')
 
 
 def pmc_cloud_full_text_document(

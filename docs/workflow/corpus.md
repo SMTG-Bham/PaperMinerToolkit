@@ -318,16 +318,21 @@ subset reports that no full text is offered rather than failing. An NCBI API key
 request rate from three to ten per second, which matters most on large download runs; see
 [Credentials and model configuration](configuration.md).
 
-PMC full text is read from the PMC Cloud Service, whose bucket stores each open-access article as
-one prefix holding its XML, plain text, PDF, and every figure file under the exact names the
-article's JATS references. Reading the XML from there means the stored source URL is the article's
-own, so its graphic references resolve to the figures stored beside it. The bucket is readable over
-plain HTTPS, so this needs no AWS SDK, credentials, or configuration.
+PMC full text and PDFs are read from the PMC Cloud Service, whose bucket stores each open-access
+article as one prefix holding its XML, plain text, PDF, and every figure file under the exact names
+the article's JATS references. Reading the XML from there means the stored source URL is the
+article's own, so its graphic references resolve to the figures stored beside it. The bucket is
+readable over plain HTTPS, so this needs no AWS SDK, credentials, or configuration.
 
-E-utilities remains the fallback, because it reaches articles outside the open-access subset. Its
-JATS names an article's figure files but reports a single shared endpoint as the source, so those
-names cannot be resolved to real images; a paper served this way yields text and structure but no
-downloadable figures.
+This service replaced the OA web service NCBI retired in August 2026. That retirement had left
+every PubMed Central PDF download reporting that no PDF was offered, because the endpoint it
+queried returned nothing for any article.
+
+E-utilities remains the full-text fallback, because it reaches articles outside the open-access
+subset. Its JATS names an article's figure files but reports a single shared endpoint as the
+source, so those names cannot be resolved to real images; a paper served this way yields text and
+structure but no downloadable figures. PDFs have no such fallback: only the open-access subset is
+redistributable, so a paper outside it reports that no PDF is offered.
 
 PMC, bioRxiv, and medRxiv text downloads retain the complete JATS response, and Elsevier downloads
 retain the native full-article XML response, as compressed structured-document assets. Each also

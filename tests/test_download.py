@@ -87,10 +87,10 @@ def test_pubmed_download_helpers_report_resolution_and_service_failures(
 
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: 'PMC1')
     monkeypatch.setattr(
-        download.pubmed, 'oa_package_urls',
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('oa failed')),
+        download.pubmed, 'pmc_cloud_pdf_url',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('cloud failed')),
     )
-    assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'oa failed')
+    assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'cloud failed')
     monkeypatch.setattr(
         download.pubmed, 'pmc_full_text_document',
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('text failed')),
@@ -904,10 +904,10 @@ def test_pubmed_download_helpers_keep_the_last_failure_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Report a failed OA package URL and a missing PMC identifier precisely."""
+    """Report a failed cloud PDF fetch and a missing PMC identifier precisely."""
     monkeypatch.setattr(download, '_pubmed_credentials', lambda: ('', 'person@example.org'))
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: 'PMC1')
-    monkeypatch.setattr(download.pubmed, 'oa_package_urls', lambda *args, **kwargs: ['paper.pdf'])
+    monkeypatch.setattr(download.pubmed, 'pmc_cloud_pdf_url', lambda *args, **kwargs: 'paper.pdf')
     monkeypatch.setattr(download, '_download_url_to_pdf', lambda *args, **kwargs: (False, 'bad PDF'))
     assert download._download_pubmed_pdf({}, tmp_path / 'paper.pdf') == (False, 'bad PDF')
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *args, **kwargs: '')
@@ -2666,16 +2666,15 @@ def test_download_pubmed_pdf_uses_only_open_access_pdf_links(
 
     monkeypatch.setattr(download, '_pubmed_credentials', lambda: (None, ''))
     monkeypatch.setattr(download.pubmed, 'resolve_pmcid', lambda *_, **__: 'PMC1')
-    monkeypatch.setattr(download.pubmed, 'oa_package_urls',
-                        lambda *_, **__: ['https://ftp.ncbi.nlm.nih.gov/a.tar.gz',
-                                          'https://ftp.ncbi.nlm.nih.gov/a.pdf'])
+    cloud_pdf = 'https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.pdf'
+    monkeypatch.setattr(download.pubmed, 'pmc_cloud_pdf_url', lambda *_, **__: cloud_pdf)
     monkeypatch.setattr(download, '_download_url_to_pdf', fake_download_url_to_pdf)
 
     assert download._download_pubmed_pdf({'pmcid': 'PMC1'}, tmp_path / 'out.pdf') == (
-        True, 'https://ftp.ncbi.nlm.nih.gov/a.pdf')
-    assert attempted == ['https://ftp.ncbi.nlm.nih.gov/a.pdf']
+        True, cloud_pdf)
+    assert attempted == [cloud_pdf]
 
-    monkeypatch.setattr(download.pubmed, 'oa_package_urls', lambda *_, **__: [])
+    monkeypatch.setattr(download.pubmed, 'pmc_cloud_pdf_url', lambda *_, **__: '')
     assert download._download_pubmed_pdf({'pmcid': 'PMC1'}, tmp_path / 'out.pdf') == (
         False, 'no open-access PDF offered for PMC1')
 

@@ -70,13 +70,9 @@ def test_pubmed_defensive_request_and_parser_paths(monkeypatch: pytest.MonkeyPat
 
 
 def test_pubmed_open_access_helpers_handle_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Return empty results for absent identifiers, records, links, and PMC bodies."""
-    assert pubmed.oa_package_urls('') == []
-    monkeypatch.setattr(pubmed, 'request_xml', lambda *args, **kwargs: None)
-    assert pubmed.oa_package_urls('PMC1') == []
-    root = ET.fromstring('<oa><record><link href="" format="pdf"/></record></oa>')
-    monkeypatch.setattr(pubmed, 'request_xml', lambda *args, **kwargs: root)
-    assert pubmed.oa_package_urls('PMC1') == []
+    """Return empty results for absent identifiers, records, and PMC bodies."""
+    assert pubmed.pmc_cloud_pdf_url('') == ''
+    assert pubmed.pmc_cloud_pdf_url('PMC1', session=FakeSession([no_cloud_article()])) == ''
     monkeypatch.setattr(pubmed, 'efetch_ids', lambda *args, **kwargs: None)
     assert pubmed.pmc_full_text('PMC1') == ''
 
@@ -515,38 +511,6 @@ def test_resolve_pmcid_reads_the_identifier_from_the_pubmed_record() -> None:
     assert pubmed.resolve_pmcid({'pmid': '99'}, session=session) == ''
 
 
-def test_oa_package_urls_order_pdfs_first_and_rewrite_ftp_links() -> None:
-    """Offer PDF links before packages and hand back links requests can fetch."""
-    payload = ('<OA><records><record>'
-               '<link format="tgz" href="ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa/a.tar.gz"/>'
-               '<link format="pdf" href="ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa/a.pdf"/>'
-               '</record></records></OA>')
-    session = FakeSession([FakeResponse(text=payload)])
-    assert pubmed.oa_package_urls('PMC9876543', session=session) == [
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa/a.pdf',
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/oa/a.pdf',
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa/a.tar.gz',
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/oa/a.tar.gz',
-    ]
-    assert session.calls[0]['params']['id'] == 'PMC9876543'
-    assert pubmed.oa_package_urls('', session=FakeSession([])) == []
-
-
-def test_https_urls_offer_both_dataset_locations_and_pass_others_through() -> None:
-    """Cover the relocated dataset tree and its temporary mirror."""
-    assert pubmed._https_urls('ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b.pdf') == [
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa_pdf/a/b.pdf',
-        'https://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b.pdf',
-    ]
-    assert pubmed._https_urls('https://example.org/a.pdf') == ['https://example.org/a.pdf']
-
-
-def test_oa_package_urls_return_nothing_for_a_record_outside_the_oa_subset() -> None:
-    """Report a closed-access record as offering no links, not as a failure."""
-    session = FakeSession([FakeResponse(text='<OA><records/></OA>')])
-    assert pubmed.oa_package_urls('PMC1', session=session) == []
-
-
 def test_pmc_full_text_flattens_prose_and_skips_tables_figures_and_references() -> None:
     """Keep section titles and paragraphs while dropping non-prose blocks."""
     session = FakeSession([FakeResponse(text=jats_article())])
@@ -624,6 +588,27 @@ def test_pmc_full_text_document_prefers_the_cloud_service_for_resolvable_graphic
         'https://pmc-oa-opendata.s3.amazonaws.com/PMC9876543.1/fig-0001.jpg'
     )
     assert len(session.calls) == 2
+
+
+def test_pmc_cloud_pdf_url_returns_the_article_pdf_from_its_own_prefix() -> None:
+    """Locate the PDF the cloud service stores beside an article's other files.
+
+    NCBI retired the OA web service this replaced, which had left every PubMed
+    Central PDF download reporting that no PDF was offered.
+    """
+    session = FakeSession([FakeResponse(text=cloud_listing(
+        'PMC9876543.1/PMC9876543.1.xml',
+        'PMC9876543.1/PMC9876543.1.pdf',
+        'PMC9876543.1/PMC9876543.1.txt',
+        'PMC9876543.1/fig-0001.jpg',
+    ))])
+
+    assert pubmed.pmc_cloud_pdf_url('PMC9876543', session=session) == (
+        'https://pmc-oa-opendata.s3.amazonaws.com/PMC9876543.1/PMC9876543.1.pdf'
+    )
+
+    without_pdf = FakeSession([FakeResponse(text=cloud_listing('PMC1.1/PMC1.1.xml'))])
+    assert pubmed.pmc_cloud_pdf_url('PMC1', session=without_pdf) == ''
 
 
 def test_pmc_cloud_files_pick_the_newest_version_and_follow_continuations() -> None:
