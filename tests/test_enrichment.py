@@ -228,6 +228,38 @@ def test_configured_sources_expands_all_and_rejects_unknown_providers() -> None:
         enrichment._configured_sources(['scopus'])
 
 
+def test_contact_address_prefers_crossrefs_setting_then_ncbis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve one contact address for a run from whichever setting has one.
+
+    Both settings are read before Crossref reports an absent address, so a run
+    that holds an address under NCBI's setting alone is not told it has none
+    and still qualifies for the polite pool.
+    """
+    monkeypatch.setattr(enrichment.crossref_client, 'configured_email',
+                        lambda settings=None: 'crossref@example.org')
+    monkeypatch.setattr(enrichment.pubmed, 'configured_email',
+                        lambda settings=None: 'ncbi@example.org')
+
+    # An explicit value wins over both settings.
+    assert enrichment._contact_address(['crossref'], 'explicit@example.org') == 'explicit@example.org'
+    # Crossref's own setting comes before NCBI's, because Crossref is the
+    # service the address qualifies the run for.
+    assert enrichment._contact_address(['crossref', 'pubmed'], None) == 'crossref@example.org'
+    assert enrichment._contact_address(['pubmed'], None) == 'ncbi@example.org'
+
+    monkeypatch.setattr(enrichment.crossref_client, 'configured_email',
+                        lambda settings=None: '')
+    assert enrichment._contact_address(['crossref', 'pubmed'], None) == 'ncbi@example.org'
+
+    monkeypatch.setattr(enrichment.pubmed, 'configured_email', lambda settings=None: '')
+    monkeypatch.setattr(enrichment.crossref_client, '_reported_missing_contact_address', False)
+    assert enrichment._contact_address(['crossref', 'pubmed'], None) == ''
+    # A run without Crossref needs no address at all and asks for none.
+    assert enrichment._contact_address(['openalex'], None) == ''
+
+
 def test_partition_candidates_splits_by_available_lookup_key() -> None:
     """Route papers by DOI, by OpenAlex identifier, or to the unresolved set."""
     by_doi, by_openalex, unresolved = enrichment._partition_candidates([

@@ -29,7 +29,7 @@ def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(crossref.provider, 'request', lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError, match='failed after'):
         crossref._request_page(None, {}, 'person@example.org')
-    for kwargs, message in [({}, 'exactly one'), ({'author_name': 'Jane Smith', 'email': ''}, 'contact email'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'max_results': 0}, 'positive'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'page_size': 0}, 'between')]:
+    for kwargs, message in [({}, 'exactly one'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'max_results': 0}, 'positive'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'page_size': 0}, 'between')]:
         with pytest.raises(ValueError, match=message):
             crossref.author_works(**kwargs)
     monkeypatch.setattr(crossref, 'work_matches_author', lambda *args, **kwargs: True)
@@ -37,6 +37,9 @@ def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', page_size=3)) == 1
     monkeypatch.setattr(crossref, '_request_page', lambda *args, **kwargs: {'items': [{'DOI': '10.1/A'}]})
     assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', max_results=1)) == 1
+    # Crossref does not require a contact address, so discovery without one is
+    # allowed rather than refused; it just runs at the public pool's pace.
+    assert len(crossref.author_works(author_name='Ada Lovelace', email='')) == 1
 
 
 def work(
@@ -263,14 +266,51 @@ def test_configured_email_reads_the_stored_setting() -> None:
 
 
 def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prefer an explicit address, fall back to settings, then fail clearly."""
+    """Prefer an explicit address and fall back to the stored setting."""
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: 'stored@example.com')
     assert crossref.resolve_email('explicit@example.com') == 'explicit@example.com'
     assert crossref.resolve_email(None) == 'stored@example.com'
+    assert crossref.resolve_email('  spaced@example.com  ') == 'spaced@example.com'
 
+
+def test_resolve_email_refuses_a_supplied_address_it_cannot_use() -> None:
+    """Fail on an address the caller meant to be used but Crossref cannot be.
+
+    An absent address is a choice to go anonymous; a supplied one that is not
+    an address is a mistake, and silently downgrading the pool would hide it.
+    """
+    with pytest.raises(ValueError, match='not a usable Crossref contact address'):
+        crossref.resolve_email('not-an-address')
+
+
+def test_resolve_email_goes_anonymous_and_reports_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Make Crossref requests without an address rather than refusing them.
+
+    Crossref does not require a contact address, so an absent one costs the
+    polite pool's rate rather than the request. The notice explains that cost
+    once per process, because a run can make hundreds of Crossref requests.
+    """
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
-    with pytest.raises(ValueError, match='pmt config crossref-email'):
-        crossref.resolve_email(None)
+    monkeypatch.setattr(crossref, '_reported_missing_contact_address', False)
+
+    assert crossref.resolve_email(None) == ''
+    first = capsys.readouterr().out
+    assert 'public pool at 5 requests per second' in first
+    assert "polite pool's 10" in first
+    assert 'pmt config crossref-email' in first
+
+    assert crossref.resolve_email(None) == ''
+    assert capsys.readouterr().out == ''
+
+
+def test_contact_params_omits_an_absent_address() -> None:
+    """Send mailto only when there is an address, never as an empty claim."""
+    assert crossref.contact_params('me@example.com') == {'mailto': 'me@example.com'}
+    assert crossref.contact_params('') == {}
+    assert crossref.contact_params() == {}
 
 
 def test_request_page_accepts_an_alternate_url() -> None:

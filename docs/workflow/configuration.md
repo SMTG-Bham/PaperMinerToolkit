@@ -23,8 +23,9 @@ Crossref has no API key. It asks automated clients to identify themselves with a
 which `pmt config crossref-email` stores once for `pmt import author`, `pmt enrich`, and the Crossref lookup
 that `pmt import pdfs` performs. `--email` still overrides the stored value for a single command.
 Naming an address also doubles your rate: Crossref serves such clients from its polite pool at ten
-requests per second rather than the public pool's five, at no cost, and PaperMinerToolkit requires an
-address before it will make a Crossref request at all, so every run it makes is a polite-pool run.
+requests per second rather than the public pool's five, at no cost. It is not required. A run without
+one still works, at half the pace, and prints one line saying so. That makes this the cheapest
+setting here — one command, no account, no key.
 
 PubMed and PubMed Central need no credentials at all, but both NCBI settings are worth having.
 NCBI paces unauthenticated clients at three requests per second and keyed clients at ten, counted
@@ -76,7 +77,7 @@ two different delays.
 | medRxiv | 1.0 s | 7.0 s | 7.0 s | 7.0 s | API none; content `Crawl-delay: 7` |
 | chemRxiv | 1.0 s | | 1.0 s | | none published |
 | CORE | 2.0 s | | 2.0 s | | 5 single or 1 batch request per 10 s |
-| Crossref | 0.1 s | | | | 5/s public pool, 10/s with a contact address |
+| Crossref | 0.2 s | | | | 5/s public pool, 10/s with a contact address |
 | Elsevier | 0.2 s | 0.2 s | 0.2 s | 0.2 s | 10/s article retrieval, 50k/week |
 | OpenAlex | 0.1 s | 0.1 s | 0.1 s | | 10/s, 100k/day |
 | PubMed | 0.34 s | | | | 3/s, or 10/s with an API key |
@@ -89,11 +90,11 @@ ever downloaded, and Crossref serves metadata only.
 
 Three consequences are worth knowing:
 
-- **Crossref's rate is the polite-pool rate.** Every Crossref request carries the configured contact
-  address, so the table gives the ten-per-second pace that address earns. The public pool's
-  five-per-second figure is the floor a request would fall back to without one, which in normal use
-  does not arise. Crossref also announces the allowance it is currently applying on every response,
-  in `X-Rate-Limit-Limit` over an `X-Rate-Limit-Interval`, so the pace can be checked against the
+- **A Crossref contact address halves the delay in the table.** The `0.2 s` shown is the public
+  pool's pace, which is what an unconfigured client gets; `pmt config crossref-email` moves the run
+  onto the polite pool at `0.1 s`, the same way an NCBI key moves PubMed from `0.34 s` to `0.11 s`.
+  Crossref announces the allowance it is currently applying on every response, in
+  `X-Rate-Limit-Limit` over an `X-Rate-Limit-Interval`, so either pace can be checked against the
   service rather than taken on trust.
 - **Elsevier figures and Elsevier metadata share one budget.** Both come from `api.elsevier.com`,
   so they are paced by the same window and spend the same weekly quota. A large figure run reduces

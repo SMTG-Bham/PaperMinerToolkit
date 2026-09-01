@@ -88,6 +88,40 @@ def _configured_sources(sources: Sequence[str] | None) -> list[str]:
     return registry.resolve_names(sources, registry.ENRICH, label='enrichment')
 
 
+def _contact_address(sources: Sequence[str], email: str | None) -> str:
+    """Resolve the contact address one enrichment run should advertise.
+
+    Crossref's setting comes first because Crossref is the service the address
+    qualifies a run for, and NCBI's is a fallback because it covers a corpus
+    configured for only one of the two. Both are resolved before Crossref
+    reports an absent address, so a run holding an address from either setting
+    is never told it has none.
+
+    Parameters
+    ----------
+    sources : Sequence[str]
+        Enrichment providers selected for this run.
+    email : str or None
+        Contact address supplied by the caller, if any.
+
+    Returns
+    -------
+    str
+        Contact address to advertise, or an empty string when none is stored.
+
+    Raises
+    ------
+    ValueError
+        If a supplied or stored address cannot be a contact address.
+    """
+    resolved = str(email or '').strip()
+    if not resolved and 'crossref' in sources:
+        resolved = str(crossref_client.configured_email()).strip()
+    if not resolved and 'pubmed' in sources:
+        resolved = str(pubmed.configured_email()).strip()
+    return crossref_client.resolve_email(resolved) if 'crossref' in sources else resolved
+
+
 def _short_openalex_id(value: object) -> str:
     """Reduce an OpenAlex entity URL to its short identifier."""
     identifier = str(value or '').strip().rstrip('/')
@@ -1659,9 +1693,7 @@ def enrich_papers(conn: sqlite3.Connection,
         Counts of each resulting status and of stored child rows.
     """
     sources = _configured_sources(sources)
-    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
-    if not email and 'pubmed' in sources:
-        email = pubmed.configured_email()
+    email = _contact_address(sources, email)
     api_key = api_key if api_key is not None else openalex.configured_api_key()
     if pubmed_api_key is None and 'pubmed' in sources:
         pubmed_api_key = pubmed.configured_api_key()
@@ -1785,9 +1817,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
     sources = _configured_sources(sources)
     if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         raise ValueError(f'batch_size must be between 1 and {MAX_BATCH_SIZE}.')
-    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
-    if not email and 'pubmed' in sources:
-        email = pubmed.configured_email()
+    email = _contact_address(sources, email)
     api_key = api_key if api_key is not None else openalex.configured_api_key()
     if pubmed_api_key is None and 'pubmed' in sources:
         pubmed_api_key = pubmed.configured_api_key()
