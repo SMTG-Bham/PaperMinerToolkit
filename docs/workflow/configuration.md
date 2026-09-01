@@ -83,7 +83,7 @@ two different delays.
 | chemRxiv | 1.0 s | | 1.0 s | | none published |
 | CORE | 2.0 s | | 2.0 s | | 5 single or 1 batch request per 10 s |
 | Crossref | 0.2 s | | | | 5/s public pool, 10/s with a contact address |
-| Elsevier | 0.1 s | 0.1 s | 0.1 s | 0.1 s | 10/s article retrieval, 50k/week |
+| Elsevier | 0.11 s | 0.1 s | 0.1 s | 0.11 s | per API: 9-10/s, 10k-50k/week |
 | OpenAlex | 0.01 s | 0.01 s | 0.01 s | | 100/s, then a daily credit budget |
 | PubMed | 0.34 s | | | | 3/s, or 10/s with an API key |
 | PMC Cloud Service | | 0.1 s | 0.1 s | 0.1 s | none published |
@@ -108,14 +108,18 @@ Four consequences are worth knowing:
   Crossref announces the allowance it is currently applying on every response, in
   `X-Rate-Limit-Limit` over an `X-Rate-Limit-Interval`, so either pace can be checked against the
   service rather than taken on trust.
-- **Elsevier figures and Elsevier metadata share one budget.** Both come from `api.elsevier.com`,
-  so they are paced by the same window and spend the same weekly quota. A large figure run reduces
-  the article retrievals left for that week. Elsevier reports what is left of that quota on every
-  authenticated response, and PaperMinerToolkit reads it: once nothing remains, the next request is
-  refused before it is sent, naming the allowance and when it refills. That turns exhaustion into
-  one clear error rather than a run of refusals that each cost a request. Nothing is enforced until
-  a response has actually reported a figure, so an unmetered endpoint or an unauthenticated
-  rejection never blocks a run.
+- **Elsevier meters each of its APIs separately.** Unusually, one host is not one limit here:
+  Elsevier states that "quota limits are unique to each API, there is not a single global setting
+  for a given APIKey", and the per-second rates differ too. Searching Scopus is 9/s against 20,000
+  a week, retrieving a ScienceDirect article is 10/s against 50,000, and retrieving an abstract is
+  9/s against 10,000. PaperMinerToolkit therefore paces and counts each endpoint on its own, so a
+  spent search allowance does not stop article downloads that still have theirs, and a path it does
+  not recognise is paced at the slowest rate Elsevier documents anywhere rather than the fastest.
+  Elsevier reports what is left of each quota on every authenticated response, and PaperMinerToolkit
+  reads it: once one is gone, the next request to that API is refused before it is sent, naming the
+  API, the allowance, and when it refills. That turns exhaustion into one clear error rather than a
+  run of refusals that each cost a request. Nothing is enforced until a response has actually
+  reported a figure, so an unmetered endpoint or an unauthenticated rejection never blocks a run.
 - **PMC text, PDFs, and figures no longer touch NCBI's limit.** They come from the PMC Cloud
   Service, a separate service from E-utilities, so an NCBI API key does not change their pace and
   their traffic does not consume the E-utilities allowance.

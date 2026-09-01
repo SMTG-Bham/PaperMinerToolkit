@@ -468,12 +468,21 @@ def test_figure_limiter_routes_each_host_to_its_own_pace() -> None:
     existing limiter rather than a second one: two limiters on one host would
     permit twice the intended rate and, for Elsevier, spend one weekly quota
     twice as fast.
+
+    Elsevier is the exception that proves it. It meters each of its APIs apart,
+    so the window belongs to the endpoint rather than the host, and a figure
+    must land on the Object Retrieval window that Object Retrieval requests
+    made anywhere else in the package also use.
     """
     from paperminertoolkit.providers import elsevier, pubmed, rxiv
 
-    assert figures.figure_limiter(
-        'https://api.elsevier.com/content/object/eid/1-s2.0-X-gr1.jpg',
-    ) is elsevier.LIMITER
+    figure_url = 'https://api.elsevier.com/content/object/eid/1-s2.0-X-gr1.jpg'
+    assert figures.figure_limiter(figure_url) is elsevier.limiter_for(figure_url)
+    assert figures.figure_limiter(figure_url) is elsevier.ELSEVIER_APIS['object'].limiter
+    # And not the window Elsevier's search or article endpoints are paced by,
+    # whose quotas and rates are Elsevier's own separate ones.
+    assert figures.figure_limiter(figure_url) is not elsevier.ELSEVIER_APIS['search'].limiter
+    assert figures.figure_limiter(figure_url) is not elsevier.ELSEVIER_APIS['article'].limiter
     assert figures.figure_limiter(
         'https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/fig.webp',
     ) is pubmed.CLOUD_LIMITER

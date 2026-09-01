@@ -19,7 +19,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path, PurePosixPath
@@ -45,11 +45,15 @@ PDF_LAYOUT_SOURCE = 'pdf-layout'
 # host also serves a provider's metadata, its existing limiter is reused rather
 # than duplicated: two limiters on one host would allow twice the intended rate
 # and, for Elsevier, would spend the same weekly quota twice as fast.
+# Elsevier is the exception: it meters each of its APIs separately, so its
+# window is chosen by the path as well as the host and comes from a function.
 _HOST_LIMITERS: dict[str, provider.RateLimiter] = {
-    'api.elsevier.com': elsevier.LIMITER,
     'pmc-oa-opendata.s3.amazonaws.com': pubmed.CLOUD_LIMITER,
     'biorxiv.org': rxiv.CONTENT_LIMITER,
     'medrxiv.org': rxiv.CONTENT_LIMITER,
+}
+_HOST_LIMITER_FACTORIES: dict[str, Callable[[str], provider.RateLimiter]] = {
+    'api.elsevier.com': elsevier.limiter_for,
 }
 FIGURE_LIMITER = provider.RateLimiter(FIGURE_MIN_INTERVAL)
 _ALLOWED_MIME_TYPES = frozenset({
@@ -139,6 +143,9 @@ def figure_limiter(url: str) -> provider.RateLimiter:
         registered, or the general figure limiter otherwise.
     """
     host = (urlsplit(url).hostname or '').lower().rstrip('.')
+    for known, choose in _HOST_LIMITER_FACTORIES.items():
+        if host == known or host.endswith(f'.{known}'):
+            return choose(url)
     for known, limiter in _HOST_LIMITERS.items():
         if host == known or host.endswith(f'.{known}'):
             return limiter

@@ -27,8 +27,9 @@ from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 import requests
 
@@ -36,20 +37,114 @@ from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 
 BASE_URL = 'https://api.elsevier.com/content'
-ELSEVIER_MIN_INTERVAL = 0.1
-LIMITER = provider.RateLimiter(ELSEVIER_MIN_INTERVAL)
 # Elsevier's documented quota headers. They appear on authenticated responses
 # only, so an absent one means "nothing learned" rather than "nothing left".
 QUOTA_LIMIT_HEADER = 'X-RateLimit-Limit'
 QUOTA_REMAINING_HEADER = 'X-RateLimit-Remaining'
 QUOTA_RESET_HEADER = 'X-RateLimit-Reset'
+# The slowest rate Elsevier documents for any of its APIs, used for a path this
+# module does not recognise so an unknown endpoint is never hurried.
+ELSEVIER_MIN_INTERVAL = 1 / 2
 
 
-_quota: provider.Budget | None = None
+@dataclass(frozen=True, slots=True)
+class ElsevierApi:
+    """One Elsevier API's own pace and its own weekly quota.
+
+    Parameters
+    ----------
+    name : str
+        API name as Elsevier's key settings page lists it.
+    limiter : provider.RateLimiter
+        Pacing window for this API alone.
+    """
+
+    name: str
+    limiter: provider.RateLimiter
 
 
-def record_quota(response: provider.ResponseLike, api_key: str = '') -> provider.Budget | None:
-    """Remember what one Elsevier response said about the remaining quota.
+def _api(name: str, per_second: float) -> ElsevierApi:
+    """Build one API's entry from its documented requests-per-second rate.
+
+    Parameters
+    ----------
+    name : str
+        API name as Elsevier's key settings page lists it.
+    per_second : float
+        Requests per second Elsevier documents for it.
+
+    Returns
+    -------
+    ElsevierApi
+        Entry owning that API's pacing window.
+    """
+    return ElsevierApi(name=name, limiter=provider.RateLimiter(1 / per_second))
+
+
+# Elsevier states that "quota limits are unique to each API, there is not a
+# single global setting for a given APIKey", and the per-second rates differ
+# between them too, so both are held per API rather than per host. Pacing every
+# path at the fastest of them would exceed the rate on most of them, and one
+# shared quota figure would let a healthy allowance on one API clear an
+# exhausted one on another. Keyed by the path segment after /content/.
+ELSEVIER_APIS: dict[str, ElsevierApi] = {
+    'search': _api('Scopus Search', 9),
+    'abstract': _api('Abstract Retrieval', 9),
+    'article': _api('ScienceDirect Article Retrieval', 10),
+    # Object Retrieval serves an article's figures and is not listed among the
+    # documented quotas, so it takes the rate of the Scopus APIs rather than
+    # the faster article one.
+    'object': _api('ScienceDirect Object Retrieval', 9),
+}
+UNKNOWN_API = _api('Elsevier', 1 / ELSEVIER_MIN_INTERVAL)
+# Kept as the name other modules reach for; an unrecognised path lands here.
+LIMITER = UNKNOWN_API.limiter
+
+
+def api_for(url: str) -> ElsevierApi:
+    """Identify which Elsevier API one URL belongs to.
+
+    Parameters
+    ----------
+    url : str
+        Elsevier endpoint URL.
+
+    Returns
+    -------
+    ElsevierApi
+        Matching API, or the conservative fallback for a path this module does
+        not recognise.
+    """
+    path = urlsplit(url).path.lower()
+    head, _, tail = path.partition('/content/')
+    segment = (tail if _ else head).lstrip('/').split('/', 1)[0]
+    return ELSEVIER_APIS.get(segment, UNKNOWN_API)
+
+
+def limiter_for(url: str) -> provider.RateLimiter:
+    """Return the pacing window for one Elsevier URL.
+
+    Parameters
+    ----------
+    url : str
+        Elsevier endpoint URL.
+
+    Returns
+    -------
+    provider.RateLimiter
+        The window belonging to that URL's API.
+    """
+    return api_for(url).limiter
+
+
+# One remembered quota per API per key, because Elsevier meters them apart.
+_quotas: dict[tuple[str, str], provider.Budget] = {}
+
+
+def record_quota(response: provider.ResponseLike,
+                 api_key: str = '',
+                 url: str = '') -> provider.Budget | None:
+    """Remember what one Elsevier response said about that API's quota.
 
     Parameters
     ----------
@@ -57,38 +152,48 @@ def record_quota(response: provider.ResponseLike, api_key: str = '') -> provider
         Response whose headers should be read.
     api_key : str, default=''
         Key the request was made with, recorded as a digest.
+    url : str, default=''
+        URL that was requested, which decides the quota it belongs to.
 
     Returns
     -------
     provider.Budget or None
         Quota now remembered, or ``None`` when the response reported none.
     """
-    global _quota
-    remaining = provider.header_int(getattr(response, 'headers', None), QUOTA_REMAINING_HEADER)
+    bucket = (api_for(url).name, provider.fingerprint(api_key))
+    headers = getattr(response, 'headers', None)
+    remaining = provider.header_int(headers, QUOTA_REMAINING_HEADER)
     if remaining is None:
-        return _quota
-    limit = provider.header_int(getattr(response, 'headers', None), QUOTA_LIMIT_HEADER)
-    reset = provider.header_int(getattr(response, 'headers', None), QUOTA_RESET_HEADER)
-    _quota = provider.Budget(remaining=max(remaining, 0),
-                             limit=limit if limit is not None else -1,
-                             reset_at=float(reset) if reset else 0.0,
-                             owner_fingerprint=provider.fingerprint(api_key))
-    return _quota
+        return _quotas.get(bucket)
+    limit = provider.header_int(headers, QUOTA_LIMIT_HEADER)
+    reset = provider.header_int(headers, QUOTA_RESET_HEADER)
+    _quotas[bucket] = provider.Budget(remaining=max(remaining, 0),
+                                      limit=limit if limit is not None else -1,
+                                      reset_at=float(reset) if reset else 0.0,
+                                      owner_fingerprint=bucket[1])
+    return _quotas[bucket]
 
 
-def quota_status() -> provider.Budget | None:
-    """Return the last quota Elsevier reported, if any.
+def quota_status(url: str = '', api_key: str = '') -> provider.Budget | None:
+    """Return the last quota Elsevier reported for one API, if any.
+
+    Parameters
+    ----------
+    url : str, default=''
+        URL identifying the API to report on.
+    api_key : str, default=''
+        Key the quota belongs to.
 
     Returns
     -------
     provider.Budget or None
         Remembered quota, or ``None`` when no response has reported one.
     """
-    return _quota
+    return _quotas.get((api_for(url).name, provider.fingerprint(api_key)))
 
 
 def reset_quota() -> None:
-    """Forget the remembered quota.
+    """Forget every remembered quota.
 
     Quota state outlives a single call by design, so a test run or a caller
     starting again with different credentials clears it explicitly.
@@ -96,20 +201,23 @@ def reset_quota() -> None:
     Returns
     -------
     None
-        The remembered quota is cleared in place.
+        The remembered quotas are cleared in place.
     """
-    global _quota
-    _quota = None
+    _quotas.clear()
 
 
-def check_quota(api_key: str = '') -> None:
+def check_quota(api_key: str = '', url: str = '') -> None:
     """Refuse a request Elsevier has already said it will not answer.
 
-    Elsevier reports a key's remaining allowance on every authenticated
-    response. Once that reaches zero, further requests are refused until the
-    allowance refills, so making them spends time and learns nothing. Raising
+    Elsevier reports each API's remaining allowance on every authenticated
+    response. Once one reaches zero, further requests to that API are refused
+    until it refills, so making them spends time and learns nothing. Raising
     here reports the exhaustion once, in terms of when it lifts, rather than as
     a run of identical failures.
+
+    Only that API is refused. Elsevier meters each one separately, so a spent
+    Scopus Search allowance says nothing about whether article retrieval can
+    still be asked, and blocking it would stop work that would have succeeded.
 
     Nothing is enforced until a response has actually reported a figure, and
     figures observed under one key never gate a request made with another.
@@ -118,6 +226,8 @@ def check_quota(api_key: str = '') -> None:
     ----------
     api_key : str, default=''
         Key the request is about to be made with.
+    url : str, default=''
+        URL about to be requested, which decides the quota that applies.
 
     Returns
     -------
@@ -127,18 +237,18 @@ def check_quota(api_key: str = '') -> None:
     Raises
     ------
     RuntimeError
-        If the remembered quota for this key is exhausted.
+        If the remembered quota for this API and key is exhausted.
     """
-    quota = _quota
+    api = api_for(url)
+    quota = _quotas.get((api.name, provider.fingerprint(api_key)))
     if quota is None or not quota.exhausted:
-        return
-    if quota.owner_fingerprint != provider.fingerprint(api_key):
         return
     allowance = f' of {quota.limit}' if quota.limit >= 0 else ''
     refill = f' It refills at {quota.reset_text}.' if quota.reset_text else ''
     raise RuntimeError(
-        f'Elsevier reports 0{allowance} requests left for this API key, so this request was '
-        f'not sent.{refill} Wait for the allowance to refill, or use a key with a larger one.'
+        f"Elsevier reports 0{allowance} requests left on {api.name} for this API key, so this "
+        f'request was not sent.{refill} Wait for the allowance to refill, or use a key with a '
+        'larger one.'
     )
 
 
@@ -244,11 +354,11 @@ def get_content(api_key: str,
         If Elsevier has reported that this key's quota is exhausted, the
         document is absent, or the request is rejected or keeps failing.
     """
-    check_quota(api_key)
-    response = provider.request(url, label='Elsevier', limiter=LIMITER, params=params,
+    check_quota(api_key, url)
+    response = provider.request(url, label='Elsevier', limiter=limiter_for(url), params=params,
                                 headers=api_headers(api_key, accept=accept), session=session,
                                 timeout=timeout, missing_ok=False,
-                                on_response=lambda answer: record_quota(answer, api_key))
+                                on_response=lambda answer: record_quota(answer, api_key, url))
     if response is None:  # pragma: no cover - missing_ok=False never returns None
         raise RuntimeError(f'Elsevier returned no content from {url}')
     return response
@@ -359,11 +469,11 @@ def request(url: str,
         If Elsevier has reported that this key's quota is exhausted, the
         request is rejected, or all request attempts fail.
     """
-    check_quota(api_key)
-    return provider.request(url, label='Elsevier', limiter=LIMITER, params=params,
+    check_quota(api_key, url)
+    return provider.request(url, label='Elsevier', limiter=limiter_for(url), params=params,
                             headers=api_headers(api_key, accept=accept), session=session,
                             timeout=timeout, attempts=attempts,
-                            on_response=lambda response: record_quota(response, api_key))
+                            on_response=lambda response: record_quota(response, api_key, url))
 
 
 def request_json(url: str,
@@ -400,11 +510,11 @@ def request_json(url: str,
         If Elsevier has reported that this key's quota is exhausted, the
         request is rejected, or the body is not a JSON object.
     """
-    check_quota(api_key)
-    return provider.request_mapping(url, label='Elsevier', limiter=LIMITER, params=params,
+    check_quota(api_key, url)
+    return provider.request_mapping(url, label='Elsevier', limiter=limiter_for(url), params=params,
                                     headers=api_headers(api_key), session=session,
                                     timeout=timeout, attempts=attempts,
-                                    on_response=lambda response: record_quota(response, api_key))
+                                    on_response=lambda response: record_quota(response, api_key, url))
 
 
 def next_page_url(payload: Mapping[str, Any] | None) -> str:

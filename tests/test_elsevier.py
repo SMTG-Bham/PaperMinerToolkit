@@ -46,25 +46,27 @@ def test_get_content_is_paced_retried_and_never_returns_a_missing_document(
     ``Retry-After``. It has to share the window with search and metadata,
     because it shares the host and the weekly allowance with them.
     """
+    url = 'https://api.elsevier.com/content/article/doi/10.1016/j.example'
     waits: list[float | None] = []
-    monkeypatch.setattr(elsevier.LIMITER, 'wait', lambda interval=None: waits.append(interval))
+    monkeypatch.setattr(elsevier.limiter_for(url), 'wait',
+                        lambda interval=None: waits.append(interval))
     session = FakeSession([
         FakeResponse(text='%PDF data', status_code=429, headers={'Retry-After': '0'}),
         FakeResponse(text='%PDF data'),
     ])
 
-    response = elsevier.get_content('elsevier-key', 'https://example.com/article',
-                                    'application/pdf', session=session)
+    response = elsevier.get_content('elsevier-key', url, 'application/pdf', session=session)
 
     assert response.text == '%PDF data'
-    # Paced once per attempt, the retry included, through Elsevier's own window.
+    # Paced once per attempt, the retry included, through the window belonging
+    # to article retrieval rather than a window of its own.
     assert waits == [None, None]
     assert session.calls[0]['headers']['Accept'] == 'application/pdf'
 
     # A missing document is raised rather than returned, so a caller working
     # through candidate URLs handles every outcome the same way.
     with pytest.raises(RuntimeError, match='rejected the request with 404'):
-        elsevier.get_content('elsevier-key', 'https://example.com/article', 'application/pdf',
+        elsevier.get_content('elsevier-key', url, 'application/pdf',
                              session=FakeSession([FakeResponse(text='', status_code=404)]))
 
 
@@ -248,7 +250,7 @@ def test_check_api_key_reports_acceptance_without_raising(
     assert elsevier.check_api_key('bad-key') is False
 
 
-def quota_headers(remaining: object, limit: object = 50000, reset: object | None = None) -> dict[str, str]:
+def quota_headers(remaining: object, limit: object = 20000, reset: object | None = None) -> dict[str, str]:
     """Build the quota headers Elsevier reports on an authenticated response.
 
     Parameters
@@ -272,15 +274,44 @@ def quota_headers(remaining: object, limit: object = 50000, reset: object | None
         elsevier.QUOTA_RESET_HEADER: str(reset),
     }
 
+SEARCH = 'https://api.elsevier.com/content/search/scopus'
+ARTICLE = 'https://api.elsevier.com/content/article/doi/10.1016/j.example'
+OBJECT = 'https://api.elsevier.com/content/object/eid/1-s2.0-X-gr1.jpg'
+
+
+def test_each_elsevier_api_is_paced_at_its_own_documented_rate() -> None:
+    """Pace by the endpoint, because Elsevier's rates differ between its APIs.
+
+    Elsevier documents nine requests a second for the Scopus APIs and ten for
+    ScienceDirect article retrieval, so one shared window at the fastest of
+    them would exceed the rate on every other path.
+    """
+    assert elsevier.limiter_for(SEARCH).min_interval == pytest.approx(1 / 9)
+    assert elsevier.limiter_for(ARTICLE).min_interval == pytest.approx(1 / 10)
+    assert elsevier.limiter_for(OBJECT).min_interval == pytest.approx(1 / 9)
+    assert elsevier.api_for(SEARCH).name == 'Scopus Search'
+    assert elsevier.api_for(ARTICLE).name == 'ScienceDirect Article Retrieval'
+
+    # Each API owns its own window, so one cannot delay another.
+    assert len({id(elsevier.limiter_for(url)) for url in (SEARCH, ARTICLE, OBJECT)}) == 3
+
+    # A path not documented here is paced at the slowest rate Elsevier
+    # documents anywhere rather than hurried on a guess.
+    assert elsevier.api_for('https://api.elsevier.com/content/serial/title') is elsevier.UNKNOWN_API
+    assert elsevier.api_for('') is elsevier.UNKNOWN_API
+    assert elsevier.UNKNOWN_API.limiter.min_interval == pytest.approx(0.5)
+    assert elsevier.LIMITER is elsevier.UNKNOWN_API.limiter
+
 
 def test_record_quota_reads_what_a_response_reports() -> None:
     """Remember the allowance, the remainder, and when it refills."""
     reset_at = int(time.time()) + 600
     quota = elsevier.record_quota(
-        FakeResponse(headers=quota_headers(4998, limit=5000, reset=reset_at)), 'elsevier-key')
+        FakeResponse(headers=quota_headers(19_998, limit=20_000, reset=reset_at)),
+        'elsevier-key', SEARCH)
 
-    assert quota == elsevier.quota_status()
-    assert (quota.remaining, quota.limit, quota.reset_at) == (4998, 5000, float(reset_at))
+    assert quota == elsevier.quota_status(SEARCH, 'elsevier-key')
+    assert (quota.remaining, quota.limit, quota.reset_at) == (19_998, 20_000, float(reset_at))
     assert not quota.exhausted
     assert quota.reset_text.endswith('UTC')
     # The key is identified by digest, so no credential is held in module state.
@@ -288,7 +319,32 @@ def test_record_quota_reads_what_a_response_reports() -> None:
     assert 'elsevier-key' not in repr(quota)
 
     elsevier.reset_quota()
-    assert elsevier.quota_status() is None
+    assert elsevier.quota_status(SEARCH, 'elsevier-key') is None
+
+
+def test_each_elsevier_api_keeps_its_own_quota() -> None:
+    """Meter each API apart, as Elsevier does.
+
+    Elsevier states that quota limits are unique to each API with no single
+    global setting for a key, and a live key bears it out: Scopus Search
+    reports 20,000 a week where article retrieval documents 50,000. One shared
+    figure would let a healthy allowance on one API clear an exhausted one on
+    another, and let doomed requests through.
+    """
+    elsevier.record_quota(FakeResponse(headers=quota_headers(0, limit=20_000)),
+                          'elsevier-key', SEARCH)
+    elsevier.record_quota(FakeResponse(headers=quota_headers(49_000, limit=50_000)),
+                          'elsevier-key', ARTICLE)
+
+    assert elsevier.quota_status(SEARCH, 'elsevier-key').remaining == 0
+    assert elsevier.quota_status(ARTICLE, 'elsevier-key').remaining == 49_000
+
+    # Search is spent, so search is refused and the message says which API.
+    with pytest.raises(RuntimeError, match='on Scopus Search for this API key'):
+        elsevier.check_quota('elsevier-key', SEARCH)
+    # Article retrieval still has allowance and must not be blocked by it.
+    elsevier.check_quota('elsevier-key', ARTICLE)
+    elsevier.check_quota('elsevier-key', OBJECT)
 
 
 def test_record_quota_ignores_a_response_that_reports_nothing() -> None:
@@ -299,48 +355,56 @@ def test_record_quota_ignores_a_response_that_reports_nothing() -> None:
     reading it as exhaustion would refuse every request after an anonymous
     rejection.
     """
-    assert elsevier.record_quota(FakeResponse()) is None
-    assert elsevier.record_quota(FakeResponse(headers={})) is None
-    assert elsevier.record_quota(FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: 'many'})) is None
-    assert elsevier.quota_status() is None
-    elsevier.check_quota('elsevier-key')
+    assert elsevier.record_quota(FakeResponse(), 'elsevier-key', SEARCH) is None
+    assert elsevier.record_quota(FakeResponse(headers={}), 'elsevier-key', SEARCH) is None
+    assert elsevier.record_quota(
+        FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: 'many'}),
+        'elsevier-key', SEARCH) is None
+    assert elsevier.quota_status(SEARCH, 'elsevier-key') is None
+    elsevier.check_quota('elsevier-key', SEARCH)
 
     # A response without a usable limit or refill still reports the remainder.
-    quota = elsevier.record_quota(FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: '7'}))
+    quota = elsevier.record_quota(
+        FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: '7'}), 'elsevier-key', SEARCH)
     assert (quota.remaining, quota.limit, quota.reset_at, quota.reset_text) == (7, -1, 0.0, '')
     # A negative remainder is still exhaustion, not a negative allowance.
-    assert elsevier.record_quota(FakeResponse(headers=quota_headers(-3))).remaining == 0
+    assert elsevier.record_quota(FakeResponse(headers=quota_headers(-3)),
+                                 'elsevier-key', SEARCH).remaining == 0
     # Elsevier sends integers, but a float-shaped value is still a number.
-    assert elsevier.record_quota(FakeResponse(headers=quota_headers('12.0'))).remaining == 12
+    assert elsevier.record_quota(FakeResponse(headers=quota_headers('12.0')),
+                                 'elsevier-key', SEARCH).remaining == 12
     assert provider.header_int(object(), elsevier.QUOTA_REMAINING_HEADER) is None
 
 
 def test_check_quota_refuses_the_next_request_once_nothing_is_left() -> None:
     """Fail before spending a request Elsevier has said it will refuse."""
     reset_at = int(time.time()) + 3600
-    elsevier.record_quota(FakeResponse(headers=quota_headers(0, limit=5000, reset=reset_at)), 'elsevier-key')
+    elsevier.record_quota(FakeResponse(headers=quota_headers(0, limit=20_000, reset=reset_at)),
+                          'elsevier-key', SEARCH)
 
-    with pytest.raises(RuntimeError, match='0 of 5000 requests left') as failure:
-        elsevier.check_quota('elsevier-key')
+    with pytest.raises(RuntimeError, match='0 of 20000 requests left') as failure:
+        elsevier.check_quota('elsevier-key', SEARCH)
     assert 'It refills at' in str(failure.value)
-    assert elsevier.quota_status().exhausted
+    assert elsevier.quota_status(SEARCH, 'elsevier-key').exhausted
 
     # A quota observed under one key cannot gate a request made with another.
-    elsevier.check_quota('other-key')
-    elsevier.check_quota('')
+    elsevier.check_quota('other-key', SEARCH)
+    elsevier.check_quota('', SEARCH)
 
 
 def test_check_quota_allows_requests_again_once_the_allowance_refills() -> None:
     """Stop refusing once the reported refill time has passed."""
-    elsevier.record_quota(FakeResponse(headers=quota_headers(0, reset=int(time.time()) - 1)), 'elsevier-key')
-    assert not elsevier.quota_status().exhausted
-    elsevier.check_quota('elsevier-key')
+    elsevier.record_quota(FakeResponse(headers=quota_headers(0, reset=int(time.time()) - 1)),
+                          'elsevier-key', SEARCH)
+    assert not elsevier.quota_status(SEARCH, 'elsevier-key').exhausted
+    elsevier.check_quota('elsevier-key', SEARCH)
 
     # With no refill time reported there is nothing to wait for, so the refusal
     # stands and says so without naming a time.
-    elsevier.record_quota(FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: '0'}), 'elsevier-key')
+    elsevier.record_quota(FakeResponse(headers={elsevier.QUOTA_REMAINING_HEADER: '0'}),
+                          'elsevier-key', SEARCH)
     with pytest.raises(RuntimeError, match='0 requests left') as failure:
-        elsevier.check_quota('elsevier-key')
+        elsevier.check_quota('elsevier-key', SEARCH)
     assert 'refills at' not in str(failure.value)
 
 
@@ -356,25 +420,25 @@ def test_every_elsevier_request_path_records_and_honours_the_quota(
     exhausted = FakeResponse(payload={'ok': True}, headers=quota_headers(0))
 
     for label, call in [
-        ('request', lambda: elsevier.request('https://example.com/a', 'elsevier-key',
+        ('request', lambda: elsevier.request(ARTICLE, 'elsevier-key',
                                              session=FakeSession([exhausted]))),
-        ('request_json', lambda: elsevier.request_json('https://example.com/a', 'elsevier-key',
+        ('request_json', lambda: elsevier.request_json(ARTICLE, 'elsevier-key',
                                                        session=FakeSession([exhausted]))),
     ]:
         elsevier.reset_quota()
         call()
-        assert elsevier.quota_status().remaining == 0, label
-        with pytest.raises(RuntimeError, match='requests left for this API key'):
+        assert elsevier.quota_status(ARTICLE, 'elsevier-key').remaining == 0, label
+        with pytest.raises(RuntimeError, match='requests left on'):
             call()
 
     monkeypatch.setattr(elsevier.requests, 'get', lambda *args, **kwargs: exhausted)
     for label, call in [
-        ('get_json', lambda: elsevier.get_json('elsevier-key', 'https://example.com/a')),
-        ('get_content', lambda: elsevier.get_content('elsevier-key', 'https://example.com/a',
+        ('get_json', lambda: elsevier.get_json('elsevier-key', ARTICLE)),
+        ('get_content', lambda: elsevier.get_content('elsevier-key', ARTICLE,
                                                      'application/pdf')),
     ]:
         elsevier.reset_quota()
         call()
-        assert elsevier.quota_status().remaining == 0, label
-        with pytest.raises(RuntimeError, match='requests left for this API key'):
+        assert elsevier.quota_status(ARTICLE, 'elsevier-key').remaining == 0, label
+        with pytest.raises(RuntimeError, match='requests left on'):
             call()
