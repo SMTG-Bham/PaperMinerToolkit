@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from paperminertoolkit.corpus.layout import BoundingBox, Figure, Graphic, Section, Table
@@ -10,6 +13,16 @@ from paperminertoolkit.corpus.xml_layout import (
     parse_jats_layout,
     parse_tei_layout,
 )
+
+DATA_DIR = Path(__file__).resolve().parent / 'data'
+# Real documents fetched from the archives, trimmed to their figures. See
+# tests/data/README.md for provenance and licensing.
+REAL_JATS = {
+    'biorxiv': ('biorxiv_2023.03.30.534894v4.jats.xml',
+                'https://www.biorxiv.org/content/early/2024/08/02/2023.03.30.534894.source.xml'),
+    'medrxiv': ('medrxiv_2024.05.31.24307874v1.jats.xml',
+                'https://www.medrxiv.org/content/early/2024/06/01/2024.05.31.24307874.source.xml'),
+}
 
 
 JATS = '''<article xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -313,3 +326,63 @@ def test_parse_jats_layout_leaves_other_repositories_untouched() -> None:
         source_url='https://www.biorxiv.org/some/other/path.xml',
     )
     assert odd.figures[0].graphics[0].uri == '339747v4_fig1'
+
+
+@pytest.mark.parametrize('archive', sorted(REAL_JATS))
+def test_real_archive_jats_resolves_every_figure_to_a_downloadable_url(archive: str) -> None:
+    """Parse markup the archives actually publish, not an imitation of it.
+
+    The synthetic fixtures in this module were written from the documented
+    shape of JATS. These are the real thing, trimmed to their figures, and they
+    carry details no hand-written sample would have thought to include: the
+    HighWire ``hwp:`` namespace, three ``object-id`` values per figure of which
+    only one is the display slug, and graphic references that are internal
+    tokens resolving against nothing.
+
+    Parameters
+    ----------
+    archive : str
+        Archive whose real document is under test.
+    """
+    filename, source_url = REAL_JATS[archive]
+    layout = parse_jats_layout((DATA_DIR / filename).read_text(encoding='utf-8'),
+                               'doi:10.1101/example', source=archive,
+                               source_identifier='10.1101/example', source_url=source_url)
+
+    assert layout.figures, 'no figures parsed from a real archive document'
+    for figure in layout.figures:
+        assert figure.caption.strip(), f'{figure.identifier} lost its caption'
+        assert figure.graphics, f'{figure.identifier} resolved to no graphic'
+        for graphic in figure.graphics:
+            # The token in the document is "24307874v1_fig1" and resolves
+            # against nothing; what comes out must be the archive's image URL.
+            assert graphic.uri.startswith(f'https://www.{archive}.org/content/{archive}/early/')
+            assert graphic.uri.endswith('.large.jpg')
+
+
+def test_real_multi_panel_figures_do_not_repeat_one_image() -> None:
+    """Keep one graphic where a figure names several tokens for one image.
+
+    A multi-panel medRxiv figure names one token per panel -- ``_fig4``,
+    ``_fig4a``, ``_fig4b`` -- but the archive publishes no per-panel URL, so
+    all three resolve to the same figure-level image. Emitting the graphic
+    three times would download the same bytes three times, and these archives
+    ask seven seconds between requests, so each repeat is seven seconds spent
+    fetching something already held.
+    """
+    filename, source_url = REAL_JATS['medrxiv']
+    content = (DATA_DIR / filename).read_text(encoding='utf-8')
+    layout = parse_jats_layout(content, 'doi:10.1101/example', source='medrxiv',
+                               source_identifier='10.1101/example', source_url=source_url)
+
+    named = {
+        re.search(r'id="([^"]+)"', element).group(1): len(re.findall(r'<graphic\b', element))
+        for element in re.findall(r'<fig\b.*?</fig>', content, re.S)
+    }
+    parsed = {figure.identifier: len(figure.graphics) for figure in layout.figures}
+
+    # The fixture has to still contain the case, or this proves nothing.
+    assert max(named.values()) > 1, 'fixture no longer covers a multi-panel figure'
+    assert named == {'fig1': 1, 'fig2': 1, 'fig3': 2, 'fig4': 3}
+    # However many panels a figure names, one image is what can be fetched.
+    assert parsed == dict.fromkeys(named, 1)

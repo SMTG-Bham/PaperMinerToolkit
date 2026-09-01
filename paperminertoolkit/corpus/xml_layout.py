@@ -495,17 +495,27 @@ def _resolve_rxiv_graphics(
     Their JATS names each graphic with an internal token that resolves against
     nothing, so a graphic that is not already an absolute URL is replaced by
     the archive's image URL for that figure's slug.
+
+    A multi-panel figure names one token per panel -- ``..._fig4``, ``_fig4a``,
+    ``_fig4b`` -- and the archive publishes no per-panel URL, so every one of
+    them resolves to the same figure-level image. Only the first is kept.
+    Repeating a graphic would repeat its download, and on these archives that
+    costs seven seconds of pacing per repeat to fetch bytes already held.
     """
     resolved = []
     for figure in figures:
         url = _rxiv_figure_url(source_url, slugs.get(figure.identifier, ''))
-        graphics = tuple(
-            replace(graphic, uri=url)
-            if url and not graphic.uri.startswith(('http://', 'https://'))
-            else graphic
-            for graphic in figure.graphics
-        )
-        resolved.append(replace(figure, graphics=graphics) if graphics != figure.graphics else figure)
+        graphics: list[Graphic] = []
+        seen: set[str] = set()
+        for graphic in figure.graphics:
+            if url and not graphic.uri.startswith(('http://', 'https://')):
+                graphic = replace(graphic, uri=url)
+            if graphic.uri in seen:
+                continue
+            seen.add(graphic.uri)
+            graphics.append(graphic)
+        resolved.append(replace(figure, graphics=tuple(graphics))
+                        if tuple(graphics) != figure.graphics else figure)
     return tuple(resolved)
 
 
