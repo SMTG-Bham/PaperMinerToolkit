@@ -165,6 +165,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'openai_api_key': 'file-openai',
         'anthropic_api_key': 'file-anthropic',
         'core_api_key': 'file-core',
+        'core_membership': 'starting',
+        'core_requests_per_10s': 5,
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
         'crossref_email': 'file-crossref@example.com',
@@ -175,6 +177,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-anthropic')
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
+    monkeypatch.setenv('CORE_MEMBERSHIP', 'sustaining')
+    monkeypatch.setenv('CORE_REQUESTS_PER_10S', '40')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
     monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
@@ -187,6 +191,8 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['openai_api_key'] == 'env-openai'
     assert loaded['anthropic_api_key'] == 'env-anthropic'
     assert loaded['core_api_key'] == 'env-core'
+    assert loaded['core_membership'] == 'sustaining'
+    assert loaded['core_requests_per_10s'] == '40'
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
     assert loaded['crossref_email'] == 'env-crossref@example.com'
@@ -365,6 +371,58 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, mon
     output = capsys.readouterr().out
     assert 'Current CORE API key: old-...-key' in output
     assert settings.load_settings()['core_api_key'] == 'core-key'
+
+
+def test_update_core_membership_records_the_level_and_granted_rate(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Save a CORE membership level together with the rate CORE granted.
+
+    CORE publishes one rate for unregistered clients and agrees higher ones
+    individually, so the level alone cannot imply a pace and the granted
+    figure is stored separately.
+    """
+    settings._save_settings({'core_membership': 'starting'})
+    answers = iter(['Sustaining', '50'])
+    monkeypatch.setattr('builtins.input', lambda _: next(answers))
+
+    settings.update_core_membership()
+
+    stored = settings.load_settings()
+    output = capsys.readouterr().out
+    assert stored['core_membership'] == 'sustaining'
+    assert stored['core_requests_per_10s'] == 50
+    assert 'granted a faster rate individually' in output
+
+
+def test_update_core_membership_defaults_and_rejects_bad_values(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default to the free tier and refuse an unusable level or rate."""
+    blank = iter(['', ''])
+    monkeypatch.setattr('builtins.input', lambda _: next(blank))
+    settings.update_core_membership()
+    stored = settings.load_settings()
+    assert stored['core_membership'] == 'starting'
+    assert 'core_requests_per_10s' not in stored
+
+    unknown = iter(['platinum', '10'])
+    monkeypatch.setattr('builtins.input', lambda _: next(unknown))
+    with pytest.raises(ValueError, match='membership must be one of'):
+        settings.update_core_membership()
+
+    not_a_number = iter(['supporting', 'lots'])
+    monkeypatch.setattr('builtins.input', lambda _: next(not_a_number))
+    with pytest.raises(ValueError, match='must be a whole number'):
+        settings.update_core_membership()
+
+    too_small = iter(['supporting', '0'])
+    monkeypatch.setattr('builtins.input', lambda _: next(too_small))
+    with pytest.raises(ValueError, match='at least one request'):
+        settings.update_core_membership()
 
 
 def test_check_elsevier_api_key_delegates_to_the_elsevier_client(

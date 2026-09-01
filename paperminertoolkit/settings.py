@@ -173,7 +173,8 @@ def load_settings() -> dict[str, Any]:
         raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
 
     merged = deepcopy(DEFAULT_SETTINGS)
-    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_api_key', 'openai_api_key',
+    for key in ['elsevier_api_key', 'core_api_key', 'core_membership', 'core_requests_per_10s',
+                'unpaywall_email', 'openalex_api_key', 'openai_api_key',
                 'anthropic_api_key', 'crossref_email', 'ncbi_api_key', 'ncbi_email']:
         if key in settings:
             merged[key] = settings[key]
@@ -194,6 +195,12 @@ def load_settings() -> dict[str, Any]:
     core_api_key = os.environ.get('CORE_API_KEY')
     if core_api_key:
         merged['core_api_key'] = core_api_key
+    core_membership = os.environ.get('CORE_MEMBERSHIP')
+    if core_membership:
+        merged['core_membership'] = core_membership
+    core_requests = os.environ.get('CORE_REQUESTS_PER_10S')
+    if core_requests:
+        merged['core_requests_per_10s'] = core_requests
     unpaywall_email = os.environ.get('UNPAYWALL_EMAIL')
     if unpaywall_email:
         merged['unpaywall_email'] = unpaywall_email
@@ -509,6 +516,54 @@ def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     _show_current_setting(settings, 'core_api_key', 'CORE API key')
     api_key = input('Enter CORE API key: ')
     settings['core_api_key'] = api_key
+    _save_settings(settings)
+
+
+def update_core_membership(settings: dict[str, Any] | Literal[True] = True) -> None:
+    """Prompt for and save the CORE membership level and any granted rate.
+
+    CORE publishes one rate for unregistered clients and agrees higher ones
+    individually with registered organisations and members, so the membership
+    level is recorded separately from the rate it was granted. A membership on
+    its own does not change pacing, because CORE does not publish what each
+    level receives.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True], default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the membership is unrecognized or the rate is not a positive whole
+        number.
+    """
+    from paperminertoolkit.providers.core import (CORE_FREE_SINGLE_PER_WINDOW,
+                                                  CORE_MEMBERSHIPS)
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'core_membership', 'CORE membership', secret=False)
+    levels = ', '.join(CORE_MEMBERSHIPS)
+    membership = input(f'Enter CORE membership ({levels}): ').strip().lower()
+    if membership and membership not in CORE_MEMBERSHIPS:
+        raise ValueError(f'CORE membership must be one of: {levels}.')
+
+    _show_current_setting(settings, 'core_requests_per_10s',
+                          'CORE requests per 10 seconds', secret=False)
+    print(f'Leave blank for the free allowance of {CORE_FREE_SINGLE_PER_WINDOW} '
+          'single requests per 10 seconds. Members and registered organisations are '
+          'granted a faster rate individually; enter the number CORE agreed with you.')
+    granted = input('Enter granted single requests per 10 seconds: ').strip()
+    if granted:
+        try:
+            requests_per_window = int(granted)
+        except ValueError as error:
+            raise ValueError('CORE request rate must be a whole number.') from error
+        if requests_per_window < 1:
+            raise ValueError('CORE request rate must be at least one request per 10 seconds.')
+        settings['core_requests_per_10s'] = requests_per_window
+    settings['core_membership'] = membership or CORE_MEMBERSHIPS[0]
     _save_settings(settings)
 
 

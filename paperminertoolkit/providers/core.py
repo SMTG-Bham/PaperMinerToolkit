@@ -33,7 +33,19 @@ from paperminertoolkit.corpus.metadata import clean_doi
 BASE_URL = 'https://api.core.ac.uk/v3'
 SEARCH_URL = f'{BASE_URL}/search/works'
 WORKS_URL = f'{BASE_URL}/works'
-CORE_MIN_INTERVAL = 1.0
+# CORE documents one allowance for unregistered clients: five single requests
+# or one batch request per ten seconds. Higher rates exist for registered
+# organisations, and come free with Supporting and Sustaining membership, but
+# CORE negotiates each one individually and publishes no figure for them --
+# it asks how many requests you expect and grants a rate to match. A
+# membership level therefore cannot imply a pace, so the granted rate is
+# configured separately and a membership on its own changes nothing.
+CORE_FREE_SINGLE_PER_WINDOW = 5
+CORE_FREE_BATCH_PER_WINDOW = 1
+CORE_WINDOW_SECONDS = 10.0
+CORE_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_SINGLE_PER_WINDOW
+CORE_BATCH_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_BATCH_PER_WINDOW
+CORE_MEMBERSHIPS = ('starting', 'supporting', 'sustaining')
 PAGE_SIZE = 100
 _CoreRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(CORE_MIN_INTERVAL)
@@ -55,6 +67,81 @@ def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
     from paperminertoolkit.settings import load_settings
     settings = settings if settings is not None else load_settings()
     return settings.get('core_api_key') or os.environ.get('CORE_API_KEY') or None
+
+
+def configured_membership(settings: Mapping[str, str] | None = None) -> str:
+    """Return the configured CORE membership level.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping to inspect before the environment.
+
+    Returns
+    -------
+    str
+        One of :data:`CORE_MEMBERSHIPS`, defaulting to ``"starting"`` when
+        nothing recognisable is configured.
+    """
+    from paperminertoolkit.settings import load_settings
+    settings = settings if settings is not None else load_settings()
+    value = str(settings.get('core_membership')
+                or os.environ.get('CORE_MEMBERSHIP') or '').strip().lower()
+    return value if value in CORE_MEMBERSHIPS else CORE_MEMBERSHIPS[0]
+
+
+def configured_requests_per_window(settings: Mapping[str, str] | None = None) -> int:
+    """Return the granted number of single requests per ten seconds.
+
+    CORE agrees a higher rate with registered organisations and members case
+    by case, so the granted figure is taken from configuration rather than
+    inferred from the membership level.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping to inspect before the environment.
+
+    Returns
+    -------
+    int
+        Configured allowance, or CORE's documented free-tier allowance when
+        none is configured or the configured value is unusable.
+    """
+    from paperminertoolkit.settings import load_settings
+    settings = settings if settings is not None else load_settings()
+    value = settings.get('core_requests_per_10s') or os.environ.get('CORE_REQUESTS_PER_10S')
+    try:
+        requested = int(str(value).strip())
+    except (TypeError, ValueError):
+        return CORE_FREE_SINGLE_PER_WINDOW
+    return requested if requested >= 1 else CORE_FREE_SINGLE_PER_WINDOW
+
+
+def min_interval(
+    settings: Mapping[str, str] | None = None,
+    batch: bool = False,
+) -> float:
+    """Return the minimum seconds between CORE requests.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping supplying any granted rate.
+    batch : bool, default=False
+        Whether the request uses a batch method, which CORE allows five times
+        less often than a single one.
+
+    Returns
+    -------
+    float
+        Delay honoring the configured allowance, or CORE's free-tier rate.
+    """
+    per_window = configured_requests_per_window(settings)
+    if batch:
+        allowed = max(1.0, per_window * CORE_FREE_BATCH_PER_WINDOW / CORE_FREE_SINGLE_PER_WINDOW)
+        return CORE_WINDOW_SECONDS / allowed
+    return CORE_WINDOW_SECONDS / per_window
 
 
 def request_headers(api_key: str | None = None) -> dict[str, str]:
@@ -150,7 +237,8 @@ def request_json(url: str,
     """
     return provider.request_mapping(url, label='CORE', limiter=LIMITER, params=params,
                                     headers=request_headers(api_key), session=session,
-                                    timeout=timeout, attempts=attempts)
+                                    timeout=timeout, attempts=attempts,
+                                    interval=min_interval())
 
 
 def get_work(core_id: object,
