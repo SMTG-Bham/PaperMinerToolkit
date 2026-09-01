@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from typing import Any
+from urllib.parse import urljoin
 
 import pytest
 
@@ -173,6 +174,35 @@ def article_set() -> str:
   </PubmedBookArticle>
 </PubmedArticleSet>
 '''
+
+
+def cloud_listing(*keys: str, next_token: str = '') -> str:
+    """Return a PMC Cloud Service bucket listing naming the given object keys.
+
+    Parameters
+    ----------
+    *keys : str
+        Object keys the listing reports.
+    next_token : str, optional
+        Continuation token, which also marks the listing as truncated.
+
+    Returns
+    -------
+    str
+        Listing XML in the bucket's namespace.
+    """
+    contents = ''.join(f'<Contents><Key>{key}</Key></Contents>' for key in keys)
+    truncated = 'true' if next_token else 'false'
+    token = f'<NextContinuationToken>{next_token}</NextContinuationToken>' if next_token else ''
+    return (
+        '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        f'<IsTruncated>{truncated}</IsTruncated>{token}{contents}</ListBucketResult>'
+    )
+
+
+def no_cloud_article() -> FakeResponse:
+    """Return an empty cloud listing, as for an article outside the OA subset."""
+    return FakeResponse(text=cloud_listing())
 
 
 def jats_article() -> str:
@@ -535,7 +565,7 @@ def test_pmc_full_text_flattens_prose_and_skips_tables_figures_and_references() 
 def test_pmc_full_text_document_preserves_the_jats_from_the_same_request() -> None:
     """Return untouched JATS and derived text without fetching the paper twice."""
     content = jats_article()
-    session = FakeSession([FakeResponse(text=content)])
+    session = FakeSession([no_cloud_article(), FakeResponse(text=content)])
 
     document = pubmed.pmc_full_text_document('PMC9876543', session=session)
 
@@ -543,22 +573,111 @@ def test_pmc_full_text_document_preserves_the_jats_from_the_same_request() -> No
     assert document.document_format == 'jats'
     assert document.source_identifier == 'PMC9876543'
     assert 'Conductivity reached 1 mS/cm.' in document.text
-    assert len(session.calls) == 1
+    assert session.calls[-1]['params']['db'] == 'pmc'
 
 
 def test_pmc_full_text_document_handles_absent_and_proseless_articles() -> None:
     """Return empty documents for invalid IDs, absent records, and JATS without prose."""
     invalid = pubmed.pmc_full_text_document('', session=FakeSession([]))
     missing = pubmed.pmc_full_text_document(
-        'PMC1', session=FakeSession([FakeResponse(status_code=404)]),
+        'PMC1', session=FakeSession([no_cloud_article(), FakeResponse(status_code=404)]),
     )
     proseless = pubmed.pmc_full_text_document(
         'PMC1',
-        session=FakeSession([FakeResponse(text='<pmc-articleset><article/></pmc-articleset>')]),
+        session=FakeSession([
+            no_cloud_article(),
+            FakeResponse(text='<pmc-articleset><article/></pmc-articleset>'),
+        ]),
     )
     assert invalid.has_structured_content is False
     assert missing.has_structured_content is False
     assert proseless.has_structured_content is False
+
+
+def test_pmc_full_text_document_prefers_the_cloud_service_for_resolvable_graphics() -> None:
+    """Return the article's own cloud XML URL so its graphics can be resolved.
+
+    E-utilities names an article's figure files but reports a shared endpoint
+    as the source, which no graphic reference resolves against. The cloud
+    service stores the figures beside the XML, so the per-article XML URL
+    makes the same references resolvable.
+    """
+    content = jats_article()
+    session = FakeSession([
+        FakeResponse(text=cloud_listing(
+            'PMC9876543.1/PMC9876543.1.xml',
+            'PMC9876543.1/PMC9876543.1.pdf',
+            'PMC9876543.1/fig-0001.jpg',
+        )),
+        FakeResponse(text=content),
+    ])
+
+    document = pubmed.pmc_full_text_document('PMC9876543', session=session)
+
+    assert document.content == content
+    assert document.document_format == 'jats'
+    assert document.source_url == (
+        'https://pmc-oa-opendata.s3.amazonaws.com/PMC9876543.1/PMC9876543.1.xml'
+    )
+    assert document.metadata == {'pmc_cloud_service': True}
+    assert urljoin(document.source_url, 'fig-0001.jpg') == (
+        'https://pmc-oa-opendata.s3.amazonaws.com/PMC9876543.1/fig-0001.jpg'
+    )
+    assert len(session.calls) == 2
+
+
+def test_pmc_cloud_files_pick_the_newest_version_and_follow_continuations() -> None:
+    """Return the newest version's files, reading every continuation page."""
+    session = FakeSession([
+        FakeResponse(text=cloud_listing('PMC7.1/PMC7.1.xml', next_token='page-2')),
+        FakeResponse(text=cloud_listing(
+            'PMC7.2/PMC7.2.xml',
+            'PMC7.2/figure.jpg',
+            'PMC7.2/',
+            'PMC7.draft/ignored.xml',
+        )),
+    ])
+
+    files = pubmed.pmc_cloud_files('PMC7', session=session)
+
+    assert files == {
+        'PMC7.2.xml': 'https://pmc-oa-opendata.s3.amazonaws.com/PMC7.2/PMC7.2.xml',
+        'figure.jpg': 'https://pmc-oa-opendata.s3.amazonaws.com/PMC7.2/figure.jpg',
+    }
+    assert session.calls[1]['params']['continuation-token'] == 'page-2'
+
+
+def test_pmc_cloud_helpers_handle_absent_records_and_malformed_listings() -> None:
+    """Report nothing for articles outside the subset and reject unusable XML."""
+    assert pubmed.pmc_cloud_files('', session=FakeSession([])) == {}
+    assert pubmed.pmc_cloud_files('PMC1', session=FakeSession([no_cloud_article()])) == {}
+    assert pubmed._cloud_object_keys(
+        'PMC1.', session=FakeSession([FakeResponse(status_code=404)]),
+    ) == []
+
+    empty = pubmed.pmc_cloud_full_text_document('PMC1', session=FakeSession([no_cloud_article()]))
+    assert empty.has_structured_content is False
+
+    blank = pubmed.pmc_cloud_full_text_document(
+        'PMC1',
+        session=FakeSession([
+            FakeResponse(text=cloud_listing('PMC1.1/PMC1.1.xml')),
+            FakeResponse(text='   '),
+        ]),
+    )
+    assert blank.has_structured_content is False
+
+    proseless = pubmed.pmc_cloud_full_text_document(
+        'PMC1',
+        session=FakeSession([
+            FakeResponse(text=cloud_listing('PMC1.1/PMC1.1.xml')),
+            FakeResponse(text='<pmc-articleset><article/></pmc-articleset>'),
+        ]),
+    )
+    assert proseless.has_structured_content is False
+
+    with pytest.raises(RuntimeError, match='malformed XML'):
+        pubmed._cloud_object_keys('PMC1.', session=FakeSession([FakeResponse(text='<not-xml')]))
 
 
 def test_jats_plain_text_reports_ncbi_error_envelopes() -> None:
