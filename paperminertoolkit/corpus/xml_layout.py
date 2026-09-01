@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from urllib.parse import urlsplit
 
 from paperminertoolkit.corpus.layout import (
     BoundingBox,
@@ -347,6 +348,7 @@ def parse_jats_layout(
     *,
     source: str = 'repository',
     source_identifier: str = '',
+    source_url: str = '',
 ) -> DocumentLayout:
     """Parse repository or publisher JATS into a document layout.
 
@@ -360,6 +362,11 @@ def parse_jats_layout(
         Repository or publisher that supplied the JATS.
     source_identifier : str, optional
         Provider-native document identifier.
+    source_url : str, optional
+        URL the document was served from. bioRxiv and medRxiv name their
+        figures with internal tokens that resolve against nothing, so their
+        real image URLs are derived from this together with each figure's
+        display slug. Other repositories are unaffected.
 
     Returns
     -------
@@ -371,7 +378,7 @@ def parse_jats_layout(
     ValueError
         If the document is not well-formed XML.
     """
-    return _parse_xml_layout(
+    layout = _parse_xml_layout(
         content,
         document_id,
         source,
@@ -379,9 +386,127 @@ def parse_jats_layout(
         'jats',
         'jats-xml',
     )
+    if not source_url:
+        return layout
+    root = ET.fromstring(content)  # already validated well-formed above
+    figures = _resolve_rxiv_graphics(layout.figures, source_url, _figure_slugs(root))
+    return replace(layout, figures=figures) if figures != layout.figures else layout
 
 
 _ELSEVIER_OBJECT_URL = 'https://api.elsevier.com/content/object/eid/{eid}-{locator}.jpg'
+# bioRxiv and medRxiv reference their figures as internal tokens such as
+# "339747v4_fig1", which resolve against nothing. Their content sites serve the
+# image under the figure's HighWire slug instead, beneath a path that repeats
+# the archive name and the posting date the source document was published at:
+#     .../content/early/2019/05/10/339747.source.xml   (the JATS)
+#     .../content/biorxiv/early/2019/05/10/339747/F1.large.jpg   (its Figure 1)
+# Everything needed is therefore in the source URL and the document itself.
+_RXIV_SOURCE_PATH = re.compile(
+    r'^/content/early/(?P<year>\d{4})/(?P<month>\d{2})/(?P<day>\d{2})/(?P<slug>[^/]+?)'
+    r'(?:\.source\.xml)?$'
+)
+_RXIV_ARCHIVES = ('biorxiv', 'medrxiv')
+
+
+def _highwire_slug(element: ET.Element) -> str:
+    """Read a HighWire display slug, such as ``"F1"``, from one element.
+
+    Parameters
+    ----------
+    element : ET.Element
+        Figure or table element to inspect.
+
+    Returns
+    -------
+    str
+        Slug from a ``sub-type="slug"`` object identifier, falling back to a
+        prefixed ``id`` attribute, or an empty string when neither is present.
+    """
+    for child in element:
+        if _local_name(child.tag) == 'object-id' and _attribute(child, 'sub-type') == 'slug':
+            return _text(child)
+    for key, value in element.attrib.items():
+        # A prefixed or namespaced id, never the element's own plain "id",
+        # which is the publisher identifier rather than the display slug.
+        if key != 'id' and _local_name(key) == 'id' and str(value).strip():
+            return str(value).strip()
+    return ''
+
+
+def _rxiv_figure_url(source_url: str, slug: str) -> str:
+    """Build a bioRxiv or medRxiv image URL from the JATS source URL.
+
+    Parameters
+    ----------
+    source_url : str
+        URL the archive served the JATS document from.
+    slug : str
+        Figure's HighWire slug, such as ``"F1"``.
+
+    Returns
+    -------
+    str
+        Image URL, or an empty string when the source URL is not one of these
+        archives' content paths or the slug is missing.
+    """
+    if not slug:
+        return ''
+    parts = urlsplit(source_url)
+    host = (parts.hostname or '').lower()
+    archive = next((name for name in _RXIV_ARCHIVES if host.endswith(f'{name}.org')), '')
+    match = _RXIV_SOURCE_PATH.match(parts.path)
+    if not archive or match is None:
+        return ''
+    return (f'{parts.scheme}://{parts.netloc}/content/{archive}/early/'
+            f'{match["year"]}/{match["month"]}/{match["day"]}/{match["slug"]}/{slug}.large.jpg')
+
+
+def _figure_slugs(root: ET.Element) -> dict[str, str]:
+    """Map each figure's own identifier to its HighWire display slug.
+
+    Parameters
+    ----------
+    root : ET.Element
+        Parsed document root.
+
+    Returns
+    -------
+    dict[str, str]
+        Figure identifier to slug, for figures that declare both.
+    """
+    slugs = {}
+    for node in root.iter():
+        if _local_name(node.tag) not in _FIGURE_TAGS:
+            continue
+        identifier = _attribute(node, 'id')
+        slug = _highwire_slug(node)
+        if identifier and slug:
+            slugs[identifier] = slug
+    return slugs
+
+
+def _resolve_rxiv_graphics(
+    figures: tuple[Figure, ...],
+    source_url: str,
+    slugs: Mapping[str, str],
+) -> tuple[Figure, ...]:
+    """Point bioRxiv and medRxiv figure graphics at their real image URLs.
+
+    Their JATS names each graphic with an internal token that resolves against
+    nothing, so a graphic that is not already an absolute URL is replaced by
+    the archive's image URL for that figure's slug.
+    """
+    resolved = []
+    for figure in figures:
+        url = _rxiv_figure_url(source_url, slugs.get(figure.identifier, ''))
+        graphics = tuple(
+            replace(graphic, uri=url)
+            if url and not graphic.uri.startswith(('http://', 'https://'))
+            else graphic
+            for graphic in figure.graphics
+        )
+        resolved.append(replace(figure, graphics=graphics) if graphics != figure.graphics else figure)
+    return tuple(resolved)
 
 
 def _is_bare_elsevier_locator(value: str) -> bool:

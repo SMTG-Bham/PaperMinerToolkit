@@ -245,6 +245,7 @@ def _layout_from_asset(asset: Mapping[str, Any], paper_id: str) -> DocumentLayou
             paper_id,
             source=str(asset['source']),
             source_identifier=source_identifier,
+            source_url=str(metadata.get('source_url', '')),
         )
     return parser(content, paper_id, source_identifier=source_identifier)
 

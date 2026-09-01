@@ -217,3 +217,99 @@ def test_parse_tei_layout_marks_pdf_derived_structure_and_coordinates() -> None:
         parse_tei_layout('<TEI', 'paper:broken')
     with pytest.raises(ValueError, match='TEI root'):
         parse_tei_layout('<article/>', 'paper:not-tei')
+
+
+RXIV_JATS = '''<article xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:hwp="http://schema.highwire.org/Journal">
+  <front><article-meta>
+    <article-id pub-id-type="doi">10.1101/339747</article-id>
+    <article-id pub-id-type="other" hwp:sub-type="slug">339747</article-id>
+    <title-group><article-title>Anoxic conditioning</article-title></title-group>
+  </article-meta></front>
+  <body><sec id="results"><title>Results</title>
+    <fig id="fig1" hwp:id="F1">
+      <object-id pub-id-type="other" hwp:sub-type="pisa">biorxiv;339747v4/FIG1</object-id>
+      <object-id pub-id-type="other" hwp:sub-type="slug">F1</object-id>
+      <label>Fig. 1</label><caption><p>Direct viable counting.</p></caption>
+      <graphic xlink:href="339747v4_fig1"/>
+    </fig>
+    <fig id="fig2" hwp:id="F2">
+      <object-id pub-id-type="other" hwp:sub-type="slug">F2</object-id>
+      <label>Fig. 2</label><caption><p>Oxygen intolerance.</p></caption>
+      <graphic xlink:href="339747v4_fig2"/>
+    </fig>
+    <fig id="fig3">
+      <label>Fig. 3</label><caption><p>No slug declared.</p></caption>
+      <graphic xlink:href="339747v4_fig3"/>
+    </fig>
+    <fig id="fig4" hwp:id="F4">
+      <object-id pub-id-type="other" hwp:sub-type="slug">F4</object-id>
+      <label>Fig. 4</label><caption><p>Already absolute.</p></caption>
+      <graphic xlink:href="https://cdn.example.org/kept.png"/>
+    </fig>
+    <fig id="fig5" hwp:id="F5">
+      <label>Fig. 5</label><caption><p>Slug only on the attribute.</p></caption>
+      <graphic xlink:href="339747v4_fig5"/>
+    </fig>
+  </sec></body>
+</article>'''
+
+
+def test_parse_jats_layout_resolves_rxiv_figure_tokens_from_the_source_url() -> None:
+    """Turn bioRxiv's internal figure tokens into its real image URLs.
+
+    bioRxiv and medRxiv name each graphic with a token such as
+    ``339747v4_fig1`` that resolves against nothing. The archives serve the
+    image under the figure's display slug, on a path derived from the posting
+    date and article slug in the document's own source URL.
+    """
+    source_url = 'https://www.biorxiv.org/content/early/2019/05/10/339747.source.xml'
+    layout = parse_jats_layout(RXIV_JATS, 'paper:rxiv', source='biorxiv', source_url=source_url)
+    uris = [figure.graphics[0].uri for figure in layout.figures]
+
+    assert uris[0] == (
+        'https://www.biorxiv.org/content/biorxiv/early/2019/05/10/339747/F1.large.jpg'
+    )
+    assert uris[1] == (
+        'https://www.biorxiv.org/content/biorxiv/early/2019/05/10/339747/F2.large.jpg'
+    )
+    # A figure declaring no slug cannot be resolved, and keeps its raw token.
+    assert uris[2] == '339747v4_fig3'
+    # A graphic that is already a URL is never rewritten.
+    assert uris[3] == 'https://cdn.example.org/kept.png'
+    # A figure carrying only a prefixed id attribute still yields its slug.
+    assert uris[4] == (
+        'https://www.biorxiv.org/content/biorxiv/early/2019/05/10/339747/F5.large.jpg'
+    )
+
+    # medRxiv uses its own archive segment.
+    medrxiv = parse_jats_layout(
+        RXIV_JATS, 'paper:rxiv', source='medrxiv',
+        source_url='https://www.medrxiv.org/content/early/2024/01/02/12345678.source.xml',
+    )
+    assert medrxiv.figures[0].graphics[0].uri == (
+        'https://www.medrxiv.org/content/medrxiv/early/2024/01/02/12345678/F1.large.jpg'
+    )
+
+
+def test_parse_jats_layout_leaves_other_repositories_untouched() -> None:
+    """Resolve tokens only for the archives that use them.
+
+    PMC names its graphics with real filenames that resolve against the
+    article's own URL, so they must not be rewritten.
+    """
+    unchanged = parse_jats_layout(RXIV_JATS, 'paper:rxiv', source='biorxiv')
+    assert unchanged.figures[0].graphics[0].uri == '339747v4_fig1'
+
+    pmc = parse_jats_layout(
+        RXIV_JATS, 'paper:pmc', source='pubmed',
+        source_url='https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.xml',
+    )
+    assert pmc.figures[0].graphics[0].uri == '339747v4_fig1'
+
+    # A content URL that is not a recognised posting path resolves nothing.
+    odd = parse_jats_layout(
+        RXIV_JATS, 'paper:rxiv', source='biorxiv',
+        source_url='https://www.biorxiv.org/some/other/path.xml',
+    )
+    assert odd.figures[0].graphics[0].uri == '339747v4_fig1'

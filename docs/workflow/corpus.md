@@ -391,6 +391,17 @@ Elsevier's native XML references its graphics as bare internal tokens such as `g
 paths, so those are resolved through Elsevier's object endpoint using the article's own `eid`
 before download. A graphic reference that is already an absolute URL is used unchanged.
 
+bioRxiv and medRxiv do the same thing in their own way: a graphic is named `339747v4_fig1`, which
+resolves against nothing. Their content sites serve each image under the figure's display slug, on
+a path built from the posting date and article slug that already appear in the document's source
+URL, so `.../content/early/2019/05/10/339747.source.xml` yields
+`.../content/biorxiv/early/2019/05/10/339747/F1.large.jpg`. A figure that declares no slug keeps
+its raw token and is reported as a failure rather than guessed at.
+
+These content hosts ask for seven seconds between requests, so downloading a preprint's figures is
+slow by design; the request-pacing section of
+[Credentials and model configuration](configuration.md) explains why.
+
 Papers with no structured document can still contribute figures. `store_pdf_layout_figures`
 detects them from PDF geometry and stores them as figure assets alongside the downloaded ones,
 recording `pdf-layout` as the source so both origins stay distinguishable:
