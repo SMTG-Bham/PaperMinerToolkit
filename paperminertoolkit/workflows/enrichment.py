@@ -1263,7 +1263,7 @@ class _FetchContext:
     api_key: str | None
     openalex_session: provider.HTTPClient | None
     crossref_session: provider.HTTPClient | None
-    pace: float
+    pace: float | None
     pmids: Sequence[str] = ()
     pubmed_session: provider.HTTPClient | None = None
     pubmed_api_key: str | None = None
@@ -1396,7 +1396,7 @@ def _enrich_batch(conn: sqlite3.Connection,
                  references: bool = True,
                  openalex_session: provider.HTTPClient | None = None,
                  crossref_session: provider.HTTPClient | None = None,
-                 pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                 pace: float | None = None,
                  pubmed_session: provider.HTTPClient | None = None,
                  pubmed_api_key: str | None = None,
                  arxiv_session: provider.HTTPClient | None = None,
@@ -1423,8 +1423,9 @@ def _enrich_batch(conn: sqlite3.Connection,
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
@@ -1603,7 +1604,7 @@ def enrich_papers(conn: sqlite3.Connection,
                   api_key: str | None = None,
                   openalex_session: provider.HTTPClient | None = None,
                   crossref_session: provider.HTTPClient | None = None,
-                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                  pace: float | None = None,
                   pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
                   arxiv_session: provider.HTTPClient | None = None,
@@ -1636,8 +1637,9 @@ def enrich_papers(conn: sqlite3.Connection,
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
@@ -1711,7 +1713,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                   api_key: str | None = None,
                   openalex_session: provider.HTTPClient | None = None,
                   crossref_session: provider.HTTPClient | None = None,
-                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                  pace: float | None = None,
                   pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
                   arxiv_session: provider.HTTPClient | None = None,
@@ -1752,8 +1754,9 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional

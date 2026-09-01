@@ -319,6 +319,26 @@ def test_works_by_doi_routes_comma_bearing_dois_to_the_single_work_route() -> No
     assert set(works) == {'10.1234/plain', '10.1234/with,comma'}
 
 
+def test_min_interval_follows_the_pool_the_contact_address_qualifies_for() -> None:
+    """Pace at the polite pool's rate once a contact address is advertised.
+
+    Crossref serves a client naming a contact address ten requests a second
+    and one that does not five, announced on every response in
+    ``X-Rate-Limit-Limit`` over an ``X-Rate-Limit-Interval`` of one second.
+    """
+    assert crossref.CROSSREF_PUBLIC_MIN_INTERVAL == pytest.approx(1 / 5)
+    assert crossref.CROSSREF_POLITE_MIN_INTERVAL == pytest.approx(1 / 10)
+    assert crossref.min_interval('me@example.com') == crossref.CROSSREF_POLITE_MIN_INTERVAL
+    assert crossref.min_interval('') == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    assert crossref.min_interval(None) == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    # An unusable address cannot qualify for the polite pool, so it must not be
+    # paced as though it had.
+    assert crossref.min_interval('not-an-address') == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    # The limiter's own window is the public-pool floor, so a request that
+    # somehow carries no address is still paced conservatively.
+    assert crossref.LIMITER.min_interval == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+
+
 def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pace consecutive Crossref requests without sleeping before the first."""
     sleeps = []
@@ -328,7 +348,21 @@ def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.Mon
     crossref.works_by_doi(['10.1234/one', '10.1234/two'], email='me@example.com',
                           session=session, batch_size=1)
 
-    assert sleeps == [pytest.approx(crossref.CROSSREF_MIN_INTERVAL, abs=1e-3)]
+    assert sleeps == [pytest.approx(crossref.CROSSREF_POLITE_MIN_INTERVAL, abs=1e-3)]
+
+
+def test_request_page_paces_an_addressless_request_at_the_public_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall back to the public-pool pace when no contact address is sent."""
+    sleeps = []
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
+    session = FakeSession([{'items': []}, {'items': []}])
+
+    crossref._request_page(session, {}, '')
+    crossref._request_page(session, {}, '')
+
+    assert sleeps == [pytest.approx(crossref.CROSSREF_PUBLIC_MIN_INTERVAL, abs=1e-3)]
 
 
 def test_works_by_doi_rejects_an_invalid_batch_size() -> None:

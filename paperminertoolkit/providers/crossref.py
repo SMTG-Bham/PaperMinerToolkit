@@ -1,4 +1,18 @@
-"""Discover an author's works through Crossref and import their metadata."""
+"""Discover an author's works through Crossref and import their metadata.
+
+Crossref serves two pools. A client that names a contact address is routed onto
+the polite pool and allowed ten requests per second; one that does not is
+served by the public pool at five. Membership costs nothing but the address,
+which travels both in the user agent and as a ``mailto`` query parameter, and
+the current allowance is announced on every response in ``X-Rate-Limit-Limit``
+and ``X-Rate-Limit-Interval``. Every entry point here resolves a contact
+address before requesting, so in practice these helpers always qualify for the
+polite pool; the public-pool pace is the floor for anything that reaches
+Crossref without one.
+
+Requests are issued one at a time through a single module-level limiter, so the
+concurrency each pool allows never becomes a factor.
+"""
 
 from __future__ import annotations
 
@@ -21,13 +35,14 @@ from paperminertoolkit.settings import load_settings
 
 CROSSREF_WORKS_URL = 'https://api.crossref.org/v1/works'
 CROSSREF_SINGLE_WORK_URL = 'https://api.crossref.org/works'
-CROSSREF_MIN_INTERVAL = 0.34
+CROSSREF_PUBLIC_MIN_INTERVAL = 0.2
+CROSSREF_POLITE_MIN_INTERVAL = 0.1
 MAX_FILTER_VALUES = 100
 BATCHABLE_DOI_PATTERN = re.compile(r'^10\.\d{4,9}/[^\s,]+$')
 ORCID_PATTERN = re.compile(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', re.IGNORECASE)
 REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources']
 _CrossrefRecord: TypeAlias = dict[str, Any]
-LIMITER = provider.RateLimiter(CROSSREF_MIN_INTERVAL)
+LIMITER = provider.RateLimiter(CROSSREF_PUBLIC_MIN_INTERVAL)
 
 
 def normalize_orcid(value: str | None) -> str:
@@ -209,6 +224,24 @@ def work_matches_author(
     )
 
 
+def min_interval(email: str | None = None) -> float:
+    """Return the minimum seconds between Crossref requests for one address.
+
+    Parameters
+    ----------
+    email : str or None, optional
+        Contact address advertised on the requests being paced.
+
+    Returns
+    -------
+    float
+        Delay honoring the polite pool's ten requests per second when an
+        address is advertised, or the public pool's five when none is.
+    """
+    email = str(email or '')
+    return CROSSREF_POLITE_MIN_INTERVAL if '@' in email else CROSSREF_PUBLIC_MIN_INTERVAL
+
+
 def _request_page(
     session: provider.HTTPClient,
     params: dict[str, str | int],
@@ -235,7 +268,8 @@ def _request_page(
     attempts : int, optional
         Maximum number of request attempts.
     pace : float or None, optional
-        Pacing override for this request, in seconds.
+        Pacing override for this request, in seconds. ``None`` paces by the
+        pool the contact address qualifies for.
 
     Returns
     -------
@@ -250,7 +284,7 @@ def _request_page(
     response = provider.request(url, label='Crossref', limiter=LIMITER, params=params,
                                 headers=provider.default_headers(email), session=session,
                                 timeout=timeout, attempts=attempts, missing_ok=False,
-                                interval=pace,
+                                interval=min_interval(email) if pace is None else pace,
                                 error_types=(*provider.RETRY_ERRORS, KeyError))
     if response is None:
         raise RuntimeError(f'Crossref request failed after {attempts} attempts: 404')
@@ -346,7 +380,7 @@ def works_by_doi(dois: Sequence[str],
                  email: str | None = None,
                  session: provider.HTTPClient | None = None,
                  batch_size: int = MAX_FILTER_VALUES,
-                 pace: float = CROSSREF_MIN_INTERVAL) -> dict[str, _CrossrefRecord]:
+                 pace: float | None = None) -> dict[str, _CrossrefRecord]:
     """Look up Crossref works in paced DOI batches.
 
     Crossref treats repeated ``doi`` filters as alternatives, returns matches
@@ -366,8 +400,9 @@ def works_by_doi(dois: Sequence[str],
         HTTP session used for the requests.
     batch_size : int, default=100
         DOIs requested per Crossref page.
-    pace : float, default=0.34
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the contact address qualifies for.
 
     Returns
     -------

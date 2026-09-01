@@ -22,6 +22,9 @@ OpenAlex `mailto` parameter identifies your client but no longer affects through
 Crossref has no API key. It asks automated clients to identify themselves with a contact address,
 which `pmt config crossref-email` stores once for `pmt import author`, `pmt enrich`, and the Crossref lookup
 that `pmt import pdfs` performs. `--email` still overrides the stored value for a single command.
+Naming an address also doubles your rate: Crossref serves such clients from its polite pool at ten
+requests per second rather than the public pool's five, at no cost, and PaperMinerToolkit requires an
+address before it will make a Crossref request at all, so every run it makes is a polite-pool run.
 
 PubMed and PubMed Central need no credentials at all, but both NCBI settings are worth having.
 NCBI paces unauthenticated clients at three requests per second and keyed clients at ten, counted
@@ -73,7 +76,7 @@ two different delays.
 | medRxiv | 1.0 s | 7.0 s | 7.0 s | 7.0 s | API none; content `Crawl-delay: 7` |
 | chemRxiv | 1.0 s | | 1.0 s | | none published |
 | CORE | 2.0 s | | 2.0 s | | 5 single or 1 batch request per 10 s |
-| Crossref | 0.34 s | | | | 5/s public pool, 10/s polite |
+| Crossref | 0.1 s | | | | 5/s public pool, 10/s with a contact address |
 | Elsevier | 0.2 s | 0.2 s | 0.2 s | 0.2 s | 10/s article retrieval, 50k/week |
 | OpenAlex | 0.1 s | 0.1 s | 0.1 s | | 10/s, 100k/day |
 | PubMed | 0.34 s | | | | 3/s, or 10/s with an API key |
@@ -84,8 +87,14 @@ A blank cell means the provider does not serve that kind of file: arXiv, chemRxi
 and Unpaywall publish no machine-readable structured document, so no figure reference of theirs is
 ever downloaded, and Crossref serves metadata only.
 
-Two consequences are worth knowing:
+Three consequences are worth knowing:
 
+- **Crossref's rate is the polite-pool rate.** Every Crossref request carries the configured contact
+  address, so the table gives the ten-per-second pace that address earns. The public pool's
+  five-per-second figure is the floor a request would fall back to without one, which in normal use
+  does not arise. Crossref also announces the allowance it is currently applying on every response,
+  in `X-Rate-Limit-Limit` over an `X-Rate-Limit-Interval`, so the pace can be checked against the
+  service rather than taken on trust.
 - **Elsevier figures and Elsevier metadata share one budget.** Both come from `api.elsevier.com`,
   so they are paced by the same window and spend the same weekly quota. A large figure run reduces
   the article retrievals left for that week.
