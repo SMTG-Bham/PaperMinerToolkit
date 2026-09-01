@@ -386,3 +386,49 @@ def test_real_multi_panel_figures_do_not_repeat_one_image() -> None:
     assert named == {'fig1': 1, 'fig2': 1, 'fig3': 2, 'fig4': 3}
     # However many panels a figure names, one image is what can be fetched.
     assert parsed == dict.fromkeys(named, 1)
+
+
+def test_parse_tei_layout_accepts_the_tei_openalex_actually_serves() -> None:
+    """Read GROBID TEI through the HTML wrapper OpenAlex puts around it.
+
+    OpenAlex serves GROBID's output through an HTML serialiser, so what arrives
+    is not a TEI document but an HTML one with the TEI inside it, and every
+    element name lower-cased: ``<html><body><tei>``, ``teiheader``,
+    ``figdesc``. The root check rejected it outright, which is why this path
+    had never produced a layout. Names cost nothing, since this module matches
+    them case-insensitively, but the wrapper displaces the root.
+    """
+    content = (DATA_DIR / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
+    assert content.lstrip().startswith('<?xml'), 'fixture must keep the real prolog'
+    assert '<html><body><tei' in content, 'fixture no longer carries the HTML wrapper'
+
+    layout = parse_tei_layout(content, 'doi:10.1/example', source_identifier='10.1/example')
+
+    assert layout.title == 'Thermometry example'
+    assert [figure.label for figure in layout.figures] == ['1']
+    assert layout.figures[0].caption.startswith('Figure 1 |')
+    assert [table.label for table in layout.tables] == ['1']
+    assert layout.provenance.document_format == 'tei'
+
+    # A document with no TEI anywhere in it is still refused.
+    with pytest.raises(ValueError, match='must have a TEI root element'):
+        parse_tei_layout('<html><body><p>not tei</p></body></html>', 'doi:10.1/example')
+
+
+def test_grobid_tei_carries_captions_but_no_images() -> None:
+    """Record that GROBID figures have no graphic to download.
+
+    GROBID recovers a figure's caption from the PDF but not the image, and
+    OpenAlex does not run it with coordinates either, so a TEI figure has
+    neither a graphic nor a box. Figure downloading therefore finds nothing to
+    fetch from this source, which is a property of the source rather than a
+    failure, and is asserted so a future change to it is noticed.
+    """
+    content = (DATA_DIR / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
+    layout = parse_tei_layout(content, 'doi:10.1/example', source_identifier='10.1/example')
+
+    assert layout.figures, 'fixture must contain a figure'
+    for figure in layout.figures:
+        assert figure.caption.strip(), 'the caption is what this source does provide'
+        assert figure.graphics == ()
+        assert figure.boxes == ()

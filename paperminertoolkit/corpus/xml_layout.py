@@ -627,7 +627,15 @@ def parse_tei_layout(
     except ET.ParseError as error:
         raise ValueError(f'malformed tei document: {error}') from error
     if _local_name(root.tag) != 'tei':
-        raise ValueError('OpenAlex GROBID content must have a TEI root element')
+        # OpenAlex serves GROBID's TEI through an HTML serialiser, which wraps
+        # it in <html><body> and lower-cases every name. The names cost nothing
+        # because this module matches them case-insensitively, but the wrapper
+        # displaces the root, so the TEI element is taken from inside it.
+        embedded = next((element for element in root.iter()
+                         if _local_name(element.tag) == 'tei'), None)
+        if embedded is None:
+            raise ValueError('OpenAlex GROBID content must have a TEI root element')
+        content = ET.tostring(embedded, encoding='unicode')
     return _parse_xml_layout(
         content,
         document_id,

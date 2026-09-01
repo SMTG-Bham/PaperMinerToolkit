@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gzip
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -465,3 +467,52 @@ def test_content_downloads_check_the_budget_before_spending_one() -> None:
     with pytest.raises(RuntimeError, match='daily credit budget is exhausted'):
         openalex.request_content('https://content.openalex.org/works/W1', 'openalex-key',
                                  session=FakeSession([]))
+
+
+def test_full_text_document_decompresses_the_gzip_openalex_sends() -> None:
+    """Decompress GROBID content that arrives gzipped without saying so.
+
+    OpenAlex returns the TEI gzipped and declares it with a ``Content-Type`` of
+    ``application/gzip`` rather than a ``Content-Encoding`` of ``gzip``. Only
+    the latter is decompressed for us, so reading the body as text yielded the
+    compressed bytes decoded as characters and every parse failed. The gzip
+    magic number is what is trusted, not the header.
+    """
+    tei = (Path(__file__).resolve().parent / 'data'
+           / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
+    work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
+    session = FakeSession([FakeResponse(content=gzip.compress(tei.encode('utf-8')),
+                                        headers={'Content-Type': 'application/gzip'})])
+
+    document = openalex.full_text_document(work, 'openalex-key', session=session)
+
+    assert document.document_format == 'tei'
+    assert document.content == tei
+    assert 'Temperature rose' in document.text
+    assert document.metadata['parser'] == 'grobid'
+
+
+def test_full_text_document_still_reads_content_that_is_not_compressed() -> None:
+    """Leave a plain TEI response alone, and report one that cannot inflate."""
+    tei = (Path(__file__).resolve().parent / 'data'
+           / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
+    work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
+
+    document = openalex.full_text_document(
+        work, 'openalex-key', session=FakeSession([FakeResponse(text=tei)]))
+    assert document.content == tei
+
+    # Bytes that claim to be gzip but are not must fail as themselves rather
+    # than reaching the parser as mojibake, which is how this bug first read.
+    with pytest.raises(ValueError, match='could not be decompressed'):
+        openalex.full_text_document(
+            work, 'openalex-key',
+            session=FakeSession([FakeResponse(content=b'\x1f\x8b truncated')]))
+
+
+def test_full_text_document_reports_no_document_when_there_is_none() -> None:
+    """Return an empty result for a work with no GROBID parse, or an empty body."""
+    assert openalex.full_text_document({}, 'openalex-key').text == ''
+    work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
+    assert openalex.full_text_document(
+        work, 'openalex-key', session=FakeSession([FakeResponse(text='   ')])).text == ''

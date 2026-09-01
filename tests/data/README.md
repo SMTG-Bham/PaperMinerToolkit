@@ -43,3 +43,13 @@ the medRxiv one is kept because it contains a multi-panel figure. The licence
 permits the modification that trimming represents, which is why CC BY articles
 were chosen over the CC BY-NC-ND that most preprints carry. Neither file is
 covered by the repository's MIT licence.
+
+### `openalex_grobid_wrapped.tei.xml`
+
+Not a third-party document. It is a hand-written skeleton that reproduces the
+exact shape OpenAlex serves GROBID TEI in: the TEI wrapped in `<html><body>`
+and every element name lower-cased, because the document has been through an
+HTML serialiser. Both properties were confirmed against a real
+`content.openalex.org` response, and both had to be handled before that
+endpoint produced a layout at all. The structure is real; the prose is
+invented, so no article text is redistributed here.

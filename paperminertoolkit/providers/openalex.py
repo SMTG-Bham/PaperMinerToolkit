@@ -19,6 +19,7 @@ request once nothing is left rather than discovering it as a refusal. See
 
 from __future__ import annotations
 
+import gzip
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -705,6 +706,35 @@ def request_content(
     )
 
 
+def _decoded_content(response: provider.ResponseLike) -> str:
+    """Read a content response as text, decompressing it when it is gzipped.
+
+    OpenAlex serves GROBID TEI gzipped, and declares it as a ``Content-Type``
+    of ``application/gzip`` rather than a ``Content-Encoding`` of ``gzip``.
+    Only the latter is decompressed for us, so reading ``response.text``
+    directly yields the compressed bytes decoded as characters. The gzip magic
+    number is checked rather than the header, because it is the body itself
+    saying what it is.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        Content response to read.
+
+    Returns
+    -------
+    str
+        Decoded document text.
+    """
+    raw = getattr(response, 'content', b'')
+    if isinstance(raw, bytes) and raw[:2] == b'\x1f\x8b':
+        try:
+            return gzip.decompress(raw).decode('utf-8')
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f'OpenAlex content could not be decompressed: {error}') from error
+    return response.text or ''
+
+
 def full_text_document(
     work: Mapping[str, Any],
     api_key: str,
@@ -737,9 +767,11 @@ def full_text_document(
     if not url:
         return provider.FullTextDocument('')
     response = request_content(url, api_key, session=session)
-    if response is None or not (response.text or '').strip():
+    if response is None:
         return provider.FullTextDocument('')
-    content = response.text
+    content = _decoded_content(response)
+    if not content.strip():
+        return provider.FullTextDocument('')
     identifier = work_id(work)
     from paperminertoolkit.corpus.xml_layout import parse_tei_layout
     layout = parse_tei_layout(content, f'openalex:{identifier}', source_identifier=identifier)

@@ -357,13 +357,29 @@ provide GROBID TEI generated from a cached PDF:
 pmt download papers.db --format text --source openalex
 ```
 
-This fallback requires an OpenAlex API key and the content service currently charges **$0.01 per
-download**. Native providers remain ahead of OpenAlex when several sources are selected. Existing
-text is not sent to the paid fallback unless `--force` is used. Stored TEI metadata records that it
-is PDF-derived, the GROBID parser, source URL, and estimated request cost. GROBID output is useful
-but not publisher-authored: multi-column reading order, figures, references, and coordinates can
-be missing or wrong; scanned or image-only PDFs may yield no usable text. `parse_tei_layout`
-normalizes the available TEI structure and coordinates without treating it as native XML.
+This fallback requires an OpenAlex API key, which content downloads need whatever your budget:
+they are the one part of the API with no keyless allowance at all. A download costs 100 credits,
+about **$0.01**, against a free daily budget of $1.00 with a key, so roughly a hundred a day cost
+nothing. Native providers remain ahead of OpenAlex when several sources are selected. Existing
+text is not sent to the fallback unless `--force` is used. Stored TEI metadata records that it is
+PDF-derived, the GROBID parser, source URL, and estimated request cost.
+
+Two things about the TEI itself are worth knowing, both confirmed against real responses:
+
+- **It carries captions but no images.** GROBID recovers a figure's caption from the PDF, not the
+  figure, and OpenAlex does not run it with coordinates, so a TEI figure has neither a graphic nor
+  a bounding box. `download_structured_figures` therefore finds nothing to fetch from this source.
+  Use it for text and captions, and one of the native providers, or PDF layout detection, for
+  images.
+- **It arrives gzipped and HTML-wrapped.** The response is gzip declared as a `Content-Type` rather
+  than a `Content-Encoding`, and the TEI inside has been through an HTML serialiser, so it is
+  wrapped in `<html><body>` with every element name lower-cased. PaperMinerToolkit handles both; it
+  matters only if you read the stored document yourself.
+
+GROBID output is useful but not publisher-authored: multi-column reading order, figures,
+references, and coordinates can be missing or wrong, and scanned or image-only PDFs may yield no
+usable text. `parse_tei_layout` normalizes the available TEI structure without treating it as
+native XML.
 
 ### Download structured-document figures
 
