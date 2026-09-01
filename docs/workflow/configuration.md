@@ -8,7 +8,7 @@ PaperMinerToolkit keeps search/download credentials separate from the text and v
 | --- | --- | --- | --- |
 | Elsevier | `ELSEVIER_API_KEY` | `pmt config elsevier-key` | Scopus search, full text, and eligible PDFs |
 | CORE | `CORE_API_KEY` | `pmt config core-key` | Search, abstracts, and PDFs |
-| CORE membership | `CORE_MEMBERSHIP`, `CORE_REQUESTS_PER_10S` | `pmt config core-membership` | CORE request pacing |
+| CORE rate | `CORE_MIN_INTERVAL` | `pmt config core-rate` | A faster CORE pace, if one was granted |
 | OpenAlex | `OPENALEX_API_KEY` | `pmt config openalex-key` | Higher API budget for search, abstracts, and OA locations |
 | Unpaywall | `UNPAYWALL_EMAIL` | `pmt config unpaywall-email` | Open-access PDF discovery |
 | Crossref | `CROSSREF_EMAIL` | `pmt config crossref-email` | Author imports and metadata enrichment |
@@ -94,19 +94,18 @@ Two consequences are worth knowing:
   their traffic does not consume the E-utilities allowance.
 
 CORE is the one provider whose pace is worth configuring. It publishes a single allowance for
-unregistered clients — five single requests, or one batch request, per ten seconds — and agrees
-higher rates individually with registered organisations, which Supporting and Sustaining members
-receive as a membership benefit. Because CORE asks how many requests you expect and grants a rate
-to match, no published figure exists for any level above the free one:
+unregistered clients — five single requests, or one batch request, per ten seconds, so two seconds
+apart and ten respectively — and grants faster paces individually to registered organisations,
+which Supporting and Sustaining members receive as a membership benefit. CORE publishes no figure
+for any of those faster paces, not even in its membership documentation, which describes what kind
+of access each level brings rather than at what rate. So if CORE granted you a pace, set it:
 
 ```bash
-pmt config core-membership
+pmt config core-rate
 ```
 
-That records which membership you hold and, separately, the rate CORE granted you. The membership
-on its own changes nothing, because a level does not imply a pace; only the granted figure does.
-Leave the rate blank and the free allowance is used. A batch method is always paced five times
-more slowly than a single one, mirroring CORE's own two allowances.
+The prompt states the free allowance it replaces, and leaving it blank returns to that allowance.
+Batch methods stay five times slower than single ones, mirroring CORE's own two allowances.
 
 Where a provider answers `429` with a `Retry-After`, PaperMinerToolkit waits for the interval the
 service asks for rather than its own backoff curve, and retries. A refusal is therefore usually

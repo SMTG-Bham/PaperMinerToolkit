@@ -50,7 +50,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'prompt'}
     assert set(cli.config_group.commands) == {
-        'model', 'status', 'elsevier-key', 'core-key', 'core-membership',
+        'model', 'status', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
         'ncbi-email', 'openai-key', 'anthropic-key',
     }
@@ -807,7 +807,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     calls = []
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
-    monkeypatch.setattr(cli, 'update_core_membership', lambda: calls.append('core-membership'))
+    monkeypatch.setattr(cli, 'update_core_rate', lambda: calls.append('core-rate'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
     monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
     monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
@@ -818,7 +818,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
-    cli.update_core_membership_level()
+    cli.update_core_request_rate()
     cli.update_unpaywall_api_email()
     cli.update_crossref_api_email()
     cli.update_openalex_api_key()
@@ -827,7 +827,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'core-membership', 'unpaywall', 'crossref',
+    assert calls == ['elsevier', 'core', 'core-rate', 'unpaywall', 'crossref',
                      'openalex', 'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
 
 

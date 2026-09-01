@@ -46,7 +46,7 @@ from paperminertoolkit.settings import (get_model_profile,
                                    set_model_profile,
                                    update_anthropic_key,
                                    update_core_key,
-                                   update_core_membership,
+                                   update_core_rate,
                                    update_crossref_email,
                                    update_elsevier_key,
                                    update_ncbi_email,
@@ -978,9 +978,9 @@ def update_core_api_key() -> None:
     update_core_key()
 
 
-def update_core_membership_level() -> None:
-    """Prompt for and save the CORE membership level and granted request rate."""
-    update_core_membership()
+def update_core_request_rate() -> None:
+    """Prompt for and save the seconds to leave between CORE requests."""
+    update_core_rate()
 
 
 def update_unpaywall_api_email() -> None:
@@ -1156,7 +1156,7 @@ config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
 config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
 config_group.add_command(click.command('core-key')(update_core_api_key))
-config_group.add_command(click.command('core-membership')(update_core_membership_level))
+config_group.add_command(click.command('core-rate')(update_core_request_rate))
 config_group.add_command(click.command('unpaywall-email')(update_unpaywall_api_email))
 config_group.add_command(click.command('crossref-email')(update_crossref_api_email))
 config_group.add_command(click.command('openalex-key')(update_openalex_api_key))
