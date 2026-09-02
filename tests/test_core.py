@@ -192,3 +192,39 @@ def test_resolve_core_id_reads_a_stored_identifier_without_a_request() -> None:
     assert core.resolve_core_id({'core_id': ' 123 '}) == '123'
     assert core.resolve_core_id({'core_id': ''}) == ''
     assert core.resolve_core_id({}) == ''
+
+
+def test_core_pacing_follows_the_documented_allowance_and_any_granted_pace() -> None:
+    """Pace CORE by its published free allowance unless a faster pace is set.
+
+    CORE documents five single requests or one batch request per ten seconds
+    for unregistered clients, and grants faster paces individually without
+    publishing a figure for any of them, so a granted pace has to be
+    configured rather than inferred.
+    """
+    # Unconfigured: exactly CORE's documented free allowance.
+    assert core.min_interval({}) == 2.0
+    assert core.min_interval({}, batch=True) == 10.0
+
+    # A configured pace scales both, keeping batch five times stricter.
+    granted = {'core_min_interval': 0.2}
+    assert core.min_interval(granted) == 0.2
+    assert core.min_interval(granted, batch=True) == 1.0
+
+    # Values that cannot be a pace fall back to the documented allowance
+    # rather than inventing a faster one.
+    for unusable in ('quickly', '', 0, -5, None):
+        assert core.min_interval({'core_min_interval': unusable}) == 2.0
+
+    # A string from the environment or config file is accepted.
+    assert core.min_interval({'core_min_interval': '0.5'}) == 0.5
+
+
+def test_core_reads_its_pace_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow the granted pace to come from the environment."""
+    monkeypatch.setenv('CORE_MIN_INTERVAL', '0.25')
+    assert core.configured_min_interval({}) == 0.25
+    assert core.min_interval({}) == 0.25
+    assert core.min_interval({}, batch=True) == 1.25

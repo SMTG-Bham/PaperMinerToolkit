@@ -1,6 +1,6 @@
 # Building a corpus
 
-A PaperMinerToolkit corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
+A PaperMinerToolkit corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Assets can include abstracts, plain text, PDFs, and raw structured article documents such as publisher XML, JATS, or TEI. Structured documents remain alongside derived plain text so later workflows can retain sections, figures, captions, tables, and source provenance. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
 
 ## Search literature services
 
@@ -283,16 +283,44 @@ pmt download papers.db --format pdf
 pmt download papers.db --format both
 ```
 
-`--source` applies to abstracts, full text, and PDFs alike. Abstract retrieval tries OpenAlex,
-PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, and Elsevier in that order, skipping any source
-the run did not select and any the row cannot reach; PubMed is attempted for any row carrying a
-PMID or a DOI, and the preprint servers for any row carrying the identifier each issued. Full text
-comes from Elsevier, PubMed Central, medRxiv, or bioRxiv, in that order and likewise only from the
-selected sources -- so `--source elsevier --format text` uses Elsevier alone, and `--source pubmed`
-no longer also reaches for it. PDF retrieval can use Unpaywall, OpenAlex, CORE, Elsevier, PubMed
-Central, medRxiv, bioRxiv, chemRxiv, and arXiv, in that order. The four preprint
-servers are tried last because the other sources may hold the publisher's version of record while a preprint server
-holds the preprint, which is a different document. Select PDF sources by repeating `--source`:
+### Default source order
+
+Each capability has its own order, and a source is only asked when every source before it has
+failed or been skipped. A run skips any source it did not select and any the row cannot reach:
+PubMed is attempted for a row carrying a PMID or a DOI, and each preprint server for a row carrying
+the identifier it issued.
+
+| capability | order tried |
+| --- | --- |
+| abstract | OpenAlex, PubMed, medRxiv, bioRxiv, chemRxiv, arXiv, CORE, Elsevier |
+| text | Elsevier, PubMed Central, medRxiv, bioRxiv, **OpenAlex** |
+| PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv, **OpenAlex cached PDF** |
+| search | Elsevier, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+| enrich | Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+
+`--source` filters this order rather than replacing it, and applies to abstracts, full text, and
+PDFs alike. Passing `--source openalex --source pubmed` asks PubMed first for text, because that is
+where PubMed sits in the order, whichever way round you type them.
+
+The orders differ deliberately:
+
+- **Abstracts** lead with the providers that serve one straight from metadata already in hand.
+- **Text** puts the native structured sources first and OpenAlex last, because OpenAlex's is GROBID
+  TEI derived from a PDF rather than a publisher document, and it is the only metered full-text
+  source. It is genuinely a last resort: nothing reaches it unless the other four could not supply
+  the paper. See [Configuration](configuration.md) for what that costs.
+- **PDFs** lead with the open-access resolvers, which are free and most likely to hold something.
+  The four preprint servers come next-to-last, because the earlier sources may hold the publisher's
+  version of record while a preprint server holds the preprint, which is a different document.
+  `openalex-content` is genuinely last, because it is the only metered PDF route: it fetches the
+  copy OpenAlex cached for itself, and is worth a credit only once every free route has failed.
+  It needs a free API key, and a run without one drops it rather than failing per paper.
+- **Search** puts arXiv and the preprint servers last, so a published record wins over its preprint.
+- **Enrichment** order is also the field precedence: Crossref is the registration authority, so its
+  values win, and the preprint servers fill in behind everything else.
+
+Naming one source restricts a run to it, so `--source elsevier --format text` uses Elsevier alone
+and `--source pubmed` no longer also reaches for it. Select sources by repeating `--source`:
 
 ```bash
 pmt download papers.db --format pdf \
@@ -317,6 +345,130 @@ Only the PMC open-access subset is redistributable, so a paper with a PMC identi
 subset reports that no full text is offered rather than failing. An NCBI API key raises the PubMed
 request rate from three to ten per second, which matters most on large download runs; see
 [Credentials and model configuration](configuration.md).
+
+PMC full text and PDFs are read from the PMC Cloud Service, whose bucket stores each open-access
+article as one prefix holding its XML, plain text, PDF, and every figure file under the exact names
+the article's JATS references. Reading the XML from there means the stored source URL is the
+article's own, so its graphic references resolve to the figures stored beside it. The bucket is
+readable over plain HTTPS, so this needs no AWS SDK, credentials, or configuration.
+
+This service replaced the OA web service NCBI retired in August 2026. That retirement had left
+every PubMed Central PDF download reporting that no PDF was offered, because the endpoint it
+queried returned nothing for any article.
+
+E-utilities remains the full-text fallback, because it reaches articles outside the open-access
+subset. Its JATS names an article's figure files but reports a single shared endpoint as the
+source, so those names cannot be resolved to real images; a paper served this way yields text and
+structure but no downloadable figures. PDFs have no such fallback: only the open-access subset is
+redistributable, so a paper outside it reports that no PDF is offered.
+
+PMC, bioRxiv, and medRxiv text downloads retain the complete JATS response, and Elsevier downloads
+retain the native full-article XML response, as compressed structured-document assets. Each also
+derives the plain-text asset used by existing workflows. Both representations come from the same
+provider response, so preserving figures, captions, tables, and embedded objects does not spend a
+second request. Structured assets record their provider, source URL, source identifier, format,
+and whether the document is publisher-native; inspect them with the corpus asset API when building
+layout-aware workflows. Elsevier XML requires full-text entitlement and unavailable or
+abstract-only responses are reported as per-paper download failures.
+
+Use `parse_jats_layout` or `parse_elsevier_layout` from
+`paperminertoolkit.corpus.xml_layout` to normalize a stored document into the common layout model.
+Both adapters preserve nested sections, figures, captions, tables, graphic references, and prose
+that explicitly cross-references a figure or table. Namespace prefixes and missing optional
+identifiers are handled locally so one sparse element does not discard the rest of the article;
+an XML document that is not well formed is rejected explicitly.
+
+When Elsevier, PMC, bioRxiv, and medRxiv cannot supply native structured full text, OpenAlex can
+provide GROBID TEI generated from a cached PDF:
+
+```bash
+pmt download papers.db --format text --source openalex
+```
+
+This fallback requires an OpenAlex API key, which content downloads need whatever your budget:
+they are the one part of the API with no keyless allowance at all. A download costs 100 credits,
+about **$0.01**, against a free daily budget of $1.00 with a key, so roughly a hundred a day cost
+nothing. Native providers remain ahead of OpenAlex when several sources are selected. Existing
+text is not sent to the fallback unless `--force` is used. Stored TEI metadata records that it is
+PDF-derived, the GROBID parser, source URL, and estimated request cost.
+
+This fallback earns its keep for a reason that is easy to miss: publishers refuse automated PDF
+requests routinely, open access or not. In a sample of works that OpenAlex holds GROBID text for,
+**44% had a PDF URL that did not actually yield a PDF** — mostly `403`s from Wiley, Elsevier,
+Science and similar. OpenAlex fetched and parsed those PDFs already, so it has the text when you
+cannot get it. Prefer the native providers and local PDF layout detection whenever the PDF is
+reachable; reach for this when the publisher refuses you.
+
+Two things about the TEI itself are worth knowing, both confirmed against real responses:
+
+- **It carries captions but no images.** GROBID recovers a figure's caption from the PDF, not the
+  figure, and OpenAlex does not run it with coordinates, so a TEI figure has neither a graphic nor
+  a bounding box. `download_structured_figures` therefore finds nothing to fetch from this source.
+  Use it for text and captions, and one of the native providers, or PDF layout detection, for
+  images.
+- **It arrives gzipped and HTML-wrapped.** The response is gzip declared as a `Content-Type` rather
+  than a `Content-Encoding`, and the TEI inside has been through an HTML serialiser, so it is
+  wrapped in `<html><body>` with every element name lower-cased. PaperMinerToolkit handles both; it
+  matters only if you read the stored document yourself.
+
+GROBID output is useful but not publisher-authored: multi-column reading order, figures,
+references, and coordinates can be missing or wrong, and scanned or image-only PDFs may yield no
+usable text. `parse_tei_layout` normalizes the available TEI structure without treating it as
+native XML.
+
+### Download structured-document figures
+
+The structured layouts also make their linked figure files retrievable without scraping pixels
+from a PDF. `download_structured_figures` resolves relative graphic paths against the stored
+document URL, follows safe HTTP redirects, verifies the response is a supported image, and writes
+each successful result back to the corpus:
+
+```python
+from paperminertoolkit.workflows.figures import download_structured_figures
+
+summary = download_structured_figures("papers.db", "doi:10.1000/example")
+print(summary.downloaded, summary.skipped, summary.failed)
+```
+
+Each figure asset records its parsed figure identifier, caption, graphic identifier, section,
+requested and final source URLs, MIME type, SHA-256 checksum, and article licence when available.
+The blob store deduplicates identical image content even when several URLs refer to it, while each
+figure keeps its own link and provenance. Re-running the workflow skips completed figure links;
+pass `force=True` only when intentionally refreshing them. Unsafe URL schemes, local network
+addresses, empty or oversized responses, unsupported formats, MIME mismatches, and active SVG
+content are rejected and reported in the returned summary without stopping the remaining figures.
+
+Elsevier's native XML references its graphics as bare internal tokens such as `gr1` rather than
+paths, so those are resolved through Elsevier's object endpoint using the article's own `eid`
+before download. A graphic reference that is already an absolute URL is used unchanged.
+
+bioRxiv and medRxiv do the same thing in their own way: a graphic is named `339747v4_fig1`, which
+resolves against nothing. Their content sites serve each image under the figure's display slug, on
+a path built from the posting date and article slug that already appear in the document's source
+URL, so `.../content/early/2019/05/10/339747.source.xml` yields
+`.../content/biorxiv/early/2019/05/10/339747/F1.large.jpg`. A figure that declares no slug keeps
+its raw token and is reported as a failure rather than guessed at.
+
+These content hosts ask for seven seconds between requests, so downloading a preprint's figures is
+slow by design; the request-pacing section of
+[Credentials and model configuration](configuration.md) explains why.
+
+Papers with no structured document can still contribute figures. `store_pdf_layout_figures`
+detects them from PDF geometry and stores them as figure assets alongside the downloaded ones,
+recording `pdf-layout` as the source so both origins stay distinguishable:
+
+```python
+from paperminertoolkit.corpus.database import connect
+from paperminertoolkit.workflows.figures import store_pdf_layout_figures
+
+with connect("papers.db") as conn:
+    summary = store_pdf_layout_figures(conn, paper_row, "paper.pdf")
+```
+
+Because both origins use the same asset model, `get_figure_assets` returns them together and
+image extraction consumes either without knowing which produced a figure. Vision scraping also
+records its progress in this metadata, so `set_figure_extraction_status` lets an interrupted
+extraction run resume per figure. See the scraping guide's `--image-extraction layout` section.
 
 arXiv serves PDFs and abstracts but no full text, because it publishes no machine-readable
 full-text format. Text for an arXiv paper comes from scraping its downloaded PDF.

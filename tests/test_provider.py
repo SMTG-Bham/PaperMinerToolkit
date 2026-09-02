@@ -126,6 +126,37 @@ def test_reset_limiters_reopens_every_window(monkeypatch: pytest.MonkeyPatch) ->
     assert sleeps == []
 
 
+def test_request_reports_every_response_to_the_on_response_hook() -> None:
+    """Hand each response to the provider before its status is interpreted.
+
+    A response's headers describe the state of the account whatever the status
+    says, so a provider tracking a remaining quota has to see a refusal and a
+    missing record as well as a success, and has to see every attempt of a
+    retry rather than only the one that succeeded.
+    """
+    seen: list[int] = []
+    session = FakeSession([
+        FakeResponse(payload={}, status_code=429, headers={'Retry-After': '0'}),
+        FakeResponse(payload={}, status_code=200),
+    ])
+
+    response = provider.request('https://example.com/a', label='Example',
+                                limiter=limiter(), session=session,
+                                on_response=lambda answer: seen.append(answer.status_code))
+
+    assert response.status_code == 200
+    assert seen == [429, 200]
+
+    # A 404 is returned as an absent record, and is still a response that was
+    # received, so the hook sees it too.
+    seen.clear()
+    assert provider.request('https://example.com/a', label='Example',
+                            limiter=limiter(),
+                            session=FakeSession([FakeResponse(payload={}, status_code=404)]),
+                            on_response=lambda answer: seen.append(answer.status_code)) is None
+    assert seen == [404]
+
+
 def test_request_returns_none_for_a_missing_record() -> None:
     """Read a 404 as an absent record rather than as a failure."""
     session = FakeSession([FakeResponse(status_code=404)])

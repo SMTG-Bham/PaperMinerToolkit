@@ -7,6 +7,7 @@ End-to-end operations for discovering, acquiring, enriching, importing, and anal
 
 search
 download
+figures
 enrichment
 imports
 topics

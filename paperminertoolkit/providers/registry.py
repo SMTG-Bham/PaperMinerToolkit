@@ -89,6 +89,10 @@ class Source:
         Dotted target implementing abstract download.
     abstract_reachable : str, default=''
         Dotted predicate deciding whether an abstract can be requested for a row.
+    probe : str, default=''
+        Dotted target making the cheapest read-only request this source
+        answers, used to report whether it is reachable. Empty for a source
+        that cannot be asked without spending a metered request.
     """
 
     name: str
@@ -108,6 +112,7 @@ class Source:
     text_reachable: str = ''
     abstract_handler: str = ''
     abstract_reachable: str = ''
+    probe: str = ''
 
     def has(self, capability: str) -> bool:
         """Report whether this source offers one capability.
@@ -184,16 +189,31 @@ SOURCES: dict[str, Source] = {
         _source('crossref', 'Crossref', 'crossref', [ENRICH],
                 credential='crossref_email', credential_env='CROSSREF_EMAIL',
                 setup_command='pmt config crossref-email',
-                enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_crossref'),
-        _source('openalex', 'OpenAlex', 'openalex', [SEARCH, ENRICH, PDF, ABSTRACT],
+                enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_crossref',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_crossref'),
+        _source('openalex', 'OpenAlex', 'openalex', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='openalex_id', credential='openalex_api_key',
                 credential_env='OPENALEX_API_KEY', setup_command='pmt config openalex-key',
                 open_access=True,
                 search_handler='paperminertoolkit.workflows.search:openalex_search',
                 enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_openalex',
                 pdf_handler='paperminertoolkit.workflows.download:_download_openalex_pdf',
+                text_handler='paperminertoolkit.workflows.download:_download_openalex_tei_text',
+                text_reachable='paperminertoolkit.workflows.download:_should_try_openalex_tei',
                 abstract_handler='paperminertoolkit.workflows.download:_download_openalex_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_openalex_identifier'),
+                abstract_reachable='paperminertoolkit.workflows.download:_openalex_identifier',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_openalex'),
+        # OpenAlex's own cached PDF is a separate entry from OpenAlex itself
+        # because it is metered where the rest of OpenAlex is free, and being
+        # separate is what lets it sit last in the PDF order while OpenAlex
+        # keeps its place near the front. Its key is marked required so an
+        # unconfigured run drops it rather than failing once per paper.
+        _source('openalex-content', 'OpenAlex cached PDF', 'openalex', [PDF],
+                credential='openalex_api_key',
+                credential_env='OPENALEX_API_KEY', setup_command='pmt config openalex-key',
+                credential_required=True, open_access=True,
+                pdf_handler='paperminertoolkit.workflows.download:_download_openalex_cached_pdf',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_openalex_content'),
         _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='pmid', credential='ncbi_api_key',
                 credential_env='NCBI_API_KEY', setup_command='pmt config ncbi-key',
@@ -203,7 +223,8 @@ SOURCES: dict[str, Source] = {
                 text_handler='paperminertoolkit.workflows.download:_download_pmc_text',
                 text_reachable='paperminertoolkit.workflows.download:_should_try_pmc_text',
                 abstract_handler='paperminertoolkit.workflows.download:_download_pubmed_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_pubmed_abstract_reachable'),
+                abstract_reachable='paperminertoolkit.workflows.download:_pubmed_abstract_reachable',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_pubmed'),
         _source('elsevier', 'Elsevier', 'elsevier', [SEARCH, PDF, TEXT, ABSTRACT],
                 identifier_column='elsevier_link', credential='elsevier_api_key',
                 credential_env='ELSEVIER_API_KEY', setup_command='pmt config elsevier-key',
@@ -213,7 +234,8 @@ SOURCES: dict[str, Source] = {
                 text_handler='paperminertoolkit.workflows.download:_download_elsevier_text',
                 text_reachable='paperminertoolkit.workflows.download:_should_try_elsevier_text',
                 abstract_handler='paperminertoolkit.workflows.download:_download_elsevier_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_elsevier_abstract_reachable'),
+                abstract_reachable='paperminertoolkit.workflows.download:_elsevier_abstract_reachable',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_elsevier'),
         _source('core', 'CORE', 'core', [SEARCH, PDF, ABSTRACT],
                 identifier_column='core_id', credential='core_api_key',
                 credential_env='CORE_API_KEY', setup_command='pmt config core-key',
@@ -221,19 +243,22 @@ SOURCES: dict[str, Source] = {
                 search_handler='paperminertoolkit.workflows.search:core_search',
                 pdf_handler='paperminertoolkit.workflows.download:_download_core_pdf',
                 abstract_handler='paperminertoolkit.workflows.download:_download_core_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_core_abstract_reachable'),
+                abstract_reachable='paperminertoolkit.workflows.download:_core_abstract_reachable',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_core'),
         _source('unpaywall', 'Unpaywall', 'unpaywall', [PDF],
                 credential='unpaywall_email', credential_env='UNPAYWALL_EMAIL',
                 setup_command='pmt config unpaywall-email', credential_required=True,
                 open_access=True,
-                pdf_handler='paperminertoolkit.workflows.download:_download_unpaywall_pdf'),
+                pdf_handler='paperminertoolkit.workflows.download:_download_unpaywall_pdf',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_unpaywall'),
         _source('arxiv', 'arXiv', 'arxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
                 identifier_column='arxiv_id', open_access=True,
                 search_handler='paperminertoolkit.workflows.search:arxiv_search',
                 enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_arxiv',
                 pdf_handler='paperminertoolkit.workflows.download:_download_arxiv_pdf',
                 abstract_handler='paperminertoolkit.workflows.download:_download_arxiv_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_arxiv_identifier'),
+                abstract_reachable='paperminertoolkit.workflows.download:_arxiv_identifier',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_arxiv'),
         _source('medrxiv', 'medRxiv', 'medrxiv', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='medrxiv_doi', open_access=True,
                 search_handler='paperminertoolkit.workflows.search:medrxiv_search',
@@ -242,7 +267,8 @@ SOURCES: dict[str, Source] = {
                 text_handler='paperminertoolkit.workflows.download:_download_medrxiv_text',
                 text_reachable='paperminertoolkit.workflows.download:_should_try_medrxiv_text',
                 abstract_handler='paperminertoolkit.workflows.download:_download_medrxiv_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_medrxiv_identifier'),
+                abstract_reachable='paperminertoolkit.workflows.download:_medrxiv_identifier',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_medrxiv'),
         _source('biorxiv', 'bioRxiv', 'biorxiv', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
                 identifier_column='biorxiv_doi', open_access=True,
                 search_handler='paperminertoolkit.workflows.search:biorxiv_search',
@@ -251,14 +277,16 @@ SOURCES: dict[str, Source] = {
                 text_handler='paperminertoolkit.workflows.download:_download_biorxiv_text',
                 text_reachable='paperminertoolkit.workflows.download:_should_try_biorxiv_text',
                 abstract_handler='paperminertoolkit.workflows.download:_download_biorxiv_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_biorxiv_identifier'),
+                abstract_reachable='paperminertoolkit.workflows.download:_biorxiv_identifier',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_biorxiv'),
         _source('chemrxiv', 'chemRxiv', 'chemrxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
                 identifier_column='chemrxiv_doi', open_access=True,
                 search_handler='paperminertoolkit.workflows.search:chemrxiv_search',
                 enrich_handler='paperminertoolkit.workflows.enrichment:_fetch_chemrxiv',
                 pdf_handler='paperminertoolkit.workflows.download:_download_chemrxiv_pdf',
                 abstract_handler='paperminertoolkit.workflows.download:_download_chemrxiv_abstract',
-                abstract_reachable='paperminertoolkit.workflows.download:_chemrxiv_identifier'),
+                abstract_reachable='paperminertoolkit.workflows.download:_chemrxiv_identifier',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_chemrxiv'),
     )
 }
 
@@ -267,17 +295,20 @@ SOURCES: dict[str, Source] = {
 #
 # Search puts arXiv last because a published record should win over its
 # preprint. PDF download leads with the open-access resolvers, which are both
-# free and most likely to hold something. Abstracts lead with the providers that
-# serve one directly from metadata already in hand. Text lists only the four
-# sources that serve machine-readable full text rather than a PDF. Enrichment
-# order is also the field precedence: Crossref is the registration authority, so
-# it wins, and the preprint servers fill in behind everything else.
+# free and most likely to hold something, and ends with OpenAlex's cached copy,
+# which is the only metered route and so is asked only once every free one has
+# failed. Abstracts lead with the providers that
+# serve one directly from metadata already in hand. Text puts native structured
+# sources first and OpenAlex GROBID TEI last because it is PDF-derived and
+# metered. Enrichment order is also the field precedence: Crossref is the
+# registration authority, so it wins, and the preprint servers fill in behind
+# everything else.
 SEARCH_ORDER = ('elsevier', 'core', 'openalex', 'pubmed', 'arxiv',
                 'medrxiv', 'biorxiv', 'chemrxiv')
 ENRICH_ORDER = ('crossref', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv')
 PDF_ORDER = ('unpaywall', 'openalex', 'core', 'elsevier', 'pubmed',
-             'medrxiv', 'biorxiv', 'chemrxiv', 'arxiv')
-TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv')
+             'medrxiv', 'biorxiv', 'chemrxiv', 'arxiv', 'openalex-content')
+TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv', 'openalex')
 ABSTRACT_ORDER = ('openalex', 'pubmed', 'medrxiv', 'biorxiv', 'chemrxiv',
                   'arxiv', 'core', 'elsevier')
 ORDERS: dict[str, tuple[str, ...]] = {
@@ -352,6 +383,36 @@ def resolve_handler(name: str, capability: str) -> Callable[..., Any]:
     if not callable(handler):
         raise TypeError(f'{target} is not callable')
     return handler
+
+
+def resolve_probe(name: str) -> Callable[..., Any] | None:
+    """Resolve a source's reachability probe.
+
+    Parameters
+    ----------
+    name : str
+        Registry source name.
+
+    Returns
+    -------
+    callable or None
+        Registered probe, or ``None`` for a source that declares none.
+
+    Raises
+    ------
+    ValueError
+        If the registered target is malformed.
+    """
+    target = SOURCES[name].probe
+    if not target:
+        return None
+    module_name, separator, attribute = target.partition(':')
+    if not separator or not module_name or not attribute:
+        raise ValueError(f'invalid probe for {name}: {target!r}')
+    probe = getattr(importlib.import_module(module_name), attribute)
+    if not callable(probe):
+        raise TypeError(f'{target} is not callable')
+    return probe
 
 
 def resolve_reachability(name: str, capability: str) -> Callable[..., Any] | None:

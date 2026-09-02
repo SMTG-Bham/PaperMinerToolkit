@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
 import pytest
@@ -196,6 +196,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         context: str,
         max_output_tokens: int,
         compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
     ) -> str:
         """Record an image query and return one material record."""
         calls['image_prompt'] = prompt
@@ -204,6 +205,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         calls['image_context'] = context
         calls['image_tokens'] = max_output_tokens
         calls['image_compression'] = compression_config
+        calls['image_labels'] = image_labels
         return '[{"Name": "image LLZO"}]'
 
     monkeypatch.setattr(extract, 'query_model', fake_query_model)
@@ -222,7 +224,15 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_context'] == 'nearby text'
     assert calls['image_tokens'] == 10000
     assert calls['image_compression'] is None
+    assert calls['image_labels'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
+
+    assert extract.scrape_images(
+        ['figure.png'],
+        recipe,
+        image_labels=['Figure 1: Conductivity map.'],
+    ) == [{'Name': 'image LLZO'}]
+    assert calls['image_labels'] == ['Figure 1: Conductivity map.']
 
     import paperminertoolkit.corpus.documents as documents
 

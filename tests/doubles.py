@@ -30,13 +30,16 @@ class FakeResponse:
         HTTP status code to report.
     headers : Mapping[str, str] or None, optional
         Response headers, such as ``Retry-After``.
+    content : bytes, default=b''
+        Raw response body, for a provider that serves bytes rather than text.
     """
 
     def __init__(self,
                  text: str = '',
                  payload: Any = None,
                  status_code: int = 200,
-                 headers: Mapping[str, str] | None = None) -> None:
+                 headers: Mapping[str, str] | None = None,
+                 content: bytes = b'') -> None:
         """Store the prepared response.
 
         Parameters
@@ -49,12 +52,16 @@ class FakeResponse:
             HTTP status code to report.
         headers : Mapping[str, str] or None, optional
             Response headers.
+        content : bytes, default=b''
+            Raw response body, for a provider that serves bytes rather than
+            text, such as a compressed document.
 
         Returns
         -------
         None
             The double is initialized in place.
         """
+        self.content = content
         self.text = text
         self.payload = payload
         self.status_code = status_code

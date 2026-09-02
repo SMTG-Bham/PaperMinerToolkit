@@ -2,16 +2,31 @@
 
 This module centralizes OpenAlex HTTP details and the mapping from OpenAlex
 work records onto PaperMinerToolkit's paper schema so search and download code can
-share one implementation. OpenAlex meters access against a daily credit budget;
-requests without an API key still work but draw on a much smaller budget.
+share one implementation.
+
+OpenAlex meters access two ways, and they fail for different reasons. A daily
+credit budget, refilling at midnight UTC, is the one that binds: a key without
+one draws on a tenth of the allowance a free key gets, and either can run out
+partway through a corpus. Separately there is a ceiling of a hundred requests a
+second, which pacing keeps to. Both are answered with 429, so the two are told
+apart by what the response says is left rather than by the status alone --
+retrying a rate trip works, and retrying an exhausted budget cannot.
+
+The remaining budget is reported on every response, so a run refuses the next
+request once nothing is left rather than discovering it as a refusal. See
+:func:`check_budget`.
 """
 
 from __future__ import annotations
 
+import gzip
 import os
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 from urllib.parse import quote
+
+import requests
 
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
@@ -20,9 +35,13 @@ from paperminertoolkit.settings import load_settings
 BASE_URL = 'https://api.openalex.org'
 WORKS_URL = f'{BASE_URL}/works'
 RATE_LIMIT_URL = f'{BASE_URL}/rate-limit'
-# OpenAlex documents ten requests a second; pacing at that rate keeps a long
-# cursor walk inside the published limit instead of relying on it not noticing.
-OPENALEX_MIN_INTERVAL = 0.1
+CONTENT_BASE_URL = 'https://content.openalex.org/works'
+# OpenAlex refuses above a hundred requests a second, so that is the ceiling
+# pacing holds to. It is rarely the binding constraint: the daily credit budget
+# runs out long before a run could sustain this rate, which is why exhausting
+# the budget, not exceeding the rate, is what a long run has to plan for.
+OPENALEX_MAX_PER_SECOND = 100
+OPENALEX_MIN_INTERVAL = 1 / OPENALEX_MAX_PER_SECOND
 MAX_FILTER_VALUES = 100
 WORK_SELECT_FIELDS = (
     'id',
@@ -38,6 +57,8 @@ WORK_SELECT_FIELDS = (
     'primary_location',
     'best_oa_location',
     'open_access',
+    'has_content',
+    'content_urls',
     'authorships',
     'is_authors_truncated',
     'cited_by_count',
@@ -52,6 +73,14 @@ WORK_SELECT_FIELDS = (
 )
 _OpenAlexRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(OPENALEX_MIN_INTERVAL)
+# OpenAlex's budget headers. X-RateLimit-Reset counts the seconds until the
+# budget refills at midnight UTC, so unlike Elsevier's header of the same name
+# it is a delay rather than a moment, and is converted on the way in.
+BUDGET_LIMIT_HEADER = 'X-RateLimit-Limit'
+BUDGET_REMAINING_HEADER = 'X-RateLimit-Remaining'
+BUDGET_RESET_HEADER = 'X-RateLimit-Reset'
+DEFAULT_CONTENT_TIMEOUT = 60.0
+_budget: provider.Budget | None = None
 
 
 def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
@@ -117,51 +146,182 @@ def request_params(
     return merged
 
 
-def _budget_error(response: provider.ResponseLike) -> str:
-    """Describe an exhausted OpenAlex credit budget using the rate-limit headers.
+def record_budget(response: provider.ResponseLike, api_key: str | None = None) -> provider.Budget | None:
+    """Remember what one OpenAlex response said about the remaining budget.
 
     Parameters
     ----------
     response : provider.ResponseLike
-        The rate-limited response, read for its reset header.
+        Response whose headers should be read.
+    api_key : str or None, optional
+        Key the request was made with, recorded as a digest.
+
+    Returns
+    -------
+    provider.Budget or None
+        Budget now remembered, or ``None`` when the response reported none.
+    """
+    global _budget
+    headers = getattr(response, 'headers', None)
+    remaining = provider.header_int(headers, BUDGET_REMAINING_HEADER)
+    if remaining is None:
+        return _budget
+    limit = provider.header_int(headers, BUDGET_LIMIT_HEADER)
+    reset = provider.header_int(headers, BUDGET_RESET_HEADER)
+    _budget = provider.Budget(
+        remaining=max(remaining, 0),
+        limit=limit if limit is not None else -1,
+        # Seconds until midnight UTC, so it becomes a moment here. A reported
+        # zero is "refills now", which is different from an absent header
+        # meaning the refill time is simply unknown.
+        reset_at=time.time() + reset if reset is not None else 0.0,
+        owner_fingerprint=provider.fingerprint(api_key or ''),
+    )
+    return _budget
+
+
+def budget_status() -> provider.Budget | None:
+    """Return the last budget OpenAlex reported, if any.
+
+    Returns
+    -------
+    provider.Budget or None
+        Remembered budget, or ``None`` when no response has reported one.
+    """
+    return _budget
+
+
+def reset_budget() -> None:
+    """Forget the remembered budget.
+
+    Returns
+    -------
+    None
+        The remembered budget is cleared in place.
+    """
+    global _budget
+    _budget = None
+
+
+def check_budget(api_key: str | None = None) -> None:
+    """Refuse a request OpenAlex has already said it will not answer.
+
+    The daily credit budget refills at midnight UTC and nothing before then
+    changes it, so once it is gone every further request is a refusal. Raising
+    here reports that once, in terms of when it lifts, rather than as a run of
+    identical failures.
+
+    Nothing is enforced until a response has actually reported a figure, and
+    figures observed under one key never gate a request made with another.
+
+    Parameters
+    ----------
+    api_key : str or None, optional
+        Key the request is about to be made with.
+
+    Returns
+    -------
+    None
+        Nothing is returned when the request may proceed.
+
+    Raises
+    ------
+    RuntimeError
+        If the remembered budget for this key is exhausted.
+    """
+    budget = _budget
+    if budget is None or not budget.exhausted:
+        return
+    if budget.owner_fingerprint != provider.fingerprint(api_key or ''):
+        return
+    raise RuntimeError(_budget_error_text(budget.limit, budget.reset_at - time.time(),
+                                          keyed=bool(api_key)))
+
+
+def _budget_error_text(limit: int, seconds_until_reset: float, keyed: bool) -> str:
+    """Describe an exhausted OpenAlex credit budget.
+
+    Parameters
+    ----------
+    limit : int
+        Credits the day allows, or ``-1`` when OpenAlex did not say.
+    seconds_until_reset : float
+        Seconds until the budget refills, or a non-positive value when unknown.
+    keyed : bool
+        Whether the request carried an API key.
 
     Returns
     -------
     str
-        Message naming the reset window when the header supplies one.
+        Message naming the allowance, the wait, and the way to raise it.
     """
-    reset = response.headers.get('X-RateLimit-Reset')
-    try:
-        wait = f' Budget resets in {round(float(reset) / 3600, 1)} hours.' if reset else ''
-    except (TypeError, ValueError):
-        wait = ''
-    return ('OpenAlex daily credit budget is exhausted.'
-            f'{wait} Configure an API key with pmt config openalex-key or OPENALEX_API_KEY '
-            'to raise the budget.')
+    allowance = f' of {limit} credits' if limit >= 0 else ''
+    wait = (f' It refills in {round(seconds_until_reset / 3600, 1)} hours, at midnight UTC.'
+            if seconds_until_reset > 0 else '')
+    # A free key is worth ten times the keyless allowance and costs nothing, so
+    # it is the first thing to suggest to a run that ran out without one.
+    advice = ('' if keyed else
+              ' A free API key raises the budget tenfold at no cost: run pmt config openalex-key '
+              'or set OPENALEX_API_KEY.')
+    return f'OpenAlex daily credit budget is exhausted, with 0{allowance} left.{wait}{advice}'
 
 
-def _terminal_error(response: provider.ResponseLike) -> str:
+def _budget_error(response: provider.ResponseLike, api_key: str | None = None) -> str:
+    """Describe an exhausted OpenAlex credit budget from a refused response.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        The rate-limited response, read for its budget headers.
+    api_key : str or None, optional
+        Key the refused request carried.
+
+    Returns
+    -------
+    str
+        Message naming the allowance and the reset window the headers supply.
+    """
+    headers = getattr(response, 'headers', None)
+    limit = provider.header_int(headers, BUDGET_LIMIT_HEADER)
+    reset = provider.header_int(headers, BUDGET_RESET_HEADER) or 0
+    return _budget_error_text(limit if limit is not None else -1, float(reset),
+                              keyed=bool(api_key))
+
+
+def _terminal_error(response: provider.ResponseLike, api_key: str | None = None) -> str:
     """Report the OpenAlex statuses that are pointless to retry.
 
-    A rejected key stays rejected, and a 429 here means the daily credit budget
-    is gone rather than that the client is going too fast, so neither is worth
-    another attempt. Every other client error takes the shared rule.
+    A rejected key stays rejected. A 429 needs telling apart, because OpenAlex
+    answers both of its limits with one: exceeding a hundred requests a second
+    is worth another attempt after a pause, while an exhausted daily budget
+    cannot succeed again until midnight UTC and retrying only spends the wait.
+    The remaining-credit header separates them -- credits left means the refusal
+    was about the rate, none left means the budget is gone. A 429 that reports
+    no credits at all is read as exhaustion, which is the older behaviour and
+    the safer guess, since retrying a spent budget achieves nothing.
 
     Parameters
     ----------
     response : provider.ResponseLike
         Response to classify.
+    api_key : str or None, optional
+        Key the request carried, used to word the advice.
 
     Returns
     -------
     str
-        Failure message, or an empty string to fall through to the shared rule.
+        Failure message, or an empty string to fall through to the shared rule,
+        which retries.
     """
     if response.status_code == 401:
         return ('OpenAlex rejected the API key. Set a valid key with pmt config openalex-key or '
                 'OPENALEX_API_KEY, or unset it to use the smaller keyless budget.')
     if response.status_code == 429:
-        return _budget_error(response)
+        remaining = provider.header_int(getattr(response, 'headers', None),
+                                        BUDGET_REMAINING_HEADER)
+        if remaining is not None and remaining > 0:
+            return ''
+        return _budget_error(response, api_key)
     return ''
 
 
@@ -204,10 +364,12 @@ def request_json(
         If the API key is rejected, the credit budget is exhausted, or all
         request attempts fail.
     """
+    check_budget(api_key)
     return provider.request_mapping(url, label='OpenAlex', limiter=LIMITER,
                                     params=request_params(params, api_key, mailto),
                                     session=session, timeout=timeout, attempts=attempts,
-                                    client_error=_terminal_error)
+                                    client_error=lambda answer: _terminal_error(answer, api_key),
+                                    on_response=lambda answer: record_budget(answer, api_key))
 
 
 def work_url(identifier: str) -> str:
@@ -469,3 +631,240 @@ def pdf_candidates(work: Mapping[str, Any]) -> list[str]:
         candidates.append((location or {}).get('pdf_url'))
     candidates.append((work.get('open_access') or {}).get('oa_url'))
     return list(dict.fromkeys(url for url in candidates if url))
+
+
+def cached_pdf_url(work: Mapping[str, Any]) -> str:
+    """Return OpenAlex's own copy of a work's PDF, if it holds one.
+
+    Deliberately separate from :func:`pdf_candidates`, which lists the free
+    publisher and repository locations. This one is metered, and it exists
+    because those free locations frequently are not actually servable:
+    publishers refuse automated PDF requests routinely, open access or not,
+    and OpenAlex has already fetched and cached what they refuse us.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record.
+
+    Returns
+    -------
+    str
+        Cached PDF URL, or an empty string when OpenAlex holds no PDF.
+    """
+    content_urls = work.get('content_urls') or {}
+    if isinstance(content_urls, Mapping) and content_urls.get('pdf'):
+        return str(content_urls['pdf'])
+    has_content = work.get('has_content') or {}
+    if not isinstance(has_content, Mapping) or not has_content.get('pdf'):
+        return ''
+    identifier = work_id(work)
+    return f'{CONTENT_BASE_URL}/{identifier}.pdf' if identifier else ''
+
+
+def grobid_xml_url(work: Mapping[str, Any]) -> str:
+    """Return the paid OpenAlex GROBID TEI endpoint for one work.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record containing ``has_content`` or ``content_urls``.
+
+    Returns
+    -------
+    str
+        TEI content URL, or an empty string when no GROBID parse is available.
+    """
+    content_urls = work.get('content_urls') or {}
+    if isinstance(content_urls, Mapping) and content_urls.get('grobid_xml'):
+        return str(content_urls['grobid_xml'])
+    has_content = work.get('has_content') or {}
+    if not isinstance(has_content, Mapping) or not has_content.get('grobid_xml'):
+        return ''
+    identifier = work_id(work)
+    return f'{CONTENT_BASE_URL}/{identifier}.grobid-xml' if identifier else ''
+
+
+def request_content(
+    url: str,
+    api_key: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+    attempts: int = 4,
+) -> provider.ResponseLike | None:
+    """Download one metered OpenAlex full-text content object.
+
+    Parameters
+    ----------
+    url : str
+        URL under ``content.openalex.org``.
+    api_key : str
+        OpenAlex API key. Content downloads do not support keyless access.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : float, default=60
+        Request timeout in seconds.
+    attempts : int, default=4
+        Maximum request attempts.
+
+    Returns
+    -------
+    provider.ResponseLike or None
+        Content response, or ``None`` for a missing object.
+
+    Raises
+    ------
+    ValueError
+        If no API key is supplied.
+    RuntimeError
+        If the request is rejected or cannot be completed.
+    """
+    if not api_key.strip():
+        raise ValueError('OpenAlex GROBID downloads require an API key')
+    # A content download is the most expensive call OpenAlex bills, so it is
+    # the one most worth refusing before it is sent.
+    check_budget(api_key)
+    return provider.request(
+        url,
+        label='OpenAlex content',
+        limiter=LIMITER,
+        params={'api_key': api_key},
+        headers=request_headers(),
+        session=session,
+        timeout=timeout,
+        attempts=attempts,
+        client_error=lambda answer: _terminal_error(answer, api_key),
+        on_response=lambda answer: record_budget(answer, api_key),
+    )
+
+
+def _decoded_content(response: provider.ResponseLike) -> str:
+    """Read a content response as text, decompressing it when it is gzipped.
+
+    OpenAlex serves GROBID TEI gzipped, and declares it as a ``Content-Type``
+    of ``application/gzip`` rather than a ``Content-Encoding`` of ``gzip``.
+    Only the latter is decompressed for us, so reading ``response.text``
+    directly yields the compressed bytes decoded as characters. The gzip magic
+    number is checked rather than the header, because it is the body itself
+    saying what it is.
+
+    Parameters
+    ----------
+    response : provider.ResponseLike
+        Content response to read.
+
+    Returns
+    -------
+    str
+        Decoded document text.
+    """
+    raw = getattr(response, 'content', b'')
+    if isinstance(raw, bytes) and raw[:2] == b'\x1f\x8b':
+        try:
+            return gzip.decompress(raw).decode('utf-8')
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f'OpenAlex content could not be decompressed: {error}') from error
+    return response.text or ''
+
+
+def cached_pdf_available(url: str, api_key: str) -> int:
+    """Check that OpenAlex will serve a cached PDF, without downloading it.
+
+    A ``HEAD`` is billed exactly as a ``GET`` is -- 100 credits, confirmed
+    against the service -- so this saves the transfer rather than the cost.
+    That is still worth having for a reachability check, where several
+    megabytes would be fetched only to be discarded.
+
+    Parameters
+    ----------
+    url : str
+        Cached PDF URL from :func:`cached_pdf_url`.
+    api_key : str
+        OpenAlex API key. Content routes have no keyless allowance.
+
+    Returns
+    -------
+    int
+        Size the response declares, or ``0`` when it declares none.
+
+    Raises
+    ------
+    ValueError
+        If no API key is supplied.
+    RuntimeError
+        If the budget is spent, or OpenAlex does not serve the PDF.
+    """
+    if not api_key.strip():
+        raise ValueError('OpenAlex content downloads require an API key')
+    check_budget(api_key)
+    LIMITER.wait()
+    response = requests.head(url, params={'api_key': api_key}, headers=request_headers(),
+                             timeout=DEFAULT_CONTENT_TIMEOUT, allow_redirects=True)
+    record_budget(response, api_key)
+    if response.status_code >= 400:
+        raise RuntimeError(_terminal_error(response, api_key)
+                           or f'OpenAlex refused the cached PDF with {response.status_code}')
+    media_type = str(response.headers.get('Content-Type', ''))
+    if 'pdf' not in media_type.lower():
+        raise RuntimeError(f'OpenAlex served {media_type or "no media type"} rather than a PDF')
+    return provider.header_int(response.headers, 'Content-Length') or 0
+
+
+def full_text_document(
+    work: Mapping[str, Any],
+    api_key: str,
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch OpenAlex GROBID TEI and derive text and layout-safe metadata.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record advertising GROBID content.
+    api_key : str
+        OpenAlex API key used by the metered content endpoint.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        PDF-derived TEI and plain text, or an empty result when unavailable.
+
+    Raises
+    ------
+    ValueError
+        If the API key is absent or the response is not TEI.
+    RuntimeError
+        If the content request fails.
+    """
+    url = grobid_xml_url(work)
+    if not url:
+        return provider.FullTextDocument('')
+    response = request_content(url, api_key, session=session)
+    if response is None:
+        return provider.FullTextDocument('')
+    content = _decoded_content(response)
+    if not content.strip():
+        return provider.FullTextDocument('')
+    identifier = work_id(work)
+    from paperminertoolkit.corpus.xml_layout import parse_tei_layout
+    layout = parse_tei_layout(content, f'openalex:{identifier}', source_identifier=identifier)
+    parts = [layout.title]
+    parts.extend(block.text for block in layout.iter_text_blocks())
+    text = '\n\n'.join(part for part in parts if part).strip()
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='tei',
+        source_url=url,
+        source_identifier=identifier,
+        metadata={
+            'publisher_native': False,
+            'derived_from': 'pdf',
+            'parser': 'grobid',
+            'estimated_cost_usd': 0.01,
+        },
+    )

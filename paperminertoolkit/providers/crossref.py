@@ -1,4 +1,17 @@
-"""Discover an author's works through Crossref and import their metadata."""
+"""Discover an author's works through Crossref and import their metadata.
+
+Crossref serves two pools. A client that names a contact address is routed onto
+the polite pool and allowed ten requests per second; one that does not is
+served by the public pool at five. Membership costs nothing but the address,
+which travels both in the user agent and as a ``mailto`` query parameter, and
+the current allowance is announced on every response in ``X-Rate-Limit-Limit``
+and ``X-Rate-Limit-Interval``. An address is worth having and these helpers say
+so once per process when none is configured, but Crossref does not require one,
+so a client without an address is paced for the public pool rather than refused.
+
+Requests are issued one at a time through a single module-level limiter, so the
+concurrency each pool allows never becomes a factor.
+"""
 
 from __future__ import annotations
 
@@ -21,13 +34,23 @@ from paperminertoolkit.settings import load_settings
 
 CROSSREF_WORKS_URL = 'https://api.crossref.org/v1/works'
 CROSSREF_SINGLE_WORK_URL = 'https://api.crossref.org/works'
-CROSSREF_MIN_INTERVAL = 0.34
+CROSSREF_PUBLIC_MIN_INTERVAL = 0.2
+CROSSREF_POLITE_MIN_INTERVAL = 0.1
 MAX_FILTER_VALUES = 100
+NO_CONTACT_ADDRESS_NOTICE = (
+    'Crossref requests are being made without a contact address, so Crossref will serve them '
+    f'from its public pool at {round(1 / CROSSREF_PUBLIC_MIN_INTERVAL)} requests per second '
+    f"rather than the polite pool's {round(1 / CROSSREF_POLITE_MIN_INTERVAL)}. "
+    'Run pmt config crossref-email, set CROSSREF_EMAIL, or pass --email to halve the waiting.'
+)
 BATCHABLE_DOI_PATTERN = re.compile(r'^10\.\d{4,9}/[^\s,]+$')
 ORCID_PATTERN = re.compile(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', re.IGNORECASE)
 REVIEW_COLUMNS = ['paper_id', 'doi', 'title', 'journal', 'publication_date', 'authors', 'sources']
 _CrossrefRecord: TypeAlias = dict[str, Any]
-LIMITER = provider.RateLimiter(CROSSREF_MIN_INTERVAL)
+LIMITER = provider.RateLimiter(CROSSREF_PUBLIC_MIN_INTERVAL)
+# Set once the public-pool notice has been shown, so a run that makes hundreds
+# of Crossref requests reports the missing address once rather than per request.
+_reported_missing_contact_address = False
 
 
 def normalize_orcid(value: str | None) -> str:
@@ -209,6 +232,24 @@ def work_matches_author(
     )
 
 
+def min_interval(email: str | None = None) -> float:
+    """Return the minimum seconds between Crossref requests for one address.
+
+    Parameters
+    ----------
+    email : str or None, optional
+        Contact address advertised on the requests being paced.
+
+    Returns
+    -------
+    float
+        Delay honoring the polite pool's ten requests per second when an
+        address is advertised, or the public pool's five when none is.
+    """
+    email = str(email or '')
+    return CROSSREF_POLITE_MIN_INTERVAL if '@' in email else CROSSREF_PUBLIC_MIN_INTERVAL
+
+
 def _request_page(
     session: provider.HTTPClient,
     params: dict[str, str | int],
@@ -235,7 +276,8 @@ def _request_page(
     attempts : int, optional
         Maximum number of request attempts.
     pace : float or None, optional
-        Pacing override for this request, in seconds.
+        Pacing override for this request, in seconds. ``None`` paces by the
+        pool the contact address qualifies for.
 
     Returns
     -------
@@ -250,7 +292,7 @@ def _request_page(
     response = provider.request(url, label='Crossref', limiter=LIMITER, params=params,
                                 headers=provider.default_headers(email), session=session,
                                 timeout=timeout, attempts=attempts, missing_ok=False,
-                                interval=pace,
+                                interval=min_interval(email) if pace is None else pace,
                                 error_types=(*provider.RETRY_ERRORS, KeyError))
     if response is None:
         raise RuntimeError(f'Crossref request failed after {attempts} attempts: 404')
@@ -275,30 +317,60 @@ def configured_email(settings: Mapping[str, str] | None = None) -> str:
 
 
 def resolve_email(email: str | None = None) -> str:
-    """Resolve the Crossref contact email, preferring an explicit value.
+    """Resolve the Crossref contact address, preferring an explicit value.
+
+    Crossref does not require a contact address, so an absent one is reported
+    once and the request made anonymously against the public pool rather than
+    refused. An address supplied by the caller is a different matter: it was
+    meant to be used, so an unusable one is an error rather than a silent
+    downgrade to a slower pool.
 
     Parameters
     ----------
     email : str or None, optional
-        Contact email supplied by the caller.
+        Contact address supplied by the caller.
 
     Returns
     -------
     str
-        Resolved contact email.
+        Resolved contact address, or an empty string when none is available.
 
     Raises
     ------
     ValueError
-        If no valid contact email is available.
+        If ``email`` was supplied but cannot be a contact address.
     """
-    resolved = str(email or '').strip() or configured_email()
-    if not resolved or '@' not in resolved:
-        raise ValueError(
-            'A contact email is required for Crossref requests. '
-            'Run pmt config crossref-email, set CROSSREF_EMAIL, or pass --email.'
-        )
-    return resolved
+    global _reported_missing_contact_address
+    supplied = str(email or '').strip()
+    if supplied:
+        if '@' not in supplied:
+            raise ValueError(f'{supplied!r} is not a usable Crossref contact address.')
+        return supplied
+    stored = str(configured_email()).strip()
+    if '@' in stored:
+        return stored
+    if not _reported_missing_contact_address:
+        _reported_missing_contact_address = True
+        print(NO_CONTACT_ADDRESS_NOTICE)
+    return ''
+
+
+def contact_params(email: str = '') -> dict[str, str]:
+    """Build the contact half of a Crossref query string.
+
+    Parameters
+    ----------
+    email : str, default=''
+        Contact address to advertise, if any.
+
+    Returns
+    -------
+    dict[str, str]
+        A ``mailto`` parameter, or nothing when there is no address. An empty
+        ``mailto`` is omitted rather than sent, because it claims a contact and
+        supplies none.
+    """
+    return {'mailto': email} if email else {}
 
 
 def work_by_doi(doi: str,
@@ -326,7 +398,7 @@ def work_by_doi(doi: str,
     Raises
     ------
     ValueError
-        If no contact email is available.
+        If ``email`` was supplied but cannot be a contact address.
     RuntimeError
         If the Crossref request exhausts its retries.
     """
@@ -337,7 +409,7 @@ def work_by_doi(doi: str,
     session = session or requests.Session()
     url = f'{CROSSREF_SINGLE_WORK_URL}/{quote(doi, safe="")}'
     try:
-        return _request_page(session, {'mailto': email}, email, url=url)
+        return _request_page(session, contact_params(email), email, url=url)
     except RuntimeError:
         return None
 
@@ -346,7 +418,7 @@ def works_by_doi(dois: Sequence[str],
                  email: str | None = None,
                  session: provider.HTTPClient | None = None,
                  batch_size: int = MAX_FILTER_VALUES,
-                 pace: float = CROSSREF_MIN_INTERVAL) -> dict[str, _CrossrefRecord]:
+                 pace: float | None = None) -> dict[str, _CrossrefRecord]:
     """Look up Crossref works in paced DOI batches.
 
     Crossref treats repeated ``doi`` filters as alternatives, returns matches
@@ -366,8 +438,9 @@ def works_by_doi(dois: Sequence[str],
         HTTP session used for the requests.
     batch_size : int, default=100
         DOIs requested per Crossref page.
-    pace : float, default=0.34
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the contact address qualifies for.
 
     Returns
     -------
@@ -377,7 +450,8 @@ def works_by_doi(dois: Sequence[str],
     Raises
     ------
     ValueError
-        If ``batch_size`` is invalid or no contact email is available.
+        If ``batch_size`` is invalid, or ``email`` was supplied but cannot be a
+        contact address.
     RuntimeError
         If a Crossref request exhausts its retries.
     """
@@ -398,7 +472,7 @@ def works_by_doi(dois: Sequence[str],
                 {
                     'filter': ','.join(f'doi:{doi}' for doi in chunk),
                     'rows': len(chunk),
-                    'mailto': email,
+                    **contact_params(email),
                 },
                 email,
                 pace=pace,
@@ -437,7 +511,8 @@ def author_works(orcid: str | None = None,
     affiliation : str, optional
         Affiliation fragment required on the matched author record.
     email : str, optional
-        Contact email for Crossref polite-pool requests.
+        Contact address qualifying the requests for Crossref's polite pool.
+        Omitting it halves the pace rather than failing.
     max_results : int or None, optional
         Maximum accepted works, or ``None`` for no explicit limit.
     page_size : int, optional
@@ -453,22 +528,19 @@ def author_works(orcid: str | None = None,
     Raises
     ------
     ValueError
-        If identity, contact, or pagination options are invalid.
+        If the identity or pagination options are invalid.
     RuntimeError
         If a Crossref request exhausts its retries.
     """
     if bool(orcid) == bool(author_name):
         raise ValueError('Provide exactly one of orcid or author_name.')
-    if not email or '@' not in email:
-        raise ValueError('A contact email is required for Crossref polite-pool requests. '
-                         'Run pmt config crossref-email, set CROSSREF_EMAIL, or pass --email.')
     if max_results is not None and max_results < 1:
         raise ValueError('max_results must be a positive integer or None.')
     if page_size < 1 or page_size > 1000:
         raise ValueError('page_size must be between 1 and 1000.')
 
     session = session or requests.Session()
-    params = {'rows': page_size, 'cursor': '*', 'mailto': email}
+    params = {'rows': page_size, 'cursor': '*', **contact_params(email)}
     if orcid:
         orcid = normalize_orcid(orcid)
         params['filter'] = f'orcid:{orcid}'
@@ -613,7 +685,7 @@ def import_author_works(db_path: str | PathLike[str],
     Raises
     ------
     ValueError
-        If the author identity, contact email, result limit, or ORCID is
+        If the author identity, contact address, result limit, or ORCID is
         invalid.
     RuntimeError
         If a Crossref request exhausts its retries or the corpus schema is

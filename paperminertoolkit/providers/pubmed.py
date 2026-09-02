@@ -29,9 +29,14 @@ from paperminertoolkit.settings import load_settings
 BASE_URL = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
 ESEARCH_URL = f'{BASE_URL}/esearch.fcgi'
 EFETCH_URL = f'{BASE_URL}/efetch.fcgi'
-OA_URL = 'https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi'
-FTP_PREFIX = 'ftp://ftp.ncbi.nlm.nih.gov/pub/pmc'
-HTTPS_PREFIX = 'https://ftp.ncbi.nlm.nih.gov/pub/pmc'
+# The PMC Cloud Service replaced the retired OA web service. Its bucket is
+# world-readable over plain HTTPS, so no AWS SDK or credentials are needed.
+# Each open-access article is one prefix holding its XML, text, PDF, a JSON
+# metadata sidecar, and every figure file under the exact names the article's
+# JATS references, which is what makes those references resolvable.
+PMC_CLOUD_URL = 'https://pmc-oa-opendata.s3.amazonaws.com'
+PMC_CLOUD_MIN_INTERVAL = 0.1
+PMC_CLOUD_MAX_KEYS = 1000
 TOOL_NAME = 'PaperMinerToolkit'
 MAX_SEARCH_RESULTS = 10000
 EFETCH_BATCH_SIZE = 200
@@ -47,6 +52,10 @@ _MONTHS = {
 }
 _PubMedRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(NCBI_MIN_INTERVAL)
+# The cloud bucket is a different service from E-utilities and is not subject
+# to its per-second ceiling, so it is paced separately rather than spending the
+# E-utilities budget.
+CLOUD_LIMITER = provider.RateLimiter(PMC_CLOUD_MIN_INTERVAL)
 
 
 def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
@@ -1105,42 +1114,68 @@ def resolve_pmcid(paper: Mapping[str, Any],
     return _article_ids(records[0])['pmcid'] if records else ''
 
 
-def _https_urls(url: str) -> list[str]:
-    """Rewrite an NCBI FTP link to the HTTPS locations that may serve it.
-
-    The open-access service still advertises ``ftp://`` links, which the
-    :mod:`requests`-based downloaders cannot fetch. NCBI moved the article
-    datasets in 2026 and left the previous tree under a ``deprecated``
-    directory that it has announced it will remove, so both the current path
-    and that mirror are offered. Whichever one NCBI is serving answers; the
-    other returns a cheap 404.
+def _cloud_object_keys(
+    prefix: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+) -> list[str]:
+    """List every cloud-service object key under one prefix.
 
     Parameters
     ----------
-    url : str
-        Link advertised by the open-access service.
+    prefix : str
+        Key prefix to list, such as ``"PMC1234567."``.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : int or float, default=60
+        Request timeout in seconds.
 
     Returns
     -------
     list[str]
-        HTTPS candidates in the order they should be tried, or the original
-        value alone when it is not an NCBI FTP link.
+        Object keys in listing order, following continuation pages.
+
+    Raises
+    ------
+    RuntimeError
+        If a listing request fails or returns malformed XML.
     """
-    if not url.startswith(FTP_PREFIX):
-        return [url]
-    path = url[len(FTP_PREFIX):].lstrip('/')
-    return [f'{HTTPS_PREFIX}/deprecated/{path}', f'{HTTPS_PREFIX}/{path}']
+    keys: list[str] = []
+    token = ''
+    while True:
+        params: dict[str, object] = {
+            'list-type': '2',
+            'prefix': prefix,
+            'max-keys': PMC_CLOUD_MAX_KEYS,
+        }
+        if token:
+            params['continuation-token'] = token
+        response = provider.request(PMC_CLOUD_URL, label='PMC Cloud Service',
+                                    limiter=CLOUD_LIMITER, params=params,
+                                    session=session, timeout=timeout)
+        if response is None:
+            return keys
+        try:
+            root = ET.fromstring(response.text or '')
+        except ET.ParseError as error:
+            raise RuntimeError(f'PMC Cloud Service returned malformed XML: {error}') from error
+        keys.extend(element.text or '' for element in root.findall('.//{*}Contents/{*}Key'))
+        truncated = (root.findtext('.//{*}IsTruncated') or '').strip().lower() == 'true'
+        token = (root.findtext('.//{*}NextContinuationToken') or '').strip()
+        if not truncated or not token:
+            return keys
 
 
-def oa_package_urls(pmcid: str,
-                    session: provider.HTTPClient | None = None,
-                    api_key: str | None = None,
-                    email: str = '',
-                    timeout: float = 60) -> list[str]:
-    """List the open-access service's links for a PubMed Central record.
+def pmc_cloud_files(
+    pmcid: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+) -> dict[str, str]:
+    """Map an open-access article's cloud-service files to their URLs.
 
-    Only the open-access subset is redistributable, so a record outside it
-    yields no links rather than an error worth retrying.
+    Only the open-access subset is redistributable, so an article outside it
+    yields no files rather than an error worth retrying. When an article has
+    several versions the newest is used.
 
     Parameters
     ----------
@@ -1148,38 +1183,119 @@ def oa_package_urls(pmcid: str,
         PubMed Central identifier.
     session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
-    api_key : str or None, optional
-        NCBI API key to attach.
-    email : str, default=''
-        Contact email address sent with the request.
     timeout : int or float, default=60
         Request timeout in seconds.
 
     Returns
     -------
-    list[str]
-        HTTPS links, PDF links first, or an empty list when none are offered.
+    dict[str, str]
+        Filename to URL for every file the newest version offers, so a
+        JATS graphic reference can be resolved by its own name.
 
     Raises
     ------
     RuntimeError
-        If the open-access request cannot be completed.
+        If the listing request cannot be completed.
     """
     identifier = normalize_pmcid(pmcid)
     if not identifier:
-        return []
-    root = request_xml(OA_URL, params={'id': identifier}, api_key=api_key,
-                       email=email, session=session, timeout=timeout)
-    if root is None:
-        return []
-    pdfs, packages = [], []
-    for link in root.findall('.//record/link'):
-        href = (link.get('href') or '').strip()
-        if not href:
+        return {}
+    keys = _cloud_object_keys(f'{identifier}.', session=session, timeout=timeout)
+    versions: dict[int, list[str]] = {}
+    for key in keys:
+        directory, _, name = key.partition('/')
+        _, _, version_text = directory.partition('.')
+        if not name or not version_text.isdigit():
             continue
-        target = pdfs if (link.get('format') or '').lower() == 'pdf' else packages
-        target.extend(_https_urls(href))
-    return list(dict.fromkeys(pdfs + packages))
+        versions.setdefault(int(version_text), []).append(key)
+    if not versions:
+        return {}
+    newest = versions[max(versions)]
+    return {key.split('/', 1)[1]: f'{PMC_CLOUD_URL}/{key}' for key in newest}
+
+
+def pmc_cloud_pdf_url(
+    pmcid: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+) -> str:
+    """Return the cloud-service PDF URL for one open-access article.
+
+    Parameters
+    ----------
+    pmcid : str
+        PubMed Central identifier.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : int or float, default=60
+        Request timeout in seconds.
+
+    Returns
+    -------
+    str
+        PDF URL, or an empty string when the article is outside the
+        open-access subset or offers no PDF.
+
+    Raises
+    ------
+    RuntimeError
+        If the listing request cannot be completed.
+    """
+    files = pmc_cloud_files(pmcid, session=session, timeout=timeout)
+    return next((url for name, url in files.items() if name.lower().endswith('.pdf')), '')
+
+
+def pmc_cloud_full_text_document(
+    pmcid: str,
+    session: provider.HTTPClient | None = None,
+    timeout: float = 60,
+) -> provider.FullTextDocument:
+    """Fetch one open-access article's JATS from the PMC Cloud Service.
+
+    The returned document's source URL is the article's own XML URL rather
+    than a shared endpoint, so the relative graphic references inside the
+    JATS resolve against it to the figure files stored beside it.
+
+    Parameters
+    ----------
+    pmcid : str
+        PubMed Central identifier.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+    timeout : int or float, default=60
+        Request timeout in seconds.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Plain text and the untouched JATS response. Both are empty when the
+        article is outside the open-access subset or carries no body.
+
+    Raises
+    ------
+    RuntimeError
+        If a cloud-service request fails or returns malformed JATS.
+    """
+    files = pmc_cloud_files(pmcid, session=session, timeout=timeout)
+    xml_url = next((url for name, url in files.items() if name.endswith('.xml')), '')
+    if not xml_url:
+        return provider.FullTextDocument('')
+    response = provider.request(xml_url, label='PMC Cloud Service', limiter=CLOUD_LIMITER,
+                                session=session, timeout=timeout)
+    if response is None or not (response.text or '').strip():
+        return provider.FullTextDocument('')
+    content = response.text
+    text = jats_plain_text(content, label='PMC Cloud Service')
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='jats',
+        source_url=xml_url,
+        source_identifier=normalize_pmcid(pmcid),
+        metadata={'pmc_cloud_service': True},
+    )
 
 
 def _jats_blocks(node: ET.Element, blocks: list[str]) -> None:
@@ -1230,6 +1346,106 @@ def _jats_body_text(root: ET.Element) -> str:
     blocks: list[str] = []
     _jats_blocks(body, blocks)
     return '\n\n'.join(blocks)
+
+
+def jats_plain_text(content: str, label: str = 'JATS') -> str:
+    """Derive plain article text from a complete JATS document.
+
+    Parameters
+    ----------
+    content : str
+        Complete JATS XML document.
+    label : str, default='JATS'
+        Provider label used in malformed-document errors.
+
+    Returns
+    -------
+    str
+        Article title and body prose, or an empty string when no body exists.
+
+    Raises
+    ------
+    RuntimeError
+        If ``content`` is not well-formed XML.
+    """
+    if not content.strip():
+        return ''
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        raise RuntimeError(f'{label} returned malformed JATS XML: {error}') from error
+    error_text = _error_text(root)
+    if error_text:
+        raise RuntimeError(f'{label} rejected the request: {error_text}')
+    title = _element_text(root.find('.//article-title'))
+    body = _jats_body_text(root)
+    if not body:
+        return ''
+    return f'{title}\n\n{body}'.strip() if title else body
+
+
+def pmc_full_text_document(
+    pmcid: str,
+    api_key: str | None = None,
+    email: str = '',
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch one PMC JATS document and derive its plain text in memory.
+
+    The PMC Cloud Service is tried first, because it stores an article's
+    figures beside its XML and so returns a document whose graphic references
+    can be resolved. E-utilities is the fallback: it reaches articles outside
+    the open-access subset, but its JATS names figure files that no endpoint
+    derived from that response can locate.
+
+    Parameters
+    ----------
+    pmcid : str
+        PubMed Central identifier.
+    api_key : str or None, optional
+        NCBI API key to attach.
+    email : str, default=''
+        Contact email address sent with the request.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Plain text and the untouched JATS response. Both are empty when the
+        identifier or article body is unavailable.
+
+    Raises
+    ------
+    RuntimeError
+        If the E-utilities request fails or returns malformed JATS.
+    """
+    identifier = normalize_pmcid(pmcid)
+    if not identifier:
+        return provider.FullTextDocument('')
+    document = pmc_cloud_full_text_document(identifier, session=session)
+    if document.text:
+        return document
+    response = request(
+        EFETCH_URL,
+        params={'db': 'pmc', 'id': identifier[3:], 'retmode': 'xml'},
+        api_key=api_key,
+        email=email,
+        session=session,
+    )
+    if response is None or not (response.text or '').strip():
+        return provider.FullTextDocument('')
+    content = response.text
+    text = jats_plain_text(content, label='NCBI')
+    if not text:
+        return provider.FullTextDocument('')
+    return provider.FullTextDocument(
+        text=text,
+        content=content,
+        document_format='jats',
+        source_url=EFETCH_URL,
+        source_identifier=identifier,
+    )
 
 
 def pmc_full_text(pmcid: str,

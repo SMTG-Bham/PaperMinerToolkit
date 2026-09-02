@@ -404,6 +404,17 @@ def test_full_text_flattens_the_jats_document_medrxiv_publishes() -> None:
     assert 'Table residue' not in text
     assert 'A citation' not in text
 
+    session = FakeSession([FakeResponse(text=jats)])
+    document = medrxiv.full_text_document(
+        {'medrxiv_doi': '10.1101/x',
+         'jatsxml': 'https://www.medrxiv.org/x.source.xml'},
+        session=session,
+    )
+    assert document.content == jats
+    assert document.document_format == 'jats'
+    assert document.source_identifier == '10.1101/x'
+    assert len(session.calls) == 1
+
 
 def test_full_text_reports_a_broken_document_and_skips_an_absent_one() -> None:
     """Raise on unparseable JATS but treat a bodyless record as no text."""

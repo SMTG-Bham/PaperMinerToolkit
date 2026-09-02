@@ -46,6 +46,7 @@ from paperminertoolkit.settings import (get_model_profile,
                                    set_model_profile,
                                    update_anthropic_key,
                                    update_core_key,
+                                   update_core_rate,
                                    update_crossref_email,
                                    update_elsevier_key,
                                    update_ncbi_email,
@@ -296,6 +297,10 @@ def corpus_status(db_path: str) -> None:
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
     click.echo(f'Papers with text: {stats["papers_with_text"]}')
     click.echo(f'Papers with PDFs: {stats["papers_with_pdf"]}')
+    click.echo(
+        f'Papers with structured documents: '
+        f'{stats["papers_with_structured_documents"]}'
+    )
     click.echo(f'Text scrapes split into chunks: {stats["papers_with_chunked_text"]}')
     click.echo(f'Abstract scrapes split into chunks: {stats["papers_with_chunked_abstracts"]}')
     click.echo(f'Blobs: {stats["blobs"]}')
@@ -797,10 +802,10 @@ def topics_models(db_path: str, batch_size: int) -> None:
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction',
-              type=click.Choice(['auto', 'embedded', 'pages']),
+              type=click.Choice(['auto', 'embedded', 'pages', 'layout']),
               default='auto',
               show_default=True,
-              help='How to turn PDFs into images for vision analysis.')
+              help='How to choose images for vision analysis. "layout" sends figures with their captions.')
 @click.option('--image-dpi', default=200, type=int, show_default=True,
               help='DPI for rendered page images when page rendering is used.')
 @click.option('--image-batch-size', default='1', show_default=True,
@@ -973,6 +978,11 @@ def update_core_api_key() -> None:
     update_core_key()
 
 
+def update_core_request_rate() -> None:
+    """Prompt for and save the seconds to leave between CORE requests."""
+    update_core_rate()
+
+
 def update_unpaywall_api_email() -> None:
     """Prompt for and save an Unpaywall email address."""
     update_unpaywall_email()
@@ -1061,6 +1071,40 @@ def model_status() -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
+@click.command('providers')
+@click.option('--no-probe', is_flag=True,
+              help='Report what is configured without making any requests.')
+@click.option('--source', 'sources', multiple=True,
+              help='Report on one provider. Repeat for several.')
+def provider_status_command(no_probe: bool, sources: tuple[str, ...]) -> None:
+    """Show which providers are set up and which are answering.
+
+    Makes one cheap read-only request per configured provider, paced by that
+    provider's own limiter, so a full sweep takes a few seconds. Exits non-zero
+    when a configured provider is not answering, so it can gate a script.
+    """
+    from paperminertoolkit.workflows.diagnostics import provider_status
+
+    names = list(sources) or None
+    rows = provider_status(names, probe=not no_probe)
+    width = max(len(row.label) for row in rows)
+    for row in rows:
+        took = f' {row.seconds:.1f}s' if row.seconds else ''
+        credential = row.credential or '-'
+        detail = row.detail if len(row.detail) <= 76 else f'{row.detail[:73]}...'
+        click.echo(f'{row.label:<{width}}  {row.state:<15} {credential:<18} {detail}{took}')
+    broken = [row for row in rows if row.is_problem]
+    if broken:
+        click.echo('')
+        # A refusal usually names its own remedy, so the reason is reprinted
+        # whole here rather than only in the shortened column above.
+        for row in broken:
+            click.echo(f'{row.label}: {row.detail}', err=True)
+        click.echo(f'\n{len(broken)} configured provider(s) not responding: '
+                   f'{", ".join(row.label for row in broken)}', err=True)
+        raise SystemExit(1)
+
+
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def reset_miner(db_path: str) -> None:
@@ -1144,8 +1188,10 @@ main.add_command(import_group)
 
 config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
+config_group.add_command(provider_status_command, 'providers')
 config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
 config_group.add_command(click.command('core-key')(update_core_api_key))
+config_group.add_command(click.command('core-rate')(update_core_request_rate))
 config_group.add_command(click.command('unpaywall-email')(update_unpaywall_api_email))
 config_group.add_command(click.command('crossref-email')(update_crossref_api_email))
 config_group.add_command(click.command('openalex-key')(update_openalex_api_key))

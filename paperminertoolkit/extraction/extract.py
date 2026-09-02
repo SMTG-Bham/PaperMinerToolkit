@@ -7,7 +7,7 @@ records are stored.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 import json
 import math
 from os import PathLike
@@ -421,6 +421,7 @@ def scrape_images(
     model_config: ModelConfig | None = None,
     context: str | None = None,
     compression_config: CompressionConfig | None = None,
+    image_labels: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured recipe-defined records from paper images.
 
@@ -436,6 +437,9 @@ def scrape_images(
         Paper text supplied as additional context.
     compression_config : CompressionConfig | None, optional
         Compression policy for the model payload.
+    image_labels : Sequence[str] or None, optional
+        Per-image descriptions, such as a figure label and caption, sent
+        immediately before their image.
 
     Returns
     -------
@@ -449,7 +453,8 @@ def scrape_images(
                             config=config,
                             context=context,
                             max_output_tokens=10000,
-                            compression_config=compression_config)
+                            compression_config=compression_config,
+                            image_labels=image_labels)
     return _extract_json_objects(response)
 
 

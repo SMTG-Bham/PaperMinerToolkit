@@ -50,9 +50,9 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'prompt'}
     assert set(cli.config_group.commands) == {
-        'model', 'status', 'elsevier-key', 'core-key', 'unpaywall-email',
-        'crossref-email', 'openalex-key', 'ncbi-key', 'ncbi-email',
-        'openai-key', 'anthropic-key',
+        'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
+        'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
+        'ncbi-email', 'openai-key', 'anthropic-key',
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
                   cli.import_group, cli.config_group, cli.recipe_group]:
@@ -316,6 +316,14 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
             kind='pdf',
             mime_type='application/pdf',
         )
+        corpus.add_structured_document(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            '<article/>',
+            document_format='jats',
+            source='pubmed',
+            original_filename='paper.nxml',
+        )
         papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
         papers['paper:1']['num_text_chunks'] = 3
         papers['paper:2']['num_abstract_chunks'] = 2
@@ -330,9 +338,10 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
     assert 'Papers with abstracts: 1' in result.output
     assert 'Papers with text: 1' in result.output
     assert 'Papers with PDFs: 1' in result.output
+    assert 'Papers with structured documents: 1' in result.output
     assert 'Text scrapes split into chunks: 1' in result.output
     assert 'Abstract scrapes split into chunks: 1' in result.output
-    assert 'Blobs: 3' in result.output
+    assert 'Blobs: 4' in result.output
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output
@@ -798,6 +807,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     calls = []
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
+    monkeypatch.setattr(cli, 'update_core_rate', lambda: calls.append('core-rate'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
     monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
     monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
@@ -808,6 +818,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
+    cli.update_core_request_rate()
     cli.update_unpaywall_api_email()
     cli.update_crossref_api_email()
     cli.update_openalex_api_key()
@@ -816,8 +827,8 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'crossref', 'openalex',
-                     'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'core-rate', 'unpaywall', 'crossref',
+                     'openalex', 'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1163,3 +1174,32 @@ def test_filter_topic_prints_the_successful_overview(
     result = CliRunner().invoke(cli.filter_topic, [str(db_path), str(rules_path)])
     assert result.exit_code == 0
     assert seen == [(str(db_path), overview)]
+
+
+def test_config_providers_prints_a_row_per_provider_and_flags_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report every provider, and exit non-zero only for a configured failure.
+
+    The exit code is what lets this gate a script, so it has to distinguish a
+    service that is down from a credential nobody supplied.
+    """
+    import paperminertoolkit.workflows.diagnostics as diagnostics
+    from click.testing import CliRunner
+
+    rows = [
+        diagnostics.ProviderStatus('arxiv', 'arXiv', '', diagnostics.OK, 'answered', 0.4),
+        diagnostics.ProviderStatus('core', 'CORE', 'CORE_API_KEY', diagnostics.NOT_SET_UP,
+                                   'unusable without it; run pmt config core-key'),
+    ]
+    monkeypatch.setattr(diagnostics, 'provider_status', lambda *_, **__: rows)
+    result = CliRunner().invoke(cli.main, ['config', 'providers', '--no-probe'])
+    assert result.exit_code == 0
+    assert 'arXiv' in result.output and 'answered 0.4s' in result.output
+    assert 'unusable without it' in result.output
+
+    rows.append(diagnostics.ProviderStatus('chemrxiv', 'chemRxiv', '',
+                                           diagnostics.NOT_RESPONDING, '403 bot challenge', 0.1))
+    result = CliRunner().invoke(cli.main, ['config', 'providers'])
+    assert result.exit_code == 1
+    assert '1 configured provider(s) not responding: chemRxiv' in result.output

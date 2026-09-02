@@ -173,7 +173,8 @@ def load_settings() -> dict[str, Any]:
         raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
 
     merged = deepcopy(DEFAULT_SETTINGS)
-    for key in ['elsevier_api_key', 'core_api_key', 'unpaywall_email', 'openalex_api_key', 'openai_api_key',
+    for key in ['elsevier_api_key', 'core_api_key', 'core_min_interval',
+                'unpaywall_email', 'openalex_api_key', 'openai_api_key',
                 'anthropic_api_key', 'crossref_email', 'ncbi_api_key', 'ncbi_email']:
         if key in settings:
             merged[key] = settings[key]
@@ -194,6 +195,9 @@ def load_settings() -> dict[str, Any]:
     core_api_key = os.environ.get('CORE_API_KEY')
     if core_api_key:
         merged['core_api_key'] = core_api_key
+    core_min_interval = os.environ.get('CORE_MIN_INTERVAL')
+    if core_min_interval:
+        merged['core_min_interval'] = core_min_interval
     unpaywall_email = os.environ.get('UNPAYWALL_EMAIL')
     if unpaywall_email:
         merged['unpaywall_email'] = unpaywall_email
@@ -509,6 +513,48 @@ def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     _show_current_setting(settings, 'core_api_key', 'CORE API key')
     api_key = input('Enter CORE API key: ')
     settings['core_api_key'] = api_key
+    _save_settings(settings)
+
+
+def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
+    """Prompt for and save the seconds to leave between CORE requests.
+
+    CORE grants registered organisations and members a faster pace than the
+    free allowance, agreed individually and published nowhere, so the pace is
+    entered directly rather than derived from a membership level.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True], default=True
+        Settings mapping to update. A true value loads the current settings.
+
+    Raises
+    ------
+    ValueError
+        If the entered value is not a positive number.
+    """
+    from paperminertoolkit.providers.core import (CORE_FREE_SINGLE_PER_WINDOW,
+                                                  CORE_MIN_INTERVAL,
+                                                  CORE_WINDOW_SECONDS)
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, 'core_min_interval',
+                          'CORE seconds between requests', secret=False)
+    print(f'Leave blank for CORE\'s free allowance of {CORE_FREE_SINGLE_PER_WINDOW} requests '
+          f'per {CORE_WINDOW_SECONDS:.0f} seconds, which is {CORE_MIN_INTERVAL:.1f} seconds '
+          'between requests. Enter a smaller number only if CORE granted you a faster rate.')
+    entered = input('Enter seconds between CORE requests: ').strip()
+    if not entered:
+        settings.pop('core_min_interval', None)
+        _save_settings(settings)
+        return
+    try:
+        interval = float(entered)
+    except ValueError as error:
+        raise ValueError('CORE request pace must be a number of seconds.') from error
+    if interval <= 0:
+        raise ValueError('CORE request pace must be greater than zero seconds.')
+    settings['core_min_interval'] = interval
     _save_settings(settings)
 
 

@@ -165,6 +165,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'openai_api_key': 'file-openai',
         'anthropic_api_key': 'file-anthropic',
         'core_api_key': 'file-core',
+        'core_min_interval': 2.0,
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
         'crossref_email': 'file-crossref@example.com',
@@ -175,6 +176,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-anthropic')
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
+    monkeypatch.setenv('CORE_MIN_INTERVAL', '0.25')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
     monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
@@ -187,6 +189,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['openai_api_key'] == 'env-openai'
     assert loaded['anthropic_api_key'] == 'env-anthropic'
     assert loaded['core_api_key'] == 'env-core'
+    assert loaded['core_min_interval'] == '0.25'
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
     assert loaded['crossref_email'] == 'env-crossref@example.com'
@@ -365,6 +368,45 @@ def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, mon
     output = capsys.readouterr().out
     assert 'Current CORE API key: old-...-key' in output
     assert settings.load_settings()['core_api_key'] == 'core-key'
+
+
+def test_update_core_rate_saves_a_granted_pace(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Save the seconds CORE granted between requests, and show the default.
+
+    CORE publishes no figure for the faster paces it grants, so the pace is
+    entered directly and the prompt states the free allowance it replaces.
+    """
+    monkeypatch.setattr('builtins.input', lambda _: '0.2')
+
+    settings.update_core_rate()
+
+    output = capsys.readouterr().out
+    assert settings.load_settings()['core_min_interval'] == 0.2
+    assert '5 requests per 10 seconds' in output
+    assert '2.0 seconds between requests' in output
+
+
+def test_update_core_rate_clears_the_pace_and_rejects_bad_values(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return to the free allowance on a blank entry and refuse a bad pace."""
+    settings._save_settings({'core_min_interval': 0.2})
+    monkeypatch.setattr('builtins.input', lambda _: '')
+    settings.update_core_rate()
+    assert 'core_min_interval' not in settings.load_settings()
+
+    monkeypatch.setattr('builtins.input', lambda _: 'quickly')
+    with pytest.raises(ValueError, match='must be a number of seconds'):
+        settings.update_core_rate()
+
+    monkeypatch.setattr('builtins.input', lambda _: '0')
+    with pytest.raises(ValueError, match='greater than zero'):
+        settings.update_core_rate()
 
 
 def test_check_elsevier_api_key_delegates_to_the_elsevier_client(

@@ -29,7 +29,7 @@ def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(crossref.provider, 'request', lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError, match='failed after'):
         crossref._request_page(None, {}, 'person@example.org')
-    for kwargs, message in [({}, 'exactly one'), ({'author_name': 'Jane Smith', 'email': ''}, 'contact email'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'max_results': 0}, 'positive'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'page_size': 0}, 'between')]:
+    for kwargs, message in [({}, 'exactly one'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'max_results': 0}, 'positive'), ({'author_name': 'Jane Smith', 'email': 'a@b.com', 'page_size': 0}, 'between')]:
         with pytest.raises(ValueError, match=message):
             crossref.author_works(**kwargs)
     monkeypatch.setattr(crossref, 'work_matches_author', lambda *args, **kwargs: True)
@@ -37,6 +37,9 @@ def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', page_size=3)) == 1
     monkeypatch.setattr(crossref, '_request_page', lambda *args, **kwargs: {'items': [{'DOI': '10.1/A'}]})
     assert len(crossref.author_works(author_name='Ada Lovelace', email='ada@example.org', max_results=1)) == 1
+    # Crossref does not require a contact address, so discovery without one is
+    # allowed rather than refused; it just runs at the public pool's pace.
+    assert len(crossref.author_works(author_name='Ada Lovelace', email='')) == 1
 
 
 def work(
@@ -263,14 +266,51 @@ def test_configured_email_reads_the_stored_setting() -> None:
 
 
 def test_resolve_email_prefers_an_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prefer an explicit address, fall back to settings, then fail clearly."""
+    """Prefer an explicit address and fall back to the stored setting."""
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: 'stored@example.com')
     assert crossref.resolve_email('explicit@example.com') == 'explicit@example.com'
     assert crossref.resolve_email(None) == 'stored@example.com'
+    assert crossref.resolve_email('  spaced@example.com  ') == 'spaced@example.com'
 
+
+def test_resolve_email_refuses_a_supplied_address_it_cannot_use() -> None:
+    """Fail on an address the caller meant to be used but Crossref cannot be.
+
+    An absent address is a choice to go anonymous; a supplied one that is not
+    an address is a mistake, and silently downgrading the pool would hide it.
+    """
+    with pytest.raises(ValueError, match='not a usable Crossref contact address'):
+        crossref.resolve_email('not-an-address')
+
+
+def test_resolve_email_goes_anonymous_and_reports_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Make Crossref requests without an address rather than refusing them.
+
+    Crossref does not require a contact address, so an absent one costs the
+    polite pool's rate rather than the request. The notice explains that cost
+    once per process, because a run can make hundreds of Crossref requests.
+    """
     monkeypatch.setattr(crossref, 'configured_email', lambda settings=None: '')
-    with pytest.raises(ValueError, match='pmt config crossref-email'):
-        crossref.resolve_email(None)
+    monkeypatch.setattr(crossref, '_reported_missing_contact_address', False)
+
+    assert crossref.resolve_email(None) == ''
+    first = capsys.readouterr().out
+    assert 'public pool at 5 requests per second' in first
+    assert "polite pool's 10" in first
+    assert 'pmt config crossref-email' in first
+
+    assert crossref.resolve_email(None) == ''
+    assert capsys.readouterr().out == ''
+
+
+def test_contact_params_omits_an_absent_address() -> None:
+    """Send mailto only when there is an address, never as an empty claim."""
+    assert crossref.contact_params('me@example.com') == {'mailto': 'me@example.com'}
+    assert crossref.contact_params('') == {}
+    assert crossref.contact_params() == {}
 
 
 def test_request_page_accepts_an_alternate_url() -> None:
@@ -319,6 +359,26 @@ def test_works_by_doi_routes_comma_bearing_dois_to_the_single_work_route() -> No
     assert set(works) == {'10.1234/plain', '10.1234/with,comma'}
 
 
+def test_min_interval_follows_the_pool_the_contact_address_qualifies_for() -> None:
+    """Pace at the polite pool's rate once a contact address is advertised.
+
+    Crossref serves a client naming a contact address ten requests a second
+    and one that does not five, announced on every response in
+    ``X-Rate-Limit-Limit`` over an ``X-Rate-Limit-Interval`` of one second.
+    """
+    assert crossref.CROSSREF_PUBLIC_MIN_INTERVAL == pytest.approx(1 / 5)
+    assert crossref.CROSSREF_POLITE_MIN_INTERVAL == pytest.approx(1 / 10)
+    assert crossref.min_interval('me@example.com') == crossref.CROSSREF_POLITE_MIN_INTERVAL
+    assert crossref.min_interval('') == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    assert crossref.min_interval(None) == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    # An unusable address cannot qualify for the polite pool, so it must not be
+    # paced as though it had.
+    assert crossref.min_interval('not-an-address') == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+    # The limiter's own window is the public-pool floor, so a request that
+    # somehow carries no address is still paced conservatively.
+    assert crossref.LIMITER.min_interval == crossref.CROSSREF_PUBLIC_MIN_INTERVAL
+
+
 def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pace consecutive Crossref requests without sleeping before the first."""
     sleeps = []
@@ -328,7 +388,21 @@ def test_works_by_doi_sleeps_between_consecutive_batches(monkeypatch: pytest.Mon
     crossref.works_by_doi(['10.1234/one', '10.1234/two'], email='me@example.com',
                           session=session, batch_size=1)
 
-    assert sleeps == [pytest.approx(crossref.CROSSREF_MIN_INTERVAL, abs=1e-3)]
+    assert sleeps == [pytest.approx(crossref.CROSSREF_POLITE_MIN_INTERVAL, abs=1e-3)]
+
+
+def test_request_page_paces_an_addressless_request_at_the_public_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fall back to the public-pool pace when no contact address is sent."""
+    sleeps = []
+    monkeypatch.setattr(provider.time, 'sleep', sleeps.append)
+    session = FakeSession([{'items': []}, {'items': []}])
+
+    crossref._request_page(session, {}, '')
+    crossref._request_page(session, {}, '')
+
+    assert sleeps == [pytest.approx(crossref.CROSSREF_PUBLIC_MIN_INTERVAL, abs=1e-3)]
 
 
 def test_works_by_doi_rejects_an_invalid_batch_size() -> None:
