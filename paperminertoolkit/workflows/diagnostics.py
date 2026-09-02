@@ -34,6 +34,9 @@ NOT_PROBED = 'not probed'
 # A DOI every metadata provider knows, used so a probe exercises a real lookup
 # rather than an endpoint that answers whatever it is asked.
 PROBE_DOI = '10.1038/nature12373'
+# A CORE record used only to prove CORE answers. Its content does not matter,
+# and a withdrawn record still answers, so this needs no maintenance.
+CORE_PROBE_ID = '24003915'
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +121,33 @@ def _probe_elsevier() -> str:
 
 
 def _probe_core() -> str:
-    """Search for one record through CORE."""
-    core.search_page('graphene', page_size=1, api_key=core.configured_api_key())
+    """Look one record up by identifier, which CORE answers quickly.
+
+    CORE's search endpoint takes 45 to 70 seconds for a broad query, which is
+    the service rather than the pacing, and far too slow for a status check. A
+    single-record lookup answers in a few seconds. A record that has since been
+    withdrawn still proves CORE responded, so an empty result is a success
+    here; only a failed request is not.
+    """
+    core.get_work(CORE_PROBE_ID, api_key=core.configured_api_key())
     return 'answered'
+
+
+def _probe_openalex_content() -> str:
+    """Check the cached-PDF route, which is the one probe that costs.
+
+    Content routes have no free allowance, and a HEAD is billed exactly as a
+    GET is, so this spends 100 credits of the daily budget. It saves the
+    transfer, not the charge, which is why the cost is reported rather than
+    hidden.
+    """
+    key = openalex.configured_api_key() or ''
+    work = openalex.get_work(f'doi:{PROBE_DOI}', api_key=key)
+    url = openalex.cached_pdf_url(work or {})
+    if not url:
+        raise RuntimeError('OpenAlex holds no cached PDF for the probe record')
+    size = openalex.cached_pdf_available(url, key)
+    return f'{size:,} byte PDF available; cost 100 credits'
 
 
 def _probe_unpaywall() -> str:
@@ -230,7 +257,7 @@ def provider_status(names: Sequence[str] | None = None, probe: bool = True) -> l
         checker = registry.resolve_probe(name)
         if checker is None:
             rows.append(ProviderStatus(name, entry.label, credential, NOT_PROBED,
-                                       'not probed, as its only route is metered'))
+                                       'no probe registered'))
             continue
         start = time.monotonic()
         try:
@@ -242,9 +269,11 @@ def provider_status(names: Sequence[str] | None = None, probe: bool = True) -> l
             # An exception may carry no message at all, which splitlines()
             # reports as no lines rather than one empty one.
             lines = str(error).strip().splitlines()
-            message = lines[0] if lines else ''
-            detail = (message[:117] + '...') if len(message) > 120 else message
-            detail = detail or type(error).__name__
+            # The whole reason is kept. A provider's refusal often carries the
+            # remedy in its second half, so shortening it here would throw away
+            # the useful part; the display shortens it instead, and reprints it
+            # in full underneath.
+            detail = (lines[0] if lines else '') or type(error).__name__
             state = NOT_RESPONDING
         rows.append(ProviderStatus(name, entry.label, credential, state, detail,
                                    time.monotonic() - start))

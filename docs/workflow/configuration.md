@@ -17,14 +17,16 @@ service is simply down:
 | `ok` | it answered; the detail says what its credentials earned |
 | `not set up` | a credential it cannot work without is missing |
 | `not responding` | it was asked and refused, or did not answer |
-| `not probed` | asking would have spent a metered request |
+| `not probed` | no probe is registered for it |
 
 ```
 Crossref             ok              CROSSREF_EMAIL     public pool, 5/s; run pmt config crossref-email for more 0.3s
-OpenAlex             ok              OPENALEX_API_KEY   9,900 of 10,000 daily credits left 0.3s
-OpenAlex cached PDF  not probed      OPENALEX_API_KEY   not probed, as its only route is metered
-PubMed               ok              NCBI_API_KEY       3/s unauthenticated; run pmt config ncbi-key for more 0.9s
-Elsevier             not set up      ELSEVIER_API_KEY   unusable without it; run pmt config elsevier-key
+OpenAlex             ok              OPENALEX_API_KEY   9,800 of 10,000 daily credits left 0.4s
+OpenAlex cached PDF  ok              OPENALEX_API_KEY   1,031,677 byte PDF available; cost 100 credits 0.7s
+PubMed               ok              NCBI_API_KEY       3/s unauthenticated; run pmt config ncbi-key for more 0.4s
+Elsevier             ok              ELSEVIER_API_KEY   key accepted, 19,996 of 20,000 requests left this period 0.6s
+CORE                 ok              CORE_API_KEY       answered 20.2s
+Unpaywall            ok              UNPAYWALL_EMAIL    answered 0.3s
 arXiv                ok              -                  answered 0.1s
 chemRxiv             not responding  -                  chemRxiv refused the request with 403 ... 0.1s
 ```
@@ -36,9 +38,21 @@ add -- whether they answer is the question this command exists for, and reportin
 them as unconfigured would hide it.
 
 Each check is the cheapest read-only request its provider documents, paced through
-that provider's own limiter, so a full sweep takes a few seconds. Nothing metered is
-ever spent: a provider whose only route is billed is reported rather than charged.
-Credentials are never printed, only named.
+that provider's own limiter, so it obeys the same pacing a run does. Credentials are
+never printed, only named.
+
+:::{warning}
+One check costs credits. OpenAlex content routes have no free allowance, and a `HEAD`
+is billed exactly as a `GET` is, so probing the cached PDF spends **100 credits**, or
+about 1% of a free key's daily budget. It saves the several-megabyte transfer, not the
+charge, and the row reports the cost. Use `--no-probe`, or `--source` without
+`openalex-content`, to check the rest for nothing.
+:::
+
+Expect a full sweep to take around half a minute rather than a few seconds, almost all
+of it CORE: its API answers a single-record lookup in about twenty seconds, and a
+search in forty-five to seventy, which is the service rather than the pacing. The
+lookup is used for exactly that reason.
 
 The command exits non-zero when a provider that *is* configured fails, so it can gate
 a script. A provider that is merely unconfigured is a choice, not a fault, and does
@@ -106,10 +120,23 @@ does not help, because each refusal costs more waiting than the pace saved.
 chemRxiv needs no credentials and publishes no rate limit either, and PaperMinerToolkit paces it at
 one request per second as well. Unlike medRxiv and bioRxiv it does have a search endpoint, so a
 broad query costs pages rather than a walk of the archive, and narrowing one saves the server
-work rather than saving you a long read. chemrxiv.org is fronted by a bot challenge that can
-refuse a client outright; PaperMinerToolkit does not try to get around it, and reports the refusal as
-the reason a search or download failed. When that happens the same papers are still reachable
-through the `openalex` and `crossref` sources.
+work rather than saving you a long read.
+
+chemrxiv.org is fronted by Cloudflare, which can answer an automated client with an interactive
+challenge instead of data: an HTTP 403 carrying `cf-mitigated: challenge` and a page reading "Just a
+moment... Enable JavaScript and cookies to continue". Getting past that needs a browser to execute
+the challenge, and PaperMinerToolkit does not try; it reports the refusal as the reason a search or
+download failed, and `pmt config providers` reports it as `not responding`.
+
+Whether you meet the challenge depends on where you are requesting from, so this is not a
+statement that chemRxiv is unavailable. Its public API needs no key and is documented as open. If
+you are challenged, both the API and the asset host that serves its PDFs are affected, so when it
+happens:
+
+- **Metadata is still reachable**, through the `openalex` and `crossref` sources. Every chemRxiv
+  preprint carries a `10.26434` DOI, and both providers hold the record.
+- **PDFs generally are not**, because the open-access location Unpaywall and OpenAlex report for a
+  chemRxiv preprint usually points back at chemrxiv.org, which is behind the same challenge.
 
 ## Request pacing
 

@@ -1091,12 +1091,17 @@ def provider_status_command(no_probe: bool, sources: tuple[str, ...]) -> None:
     for row in rows:
         took = f' {row.seconds:.1f}s' if row.seconds else ''
         credential = row.credential or '-'
-        click.echo(f'{row.label:<{width}}  {row.state:<15} {credential:<18} '
-                   f'{row.detail}{took}')
-    broken = [row.label for row in rows if row.is_problem]
+        detail = row.detail if len(row.detail) <= 76 else f'{row.detail[:73]}...'
+        click.echo(f'{row.label:<{width}}  {row.state:<15} {credential:<18} {detail}{took}')
+    broken = [row for row in rows if row.is_problem]
     if broken:
+        click.echo('')
+        # A refusal usually names its own remedy, so the reason is reprinted
+        # whole here rather than only in the shortened column above.
+        for row in broken:
+            click.echo(f'{row.label}: {row.detail}', err=True)
         click.echo(f'\n{len(broken)} configured provider(s) not responding: '
-                   f'{", ".join(broken)}', err=True)
+                   f'{", ".join(row.label for row in broken)}', err=True)
         raise SystemExit(1)
 
 

@@ -26,6 +26,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 from urllib.parse import quote
 
+import requests
+
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 from paperminertoolkit.settings import load_settings
@@ -77,6 +79,7 @@ LIMITER = provider.RateLimiter(OPENALEX_MIN_INTERVAL)
 BUDGET_LIMIT_HEADER = 'X-RateLimit-Limit'
 BUDGET_REMAINING_HEADER = 'X-RateLimit-Remaining'
 BUDGET_RESET_HEADER = 'X-RateLimit-Reset'
+DEFAULT_CONTENT_TIMEOUT = 60.0
 _budget: provider.Budget | None = None
 
 
@@ -762,6 +765,49 @@ def _decoded_content(response: provider.ResponseLike) -> str:
         except (OSError, UnicodeDecodeError) as error:
             raise ValueError(f'OpenAlex content could not be decompressed: {error}') from error
     return response.text or ''
+
+
+def cached_pdf_available(url: str, api_key: str) -> int:
+    """Check that OpenAlex will serve a cached PDF, without downloading it.
+
+    A ``HEAD`` is billed exactly as a ``GET`` is -- 100 credits, confirmed
+    against the service -- so this saves the transfer rather than the cost.
+    That is still worth having for a reachability check, where several
+    megabytes would be fetched only to be discarded.
+
+    Parameters
+    ----------
+    url : str
+        Cached PDF URL from :func:`cached_pdf_url`.
+    api_key : str
+        OpenAlex API key. Content routes have no keyless allowance.
+
+    Returns
+    -------
+    int
+        Size the response declares, or ``0`` when it declares none.
+
+    Raises
+    ------
+    ValueError
+        If no API key is supplied.
+    RuntimeError
+        If the budget is spent, or OpenAlex does not serve the PDF.
+    """
+    if not api_key.strip():
+        raise ValueError('OpenAlex content downloads require an API key')
+    check_budget(api_key)
+    LIMITER.wait()
+    response = requests.head(url, params={'api_key': api_key}, headers=request_headers(),
+                             timeout=DEFAULT_CONTENT_TIMEOUT, allow_redirects=True)
+    record_budget(response, api_key)
+    if response.status_code >= 400:
+        raise RuntimeError(_terminal_error(response, api_key)
+                           or f'OpenAlex refused the cached PDF with {response.status_code}')
+    media_type = str(response.headers.get('Content-Type', ''))
+    if 'pdf' not in media_type.lower():
+        raise RuntimeError(f'OpenAlex served {media_type or "no media type"} rather than a PDF')
+    return provider.header_int(response.headers, 'Content-Length') or 0
 
 
 def full_text_document(

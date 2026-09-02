@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import NoReturn
 
 import pytest
@@ -10,18 +11,23 @@ import paperminertoolkit.workflows.diagnostics as diagnostics
 from paperminertoolkit.providers import registry
 
 
-def test_every_free_provider_declares_a_probe() -> None:
-    """Give each source a probe unless asking it would cost something.
-
-    A source with no probe is reported as unchecked rather than as working, so
-    a missing one silently downgrades the report. Only a source whose sole
-    route is metered is allowed to have none.
-    """
-    unprobed = {name for name in registry.SOURCES if not registry.SOURCES[name].probe}
-    assert unprobed == {'openalex-content'}
+def test_every_provider_declares_a_probe() -> None:
+    """Give every source a probe, so none is silently reported as unchecked."""
+    assert not [name for name in registry.SOURCES if not registry.SOURCES[name].probe]
     for name in registry.SOURCES:
-        probe = registry.resolve_probe(name)
-        assert probe is None or callable(probe)
+        assert callable(registry.resolve_probe(name))
+
+
+def test_only_the_content_probe_costs_anything() -> None:
+    """Keep the one billed probe identifiable, since it spends a real budget.
+
+    Every other probe is free: OpenAlex's singleton lookup is documented as
+    costing nothing, and the rest are unmetered services. Content routes have
+    no free allowance at all, so that probe is the one a caller may want to
+    avoid, which is what ``--no-probe`` is for.
+    """
+    assert diagnostics._probe_openalex_content.__doc__ is not None
+    assert 'costs' in diagnostics._probe_openalex_content.__doc__
 
 
 def test_a_missing_optional_credential_does_not_stop_the_check(
@@ -72,25 +78,32 @@ def test_a_configured_provider_that_fails_is_the_only_reported_fault(
     assert rows['chemrxiv'].is_problem is True
     # Only the first line is kept, so one row stays one row.
     assert rows['chemrxiv'].detail == 'chemRxiv refused the request with 403'
+    assert 'second line' not in rows['chemrxiv'].detail
     # A required credential that is absent is a choice, not a fault.
     assert rows['core'].is_problem is False
 
 
-def test_a_long_failure_is_truncated_and_an_empty_one_is_named(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep one failure to one line, however the provider phrased it."""
+def test_a_failure_keeps_its_whole_first_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the entire reason, because its remedy is usually in the tail.
+
+    chemRxiv's refusal names the bot challenge and then says which sources
+    reach the same papers instead. Shortening the reason here would keep the
+    half that states the problem and drop the half that solves it, so the
+    display shortens it for the column and reprints it whole underneath.
+    """
     monkeypatch.setattr(diagnostics, 'load_settings', lambda: {'ncbi_api_key': 'k'})
     monkeypatch.setattr(diagnostics.os, 'environ', {})
 
+    reason = 'refused with 403. ' + 'the remedy is in this tail ' * 12
+
     def verbose() -> NoReturn:
-        """Fail at length."""
-        raise RuntimeError('x' * 400)
+        """Fail at length, with the useful part last."""
+        raise RuntimeError(reason + '\nsecond line dropped')
 
     monkeypatch.setattr(diagnostics.registry, 'resolve_probe', lambda name: verbose)
     row = diagnostics.provider_status(['pubmed'])[0]
-    assert len(row.detail) == 120
-    assert row.detail.endswith('...')
+    assert row.detail == reason
+    assert len(row.detail) > 120
 
     def silent() -> NoReturn:
         """Fail with nothing to say."""
@@ -121,18 +134,131 @@ def test_no_probe_reports_configuration_without_requesting_anything(
     assert all(row.seconds == 0.0 for row in rows.values())
 
 
-def test_a_metered_only_source_is_reported_rather_than_charged(
+def test_the_cached_pdf_probe_reports_its_size_and_its_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Never spend a metered request to prove a metered request can be spent."""
-    monkeypatch.setattr(diagnostics, 'load_settings', lambda: {'openalex_api_key': 'k'})
-    monkeypatch.setattr(diagnostics.os, 'environ', {})
+    """Check the billed route, and say what checking it cost.
 
-    row = diagnostics.provider_status(['openalex-content'])[0]
+    A HEAD is billed exactly as a GET is, so this probe spends 100 credits. It
+    saves the several-megabyte transfer rather than the charge, and the charge
+    is reported so it is never a surprise.
+    """
+    monkeypatch.setattr(diagnostics.openalex, 'configured_api_key', lambda *_, **__: 'k')
+    monkeypatch.setattr(diagnostics.openalex, 'get_work', lambda *_, **__: {'id': 'W1'})
+    monkeypatch.setattr(diagnostics.openalex, 'cached_pdf_url',
+                        lambda *_, **__: 'https://content.openalex.org/works/W1.pdf')
+    monkeypatch.setattr(diagnostics.openalex, 'cached_pdf_available', lambda *_, **__: 1_031_677)
+
+    assert diagnostics._probe_openalex_content() == (
+        '1,031,677 byte PDF available; cost 100 credits')
+
+    monkeypatch.setattr(diagnostics.openalex, 'cached_pdf_url', lambda *_, **__: '')
+    with pytest.raises(RuntimeError, match='holds no cached PDF'):
+        diagnostics._probe_openalex_content()
+
+
+def test_a_source_without_a_probe_is_reported_as_unchecked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report an unregistered probe rather than implying the source works."""
+    monkeypatch.setattr(diagnostics, 'load_settings', lambda: {})
+    monkeypatch.setattr(diagnostics.os, 'environ', {})
+    monkeypatch.setattr(diagnostics.registry, 'resolve_probe', lambda name: None)
+
+    row = diagnostics.provider_status(['arxiv'])[0]
 
     assert row.state == diagnostics.NOT_PROBED
-    assert row.detail == 'not probed, as its only route is metered'
+    assert row.detail == 'no probe registered'
     assert row.is_problem is False
+
+
+# Every provider call any probe makes, with a stand-in result. Patching all of
+# them keeps this test off the network however the probes are rearranged.
+PROBE_CALLS = [
+    ('core', 'get_work', {}),
+    ('core', 'configured_api_key', 'k'),
+    ('unpaywall', 'get_work', {}),
+    ('arxiv', 'request_xml', {}),
+    ('medrxiv', 'request_json', {}),
+    ('biorxiv', 'request_json', {}),
+    ('chemrxiv', 'request_json', {}),
+    ('pubmed', 'esearch', ([], '')),
+    ('pubmed', 'configured_api_key', 'k'),
+    ('pubmed', 'configured_email', ''),
+    ('crossref', 'work_by_doi', {}),
+    ('crossref', 'resolve_email', ''),
+    ('openalex', 'get_work', {'id': 'https://openalex.org/W1'}),
+    ('openalex', 'configured_api_key', 'k'),
+    ('openalex', 'budget_status', None),
+    ('openalex', 'cached_pdf_url', 'https://content.openalex.org/works/W1.pdf'),
+    ('openalex', 'cached_pdf_available', 1024),
+    ('elsevier', 'check_api_key', True),
+    ('elsevier', 'configured_api_key', 'k'),
+    ('elsevier', 'quota_status', None),
+]
+# The call that proves each source was actually reached.
+PROBE_TARGETS = [
+    ('core', 'core', 'get_work'),
+    ('unpaywall', 'unpaywall', 'get_work'),
+    ('arxiv', 'arxiv', 'request_xml'),
+    ('medrxiv', 'medrxiv', 'request_json'),
+    ('biorxiv', 'biorxiv', 'request_json'),
+    ('chemrxiv', 'chemrxiv', 'request_json'),
+    ('pubmed', 'pubmed', 'esearch'),
+    ('crossref', 'crossref', 'work_by_doi'),
+    ('openalex', 'openalex', 'get_work'),
+    ('elsevier', 'elsevier', 'check_api_key'),
+    ('openalex-content', 'openalex', 'cached_pdf_available'),
+]
+
+
+@pytest.mark.parametrize(('source', 'module_name', 'function_name'), PROBE_TARGETS)
+def test_each_probe_calls_its_provider_with_arguments_it_accepts(
+    source: str,
+    module_name: str,
+    function_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bind each probe's call against the real signature it is aimed at.
+
+    Replacing a provider function with a permissive stub makes a probe test
+    pass whatever the probe passes, which is how ``core.search_page`` came to
+    be called with a ``page_size`` argument it does not take: the fault only
+    appeared once someone configured a CORE key and the probe actually ran.
+    Binding against the genuine signature catches that without a network call.
+
+    Parameters
+    ----------
+    source : str
+        Registry source whose probe is under test.
+    module_name : str
+        Provider module attribute on the diagnostics module.
+    function_name : str
+        Function that proves the provider was reached.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to substitute every provider call.
+    """
+    reached: list[str] = []
+
+    def substitute(module: object, name: str, result: object) -> None:
+        """Replace one provider call with a signature-checked stand-in."""
+        signature = inspect.signature(getattr(module, name))
+
+        def checked(*args: object, **kwargs: object) -> object:
+            """Reject a call the real function could not have accepted."""
+            signature.bind(*args, **kwargs)
+            reached.append(name)
+            return result
+
+        monkeypatch.setattr(module, name, checked)
+
+    for patched_module, patched_function, result in PROBE_CALLS:
+        substitute(getattr(diagnostics, patched_module), patched_function, result)
+
+    probe = registry.resolve_probe(source)
+    assert probe is not None
+    probe()
+    assert function_name in reached, f'{source} probe never called {function_name}'
 
 
 def test_probes_report_what_each_provider_reveals(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,16 +291,13 @@ def test_probes_report_what_each_provider_reveals(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(RuntimeError, match='rejected the API key'):
         diagnostics._probe_elsevier()
 
-    for probe, module, function in [
-        (diagnostics._probe_core, diagnostics.core, 'search_page'),
-        (diagnostics._probe_unpaywall, diagnostics.unpaywall, 'get_work'),
-        (diagnostics._probe_arxiv, diagnostics.arxiv, 'request_xml'),
-        (diagnostics._probe_medrxiv, diagnostics.medrxiv, 'request_json'),
-        (diagnostics._probe_biorxiv, diagnostics.biorxiv, 'request_json'),
-        (diagnostics._probe_chemrxiv, diagnostics.chemrxiv, 'request_json'),
-    ]:
-        monkeypatch.setattr(module, function, lambda *_, **__: {})
-        assert probe() == 'answered'
+    # The providers whose probes report only that they answered are covered by
+    # test_each_probe_calls_its_provider_with_arguments_it_accepts, which
+    # exercises every one of them without a network call.
+    monkeypatch.setattr(diagnostics.core, 'get_work', lambda *_, **__: None)
+    monkeypatch.setattr(diagnostics.core, 'configured_api_key', lambda *_, **__: 'k')
+    # A withdrawn record is an answer: CORE responded, which is what is asked.
+    assert diagnostics._probe_core() == 'answered'
 
 
 def test_elsevier_probe_reports_the_quota_the_response_declared(
@@ -222,3 +345,75 @@ def test_a_probe_target_that_is_not_callable_is_rejected() -> None:
                     probe='paperminertoolkit.workflows.diagnostics:PROBE_DOI')
     with pytest.raises(TypeError, match='is not callable'):
         _resolve(entry)
+
+
+def test_cached_pdf_available_checks_without_transferring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirm the cached PDF is servable using a HEAD, and report its size.
+
+    The HEAD is billed exactly as a GET is, so this saves several megabytes of
+    transfer rather than the charge. It still has to spend the budget check and
+    record what the response says is left.
+    """
+    from tests.doubles import FakeResponse
+
+    calls: list[dict[str, object]] = []
+
+    def fake_head(url: str, **kwargs: object) -> FakeResponse:
+        """Record the HEAD and answer as OpenAlex does."""
+        calls.append({'url': url, **kwargs})
+        return FakeResponse(headers={'Content-Type': 'application/pdf',
+                                     'Content-Length': '1031677',
+                                     diagnostics.openalex.BUDGET_REMAINING_HEADER: '9800'})
+
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head', fake_head)
+    size = diagnostics.openalex.cached_pdf_available(
+        'https://content.openalex.org/works/W1.pdf', 'openalex-key')
+
+    assert size == 1_031_677
+    assert calls[0]['params'] == {'api_key': 'openalex-key'}
+    # The response's budget figure is remembered, as any content response is.
+    assert diagnostics.openalex.budget_status().remaining == 9800
+
+
+def test_cached_pdf_available_reports_what_went_wrong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refuse without a key, on a rejection, and on a non-PDF answer."""
+    from tests.doubles import FakeResponse
+
+    with pytest.raises(ValueError, match='require an API key'):
+        diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', '  ')
+
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head',
+                        lambda *_, **__: FakeResponse(status_code=401))
+    with pytest.raises(RuntimeError, match='rejected the API key'):
+        diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', 'k')
+
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head',
+                        lambda *_, **__: FakeResponse(status_code=503))
+    with pytest.raises(RuntimeError, match='refused the cached PDF with 503'):
+        diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', 'k')
+
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head',
+                        lambda *_, **__: FakeResponse(headers={'Content-Type': 'text/html'}))
+    with pytest.raises(RuntimeError, match='served text/html rather than a PDF'):
+        diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', 'k')
+
+    # A PDF whose length the response does not declare is still available.
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head',
+                        lambda *_, **__: FakeResponse(headers={'Content-Type': 'application/pdf'}))
+    assert diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', 'k') == 0
+
+    monkeypatch.setattr(diagnostics.openalex.requests, 'head',
+                        lambda *_, **__: FakeResponse(status_code=500))
+    with pytest.raises(RuntimeError, match='refused the cached PDF with 500'):
+        diagnostics.openalex.cached_pdf_available('https://content.example/W1.pdf', 'k')
+
+
+def test_a_source_with_no_probe_target_resolves_to_none() -> None:
+    """Allow a source to declare no probe, and report it as unchecked."""
+    from dataclasses import replace
+
+    assert _resolve(replace(registry.SOURCES['arxiv'], probe='')) is None
