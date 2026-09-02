@@ -50,7 +50,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'prompt'}
     assert set(cli.config_group.commands) == {
-        'model', 'status', 'elsevier-key', 'core-key', 'core-rate',
+        'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
         'ncbi-email', 'openai-key', 'anthropic-key',
     }
@@ -1174,3 +1174,32 @@ def test_filter_topic_prints_the_successful_overview(
     result = CliRunner().invoke(cli.filter_topic, [str(db_path), str(rules_path)])
     assert result.exit_code == 0
     assert seen == [(str(db_path), overview)]
+
+
+def test_config_providers_prints_a_row_per_provider_and_flags_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report every provider, and exit non-zero only for a configured failure.
+
+    The exit code is what lets this gate a script, so it has to distinguish a
+    service that is down from a credential nobody supplied.
+    """
+    import paperminertoolkit.workflows.diagnostics as diagnostics
+    from click.testing import CliRunner
+
+    rows = [
+        diagnostics.ProviderStatus('arxiv', 'arXiv', '', diagnostics.OK, 'answered', 0.4),
+        diagnostics.ProviderStatus('core', 'CORE', 'CORE_API_KEY', diagnostics.NOT_SET_UP,
+                                   'unusable without it; run pmt config core-key'),
+    ]
+    monkeypatch.setattr(diagnostics, 'provider_status', lambda *_, **__: rows)
+    result = CliRunner().invoke(cli.main, ['config', 'providers', '--no-probe'])
+    assert result.exit_code == 0
+    assert 'arXiv' in result.output and 'answered 0.4s' in result.output
+    assert 'unusable without it' in result.output
+
+    rows.append(diagnostics.ProviderStatus('chemrxiv', 'chemRxiv', '',
+                                           diagnostics.NOT_RESPONDING, '403 bot challenge', 0.1))
+    result = CliRunner().invoke(cli.main, ['config', 'providers'])
+    assert result.exit_code == 1
+    assert '1 configured provider(s) not responding: chemRxiv' in result.output

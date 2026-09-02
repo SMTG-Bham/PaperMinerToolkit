@@ -1071,6 +1071,35 @@ def model_status() -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
+@click.command('providers')
+@click.option('--no-probe', is_flag=True,
+              help='Report what is configured without making any requests.')
+@click.option('--source', 'sources', multiple=True,
+              help='Report on one provider. Repeat for several.')
+def provider_status_command(no_probe: bool, sources: tuple[str, ...]) -> None:
+    """Show which providers are set up and which are answering.
+
+    Makes one cheap read-only request per configured provider, paced by that
+    provider's own limiter, so a full sweep takes a few seconds. Exits non-zero
+    when a configured provider is not answering, so it can gate a script.
+    """
+    from paperminertoolkit.workflows.diagnostics import provider_status
+
+    names = list(sources) or None
+    rows = provider_status(names, probe=not no_probe)
+    width = max(len(row.label) for row in rows)
+    for row in rows:
+        took = f' {row.seconds:.1f}s' if row.seconds else ''
+        credential = row.credential or '-'
+        click.echo(f'{row.label:<{width}}  {row.state:<15} {credential:<18} '
+                   f'{row.detail}{took}')
+    broken = [row.label for row in rows if row.is_problem]
+    if broken:
+        click.echo(f'\n{len(broken)} configured provider(s) not responding: '
+                   f'{", ".join(broken)}', err=True)
+        raise SystemExit(1)
+
+
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def reset_miner(db_path: str) -> None:
@@ -1154,6 +1183,7 @@ main.add_command(import_group)
 
 config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
+config_group.add_command(provider_status_command, 'providers')
 config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
 config_group.add_command(click.command('core-key')(update_core_api_key))
 config_group.add_command(click.command('core-rate')(update_core_request_rate))

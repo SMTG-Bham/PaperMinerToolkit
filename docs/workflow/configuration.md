@@ -2,6 +2,49 @@
 
 PaperMinerToolkit keeps search/download credentials separate from the text and vision model profiles. Secrets can be supplied through environment variables, which is best for batch jobs, or saved interactively with the commands under `pmt config`.
 
+## Check what is configured and answering
+
+```bash
+pmt config providers
+```
+
+One row per provider, distinguishing three states, because they need different
+fixes and collapsing them into "not working" sends you to re-check a key when the
+service is simply down:
+
+| state | meaning |
+| --- | --- |
+| `ok` | it answered; the detail says what its credentials earned |
+| `not set up` | a credential it cannot work without is missing |
+| `not responding` | it was asked and refused, or did not answer |
+| `not probed` | asking would have spent a metered request |
+
+```
+Crossref             ok              CROSSREF_EMAIL     public pool, 5/s; run pmt config crossref-email for more 0.3s
+OpenAlex             ok              OPENALEX_API_KEY   9,900 of 10,000 daily credits left 0.3s
+OpenAlex cached PDF  not probed      OPENALEX_API_KEY   not probed, as its only route is metered
+PubMed               ok              NCBI_API_KEY       3/s unauthenticated; run pmt config ncbi-key for more 0.9s
+Elsevier             not set up      ELSEVIER_API_KEY   unusable without it; run pmt config elsevier-key
+arXiv                ok              -                  answered 0.1s
+chemRxiv             not responding  -                  chemRxiv refused the request with 403 ... 0.1s
+```
+
+A missing credential is only reported as `not set up` when the provider cannot work
+without it. Crossref, PubMed and OpenAlex all answer unconfigured and only go slower
+or get a smaller budget, so they are asked anyway and told what a credential would
+add -- whether they answer is the question this command exists for, and reporting
+them as unconfigured would hide it.
+
+Each check is the cheapest read-only request its provider documents, paced through
+that provider's own limiter, so a full sweep takes a few seconds. Nothing metered is
+ever spent: a provider whose only route is billed is reported rather than charged.
+Credentials are never printed, only named.
+
+The command exits non-zero when a provider that *is* configured fails, so it can gate
+a script. A provider that is merely unconfigured is a choice, not a fault, and does
+not affect the exit code. `--no-probe` reports what is configured without making any
+requests, and `--source` repeated limits the check to named providers.
+
 ## Search and download services
 
 | Service | Environment variable | Interactive command | Used for |
