@@ -985,6 +985,69 @@ def test_scrape_papers_layout_mode_sends_captions_and_records_figure_provenance(
     assert statuses == {'fig-1': 'succeeded', 'fig-2': 'succeeded'}
 
 
+def test_layout_batches_keep_provenance_and_counts_across_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep each batch's figure identity and successful counts after a retry."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-1', 'doi': '10.1/one'}
+    write_corpus(db_path, [paper])
+    _add_figure(db_path, paper, 'fig-1', caption='First.', label='Figure 1')
+    _add_figure(db_path, paper, 'fig-2', caption='Second.', label='Figure 2')
+    _add_figure(db_path, paper, 'fig-3', caption='Third.', label='Figure 3')
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+
+    def fake_scrape_images(
+        image_paths: Sequence[str],
+        recipe: Mapping[str, Any],
+        model_config: FakeModelConfig | None = None,
+        context: str | None = None,
+        compression_config: CompressionConfig | None = None,
+        image_labels: Sequence[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Fail the third batch once, then complete it on the resumed run."""
+        calls.append(list(image_labels or []))
+        if len(calls) == 3:
+            raise RuntimeError('temporary vision failure')
+        return [{'Name': f'material {len(calls)}'}]
+
+    monkeypatch.setattr(scrape, 'scrape_images', fake_scrape_images)
+    options = {
+        'output_path': str(output_path),
+        'mode': 'images',
+        'image_extraction': 'layout',
+        'image_batch_size': 1,
+        'image_dir': str(tmp_path / 'images'),
+    }
+
+    scrape.scrape_papers(str(db_path), **options)
+    first_paper = read_corpus(db_path).iloc[0]
+    assert first_paper['image_scrape_status'] == 'failed'
+    assert first_paper['num_images'] == 2
+    assert first_paper['num_image_materials'] == 2
+
+    scrape.scrape_papers(str(db_path), **options)
+
+    materials = pd.read_csv(output_path, index_col=0)
+    final_paper = read_corpus(db_path).iloc[0]
+    assert calls == [
+        ['Figure 1: First.'], ['Figure 2: Second.'],
+        ['Figure 3: Third.'], ['Figure 3: Third.'],
+    ]
+    assert materials['Name'].tolist() == ['material 1', 'material 2', 'material 4']
+    assert materials['Figure id'].tolist() == ['fig-1', 'fig-2', 'fig-3']
+    assert materials['Figure label'].tolist() == ['Figure 1', 'Figure 2', 'Figure 3']
+    assert final_paper['image_scrape_status'] == 'succeeded'
+    assert final_paper['num_images'] == 3
+    assert final_paper['num_image_materials'] == 3
+
+
 def test_scrape_papers_layout_mode_resumes_completed_figures_and_forces_reruns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

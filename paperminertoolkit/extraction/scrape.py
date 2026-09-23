@@ -808,6 +808,8 @@ def scrape_papers(db_path: str = 'papers.db',
                             summary['image_skipped'] += 1
                         else:
                             summary['image_attempted'] += 1
+                            previous_images = 0
+                            previous_materials = 0
                             try:
                                 image_key = _image_key_for_row(row, pdf_path)
                                 paper_image_dir = os.path.join(image_dir, image_key)
@@ -827,6 +829,9 @@ def scrape_papers(db_path: str = 'papers.db',
                                         'No layout-aware figures are available for this paper.'
                                     )
                                 if figure_packages:
+                                    if not force:
+                                        previous_images = int(row.get('num_images') or 0)
+                                        previous_materials = int(row.get('num_image_materials') or 0)
                                     image_paths = [figure.path for figure in figure_packages]
                                 else:
                                     if not pdf_path:
@@ -884,7 +889,11 @@ def scrape_papers(db_path: str = 'papers.db',
                                             )
                                         image_source_paths.extend(batch_paths)
                                         scraped_figures.extend(figure_batch)
-                                        image_materials.extend(response)
+                                        image_materials.extend(_append_materials(
+                                            response, row, 'image', ';'.join(batch_paths), figure_batch,
+                                        ))
+                                        row['num_images'] = previous_images + len(image_source_paths)
+                                        row['num_image_materials'] = previous_materials + len(image_materials)
                                 else:
                                     for image_batch in _image_batches(image_paths, image_batch_size):
                                         response = scrape_images(image_batch,
@@ -895,8 +904,8 @@ def scrape_papers(db_path: str = 'papers.db',
                                         image_source_paths.extend(image_batch)
                                         image_materials.extend(response)
                                 row['image_dir'] = paper_image_dir
-                                row['num_images'] = len(image_paths)
-                                row['num_image_materials'] = len(image_materials)
+                                row['num_images'] = previous_images + len(image_source_paths)
+                                row['num_image_materials'] = previous_materials + len(image_materials)
                                 _set_status(row, 'image_scrape_status', 'succeeded')
                                 if delete_images_after:
                                     for image_path in image_paths:
@@ -918,16 +927,22 @@ def scrape_papers(db_path: str = 'papers.db',
                         except Exception as e:
                             row['last_error'] = f'Combining text and image results failed: {e}'
                             row_materials.extend(_append_materials(text_materials, row, 'text', text_source))
-                            row_materials.extend(_append_materials(image_materials, row, 'image', image_source,
-                                                                   scraped_figures))
+                            row_materials.extend(
+                                image_materials if scraped_figures else _append_materials(
+                                    image_materials, row, 'image', image_source,
+                                )
+                            )
                     elif text_materials:
                         if should_scrape_abstract:
                             row_materials.extend(_append_materials(text_materials, row, 'abstract', 'corpus:abstract'))
                         else:
                             row_materials.extend(_append_materials(text_materials, row, 'text', text_source_path))
                     elif image_materials:
-                        row_materials.extend(_append_materials(image_materials, row, 'image',
-                                                               ';'.join(image_source_paths), scraped_figures))
+                        row_materials.extend(
+                            image_materials if scraped_figures else _append_materials(
+                                image_materials, row, 'image', ';'.join(image_source_paths),
+                            )
+                        )
 
                     first_material, written_count = _write_materials(row_materials, first_material, output_path)
                     summary['materials'] += written_count
