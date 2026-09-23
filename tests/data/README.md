@@ -53,3 +53,35 @@ HTML serialiser. Both properties were confirmed against a real
 `content.openalex.org` response, and both had to be handled before that
 endpoint produced a layout at all. The structure is real; the prose is
 invented, so no article text is redistributed here.
+
+### `scanlon_metastable_excerpt.pdf`
+
+Seán R. Kavanagh, David O. Scanlon, Aron Walsh, and Christoph Freysoldt,
+“Impact of metastable defect structures on carrier recombination in solar
+cells,” arXiv:2202.12212v2 (2022).
+
+Source: https://arxiv.org/abs/2202.12212 and
+https://arxiv.org/pdf/2202.12212v2. The arXiv record links the
+[Creative Commons Attribution 4.0 International licence](https://creativecommons.org/licenses/by/4.0/).
+© the authors. This PDF is not covered by the repository's MIT licence.
+
+This is an adapted, six-page excerpt of the 8,039,091-byte source PDF, retaining
+original PDF pages 1, 2, 3, 8, 16, and 17 in that order. The source PDF has
+SHA-256 `895736135eee99ead1a19dde852305fe7f12cf928d824f28d10853eaac375793`;
+the excerpt has SHA-256
+`aedd2a6ede84e0ec12e8bd69be65bcedf97574309252db8b1ab65433283b6c04`.
+CC BY 4.0 permits sharing an adapted excerpt with attribution and notice of the
+change. The full source PDF is kept outside Git; only the smaller excerpt is a
+test fixture.
+
+The excerpt provides a single-column raster Figure 1 (excerpt page 2), a table
+(page 4), and a vector supplemental Figure S2 (page 6). Pages 3 and 5 have
+in-text figure references but no figure art, which tests false positives.
+The Wiley PDF above supplies double-column raster figures and a decorative
+publisher logo on page 1. The page numbers and full-caption fingerprints used
+as gold labels are in `tests/test_pdf_figure_validation.py`.
+
+Current measured baseline for the two fixed PDFs: 11/11 figure recall,
+11/11 exact full-caption associations, and zero false positives. The Scanlon
+excerpt specifically guards against in-text figure references being counted as
+figures and against body text being appended to its Figure 1 caption.

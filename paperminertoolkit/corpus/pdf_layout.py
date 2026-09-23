@@ -24,6 +24,11 @@ from paperminertoolkit.corpus.layout import (
     Table,
 )
 
+_INLINE_REFERENCE_RE = re.compile(
+    r'^(?:shows?|serves|illustrates?|depicts?|demonstrates?|presents?|summari[sz]es?)\b',
+    re.IGNORECASE,
+)
+
 _CAPTION_RE = re.compile(
     r'^\s*(?P<label>(?P<kind>fig(?:ure)?\.?|table)\s+[A-Za-z]?\d+[A-Za-z]?)'
     r'\s*(?:[.:\-–—]\s*|\s+)(?P<caption>.*)$',
@@ -59,6 +64,25 @@ def _text_blocks(page: Any, page_number: int) -> list[tuple[str, BoundingBox]]:
     return sorted(blocks, key=lambda item: (item[1].y0, item[1].x0))
 
 
+def _block_fonts(page: Any, page_number: int) -> dict[BoundingBox, tuple[str, float]]:
+    """Identify the dominant font and size of each text block."""
+    from collections import Counter
+
+    fonts = {}
+    for block in page.get_text('dict').get('blocks', []):
+        if block.get('type', 0) != 0:
+            continue
+        counts: Counter[tuple[str, float]] = Counter()
+        for line in block.get('lines', []):
+            for span in line.get('spans', []):
+                if span.get('font') and span.get('size'):
+                    key = (span['font'], round(float(span['size']), 1))
+                    counts[key] += len(span.get('text', ''))
+        if counts:
+            fonts[BoundingBox(page_number, *block['bbox'])] = counts.most_common(1)[0][0]
+    return fonts
+
+
 def _horizontal_overlap(first: BoundingBox, second: BoundingBox) -> float:
     """Return horizontal overlap as a fraction of the narrower box."""
     overlap = max(0.0, min(first.x1, second.x1) - max(first.x0, second.x0))
@@ -69,6 +93,7 @@ def _horizontal_overlap(first: BoundingBox, second: BoundingBox) -> float:
 def _join_caption_blocks(
     blocks: Sequence[tuple[str, BoundingBox]],
     max_gap: float,
+    block_fonts: Mapping[BoundingBox, tuple[str, float]] | None = None,
 ) -> list[tuple[str, str, str, tuple[BoundingBox, ...]]]:
     """Join wrapped caption blocks while respecting column boundaries."""
     captions = []
@@ -94,6 +119,11 @@ def _join_caption_blocks(
                 continue
             if _CAPTION_RE.match(next_text) or gap < -2:
                 break
+            if block_fonts is not None:
+                caption_font = block_fonts.get(box)
+                next_font = block_fonts.get(next_box)
+                if caption_font and next_font and caption_font != next_font:
+                    break
             parts.append(next_text)
             boxes.append(next_box)
             consumed.add(next_index)
@@ -219,11 +249,13 @@ def detect_pdf_layout(
             page = document[page_index]
             page_number = page_index + 1
             blocks = _text_blocks(page, page_number)
+            block_fonts = _block_fonts(page, page_number)
             regions = _visual_regions(page, page_number)
             page_height = float(page.rect.height)
             for kind, label, caption, caption_boxes in _join_caption_blocks(
                 blocks,
                 caption_gap,
+                block_fonts,
             ):
                 region = _associated_region(
                     caption_boxes,
@@ -232,6 +264,11 @@ def detect_pdf_layout(
                     kind,
                     minimum_confidence,
                 )
+                # Body prose can start with a figure reference. Without nearby
+                # art, a leading narrative verb identifies an inline mention.
+                if (kind == 'figure' and region is None
+                        and _INLINE_REFERENCE_RE.match(caption)):
+                    continue
                 boxes = (region,) if region is not None else ()
                 if kind == 'figure':
                     figures.append(Figure(
