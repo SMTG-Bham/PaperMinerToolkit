@@ -226,13 +226,13 @@ def _request_headers(source: str) -> dict[str, str]:
 
 def _asset_filename(figure: Figure, graphic: Graphic, url: str, mime_type: str) -> str:
     """Build a stable filename that cannot collide across graphic URLs."""
-    identifier = graphic.identifier or figure.identifier
-    safe_identifier = re.sub(r'[^A-Za-z0-9._-]+', '-', identifier).strip('.-') or 'figure'
+    figure_identifier = re.sub(r'[^A-Za-z0-9._-]+', '-', figure.identifier).strip('.-') or 'figure'
+    graphic_identifier = re.sub(r'[^A-Za-z0-9._-]+', '-', graphic.identifier).strip('.-') or 'graphic'
     source_name = PurePosixPath(unquote(urlsplit(url).path)).name
-    stem = PurePosixPath(source_name).stem if source_name else safe_identifier
-    safe_stem = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('.-') or safe_identifier
+    stem = PurePosixPath(source_name).stem if source_name else figure_identifier
+    safe_stem = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('.-') or figure_identifier
     url_digest = hashlib.sha256(url.encode('utf-8')).hexdigest()[:12]
-    return f'{safe_identifier}-{safe_stem}-{url_digest}{_MIME_EXTENSIONS[mime_type]}'
+    return f'{figure_identifier}-{graphic_identifier}-{safe_stem}-{url_digest}{_MIME_EXTENSIONS[mime_type]}'
 
 
 def _layout_from_asset(asset: Mapping[str, Any], paper_id: str) -> DocumentLayout:

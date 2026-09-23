@@ -160,6 +160,34 @@ def test_downloads_redirects_deduplicates_resumes_and_forces(tmp_path: Path) -> 
     assert len(force_session.calls) == 2
 
 
+def test_shared_graphic_url_keeps_both_figure_assets(tmp_path: Path) -> None:
+    """Figures referencing one graphic URL retain separate asset links."""
+    db_path = tmp_path / 'shared-graphic.db'
+    _add_jats(
+        db_path,
+        b'''<article xmlns:xlink="http://www.w3.org/1999/xlink"><body>
+        <fig id="fig-1"><caption><p>First caption.</p></caption>
+          <graphic id="shared-graphic" xlink:href="https://cdn.example/shared.png"/>
+        </fig>
+        <fig id="fig-2"><caption><p>Second caption.</p></caption>
+          <graphic id="shared-graphic" xlink:href="https://cdn.example/shared.png"/>
+        </fig></body></article>''',
+    )
+    session = ImageSession([ImageResponse(), ImageResponse()])
+
+    summary = figures.download_structured_figures(db_path, 'paper:figures', session=session)
+
+    assert summary == figures.FigureDownloadSummary(2, 0, 0)
+    with database.connect(db_path) as conn:
+        assets = database.get_figure_assets(conn, 'paper:figures')
+    assert len(assets) == 2
+    assert {asset['metadata']['figure_id'] for asset in assets} == {'fig-1', 'fig-2'}
+    assert {asset['metadata']['caption'] for asset in assets} == {
+        'First caption.', 'Second caption.',
+    }
+    assert len({asset['original_filename'] for asset in assets}) == 2
+
+
 def test_reports_document_url_and_payload_failures_without_stopping(tmp_path: Path) -> None:
     """Continue after malformed layouts, unsafe URLs, empty bodies, and invalid images."""
     db_path = tmp_path / 'failures.db'
@@ -297,7 +325,7 @@ def test_response_and_filename_helpers_cover_sparse_metadata() -> None:
     name = figures._asset_filename(
         Figure('figure 1'), Graphic(), 'https://example.org', 'image/jpeg',
     )
-    assert name.startswith('figure-1-figure-1-')
+    assert name.startswith('figure-1-graphic-figure-1-')
     assert name.endswith('.jpg')
 
 
