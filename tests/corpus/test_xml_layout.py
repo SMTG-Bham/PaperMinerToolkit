@@ -14,7 +14,7 @@ from paperminertoolkit.corpus.xml_layout import (
     parse_tei_layout,
 )
 
-DATA_DIR = Path(__file__).resolve().parent / 'data'
+DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
 # Real documents fetched from the archives, trimmed to their figures. See
 # tests/data/README.md for provenance and licensing.
 REAL_JATS = {

@@ -478,7 +478,7 @@ def test_full_text_document_decompresses_the_gzip_openalex_sends() -> None:
     compressed bytes decoded as characters and every parse failed. The gzip
     magic number is what is trusted, not the header.
     """
-    tei = (Path(__file__).resolve().parent / 'data'
+    tei = (Path(__file__).resolve().parents[1] / 'data'
            / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
     work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
     session = FakeSession([FakeResponse(content=gzip.compress(tei.encode('utf-8')),
@@ -494,7 +494,7 @@ def test_full_text_document_decompresses_the_gzip_openalex_sends() -> None:
 
 def test_full_text_document_still_reads_content_that_is_not_compressed() -> None:
     """Leave a plain TEI response alone, and report one that cannot inflate."""
-    tei = (Path(__file__).resolve().parent / 'data'
+    tei = (Path(__file__).resolve().parents[1] / 'data'
            / 'openalex_grobid_wrapped.tei.xml').read_text(encoding='utf-8')
     work = {'id': 'https://openalex.org/W1', 'has_content': {'grobid_xml': True}}
 

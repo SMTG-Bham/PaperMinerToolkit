@@ -79,7 +79,7 @@ The excerpt provides a single-column raster Figure 1 (excerpt page 2), a table
 in-text figure references but no figure art, which tests false positives.
 The Wiley PDF above supplies double-column raster figures and a decorative
 publisher logo on page 1. The page numbers and full-caption fingerprints used
-as gold labels are in `tests/test_pdf_figure_validation.py`.
+as gold labels are in `tests/corpus/test_pdf_figure_validation.py`.
 
 Current measured baseline for the two fixed PDFs: 11/11 figure recall,
 11/11 exact full-caption associations, and zero false positives. The Scanlon

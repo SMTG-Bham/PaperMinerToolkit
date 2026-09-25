@@ -15,7 +15,7 @@ import pytest
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.imports as imports
 
-DATA_DIR = Path(__file__).parent / 'data'
+DATA_DIR = Path(__file__).parents[1] / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'
 FIXTURE_DOI = '10.1002/aenm.70977'
 

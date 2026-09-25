@@ -12,7 +12,7 @@ import pytest
 
 import paperminertoolkit.extraction.compression as compression
 
-DATA_DIR = Path(__file__).resolve().parent / 'data'
+DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
 IMAGE_DIR = DATA_DIR / 'images'
 
 

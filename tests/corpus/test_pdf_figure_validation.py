@@ -17,7 +17,7 @@ from PIL import Image
 
 from paperminertoolkit.corpus.pdf_layout import detect_pdf_layout, render_pdf_figures
 
-DATA = Path(__file__).parent / 'data'
+DATA = Path(__file__).parents[1] / 'data'
 # (page, label, caption anchor, full-caption fingerprint)
 WILEY_GOLD = (
     (3, 'Figure 1', 'Weighted experimental pair distribution function', '055a95daed4f37e3bcca567fd86aad70aef61fb69a0535c913c91e8ec31bb22d'),

@@ -16,7 +16,7 @@ import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.providers.crossref as crossref
 import paperminertoolkit.corpus.metadata as metadata
 
-DATA_DIR = Path(__file__).parent / 'data'
+DATA_DIR = Path(__file__).parents[1] / 'data'
 FIXTURE_PDF = DATA_DIR / 'disorder-driven_fast_na_transport_oxychlorides.pdf'
 
 

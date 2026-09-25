@@ -198,7 +198,7 @@ def test_documented_source_order_matches_the_registry() -> None:
     default set at all. A table is only worth more than that prose if it
     cannot drift the same way.
     """
-    guide = (Path(__file__).parents[1] / 'docs' / 'workflow' / 'corpus.md').read_text()
+    guide = (Path(__file__).parents[2] / 'docs' / 'workflow' / 'corpus.md').read_text()
     table = re.search(r'\| capability \| order tried \|\n\|[^\n]*\|\n((?:\|[^\n]*\|\n)+)', guide)
     assert table is not None, 'the source-order table is no longer in the corpus guide'
 
