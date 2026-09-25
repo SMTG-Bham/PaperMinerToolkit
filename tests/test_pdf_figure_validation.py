@@ -42,10 +42,12 @@ FIXTURES = (
 
 
 def _normalise(text: str) -> str:
+    """Lowercase text and retain only alphanumeric tokens separated by spaces."""
     return ' '.join(re.findall(r'[a-z0-9]+', text.casefold()))
 
 
 def _caption_fingerprint(text: str) -> str:
+    """Return the SHA-256 fingerprint of a normalised caption."""
     return hashlib.sha256(_normalise(text).encode()).hexdigest()
 
 
