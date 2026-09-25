@@ -1,0 +1,196 @@
+Identifier,Source field,Source item,Reason,Original content
+paper_bce39475a5821a03,P,0,original paper-level summary and count,"{""material_system"": ""Li2TM(C2O4)2 oxalate cathode polymorphs (TM = Fe, Mn, Co, Ni, V); also LiCoO2, LiFePO4, LixCuyFz used for method validation"", ""band_gap_in_this_study"": ""2.01-4.73 eV (HSE06, across Li2TM(C2O4)2 polymorphs, TM = V, Fe, Mn, Co, Ni)"", ""n_gaps_this_study"": ""23""}"
+paper_4047cf2e77fa2f42,P,0,original paper-level summary and count,"{""material_system"": ""Li-Fe cathode polyanion compounds (LiFePO4, LiFeSO4F, Li2FeC2O4F2, LiFeC2O4F)"", ""band_gap_in_this_study"": ""2.8 eV HSE06 (Li2FeC2O4F2)"", ""n_gaps_this_study"": ""1""}"
+paper_9131a250f6d0e2c8,P,0,original paper-level summary and count,"{""material_system"": ""Metal nitride perovskites ANbN3/ATaN3/AMoN3/AWN3 family (A = Zr, Hf, Y, La, Sc, etc.)"", ""band_gap_in_this_study"": ""YMoN3 2.18 eV (HSE06, indirect) - best candidate of a 12-material screen (text quotes 2.17 eV; table says 2.18)"", ""n_gaps_this_study"": ""48""}"
+paper_31fb04c2b90dae4b,S,1,context or non-gap,"1.63 eV [M-phosphides (average across M=Li,Na,K,Rb,Cs); HSE06]"
+paper_31fb04c2b90dae4b,S,2,context or non-gap,"1.22 eV [M-arsenides (average across M=Li,Na,K,Rb,Cs); HSE06]"
+paper_31fb04c2b90dae4b,S,3,context or non-gap,"1.00 eV [M-antimonides (average across M=Li,Na,K,Rb,Cs); HSE06]"
+paper_31fb04c2b90dae4b,S,4,context or non-gap,"0.61-1.78 eV [MPn family (all M, Pn combinations, both monoclinic and orthorhombic phases); HSE06]"
+paper_31fb04c2b90dae4b,C,1,context or non-gap,1.8 eV [trigonal Se (t-Se); experiment-literature]
+paper_31fb04c2b90dae4b,P,0,original paper-level summary and count,"{""material_system"": ""Alkali mono-pnictides MPn (M=Li,Na,K,Rb,Cs; Pn=P,As,Sb), focus on NaP"", ""band_gap_in_this_study"": ""1.59 eV fundamental (indirect) / 1.62 eV direct band gap of o-NaP, HSE06"", ""n_gaps_this_study"": ""7""}"
+paper_078201c6d71acdd8,P,0,original paper-level summary and count,"{""material_system"": ""Cs2SnX6 (X = Cl, Br, I) vacancy-ordered double perovskites, mixed halide"", ""band_gap_in_this_study"": ""0.92 eV (Cs2SnI6) fundamental HSE06+SOC; also 2.85 eV (Cs2SnBr6) and 4.17 eV (Cs2SnCl6) fundamental gaps"", ""n_gaps_this_study"": ""16""}"
+paper_a7e826885db84213,P,0,original paper-level summary and count,"{""material_system"": ""Cs3Bi2Br9-xIx (vacancy-ordered triple perovskite solid solution)"", ""band_gap_in_this_study"": ""2.66 eV (x=0) down to 2.05-2.06 eV (Cs3Bi2I9 end member) - experiment, this work, diffuse reflectance"", ""n_gaps_this_study"": ""3""}"
+paper_af943b35ac253e2d,P,0,original paper-level summary and count,"{""material_system"": ""SrRu2O6"", ""band_gap_in_this_study"": ""2.15 eV HSE06"", ""n_gaps_this_study"": ""1""}"
+paper_2349a9b9effd0cc8,P,0,original paper-level summary and count,"{""material_system"": ""Sb2Si2Te6 / Sc2Si2Te6"", ""band_gap_in_this_study"": ""0.44 eV (Sb2Si2Te6, direct) / 0.92 eV (Sc2Si2Te6, indirect), HSE06+SOC"", ""n_gaps_this_study"": ""2""}"
+paper_6fd3618fd47a1d61,P,0,original paper-level summary and count,"{""material_system"": ""Cs2Ag(SbxBi1-x)Br6 double perovskite alloys"", ""band_gap_in_this_study"": ""Measured: 2.08 eV (PDS/Tauc, Cs2Ag(Sb0.9Bi0.1)Br6, lowest of series). Computed: 1.37 eV (Cs2AgSbBr6) and 1.77 eV (Cs2AgBiBr6), HSE06+SOC indirect."", ""n_gaps_this_study"": ""8""}"
+paper_bc910bd7074603bc,P,0,original paper-level summary and count,"{""material_system"": ""LiMn1.5Ni0.5O4 (LMNO) spinel, P4332"", ""band_gap_in_this_study"": ""3.17 eV indirect, HSE06"", ""n_gaps_this_study"": ""2""}"
+paper_aeef8d3965f999e8,C,1,context or non-gap,"1.0-2.0 eV [MChX (pnictogen chalcohalides, general class); unspecified (literature survey)]"
+paper_aeef8d3965f999e8,P,0,original paper-level summary and count,"{""material_system"": ""BiSeI (pnictogen chalcohalide, MChX)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_ad22343dc927514d,P,0,original paper-level summary and count,"{""material_system"": ""Cs2ZrCl6, Cs2ZrBr6"", ""band_gap_in_this_study"": ""5.06 eV HSE06+SOC (indirect fundamental, Cs2ZrCl6); 3.91 eV HSE06+SOC (indirect fundamental, Cs2ZrBr6)"", ""n_gaps_this_study"": ""6""}"
+paper_731cb2faa284c183,P,0,original paper-level summary and count,"{""material_system"": ""SrZn2S2O"", ""band_gap_in_this_study"": ""3.52 eV HSE06"", ""n_gaps_this_study"": ""2""}"
+paper_df933faeb582ea34,P,0,original paper-level summary and count,"{""material_system"": ""Sb2O5 (F-doped)"", ""band_gap_in_this_study"": ""3.08 eV (PBE0, slightly indirect fundamental gap, Sb2O5; direct 3.11 eV). Note: the abstract headlines an effective OPTICAL gap of ~3.6 eV from a Tauc fit to the computed absorption, because near-edge transitions are symmetry-forbidden."", ""n_gaps_this_study"": ""4""}"
+paper_8368c9bd93d429c9,C,1,context or non-gap,3.1 eV [design threshold (general p-type TC criterion); n/a; optical]
+paper_8368c9bd93d429c9,C,2,context or non-gap,3.1 eV [LaCuOS; experiment]
+paper_8368c9bd93d429c9,C,3,context or non-gap,2.8 eV [LaCuOSe; experiment]
+paper_8368c9bd93d429c9,C,6,context or non-gap,2.82 eV [LaCuOSe]
+paper_8368c9bd93d429c9,C,7,context or non-gap,2.60 eV [SmOCuSe]
+paper_8368c9bd93d429c9,C,8,context or non-gap,2.58 eV [YOCuSe]
+paper_8368c9bd93d429c9,C,9,context or non-gap,3.2 eV [BaFCuS]
+paper_8368c9bd93d429c9,C,10,context or non-gap,2.9 eV [BaFCuSe]
+paper_8368c9bd93d429c9,C,11,context or non-gap,2.3 eV [BaFCuTe]
+paper_8368c9bd93d429c9,P,0,original paper-level summary and count,"{""material_system"": ""[Cu2S2][A3M2O5] layered oxychalcogenides (A = Ca,Sr,Ba; M = Al,Ga,Sc)"", ""band_gap_in_this_study"": ""3.24 eV HSE06 (optical, direct, BaSc [Cu2S2][Ba3Sc2O5])"", ""n_gaps_this_study"": ""22""}"
+paper_7c10944003c0f0b7,P,0,original paper-level summary and count,"{""material_system"": ""Bi2Se3, Bi2Te3, Bi2Te2Se (topological insulators)"", ""band_gap_in_this_study"": ""0.29 eV (PBE, indirect, Bi2Se3)"", ""n_gaps_this_study"": ""3""}"
+paper_f3c62ffd397117f7,P,0,original paper-level summary and count,"{""material_system"": ""Ni-btt / Ni-ibtt (organometallic coordination polymers)"", ""band_gap_in_this_study"": ""0.88 eV HSE06 (Ni-ibtt)"", ""n_gaps_this_study"": ""2""}"
+paper_91a4d414498738ea,P,0,original paper-level summary and count,"{""material_system"": ""CuSbS2 (CAS)"", ""band_gap_in_this_study"": ""1.82 eV (direct) / 1.67 eV (indirect), HSE06"", ""n_gaps_this_study"": ""6""}"
+paper_656d9447149ceb64,P,0,original paper-level summary and count,"{""material_system"": ""Cu2SiSe3"", ""band_gap_in_this_study"": ""1.52 eV HSE06 (direct)"", ""n_gaps_this_study"": ""4""}"
+paper_6c6794d8bed74c6d,C,1,context or non-gap,"2.1 eV [candidate phosphor hosts (screening threshold, general); PBE (Materials Project database)]"
+paper_6c6794d8bed74c6d,C,2,context or non-gap,~6 eV [wide-bandgap Ce3+ substituted compounds (general); PBE (Materials Project database)]
+paper_6c6794d8bed74c6d,P,0,original paper-level summary and count,"{""material_system"": ""Ce3+-doped inorganic phosphor host screening (thousands of hosts), highlighted example Ca2SrSc6O12"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_5a7692433149d7be,S,2,context or non-gap,"4.80-4.99 eV [Si-doped Ga2O3 (SGO), doping series 0.01%-1%; experiment-this-work (HAXPES, Burstein-Moss widened optical gap); optical]"
+paper_5a7692433149d7be,S,6,context or non-gap,"0.34 eV [0.5% Si-doped Ga2O3 (SGO), Burstein-Moss predicted increase; free-electron model (Burstein-Moss shift estimate)]"
+paper_5a7692433149d7be,S,7,context or non-gap,"0.51 eV [1% Si-doped Ga2O3 (SGO), Burstein-Moss predicted increase; free-electron model (Burstein-Moss shift estimate)]"
+paper_5a7692433149d7be,C,1,context or non-gap,">3.2 eV [conventional TCOs (ITO, FTO, AZO), general criterion; experiment (general TCO criterion)]"
+paper_5a7692433149d7be,C,2,context or non-gap,"<3.5 eV [conventional TCOs (ITO, FTO, AZO); experiment]"
+paper_5a7692433149d7be,C,3,context or non-gap,4.8 eV [Ga2O3; experiment (literature)]
+paper_5a7692433149d7be,C,4,context or non-gap,~4 eV [12CaO·7Al2O3; experiment (literature)]
+paper_5a7692433149d7be,C,5,context or non-gap,~4.2 eV [Mg0.43Zn0.57O; experiment (literature)]
+paper_5a7692433149d7be,C,6,context or non-gap,~4.6 eV [SrSnO3; experiment (literature)]
+paper_5a7692433149d7be,P,0,original paper-level summary and count,"{""material_system"": ""Ga2O3 (Si-doped, SGO)"", ""band_gap_in_this_study"": ""4.80 eV (experiment, this work, HAXPES optical bandgap)"", ""n_gaps_this_study"": ""7""}"
+paper_6f6b5a47978bd225,P,0,original paper-level summary and count,"{""material_system"": ""GaN (Mg-doped)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_f6b9f4f815a6679e,P,0,original paper-level summary and count,"{""material_system"": ""Ca6NFSn2, Sr6NFSn2, Ba6NFSn2 (antiperovskites)"", ""band_gap_in_this_study"": ""0.51 eV (Ca6NFSn2) and 0.23 eV (Sr6NFSn2) - HSE06+SOC, direct at Gamma"", ""n_gaps_this_study"": ""2""}"
+paper_acad119eda807a69,P,0,original paper-level summary and count,"{""material_system"": ""GaN (wurtzite)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_15d85a252479ea5f,C,1,context or non-gap,"3.75 eV [In2O3; experiment (cited, historical)]"
+paper_15d85a252479ea5f,C,2,context or non-gap,"2.69 eV [In2O3 (single crystal); experiment (cited, 1966 optical measurement)]"
+paper_15d85a252479ea5f,P,0,original paper-level summary and count,"{""material_system"": ""Ga-doped In2O3 (bixbyite) ceramics"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_1ab34a4a9eaf8121,P,0,original paper-level summary and count,"{""material_system"": ""BAs (boron arsenide, zinc blende)"", ""band_gap_in_this_study"": ""1.674 eV indirect / 3.990 eV direct (QSGW+BSE, BAs) - the paper's headline result"", ""n_gaps_this_study"": ""13""}"
+paper_bd1346c89048f30f,P,0,original paper-level summary and count,"{""material_system"": ""LaCoO3"", ""band_gap_in_this_study"": ""0.925 eV, PBEsol+U"", ""n_gaps_this_study"": ""1""}"
+paper_bb11d1b5f14e56c5,P,0,original paper-level summary and count,"{""material_system"": ""Li3AlP2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_67c87ef5d4e9721f,C,2,context or non-gap,0.04 eV [troilite FeS]
+paper_67c87ef5d4e9721f,C,3,context or non-gap,0.34 eV [marcasite FeS2; experiment (temperature-dependent electrical resistivity)]
+paper_67c87ef5d4e9721f,P,0,original paper-level summary and count,"{""material_system"": ""FeS2 (pyrite and marcasite polymorphs)"", ""band_gap_in_this_study"": ""0.96 eV pyrite / 1.17 eV marcasite, PBE+U (indirect)"", ""n_gaps_this_study"": ""4""}"
+paper_ad50744e01711680,P,0,original paper-level summary and count,"{""material_system"": ""ZnGa2O4"", ""band_gap_in_this_study"": ""5.08 eV PBE0 (indirect); 5.29 eV PBE0 (direct) at 0 K -- with 300 K renormalized values of ~4.7 eV (indirect) / ~4.9 eV (direct)"", ""n_gaps_this_study"": ""4""}"
+paper_ca045d7bddc7f62e,P,0,original paper-level summary and count,"{""material_system"": ""Bismuth(III) halide coordination complexes (chloride, bromide, iodide bioctahedral complexes)"", ""band_gap_in_this_study"": ""2.64 eV HSE06+SOC (compound 1, chloride, fundamental)"", ""n_gaps_this_study"": ""2""}"
+paper_b47211d92c64239d,P,0,original paper-level summary and count,"{""material_system"": ""MgB4"", ""band_gap_in_this_study"": ""1.32 eV (direct) / 0.71 eV (indirect), HSE06"", ""n_gaps_this_study"": ""4""}"
+paper_9cfb60b26a0fbd69,P,0,original paper-level summary and count,"{""material_system"": ""GeSe, SnSe"", ""band_gap_in_this_study"": ""GeSe: 0.84 eV; SnSe: 0.61 eV (PBE/GGA, pristine bulk)"", ""n_gaps_this_study"": ""4""}"
+paper_a8c0f947d60955d5,P,0,original paper-level summary and count,"{""material_system"": ""Sb2Se3"", ""band_gap_in_this_study"": ""1.42 eV HSE06 (indirect, fundamental)"", ""n_gaps_this_study"": ""1""}"
+paper_e8286963a7b69d68,P,0,original paper-level summary and count,"{""material_system"": ""Cs2SnX6 / Cs2TiX6 (X = Cl, Br, I) vacancy-ordered double perovskites"", ""band_gap_in_this_study"": ""1.69 eV HSE06+SOC (Eg,direct for Cs2TiI6; see Table 2 for full 6-compound set)"", ""n_gaps_this_study"": ""12""}"
+paper_bd73ce9ac284f1f8,P,0,original paper-level summary and count,"{""material_system"": ""CdTe"", ""band_gap_in_this_study"": ""1.5 eV, HSE+SOC (alpha_exx=34.5% tuned to experiment)"", ""n_gaps_this_study"": ""1""}"
+paper_502c7d91694c61c2,S,7,context or non-gap,"0.45 eV [Sn2SbS2I3 (scissor-operator correction applied to optB86b-vdW CE results); optB86b-vdW (GGA, scissor-corrected)]"
+paper_502c7d91694c61c2,S,8,context or non-gap,"0.02 eV [Sn2SbS2I3 (validation deviation of scaled CE model vs DFT supercells, not a gap value itself); optB86b-vdW (1024-atom supercell validation)]"
+paper_502c7d91694c61c2,S,9,context or non-gap,"0.175 eV [Sn2SbS2I3 (dynamic/MD bandgap fluctuation amplitude, not an absolute gap value); molecular dynamics (dynamic disorder)]"
+paper_502c7d91694c61c2,P,0,original paper-level summary and count,"{""material_system"": ""Sn2SbS2I3"", ""band_gap_in_this_study"": ""1.78 eV HSE06+SOC (athermal P21/c ground state); 1.50 eV frozen-atom CE model at 573 K annealing temperature"", ""n_gaps_this_study"": ""9""}"
+paper_4bd96a13467c893f,S,1,context or non-gap,"3.36 eV [Na2Ti3O7; HSE06 (defect self-consistent Fermi level, not the band gap width)]"
+paper_4bd96a13467c893f,S,2,context or non-gap,"2.07 eV [Na2Ti3O7; HSE06 (defect self-consistent Fermi level, not the band gap width)]"
+paper_4bd96a13467c893f,S,6,context or non-gap,0.35 eV [mixed anode vs pristine Na2Ti3O7 (band gap decrement); experiment-this-work (UV-vis spectroscopy); optical]
+paper_4bd96a13467c893f,C,1,context or non-gap,"0.19 eV [mixed Na2Ti3O7/Na2Ti6O13 anode (band gap decrement); HSE06 (cited from ref 16, authors' own prior computational study)]"
+paper_4bd96a13467c893f,P,0,original paper-level summary and count,"{""material_system"": ""Na2Ti3O7 / Na2Ti6O13"", ""band_gap_in_this_study"": ""3.88 eV (experiment, this work, UV-vis Tauc, optical; pristine Na2Ti3O7)"", ""n_gaps_this_study"": ""6""}"
+paper_482c6354c2b11fa2,P,0,original paper-level summary and count,"{""material_system"": ""GaSb and InSb"", ""band_gap_in_this_study"": ""0.808 eV (GaSb) / 0.23 eV (InSb), HSE06+SOC (alpha tuned to reproduce experimental gap)"", ""n_gaps_this_study"": ""2""}"
+paper_390905adeebe2db4,P,0,original paper-level summary and count,"{""material_system"": ""CuI (copper iodide)"", ""band_gap_in_this_study"": ""2.99 eV (PBE0+SOC, direct at Gamma, CuI)"", ""n_gaps_this_study"": ""2""}"
+paper_5419550d7e4f276b,C,1,context or non-gap,"1.77 eV [screening threshold applied to 6060 oxide/fluoride host candidates (Materials Project database); PBE / semilocal DFT (Materials Project pre-computed values, not computed by this study)]"
+paper_5419550d7e4f276b,C,2,context or non-gap,"1.77 eV [screening threshold applied to 6060 oxide/fluoride host candidates (Materials Project database); PBE / semilocal DFT (Materials Project pre-computed values, not computed by this study)]"
+paper_5419550d7e4f276b,P,0,original paper-level summary and count,"{""material_system"": ""Cr3+-doped oxide/fluoride phosphor hosts (screening of 6060 compounds; e.g. Li-La-Mg-W-O type hosts synthesized)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_da011feb836ad659,C,1,context or non-gap,2.4 eV [CdS; experiment (literature)]
+paper_da011feb836ad659,C,2,context or non-gap,"1.18 eV [Sb2Se3; experiment (literature, ref 6)]"
+paper_da011feb836ad659,P,0,original paper-level summary and count,"{""material_system"": ""TiO2 (anatase/rutile)/Sb2Se3 heterojunction"", ""band_gap_in_this_study"": ""3.50 eV (anatase sol-TiO2) and 3.37 eV (rutile peak sp-TiO2), experiment/UV-vis Tauc, this work"", ""n_gaps_this_study"": ""2""}"
+paper_93a9d1bf987853de,P,0,original paper-level summary and count,"{""material_system"": ""ReS2"", ""band_gap_in_this_study"": ""~1.2 eV (ARPES, direct/fundamental gap near Z-point of bulk BZ)"", ""n_gaps_this_study"": ""2""}"
+paper_e9149d4a0c32e1ec,C,1,context or non-gap,>2.4 eV [LaOCuS/Sr2GaO3CuS/Sr2ZnO2Cu2S2 (sulfide analogues); cited-literature]
+paper_e9149d4a0c32e1ec,P,0,original paper-level summary and count,"{""material_system"": ""Sr2ZnO2Cu2Se2 / Ba2Zn1-xO2-xCu2Se2"", ""band_gap_in_this_study"": ""2.16 eV (experiment, optical, UV-vis diffuse reflectance)"", ""n_gaps_this_study"": ""11""}"
+paper_6c5bfadd30996b2d,P,0,original paper-level summary and count,"{""material_system"": ""BaSnO3"", ""band_gap_in_this_study"": ""3.59 eV direct / 3.19 eV indirect, PBE0"", ""n_gaps_this_study"": ""4""}"
+paper_78fd305f36fd55d8,P,0,original paper-level summary and count,"{""material_system"": ""In2O3 (Mo-doped and Sn-doped indium oxide)"", ""band_gap_in_this_study"": ""2.75 eV HSE06"", ""n_gaps_this_study"": ""3""}"
+paper_98cb1d1eee62219b,C,1,context or non-gap,"1.3-2.1 eV [Sn-based perovskites (general, e.g. CsSnI3/MASnI3 family); unspecified (cited); direct]"
+paper_98cb1d1eee62219b,C,2,context or non-gap,1.3-3.61 eV [MASnX3 (X = I to Cl); unspecified (cited)]
+paper_98cb1d1eee62219b,C,4,context or non-gap,"1.6-2.35 eV [CsGeI3, MAGeI3, FAGeI3; unspecified (cited); direct]"
+paper_98cb1d1eee62219b,C,5,context or non-gap,2-3.4 eV [double perovskites (general); unspecified (cited)]
+paper_98cb1d1eee62219b,C,9,context or non-gap,"1.5-2 eV [BaZrS3 / SrZrS3 / LaYS3 (chalcogenide perovskites, general); unspecified (cited)]"
+paper_98cb1d1eee62219b,C,15,context or non-gap,>1.9 eV [A3B2X9 materials (general class); unspecified (cited)]
+paper_98cb1d1eee62219b,C,33,context or non-gap,2.03 eV [general PV/water-splitting design optimum; unspecified (cited)]
+paper_98cb1d1eee62219b,C,34,context or non-gap,>1.9 eV [general water-splitting design threshold; unspecified (cited)]
+paper_98cb1d1eee62219b,C,36,context or non-gap,"1.6-1.9 eV [BiOI and BiSI (general, photocatalysis context); unspecified (cited)]"
+paper_98cb1d1eee62219b,C,37,context or non-gap,1.4-2.5 eV [radiation-detector design range (general); unspecified (cited)]
+paper_98cb1d1eee62219b,P,0,original paper-level summary and count,"{""material_system"": ""Lead-free perovskite-inspired PV materials (review; Sn/Ge perovskites, double perovskites, A3B2X9, chalcogenide perovskites, V-VI-VII binaries/ternaries, etc.)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_809681f5dbec1172,C,30,context or non-gap,"1.3-2.7 eV [CsSnX3 (X = I, Br, Cl); DFT (unspecified, cited); fundamental]"
+paper_809681f5dbec1172,C,31,context or non-gap,"1.3-3.9 eV [Cs2SnX6 (X = I, Br, Cl); unspecified (cited, experiment+DFT)]"
+paper_809681f5dbec1172,P,0,original paper-level summary and count,"{""material_system"": ""A2BX6 vacancy-ordered double perovskite halides (Cs2SnI6, Cs2TiI6, Cs2TeI6, etc.)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_0198bb69daa07943,C,1,context or non-gap,3.10 eV [Sr3Sc2O5Cu2S2; experiment (cited)]
+paper_0198bb69daa07943,C,2,context or non-gap,2.90 eV [Sr3Sc2O5Cu2Se2; experiment (cited)]
+paper_0198bb69daa07943,C,3,context or non-gap,3.14 eV [LaOCuS; experiment (cited)]
+paper_0198bb69daa07943,C,4,context or non-gap,2.82 eV [LaOCuSe; experiment (cited)]
+paper_0198bb69daa07943,C,5,context or non-gap,">3 eV [TiO2 (metal oxide photocatalysts, general); cited literature (general statement)]"
+paper_0198bb69daa07943,P,0,original paper-level summary and count,"{""material_system"": ""Ba3Sc2O5Cu2S2 / Ba3In2O5Cu2S2 / Ba3In2O5Cu2Se2 (oxychalcogenide solid solutions)"", ""band_gap_in_this_study"": ""3.04 eV (Ba3Sc2O5Cu2S2) / 1.37 eV (Ba3In2O5Cu2S2) / 1.09 eV (Ba3In2O5Cu2Se2) HSE06 direct fundamental gaps"", ""n_gaps_this_study"": ""18""}"
+paper_dbac9a76bf431969,S,1,context or non-gap,"1-2 eV [beta-CuMO2 family (M = Al, Ga, In, Sc, Y, La), wurtzite-analogue polymorphs; HSE06; indirect]"
+paper_dbac9a76bf431969,P,0,original paper-level summary and count,"{""material_system"": ""CuMO2 (M = Al, Ga, In, Sc, Y, La) delafossite and wurtzite (κ-phase) polymorphs"", ""band_gap_in_this_study"": ""1.0 eV HSE06 (indirect fundamental gap of beta-CuGaO2)"", ""n_gaps_this_study"": ""4""}"
+paper_f94845159d0c6ac5,P,0,original paper-level summary and count,"{""material_system"": ""In2O3 (cubic bixbyite and orthorhombic phases)"", ""band_gap_in_this_study"": ""2.50 eV HSE06 (orthorhombic In2O3, fundamental)"", ""n_gaps_this_study"": ""2""}"
+paper_55b34d2fccf81db2,S,1,context or non-gap,"3 eV [CuF (valence-band splitting, F 2p vs Cu 3d bands -- NOT the fundamental band gap); PBEsol0 (hybrid DFT, 25% HF exchange)]"
+paper_55b34d2fccf81db2,S,3,context or non-gap,1.5 eV [CuF/Cu2O heterojunction type-II band offset (NOT a bulk band gap); PBEsol0 (hybrid DFT)]
+paper_55b34d2fccf81db2,P,0,original paper-level summary and count,"{""material_system"": ""CuF (cinnabar structure)"", ""band_gap_in_this_study"": ""3.0 eV PBEsol0"", ""n_gaps_this_study"": ""3""}"
+paper_8173ba8de30a020d,C,2,context or non-gap,"1.7-2.2 eV [SbSI, SbSBr, SbSeI; experiment (cited, ref 18); optical]"
+paper_8173ba8de30a020d,P,0,original paper-level summary and count,"{""material_system"": ""SbSI, SbSBr, SbSeI"", ""band_gap_in_this_study"": ""SbSI 2.11 (HSE06) / 2.22 (QSGW); SbSBr 2.31 / 2.53; SbSeI 1.86 / 2.03 eV - all +SOC"", ""n_gaps_this_study"": ""7""}"
+paper_7d3c8d28631cec4f,P,0,original paper-level summary and count,"{""material_system"": ""CdTe"", ""band_gap_in_this_study"": ""1.50 eV HSE(34.5%)+SOC"", ""n_gaps_this_study"": ""2""}"
+paper_5907bc3953831840,P,0,original paper-level summary and count,"{""material_system"": ""BiSI, BiSeI"", ""band_gap_in_this_study"": ""1.78 eV (BiSI) / 1.50 eV (BiSeI), HSE06+SOC indirect gaps"", ""n_gaps_this_study"": ""4""}"
+paper_f26893cb71d473a3,C,1,context or non-gap,1.97 eV [tropylium lead iodide; cited-literature]
+paper_f26893cb71d473a3,P,0,original paper-level summary and count,"{""material_system"": ""(Pb2I6)·(H2DPNDI)·(H2O)·(NMP) (1D hybrid organic-inorganic lead iodide)"", ""band_gap_in_this_study"": ""1.26 eV HSE06 (indirect fundamental)"", ""n_gaps_this_study"": ""8""}"
+paper_c5b9d2b5251a9cde,S,3,context or non-gap,"1.84-1.86 eV [trigonal selenium thin film; experiment (PL, this work); optical]"
+paper_c5b9d2b5251a9cde,P,0,original paper-level summary and count,"{""material_system"": ""Trigonal Selenium (Se)"", ""band_gap_in_this_study"": ""1.84-1.86 eV (experiment, this work, PL-inferred optical gap, trigonal Se)"", ""n_gaps_this_study"": ""3""}"
+paper_0dcc3f12aff3a663,P,0,original paper-level summary and count,"{""material_system"": ""Sr2Sb2O7"", ""band_gap_in_this_study"": ""4.45 eV direct / 4.08 eV indirect, PBE0"", ""n_gaps_this_study"": ""6""}"
+paper_dc02f72e6cb2e1e5,P,0,original paper-level summary and count,"{""material_system"": ""NaBiS2 nanocrystals (with AgBiS2 comparison)"", ""band_gap_in_this_study"": ""1.47 eV (HSE06+SOC, indirect, disordered NaBiS2; lowest direct transition 0.01 eV higher)"", ""n_gaps_this_study"": ""3""}"
+paper_5db785e954fa3c9e,P,0,original paper-level summary and count,"{""material_system"": ""CuSbSe2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_7c5acf6964a8d34e,P,0,original paper-level summary and count,"{""material_system"": ""MgO, CaO, SrO, BaO (rocksalt alkaline earth oxides, (100) surfaces)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_1ba4e3011ca80916,P,0,original paper-level summary and count,"{""material_system"": ""Na2Ti3O7 (NTO) and Na2Ti6O13, Na-ion battery anode"", ""band_gap_in_this_study"": ""4.47 eV HSE06 (fundamental gap, Na2Ti3O7/NTO)"", ""n_gaps_this_study"": ""4""}"
+paper_0fc1b3b02280f705,C,1,context or non-gap,1.9 eV [indoor PV absorber (general/application target); cited literature (application target)]
+paper_0fc1b3b02280f705,C,2,context or non-gap,~2 eV [photoelectrochemical cell absorber (general/application target); cited literature (application target)]
+paper_0fc1b3b02280f705,C,3,context or non-gap,1.4-2.5 eV [X-ray detector absorber (general/application target); cited literature (application target)]
+paper_0fc1b3b02280f705,C,4,context or non-gap,>1.7 eV [tandem PV top-cell absorber (general/application target); cited literature (application target)]
+paper_0fc1b3b02280f705,C,5,context or non-gap,1.6-2.5 eV [wide-bandgap visible-light harvesting materials (general range); cited literature (design range)]
+paper_0fc1b3b02280f705,C,6,context or non-gap,8.5 eV [NaCl; experiment (cited)]
+paper_0fc1b3b02280f705,C,7,context or non-gap,1.12 eV [silicon; experiment (cited)]
+paper_0fc1b3b02280f705,C,8,context or non-gap,14 eV [LiF; experiment (cited)]
+paper_0fc1b3b02280f705,C,9,context or non-gap,5.5 eV [diamond; experiment (cited)]
+paper_0fc1b3b02280f705,C,10,context or non-gap,1.59-3.04 eV [CH3NH3PbI3 (halide series); experiment (cited)]
+paper_0fc1b3b02280f705,C,11,context or non-gap,1.5 eV [GaAs; experiment (cited)]
+paper_0fc1b3b02280f705,C,12,context or non-gap,3.5 eV [GaN; experiment (cited)]
+paper_0fc1b3b02280f705,C,13,context or non-gap,1.86 eV [SbSI; experiment (cited)]
+paper_0fc1b3b02280f705,C,14,context or non-gap,1.8-1.9 eV [BaZrS3; cited literature]
+paper_0fc1b3b02280f705,P,0,original paper-level summary and count,"{""material_system"": ""General wide-bandgap semiconductors (perovskites, BiOI, BaZrS3, SbSI, III-Vs, oxides) — perspective/comment article, not a single material system"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_48c54deeac6adefb,P,0,original paper-level summary and count,"{""material_system"": ""Sb2Ch3 series: Sb2O3, Sb2S3, Sb2Se3, Sb2Te3"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_d5ea0b3326b077f7,P,0,original paper-level summary and count,"{""material_system"": ""Y2(MoO4)3 and Al2(MoO4)3"", ""band_gap_in_this_study"": ""~5 eV hybrid DFT (both Y2(MoO4)3 and Al2(MoO4)3)"", ""n_gaps_this_study"": ""1""}"
+paper_2bd03cebb74c9478,C,2,context or non-gap,1.2 eV [Sr2InO3CuTe; experiment-literature; optical]
+paper_2bd03cebb74c9478,P,0,original paper-level summary and count,"{""material_system"": ""Sr2MO3CuCh (M = Ga, Sc, In; Ch = S, Se) layered oxychalcogenides"", ""band_gap_in_this_study"": ""HSE06-computed Eg for 6 compounds: 2.03(GaS)/1.48(GaSe)/3.07(ScS)/2.73(ScSe)/1.98(InS)/1.61(InSe) eV, all indirect"", ""n_gaps_this_study"": ""14""}"
+paper_f635f125e1915cd9,C,1,context or non-gap,3.2 eV [TiO2 (titania); cited-literature/experiment]
+paper_f635f125e1915cd9,C,2,context or non-gap,"1.8-2.2 eV [Ln2Ti2O5S2 family (Ln = Y, Nd, Sm, Gd, Tb, Dy, Ho, Er); experiment (literature); optical]"
+paper_f635f125e1915cd9,P,0,original paper-level summary and count,"{""material_system"": ""Y2Ti2O5S2"", ""band_gap_in_this_study"": ""1.95 eV HSE06 (fundamental, bulk Y2Ti2O5S2)"", ""n_gaps_this_study"": ""5""}"
+paper_f47c61bca8c9be11,P,0,original paper-level summary and count,"{""material_system"": ""Sb2Se3"", ""band_gap_in_this_study"": ""1.42 eV HSE06 (indirect, fundamental)"", ""n_gaps_this_study"": ""1""}"
+paper_8cd8c04dd3314884,P,0,original paper-level summary and count,"{""material_system"": ""MgO (Li-doped, low-index surfaces)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_2d7530a5edc02949,P,0,original paper-level summary and count,"{""material_system"": ""AgSbTe2 (Cd-doped, Se co-doped)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_e80a7b9a68ee2375,P,0,original paper-level summary and count,"{""material_system"": ""Benchmark set of 245 previously-published hybrid-DFT defect calculations across many host semiconductors/insulators"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_bc8f7212bc0e7a8f,P,0,original paper-level summary and count,"{""material_system"": ""CdTe, GaAs, Sb2S3, Sb2Se3, CeO2, In2O3, ZnO, anatase-TiO2 (8 host materials, defect study)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_59af28f4a07b5d0e,P,0,original paper-level summary and count,"{""material_system"": ""ε-VOPO4 / ε-LiVOPO4 / ε-Li2VOPO4"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_eca5541fb4300fec,P,0,original paper-level summary and count,"{""material_system"": ""TiO2 (anatase/rutile polymorphs)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_a66b059688c30ee8,P,0,original paper-level summary and count,"{""material_system"": ""CeO2, TiO2, MgO (with O vacancies / Li-doping)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_3070b6e97c771a7b,P,0,original paper-level summary and count,"{""material_system"": ""SnS2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_1e78463cd0527237,P,0,original paper-level summary and count,"{""material_system"": ""Cu (metal surfaces)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_bfc5623973107f39,P,0,original paper-level summary and count,"{""material_system"": ""AgBiS2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_5094345e224e8608,P,0,original paper-level summary and count,"{""material_system"": ""General methodology (chemical-potential/thermodynamic stability algorithm; no specific material system)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_b6b7f596b2b8c5ee,P,0,original paper-level summary and count,"{""material_system"": ""GaN (Mg-doped, nitrogen vacancy V_N defect)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_7e418c40ac47c6f4,P,0,original paper-level summary and count,"{""material_system"": ""Nb2PdxS5 (Li-intercalated)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_c09f9474011d0756,P,0,original paper-level summary and count,"{""material_system"": ""N/A (software tool paper, not material-specific)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_f2c72770aaf15c54,P,0,original paper-level summary and count,"{""material_system"": ""generic (software tool, demonstrated on example materials)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_b52f30e3754e76e3,P,0,original paper-level summary and count,"{""material_system"": ""TiO2 and various oxides/semiconductors (general discussion of oxidation states)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_ffe89ab76fa21313,P,0,original paper-level summary and count,"{""material_system"": ""Ca2N, Sr2N, Ba2N (alkaline earth sub-nitrides / electrides)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_35e6107021cb0120,P,0,original paper-level summary and count,"{""material_system"": ""Bi (bulk anode)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_bf0adce8654afb01,P,0,original paper-level summary and count,"{""material_system"": ""LiNiO2 (Mg/W co-doped)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_2bf7b939f479c24d,P,0,original paper-level summary and count,"{""material_system"": ""Li7P3S11 (AgCl-doped)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_73358351d59169c8,P,0,original paper-level summary and count,"{""material_system"": ""Alloying anode materials (e.g. Si, Sn, Sb - Li-ion battery anodes)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_609fa903e06cef6a,P,0,original paper-level summary and count,"{""material_system"": ""N/A (software paper - Galore, a Python package for simulating photoelectron spectra)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_5174f56ee79e6259,P,0,original paper-level summary and count,"{""material_system"": ""Electrides (general class; commentary on computational screening by Zhu et al.)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_49b1d8238981a970,P,0,original paper-level summary and count,"{""material_system"": ""Li10GeP2S12 (LGPS)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_29d4b0da00482dee,P,0,original paper-level summary and count,"{""material_system"": ""Li10GeP2S12 (Ge/Cl dual-doped)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_d5abd5219bf79269,P,0,original paper-level summary and count,"{""material_system"": ""LiNi0.5-xMxMn1.5O4 (M=Fe, Mg) spinel cathode"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_891f186a96704d02,P,0,original paper-level summary and count,"{""material_system"": ""ZrTe3 (Ni-intercalated, NixZrTe3)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_dfb236fe088076ee,P,0,original paper-level summary and count,"{""material_system"": ""La0.9Ba0.1MnO3 (LBMO) thin films"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_c8884ccb9d5c3429,P,0,original paper-level summary and count,"{""material_system"": ""TiTe2 (monolayer and bulk)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_d6279e7a3a951471,P,0,original paper-level summary and count,"{""material_system"": ""LiNiO2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_b5c82d2d90304d2d,P,0,original paper-level summary and count,"{""material_system"": ""LiFePO4 (V-doped, LiFe0.95V0.05PO4)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_e07edfd568fc203e,P,0,original paper-level summary and count,"{""material_system"": ""LiMOCl4 / NaMOCl4 (M = Nb, Ta)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_53f3baa55806d305,P,0,original paper-level summary and count,"{""material_system"": ""Software tool (no specific material system; general point-defect thermodynamics)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_cf19894b5037854b,P,0,original paper-level summary and count,"{""material_system"": ""various PV absorbers (multi-topic roadmap)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_817d0f5b24f1d5d6,P,0,original paper-level summary and count,"{""material_system"": ""IrO2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_621520580f47d3a1,P,0,original paper-level summary and count,"{""material_system"": ""CH3NH3PbI3 (MAPI)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_158d4190158622fb,P,0,original paper-level summary and count,"{""material_system"": ""General methodology / software (ShakeNBreak) — not material-specific"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_b1ec6a2b4c42a2e8,P,0,original paper-level summary and count,"{""material_system"": ""SnO"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_b59afcab68a905d7,P,0,original paper-level summary and count,"{""material_system"": ""N/A (software tool paper, no specific material system)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_2b2d2f8da42cde43,P,0,original paper-level summary and count,"{""material_system"": ""General (software tool, not material-specific)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_63de61b2c3292898,P,0,original paper-level summary and count,"{""material_system"": ""CeO2"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_ae925b28cd232214,P,0,original paper-level summary and count,"{""material_system"": ""CeO2 (110) surface with Cu adsorption"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_340c15af82a9c69e,P,0,original paper-level summary and count,"{""material_system"": ""CeO2 (and La-doped CeO2) surfaces"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_548a51862c356f08,P,0,original paper-level summary and count,"{""material_system"": ""BiFeO3/BiCrO3, BiFeO3/BaTiO3 superlattices"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"
+paper_4c0d65d7f9fd7058,P,0,original paper-level summary and count,"{""material_system"": ""Disordered rock salt Li-ion cathodes (many-component)"", ""band_gap_in_this_study"": """", ""n_gaps_this_study"": ""0""}"

@@ -120,3 +120,53 @@ pmt store \
 Storage matches aliases, performs recipe-defined unit conversions, appends provenance metadata, merges the new rows with the final CSV, and records stored papers in the corpus. Review the intermediate file before omitting confirmation in unattended workflows.
 
 The general missing value is the string `None`. Recipes that define list-valued output may use an empty list where the whole list is supported but contains no items; follow each recipe's field-level prompt.
+
+## Review against a validation set
+
+Run `pmt validate` to open a local browser review. Choose a validation CSV, a
+scraped CSV, and the recipe used for extraction. The recipe selector lists
+bundled recipes and **Custom recipe JSON…**, which reveals a file picker for a
+standalone recipe JSON file. For repeat runs, provide all three paths on the
+command line:
+
+```bash
+pmt validate \
+  --validation tests/data/verification_data/band_gaps.csv \
+  --scraped temp_scraped_materials.csv \
+  --recipe band_gap_validation
+```
+
+The reviewer groups rows by DOI, then paper ID or title when needed. It suggests
+material pairs within each paper; confirm or change pairs, mark missing and extra
+entries, and record a correct or incorrect decision for each recipe field.
+Per-entry and per-paper progress is shown in the browser. Decisions autosave to
+`~/.config/paperminertoolkit/validation-reviews/` and resume when the same two
+CSVs and recipe are selected again. The setup screen also lists saved reviews;
+it can resume them from local CSV snapshots without asking you to find the files
+again. These snapshots stay in the same local review folder. The input CSVs are
+never changed. Use `--output review.json` to choose the decision file.
+
+For list-valued fields, pair items and judge each scalar value separately.
+The reviewer splits structured CSV cells written as JSON or Python-style
+list/dictionary literals, while the **Raw cell** view retains the original text.
+Dictionary-valued answers expose each key for its own decision, including keys
+inside list items such as `value`, `method_or_source`, `gap_type`, and
+`conditions`. Nested lists and dictionaries use the same controls; mark missing
+reference parts and unpaired extracted parts extra. The scoring summary shows
+both field totals and expandable per-part totals.
+
+An extra scraped entry, list item, or dictionary part can be marked correct or
+incorrect. Correct extras count as true positives when the reference omitted
+valid information; incorrect extras count as false positives. Unreviewed extras
+keep the score pending.
+
+Record the extraction mode, model identifier, provider, context length,
+software commit, run date, and the numeric matching rule in **Scoring summary**.
+That view gives per-field TP, FP, FN, precision, recall, and F1. While a review
+is in progress, metrics use the decisions completed so far and remain
+provisional; an undefined denominator is reported as pending until the review
+is complete, then as null. A wrong matched value counts one FP and one FN, a missing
+value counts one FN. Use **Download scoring
+run** to archive the decisions, metrics, protocol, paper count, and SHA-256
+fingerprints of both CSVs and the recipe. A download made before review is
+complete is labeled a draft.

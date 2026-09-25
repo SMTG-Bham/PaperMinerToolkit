@@ -31,7 +31,7 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
-                    'config', 'recipe', 'scrape', 'store', 'status', 'reset']:
+                    'config', 'recipe', 'scrape', 'store', 'validate', 'status', 'reset']:
         assert command in root_help.output
     assert filter_help.exit_code == 0
     assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}

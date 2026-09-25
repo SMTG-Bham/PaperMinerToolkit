@@ -6,6 +6,7 @@ download, scrape, store, configuration, and maintenance functions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -32,6 +33,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
 from paperminertoolkit.workflows.imports import import_pdfs
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.store import store_results
+from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
 from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
@@ -931,6 +933,36 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
+@click.command('validate')
+@click.option('--validation', 'validation_path', type=click.Path(exists=True, dir_okay=False),
+              help='Validation CSV to open immediately.')
+@click.option('--scraped', 'scraped_path', type=click.Path(exists=True, dir_okay=False),
+              help='Scraped CSV to open immediately.')
+@click.option('--recipe', 'recipe_name', help='Bundled recipe name or recipe JSON path.')
+@click.option('--output', type=click.Path(dir_okay=False),
+              help='Review decisions JSON path; defaults to the local review directory.')
+@click.option('--no-browser', is_flag=True, help='Print the local URL without opening a browser.')
+def validate(validation_path: str | None, scraped_path: str | None,
+             recipe_name: str | None, output: str | None, no_browser: bool) -> None:
+    """Review recipe extraction against a validation CSV in a local browser."""
+    supplied = [validation_path, scraped_path, recipe_name]
+    if any(supplied) and not all(supplied):
+        raise click.UsageError('Supply --validation, --scraped, and --recipe together, or choose all three in the browser.')
+    app = ReviewApp(output=Path(output) if output else None)
+    if all(supplied):
+        try:
+            validation_bytes = Path(validation_path).read_bytes()
+            scraped_bytes = Path(scraped_path).read_bytes()
+            app.load(validation_bytes.decode('utf-8-sig'),
+                     scraped_bytes.decode('utf-8-sig'), recipe_name,
+                     validation_name=validation_path, scraped_name=scraped_path,
+                     validation_sha256=hashlib.sha256(validation_bytes).hexdigest(),
+                     scraped_sha256=hashlib.sha256(scraped_bytes).hexdigest())
+        except (OSError, ValueError, KeyError) as error:
+            raise click.ClickException(str(error)) from error
+    serve_validation(app, open_browser=not no_browser)
+
+
 @click.command('prompt')
 @click.argument('recipe', default='sse', type=str)
 @click.option(
@@ -1158,6 +1190,7 @@ main.add_command(paper_search, 'search')
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
+main.add_command(validate, 'validate')
 main.add_command(store, 'store')
 main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
