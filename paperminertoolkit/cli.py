@@ -6,6 +6,7 @@ download, scrape, store, configuration, and maintenance functions.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from pathlib import Path
@@ -933,7 +934,7 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
-@click.command('validate')
+@click.command('gui')
 @click.option('--validation', 'validation_path', type=click.Path(exists=True, dir_okay=False),
               help='Validation CSV to open immediately.')
 @click.option('--scraped', 'scraped_path', type=click.Path(exists=True, dir_okay=False),
@@ -942,8 +943,8 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
 @click.option('--output', type=click.Path(dir_okay=False),
               help='Review decisions JSON path; defaults to the local review directory.')
 @click.option('--no-browser', is_flag=True, help='Print the local URL without opening a browser.')
-def validate(validation_path: str | None, scraped_path: str | None,
-             recipe_name: str | None, output: str | None, no_browser: bool) -> None:
+def validation_gui(validation_path: str | None, scraped_path: str | None,
+                   recipe_name: str | None, output: str | None, no_browser: bool) -> None:
     """Review recipe extraction against a validation CSV in a local browser."""
     supplied = [validation_path, scraped_path, recipe_name]
     if any(supplied) and not all(supplied):
@@ -998,6 +999,26 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
     except OSError as error:
         raise click.ClickException(str(error)) from error
     click.echo(f'Prompt written to {outfile}.')
+
+
+@click.command('template')
+@click.argument('recipe', type=str)
+@click.argument('outfile', type=click.Path(dir_okay=False))
+def validation_template(recipe: str, outfile: str) -> None:
+    """Create an empty validation CSV for a bundled or file-based recipe."""
+    try:
+        loaded = load_recipe(recipe)
+        columns = ['Identifier', 'Title', 'DOI']
+        existing = {column.casefold() for column in columns}
+        columns.extend(
+            field for field in loaded['search fields']
+            if field.casefold() not in existing
+        )
+        with Path(outfile).open('w', encoding='utf-8', newline='') as handle:
+            csv.writer(handle).writerow(columns)
+    except (FileNotFoundError, KeyError, OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Validation template written to {outfile}.')
 
 
 def update_elsevier_api_key() -> None:
@@ -1186,11 +1207,15 @@ def recipe_group() -> None:
     """Inspect extraction recipes and their generated prompts."""
 
 
+@click.group('validate')
+def validate_group() -> None:
+    """Create validation sets and review extraction results."""
+
+
 main.add_command(paper_search, 'search')
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
-main.add_command(validate, 'validate')
 main.add_command(store, 'store')
 main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
@@ -1236,3 +1261,7 @@ main.add_command(config_group)
 
 recipe_group.add_command(recipe_prompt, 'prompt')
 main.add_command(recipe_group)
+
+validate_group.add_command(validation_gui, 'gui')
+validate_group.add_command(validation_template, 'template')
+main.add_command(validate_group)

@@ -28,6 +28,7 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     filter_help = runner.invoke(cli.main, ['filter', '--help'])
     topics_help = runner.invoke(cli.main, ['topics', '--help'])
     recipe_help = runner.invoke(cli.main, ['recipe', '--help'])
+    validate_help = runner.invoke(cli.main, ['validate', '--help'])
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
@@ -42,6 +43,8 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     }
     assert recipe_help.exit_code == 0
     assert 'prompt' in recipe_help.output
+    assert validate_help.exit_code == 0
+    assert all(command in validate_help.output for command in ['gui', 'template'])
 
 
 def test_nested_groups_register_every_command_at_its_public_path() -> None:
@@ -49,13 +52,15 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.corpus_group.commands) == {'stats', 'searches'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'prompt'}
+    assert set(cli.validate_group.commands) == {'gui', 'template'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
         'ncbi-email', 'openai-key', 'anthropic-key',
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
-                  cli.import_group, cli.config_group, cli.recipe_group]:
+                  cli.import_group, cli.config_group, cli.recipe_group,
+                  cli.validate_group]:
         for public_name, command in group.commands.items():
             assert command.name == public_name
 
@@ -118,6 +123,58 @@ def test_recipe_prompt_writes_an_output_file_and_reports_recipe_errors(
     unwritable = CliRunner().invoke(
         cli.recipe_prompt,
         ['custom', '--outfile', str(tmp_path / 'missing' / 'prompt.txt')],
+    )
+    assert unwritable.exit_code == 1
+    assert 'Error:' in unwritable.output
+
+
+def test_validation_template_writes_metadata_and_recipe_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Create a header-only CSV in the format consumed by validation."""
+    output = tmp_path / 'validation.csv'
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {
+        'search fields': {
+            'Material system': {},
+            'Band gap': {},
+            'All band gaps': {},
+        },
+    })
+
+    result = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert output.read_text() == (
+        'Identifier,Title,DOI,Material system,Band gap,All band gaps\n'
+    )
+    assert result.output == f'Validation template written to {output}.\n'
+
+
+def test_validation_template_reports_recipe_and_output_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Present invalid recipes and unwritable destinations as CLI errors."""
+    monkeypatch.setattr(
+        cli,
+        'load_recipe',
+        lambda _: (_ for _ in ()).throw(ValueError('bad recipe')),
+    )
+    invalid = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(tmp_path / 'validation.csv')],
+    )
+    assert invalid.exit_code == 1
+    assert 'Error: bad recipe' in invalid.output
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {'search fields': {'Name': {}}})
+    unwritable = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(tmp_path / 'missing' / 'validation.csv')],
     )
     assert unwritable.exit_code == 1
     assert 'Error:' in unwritable.output

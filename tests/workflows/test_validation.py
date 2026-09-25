@@ -11,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 import paperminertoolkit.cli as cli
+import paperminertoolkit.workflows.validation as validation_workflow
 from paperminertoolkit.workflows.validation import ReviewApp
 
 
@@ -135,6 +136,7 @@ def test_review_rejects_unusable_csv_and_reads_current_band_gap_data(tmp_path: P
 
 def test_validate_cli_preloads_inputs_and_opens_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The public command accepts repeatable file arguments."""
+    monkeypatch.setattr(validation_workflow, 'REVIEW_DIR', tmp_path / 'reviews')
     gold = tmp_path / 'gold.csv'
     scraped = tmp_path / 'scraped.csv'
     gold.write_text(_gold())
@@ -146,7 +148,7 @@ def test_validate_cli_preloads_inputs_and_opens_server(tmp_path: Path, monkeypat
         called['open_browser'] = open_browser
 
     monkeypatch.setattr(cli, 'serve_validation', fake_serve)
-    result = CliRunner().invoke(cli.main, ['validate', '--validation', str(gold),
+    result = CliRunner().invoke(cli.main, ['validate', 'gui', '--validation', str(gold),
                                             '--scraped', str(scraped), '--recipe',
                                             'band_gap_validation', '--no-browser'])
     assert result.exit_code == 0, result.output
