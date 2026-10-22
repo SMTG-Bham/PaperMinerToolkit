@@ -18,7 +18,7 @@ import pandas as pd
 from paperminertoolkit.corpus.database import connect, paper_rows, upsert_paper
 from paperminertoolkit.extraction.extract import convert_units
 from paperminertoolkit.extraction.models import ModelConfig
-from paperminertoolkit.extraction.recipes import canonical_match, field_columns, load_recipe
+from paperminertoolkit.extraction.recipes import PROVENANCE_FIELDS, canonical_match, field_columns, load_recipe
 
 
 def _temporary_path(directory: Path, prefix: str, suffix: str) -> str:
@@ -125,10 +125,15 @@ def _mark_stored_papers(
         for paper in paper_rows(conn):
             if paper['paper_id'] not in paper_ids:
                 continue
-            if not any(
+            article_scraped = any(
                 paper.get(column) == 'succeeded'
                 for column in ['abstract_scrape_status', 'text_scrape_status', 'image_scrape_status']
-            ):
+            )
+            supplement_scraped = any(
+                paper.get(column) in {'succeeded', 'partial'}
+                for column in ['supplement_text_scrape_status', 'supplement_image_scrape_status']
+            )
+            if not article_scraped and not supplement_scraped:
                 continue
             paper['store_status'] = 'stored'
             upsert_paper(conn, paper)
@@ -195,6 +200,9 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
     else:
         out_file = None
         columns = field_columns(recipe)
+    # Evidence identity is preserved even when appending to an older output
+    # schema that predates supplementary files or captioned figures.
+    columns.extend(column for column in PROVENANCE_FIELDS if column not in columns)
 
     out_data = pd.DataFrame()
     for series_name, series in in_file.items():

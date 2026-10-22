@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from paperminertoolkit.extraction.recipes import RECIPES_PATH, canonical_match, load_recipe
+from paperminertoolkit.extraction.recipes import PROVENANCE_FIELDS, RECIPES_PATH, canonical_match, load_recipe
 from paperminertoolkit.workflows.validation_scoring import GAP_FIELDS, score_review
 
 PAGE = Path(__file__).resolve().parents[1] / 'resources' / 'validation.html'
@@ -108,8 +108,11 @@ def _csv_rows(content: str, label: str, recipe: dict[str, Any]) -> list[dict[str
             raw_values = {field: str(raw.get(columns[field]) or '') if field in columns else ''
                           for field in fields}
             values = {field: _structured_cell(value) for field, value in raw_values.items()}
+            provenance = {field: _clean(raw.get(names[field.casefold()]))
+                          for field in PROVENANCE_FIELDS if field.casefold() in names}
             rows.append({'id': f'{label[0].lower()}:{index}', 'line': index,
-                         'meta': metadata, 'values': values, 'raw_values': raw_values})
+                         'meta': metadata, 'values': values, 'raw_values': raw_values,
+                         'provenance': provenance})
         return rows
     except csv.Error as error:
         raise ValueError(f'{label} CSV cannot be read: {error}') from error

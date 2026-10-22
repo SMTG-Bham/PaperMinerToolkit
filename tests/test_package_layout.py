@@ -16,6 +16,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.corpus.metadata',
     'paperminertoolkit.corpus.pdf_layout',
     'paperminertoolkit.corpus.xml_layout',
+    'paperminertoolkit.extraction.supplements',
     'paperminertoolkit.extraction.compression',
     'paperminertoolkit.extraction.entities',
     'paperminertoolkit.extraction.extract',

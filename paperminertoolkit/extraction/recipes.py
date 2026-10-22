@@ -15,6 +15,10 @@ from typing import Any, TypeAlias
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 RECIPES_PATH = PACKAGE_DIR / 'resources' / 'recipes.json'
 METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
+PROVENANCE_FIELDS = [
+    'Source', 'Source path', 'Figure id', 'Figure label', 'Figure source',
+    'Supplement id', 'Supplement label', 'Supplement filename', 'Supplement source URL',
+]
 _Recipe: TypeAlias = dict[str, Any]
 
 

@@ -5,6 +5,7 @@ Recipe-driven preparation, model execution, structured extraction, entity annota
 ```{toctree}
 :maxdepth: 1
 
+supplements
 recipes
 models
 tokenizer

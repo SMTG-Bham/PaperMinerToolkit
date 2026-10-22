@@ -75,6 +75,30 @@ def test_review_matches_papers_before_materials_and_keeps_empty_papers(tmp_path:
     assert first['material_suggestions'][first['rows'][1]['id']] == by_name['Na2O']
 
 
+def test_review_retains_si_provenance_without_turning_it_into_recipe_fields(tmp_path: Path) -> None:
+    """Keep article and supplementary evidence distinguishable within a paper."""
+    gold = _csv(['Paper id', 'Material system', 'Band gap'], [['one', 'ZnO', '3 eV']])
+    scraped = _csv([
+        'Paper id', 'Material system', 'Band gap', 'Source', 'Source path',
+        'Supplement id', 'Supplement label', 'Supplement filename', 'Supplement source URL',
+    ], [
+        ['one', 'ZnO', '3 eV', 'text', 'corpus:text', '', '', '', ''],
+        ['one', 'ZnO', '3 eV', 'supplement-text', 'corpus:supplement:abc!data.csv',
+         'abc', 'Table S1', 'data.csv', 'https://example.org/SI.zip'],
+    ])
+    session = ReviewApp(output=tmp_path / 'review.json').load(gold, scraped, 'band_gap_validation')
+    assert len(session['scraped']) == 1
+    article, supplement = session['scraped'][0]['rows']
+    assert article['provenance']['Source'] == 'text'
+    assert supplement['provenance'] == {
+        'Source': 'supplement-text', 'Source path': 'corpus:supplement:abc!data.csv',
+        'Supplement id': 'abc', 'Supplement label': 'Table S1',
+        'Supplement filename': 'data.csv', 'Supplement source URL': 'https://example.org/SI.zip',
+    }
+    assert 'Supplement id' not in session['fields']
+    assert article['values'] == supplement['values']
+
+
 def test_review_title_fallback_conflicts_and_ambiguous_matches(tmp_path: Path) -> None:
     """Fallback metadata never overrides a contradictory DOI."""
     app = ReviewApp(output=tmp_path / 'review.json')
