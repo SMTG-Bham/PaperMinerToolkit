@@ -7,6 +7,8 @@ progress summary for the SQLite paper corpus.
 from __future__ import annotations
 
 from os import PathLike
+from contextlib import closing
+from typing import Any
 
 from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
                                                connect,
@@ -36,6 +38,41 @@ def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
             upsert_paper(conn, paper)
 
 
+def progress_summary(db_path: str | PathLike[str] = 'papers.db') -> dict[str, Any]:
+    """Collect pipeline status counts without loading all paper metadata.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str], optional
+        Corpus database to summarize. Opens and migrates the schema as needed.
+
+    Returns
+    -------
+    dict[str, Any]
+        Paper count, structured-document coverage, counts by pipeline status,
+        and extracted text/image material totals.
+    """
+    with closing(connect(db_path)) as conn, conn:
+        stats = corpus_stats(conn)
+        pipeline = {
+            column: {row[0]: row[1] for row in conn.execute(
+                f'SELECT {column}, COUNT(*) FROM papers GROUP BY {column}'
+            )}
+            for column in PIPELINE_COLUMNS if column.endswith('_status')
+        }
+        totals = conn.execute(
+            'SELECT COALESCE(SUM(num_text_materials), 0), '
+            'COALESCE(SUM(num_image_materials), 0) FROM papers'
+        ).fetchone()
+    return {
+        'papers': stats['papers'],
+        'papers_with_structured_documents': stats['papers_with_structured_documents'],
+        'pipeline': pipeline,
+        'text_materials': totals[0],
+        'image_materials': totals[1],
+    }
+
+
 def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     """Print a compact corpus progress summary.
 
@@ -49,13 +86,11 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     RuntimeError
         If the corpus schema is newer than this package supports.
     """
-    with connect(db_path) as conn:
-        papers = paper_rows(conn)
-        stats = corpus_stats(conn)
+    summary = progress_summary(db_path)
     print('\nPaperMinerToolkit Progress Summary')
     print('---------------------------')
-    print(f'Total papers: {len(papers)}')
-    print(f'Papers with structured documents: {stats["papers_with_structured_documents"]}')
+    print(f'Total papers: {summary["papers"]}')
+    print(f'Papers with structured documents: {summary["papers_with_structured_documents"]}')
     rows = [
         ('Metadata retrieved', 'metadata_status', 'retrieved'),
         ('Metadata enriched', 'enrichment_status', 'succeeded'),
@@ -70,10 +105,10 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
         ('Failed image scrapes', 'image_scrape_status', 'failed'),
     ]
     for label, column, value in rows:
-        count = sum(1 for paper in papers if paper.get(column) == value)
+        count = summary['pipeline'][column].get(value, 0)
         print(f'{label}: {count}')
-    text_materials = sum(int(paper.get('num_text_materials') or 0) for paper in papers)
-    image_materials = sum(int(paper.get('num_image_materials') or 0) for paper in papers)
+    text_materials = summary['text_materials']
+    image_materials = summary['image_materials']
     print(f'Text material rows extracted: {text_materials}')
     print(f'Image material rows extracted: {image_materials}')
     print('---------------------------\n')

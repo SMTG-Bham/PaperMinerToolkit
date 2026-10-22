@@ -11,12 +11,14 @@ import hashlib
 import json
 import sqlite3
 import sys
-from contextlib import nullcontext, redirect_stdout
+from contextlib import closing, nullcontext, redirect_stdout
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import click
+from paperminertoolkit._cli_schema import schema_command
+from paperminertoolkit._version import __version__
 from paperminertoolkit.providers import registry as sources
 from paperminertoolkit.corpus.database import (connect,
                                                corpus_stats,
@@ -31,7 +33,7 @@ from paperminertoolkit.extraction.entities import EntityExtractionConfig
 from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
                                                   build_reconciliation_prompt,
                                                   build_text_extraction_prompt)
-from paperminertoolkit.extraction.recipes import load_recipe
+from paperminertoolkit.extraction.recipes import RECIPES_PATH, load_recipe
 from paperminertoolkit.workflows.download import download_papers
 from paperminertoolkit.workflows.enrichment import enrich_corpus
 from paperminertoolkit.workflows.entities import extract_corpus_entities, extract_file_entities
@@ -65,7 +67,13 @@ from paperminertoolkit.settings import (get_model_profile,
                                    update_openai_key,
                                    update_openalex_key,
                                    update_unpaywall_email)
-from paperminertoolkit.workflows.utilities import reset, status
+from paperminertoolkit.workflows.utilities import progress_summary, reset, status
+
+
+_json_option = click.option(
+    '--json', 'json_output', is_flag=True,
+    help='Write JSON to stdout and progress or errors to stderr.',
+)
 
 # A download may fetch a PDF, full text, or an abstract, so its choices are
 # the union of the three, kept in PDF order because that is the one a caller
@@ -113,20 +121,24 @@ def _format_bytes(size: int) -> str:
               help='Search selected providers concurrently.')
 @click.option('--workers', default=None, type=click.IntRange(min=1),
               help='Maximum provider workers; also enables parallel search.')
+@_json_option
 def paper_search(query: str, db_path: str, source: tuple[str, ...], count: int,
                  store_abstract: bool, enrich_metadata: bool, parallel: bool,
-                 workers: int | None) -> None:
+                 workers: int | None, json_output: bool) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
     if not query.strip():
         raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
     try:
-        summary = search_for_papers(
-            query, db_path, source=source[0] if len(source) == 1 else source, count=count,
-            store_abstract=store_abstract, enrich=enrich_metadata,
-            parallel=parallel, workers=workers,
-        )
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = search_for_papers(
+                query, db_path, source=source[0] if len(source) == 1 else source, count=count,
+                store_abstract=store_abstract, enrich=enrich_metadata,
+                parallel=parallel, workers=workers,
+            )
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
     if summary:
         _check_search_status(summary)
 
@@ -283,21 +295,29 @@ def import_author(db_path: str,
               help='Download and store abstracts alongside requested paper assets.')
 @click.option('--force', is_flag=True, default=False,
               help='Redownload requested assets even when that content type is already stored.')
+@_json_option
 def download(
         db_path: str,
         download_format: str,
         sources: tuple[str, ...],
         download_abstract: bool,
         force: bool,
+        json_output: bool,
 ) -> None:
     """Download abstracts, text, and/or PDFs for rows in the paper corpus."""
-    download_papers(
-        db_path,
-        download_format=download_format,
-        sources=list(sources),
-        download_abstract=download_abstract,
-        force=force,
-    )
+    try:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = download_papers(
+                db_path,
+                download_format=download_format,
+                sources=list(sources),
+                download_abstract=download_abstract,
+                force=force,
+            )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
 
 
 @click.command('enrich')
@@ -335,6 +355,7 @@ def download(
 @click.option('--email',
               default=None,
               help='Contact email for Crossref. Defaults to the stored crossref_email setting.')
+@_json_option
 def enrich(db_path: str,
            sources: tuple[str, ...],
            batch_size: int,
@@ -344,23 +365,27 @@ def enrich(db_path: str,
            refresh_after: int,
            references: bool,
            resolve_references: bool,
-           email: str | None) -> None:
+           email: str | None, json_output: bool) -> None:
     """Supplement corpus metadata with the selected provider records."""
     try:
-        summary = enrich_corpus(
-            db_path,
-            sources=list(sources),
-            batch_size=batch_size,
-            limit=limit,
-            force=force,
-            retry_failed=retry_failed,
-            refresh_after=refresh_after,
-            references=references,
-            resolve_references=resolve_references,
-            email=email,
-        )
-    except (RuntimeError, ValueError) as error:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = enrich_corpus(
+                db_path,
+                sources=list(sources),
+                batch_size=batch_size,
+                limit=limit,
+                force=force,
+                retry_failed=retry_failed,
+                refresh_after=refresh_after,
+                references=references,
+                resolve_references=resolve_references,
+                email=email,
+            )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
+        return
     click.echo(
         f'Enrichment complete: {summary["succeeded"]} enriched, '
         f'{summary["partial"]} partial, {summary["not_found"]} not found.'
@@ -379,12 +404,19 @@ def enrich(db_path: str,
 
 
 @click.command('stats')
-@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def corpus_status(db_path: str) -> None:
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
+@_json_option
+def corpus_status(db_path: str, json_output: bool) -> None:
     """Print storage statistics for the paper corpus."""
-    with connect(db_path) as conn:
-        stats = corpus_stats(conn)
-        enrichment = enrichment_stats(conn)
+    try:
+        with closing(connect(db_path)) as conn, conn:
+            stats = corpus_stats(conn)
+            enrichment = enrichment_stats(conn)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps({'stats': stats, 'enrichment': enrichment}, indent=2))
+        return
     click.echo(f'Corpus: {db_path}')
     click.echo(f'Papers: {stats["papers"]}')
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
@@ -410,12 +442,13 @@ def corpus_status(db_path: str) -> None:
 
 
 @click.command('searches')
-@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.option('--limit', default=20, type=click.IntRange(min=1), show_default=True,
               help='Maximum number of recent searches to show.')
 @click.option('--outfile', default=None, type=click.Path(dir_okay=False),
-              help='Write the complete search history to a JSON file.')
-def corpus_searches(db_path: str, limit: int, outfile: str | None) -> None:
+              help='Write the selected recent search history to a JSON file.')
+@_json_option
+def corpus_searches(db_path: str, limit: int, outfile: str | None, json_output: bool) -> None:
     """Print the searches recorded in a paper corpus.
 
     Parameters
@@ -426,15 +459,24 @@ def corpus_searches(db_path: str, limit: int, outfile: str | None) -> None:
         Maximum number of recent searches to display.
     outfile : str or None
         Optional JSON output path. A ``.json`` suffix is appended when absent.
+    json_output : bool
+        Emit the selected search history as JSON on stdout.
     """
-    with connect(db_path) as conn:
-        searches = search_history(conn, limit=limit)
+    try:
+        with closing(connect(db_path)) as conn, conn:
+            searches = search_history(conn, limit=limit)
+        if outfile is not None:
+            output_path = Path(outfile)
+            if output_path.suffix.lower() != '.json':
+                output_path = Path(f'{output_path}.json')
+            output_path.write_text(f'{json.dumps(searches, indent=2)}\n', encoding='utf-8')
+            click.echo(f'Search history written to {output_path}.', err=json_output)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(searches, indent=2))
+        return
     if outfile is not None:
-        output_path = Path(outfile)
-        if output_path.suffix.lower() != '.json':
-            output_path = Path(f'{output_path}.json')
-        output_path.write_text(f'{json.dumps(searches, indent=2)}\n', encoding='utf-8')
-        click.echo(f'Search history written to {output_path}.')
         return
     click.echo(f'Corpus searches: {db_path}')
     if not searches:
@@ -552,11 +594,18 @@ def filter_topic(db_path: str, rules_path: str,
 
 
 @click.command('status')
-@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def filter_status(db_path: str) -> None:
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
+@_json_option
+def filter_status(db_path: str, json_output: bool) -> None:
     """Show active corpus filters and their final paper decisions."""
-    with connect(db_path) as conn:
-        overview = filter_overview(conn)
+    try:
+        with closing(connect(db_path)) as conn, conn:
+            overview = filter_overview(conn)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(overview, indent=2))
+        return
     _echo_filter_overview(db_path, overview)
 
 
@@ -1175,6 +1224,31 @@ def validation_gui(validation_path: str | None, scraped_path: str | None,
     serve_validation(app, open_browser=not no_browser)
 
 
+@click.command('list')
+@_json_option
+def recipe_list(json_output: bool) -> None:
+    """List bundled recipe names without making model requests."""
+    try:
+        names = sorted(json.loads(RECIPES_PATH.read_text(encoding='utf-8')))
+    except (ValueError, OSError) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(names, indent=2))
+    else:
+        click.echo('\n'.join(names))
+
+
+@click.command('show')
+@click.argument('recipe', default='sse')
+def recipe_show(recipe: str) -> None:
+    """Write a validated bundled recipe or recipe file as JSON."""
+    try:
+        loaded = load_recipe(recipe)
+    except (KeyError, ValueError, OSError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(json.dumps(loaded, indent=2))
+
+
 @click.command('prompt')
 @click.argument('recipe', default='sse', type=str)
 @click.option(
@@ -1326,10 +1400,21 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
 
 
 @click.command('status')
-def model_status() -> None:
+@_json_option
+def model_status(json_output: bool) -> None:
     """Print configured text and vision model profiles."""
-    for profile in ['text', 'vision']:
-        config = get_model_profile(profile)
+    try:
+        profiles = {
+            profile: {key: value for key, value in get_model_profile(profile).items()
+                      if key != 'api_key'}
+            for profile in ['text', 'vision']
+        }
+    except (RuntimeError, ValueError, OSError) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(profiles, indent=2))
+        return
+    for profile, config in profiles.items():
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
@@ -1362,13 +1447,21 @@ def reset_miner(db_path: str) -> None:
 
 
 @click.command('status')
-@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def miner_status(db_path: str) -> None:
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
+@_json_option
+def miner_status(db_path: str, json_output: bool) -> None:
     """Print pipeline progress for the paper corpus."""
-    status(db_path)
+    try:
+        if json_output:
+            click.echo(json.dumps(progress_summary(db_path), indent=2))
+        else:
+            status(db_path)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
 
 
-@click.group()
+@click.group('pmt')
+@click.version_option(__version__, prog_name='pmt')
 def main() -> None:
     """Build, analyse, and extract structured data from paper corpora."""
 
@@ -1414,6 +1507,7 @@ def validate_group() -> None:
 
 
 main.add_command(paper_search, 'search')
+main.add_command(schema_command)
 main.add_command(probe)
 main.add_command(gather)
 main.add_command(download, 'download')
@@ -1467,6 +1561,8 @@ config_group.add_command(click.command('anthropic-key')(update_anthropic_api_key
 main.add_command(config_group)
 
 recipe_group.add_command(recipe_prompt, 'prompt')
+recipe_group.add_command(recipe_list)
+recipe_group.add_command(recipe_show)
 main.add_command(recipe_group)
 
 validate_group.add_command(validation_gui, 'gui')

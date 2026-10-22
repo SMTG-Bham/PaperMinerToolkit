@@ -55,7 +55,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     """Keep the installed command hierarchy from drifting from its design."""
     assert set(cli.corpus_group.commands) == {'stats', 'searches'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
-    assert set(cli.recipe_group.commands) == {'prompt'}
+    assert set(cli.recipe_group.commands) == {'list', 'show', 'prompt'}
     assert set(cli.validate_group.commands) == {'gui', 'template'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
