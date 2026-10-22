@@ -424,7 +424,7 @@ def _update_api_key(
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True]
-        Empty mapping to update in place, or a truthy value to reload settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     key : str
         Settings key containing the credential.
     label : str
@@ -439,7 +439,7 @@ def _update_api_key(
     ValueError
         If the provider rejects the entered key.
     """
-    if settings:
+    if settings is True:
         settings = load_settings()
     _show_current_setting(settings, key, label)
     api_key = input(f'Enter {label}: ')
@@ -457,7 +457,7 @@ def update_openai_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -473,7 +473,7 @@ def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True) -> Non
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     """
     _update_api_key(settings, 'anthropic_api_key', 'Anthropic API key')
 
@@ -501,7 +501,7 @@ def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True) -> None
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -517,7 +517,7 @@ def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     """
     _update_api_key(settings, 'core_api_key', 'CORE API key')
 
@@ -532,7 +532,7 @@ def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -542,7 +542,7 @@ def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
     from paperminertoolkit.providers.core import (CORE_FREE_SINGLE_PER_WINDOW,
                                                   CORE_MIN_INTERVAL,
                                                   CORE_WINDOW_SECONDS)
-    if settings:
+    if settings is True:
         settings = load_settings()
     _show_current_setting(settings, 'core_min_interval',
                           'CORE seconds between requests', secret=False)
@@ -570,7 +570,7 @@ def _update_email(settings: dict[str, Any] | Literal[True], key: str, label: str
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True]
-        Mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     key : str
         Settings key containing the contact address.
     label : str
@@ -581,7 +581,7 @@ def _update_email(settings: dict[str, Any] | Literal[True], key: str, label: str
     ValueError
         If the entered address does not contain an ``@`` character.
     """
-    if settings:
+    if settings is True:
         settings = load_settings()
     _show_current_setting(settings, key, label, secret=False)
     email = input(f'Enter {label}: ').strip()
@@ -597,7 +597,7 @@ def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True) -> N
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -616,7 +616,7 @@ def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> No
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -635,7 +635,7 @@ def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     """
     _update_api_key(settings, 'ncbi_api_key', 'NCBI API key')
 
@@ -650,7 +650,7 @@ def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
@@ -696,7 +696,7 @@ def update_openalex_key(settings: dict[str, Any] | Literal[True] = True) -> None
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
 
     Raises
     ------
