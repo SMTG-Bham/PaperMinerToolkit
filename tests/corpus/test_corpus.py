@@ -1006,6 +1006,8 @@ def test_papers_match_on_a_shared_pubmed_identifier() -> None:
 @pytest.mark.parametrize('column', ['doi', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi'])
 @pytest.mark.parametrize('presented', [
     'DOI: 10.1234/EXAMPLE(test)',
+    'doi:https://doi.org/10.1234/EXAMPLE(test)',
+    'DOI: http://dx.doi.org/10.1234/EXAMPLE%28test%29?source=pdf',
     'http://doi.org/10.1234/EXAMPLE(test)',
     'https://dx.doi.org/10.1234/EXAMPLE(test)',
     'http://dx.doi.org/10.1234/EXAMPLE%28test%29?source=pdf#abstract',

@@ -48,13 +48,12 @@ def clean_doi(value: object) -> str:
     """
     doi = unicodedata.normalize('NFKC', html.unescape(str(value or ''))).translate(UNICODE_PUNCTUATION)
     doi = doi.translate(INVISIBLE_CHARACTERS).strip()
+    doi = DOI_LABEL_PREFIX.sub('', doi, count=1).strip()
 
     url_prefix = DOI_URL_PREFIX.match(doi)
     if url_prefix:
         doi = unquote(doi[url_prefix.end():])
         doi = re.split(r'[?#]', doi, maxsplit=1)[0]
-    else:
-        doi = DOI_LABEL_PREFIX.sub('', doi, count=1)
     doi = doi.strip()
 
     while doi:

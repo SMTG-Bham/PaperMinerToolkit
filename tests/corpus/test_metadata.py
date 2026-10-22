@@ -29,6 +29,7 @@ def test_clean_doi_normalizes_labels_resolver_urls_and_case() -> None:
     """Test canonicalization of common DOI presentation formats."""
     assert metadata.clean_doi('DOI: 10.1234/EXAMPLE') == '10.1234/example'
     assert metadata.clean_doi('https://doi.org/10.1234/EXAMPLE%2BONE?source=pdf') == '10.1234/example+one'
+    assert metadata.clean_doi('DOI: http://dx.doi.org/10.1234/EXAMPLE%2BONE?source=pdf') == '10.1234/example+one'
 
 
 def test_clean_doi_preserves_balanced_suffix_delimiters() -> None:
