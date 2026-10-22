@@ -50,3 +50,17 @@ must not imply every paper succeeded merely because the command completed.
 Network-dependent tests and paid model/provider calls are outside offline
 validation. Each implementation stage is committed separately with `#91` in
 its commit title.
+
+## Completion and verification
+
+All three stages were completed on 22 October 2026. The implementation keeps
+the existing gather/probe payloads and human output, adds generated command
+discovery and JSON summaries, and supplies read-only corpus inspection with
+explicit asset export. The {doc}`../workflow/agents` guide and
+`examples/agent_cli.py` describe the complete agent workflow.
+
+Validation: 1,718 offline tests passed (32 network/slow tests deselected), Ruff
+and source compilation passed, and Sphinx built with warnings treated as errors.
+The wheel and source distribution built successfully and passed strict Twine
+metadata checks. Tests of the local validation server required localhost socket
+access outside the restricted sandbox; they passed with that access enabled.

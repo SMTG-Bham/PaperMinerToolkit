@@ -63,6 +63,31 @@ pmt store papers.db \
 
 Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
 
+## CLI automation and AI agents
+
+Discover the installed interface and inspect corpus records without parsing tables:
+
+```bash
+pmt --version
+pmt schema corpus export
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv --json
+pmt corpus list papers.db --limit 5 --json
+pmt status papers.db --json
+```
+
+`python -m paperminertoolkit` exposes the same commands. JSON is available on
+selected commands through their local `--json` option; progress and errors use
+stderr. Preserve JSON even when a search exits with code 1: successful papers
+from a partial search remain in the corpus. Use `corpus show` to inspect a paper
+and `corpus export` to retrieve a stored abstract, text, or PDF.
+
+The [agent CLI guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/agents.html)
+documents discovery, credentials, JSON shapes, exit codes, and resumable
+extraction. The [standard-library subprocess example](examples/agent_cli.py)
+closes stdin and handles partial results; run it with `--help` before supplying
+a query and explicit corpus path.
+
 ## BERT entity extraction
 
 Annotate stored abstracts with a fine-tuned token-classification checkpoint:

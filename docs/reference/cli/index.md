@@ -6,12 +6,21 @@ PaperMinerToolkit provides one `pmt` executable. Commands that operate on the sa
 pmt --help
 pmt filter --help
 pmt filter regex --help
+pmt --version
+pmt schema corpus export
 ```
+
+`python -m paperminertoolkit` exposes the same command tree. `pmt schema`
+describes the installed commands as JSON, including options, defaults, and
+choices. Selected commands accept a command-local `--json` flag; see the
+{doc}`agent CLI guide <../../workflow/agents>` for payloads, exit codes, and an
+unattended workflow.
 
 ## Top-level commands
 
 | Command | Purpose |
 | --- | --- |
+| `pmt schema` | Describe all commands or one command subtree as JSON. |
 | `pmt probe` | Check provider configuration and availability. |
 | `pmt gather` | Search and retrieve content for matching papers in one run. |
 | `pmt search` | Find papers and add them to a corpus. |

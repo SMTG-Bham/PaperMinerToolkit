@@ -2,7 +2,8 @@
 
 This example gathers a small corpus of abstracts, scrapes one recipe, and stores
 the records. Probing and gathering from arXiv require no API key or language model;
-configure a text model only when you reach extraction.
+configure a text model only when you reach extraction. For subprocess automation,
+JSON results, and noninteractive configuration, follow the {doc}`agent CLI guide <agents>`.
 
 ## 1. Probe and gather
 
@@ -17,8 +18,13 @@ pmt corpus stats papers.db
 search, and fetches missing content for just the papers matched in this run.
 Repeat `--source` to search several providers, and `--download-source` to select
 content providers separately. Configure only the {doc}`credentials <configuration>`
-those providers need. Add `--json` to `probe` or `gather` for machine-readable
-standard output; progress is sent to standard error.
+those providers need. Add `--json` to `probe`, `gather`, or `corpus stats` for
+machine-readable standard output; progress is sent to standard error.
+
+Inspect a bounded page of records with `pmt corpus list papers.db --limit 5 --json`.
+Use a returned `paper_id` with `pmt corpus show papers.db PAPER_ID --json`, or
+export its stored abstract with
+`pmt corpus export papers.db PAPER_ID abstract.txt --role abstract`.
 
 ## 2. Add content when needed
 

@@ -56,6 +56,7 @@ For a first run, follow the quickstart. The remaining pages explain each product
 :maxdepth: 1
 
 quickstart
+agents
 configuration
 corpus
 topics
