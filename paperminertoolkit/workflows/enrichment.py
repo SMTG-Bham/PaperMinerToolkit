@@ -1357,6 +1357,32 @@ class _FetchResult:
     errors: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _IdentifierSource:
+    """Connect a provider's identifier lookup to its enrichment and subject records."""
+
+    name: str
+    candidates: Callable[[Sequence[Mapping[str, Any]]], dict[str, str]]
+    context_field: str
+    result_field: str
+    merge_parameter: str
+    subject_rows: Callable[[str, Mapping[str, Any] | None], list[_Record]]
+
+
+_IDENTIFIER_SOURCES = (
+    _IdentifierSource('pubmed', _pubmed_candidates, 'pmids', 'pubmed_by_pmid',
+                      'pubmed_article', _pubmed_subject_rows),
+    _IdentifierSource('arxiv', _arxiv_candidates, 'arxiv_ids', 'arxiv_by_id',
+                      'arxiv_entry', _arxiv_subject_rows),
+    _IdentifierSource('medrxiv', _medrxiv_candidates, 'medrxiv_dois', 'medrxiv_by_doi',
+                      'medrxiv_entry', _medrxiv_subject_rows),
+    _IdentifierSource('biorxiv', _biorxiv_candidates, 'biorxiv_dois', 'biorxiv_by_doi',
+                      'biorxiv_entry', _biorxiv_subject_rows),
+    _IdentifierSource('chemrxiv', _chemrxiv_candidates, 'chemrxiv_dois', 'chemrxiv_by_doi',
+                      'chemrxiv_entry', _chemrxiv_subject_rows),
+)
+
+
 def _fetch_crossref(context: _FetchContext) -> dict[str, dict[str, _Record]]:
     """Fetch Crossref records for one enrichment batch."""
     if not context.dois:
@@ -1516,23 +1542,18 @@ def _enrich_batch(conn: sqlite3.Connection,
         return summary
 
     by_doi, by_openalex, unresolved = _partition_candidates(candidates)
-    by_pmid = _pubmed_candidates(candidates) if 'pubmed' in sources else {}
-    by_arxiv = _arxiv_candidates(candidates) if 'arxiv' in sources else {}
-    by_medrxiv = _medrxiv_candidates(candidates) if 'medrxiv' in sources else {}
-    by_biorxiv = _biorxiv_candidates(candidates) if 'biorxiv' in sources else {}
-    by_chemrxiv = _chemrxiv_candidates(candidates) if 'chemrxiv' in sources else {}
-    openalex_papers = set(by_openalex.values())
-    pubmed_papers = set(by_pmid.values())
-    arxiv_papers = set(by_arxiv.values())
-    medrxiv_papers = set(by_medrxiv.values())
-    biorxiv_papers = set(by_biorxiv.values())
-    chemrxiv_papers = set(by_chemrxiv.values())
+    candidate_maps = {
+        source.name: source.candidates(candidates) if source.name in sources else {}
+        for source in _IDENTIFIER_SOURCES
+    }
+    applicable_papers = {
+        name: set(identifiers.values()) for name, identifiers in candidate_maps.items()
+    }
     # A row known only to PubMed, arXiv, medRxiv, bioRxiv, or chemRxiv carries no DOI or
     # OpenAlex ID, so _partition_candidates reports it unresolved. It is
     # resolvable whenever the provider that already knows its identifier is
     # being queried.
-    identifier_papers = (pubmed_papers | arxiv_papers | medrxiv_papers | biorxiv_papers
-                         | chemrxiv_papers)
+    identifier_papers = set().union(*applicable_papers.values())
     identifier_only = [paper_id for paper_id in unresolved if paper_id in identifier_papers]
     unresolved = [paper_id for paper_id in unresolved if paper_id not in identifier_papers]
     if unresolved:
@@ -1541,57 +1562,47 @@ def _enrich_batch(conn: sqlite3.Connection,
     if not by_doi and not by_openalex and not identifier_only:
         return summary
 
+    context_identifiers = {
+        source.context_field: list(candidate_maps[source.name])
+        for source in _IDENTIFIER_SOURCES
+    }
     fetched = _fetch(sources, _FetchContext(
         dois=list(by_doi), identifiers=list(by_openalex), email=email, api_key=api_key,
         openalex_session=openalex_session, crossref_session=crossref_session, pace=pace,
-        pmids=list(by_pmid), pubmed_session=pubmed_session, pubmed_api_key=pubmed_api_key,
-        arxiv_ids=list(by_arxiv), arxiv_session=arxiv_session,
-        medrxiv_dois=list(by_medrxiv), medrxiv_session=medrxiv_session,
-        biorxiv_dois=list(by_biorxiv), biorxiv_session=biorxiv_session,
-        chemrxiv_dois=list(by_chemrxiv), chemrxiv_session=chemrxiv_session))
-    pubmed_by_paper = {paper_id: fetched.pubmed_by_pmid[pmid]
-                       for pmid, paper_id in by_pmid.items() if pmid in fetched.pubmed_by_pmid}
-    arxiv_by_paper = {paper_id: fetched.arxiv_by_id[identifier]
-                      for identifier, paper_id in by_arxiv.items()
-                      if identifier in fetched.arxiv_by_id}
-    medrxiv_by_paper = {paper_id: fetched.medrxiv_by_doi[identifier]
-                        for identifier, paper_id in by_medrxiv.items()
-                        if identifier in fetched.medrxiv_by_doi}
-    biorxiv_by_paper = {paper_id: fetched.biorxiv_by_doi[identifier]
-                        for identifier, paper_id in by_biorxiv.items()
-                        if identifier in fetched.biorxiv_by_doi}
-    chemrxiv_by_paper = {paper_id: fetched.chemrxiv_by_doi[identifier]
-                         for identifier, paper_id in by_chemrxiv.items()
-                         if identifier in fetched.chemrxiv_by_doi}
+        pubmed_session=pubmed_session, pubmed_api_key=pubmed_api_key,
+        arxiv_session=arxiv_session, medrxiv_session=medrxiv_session,
+        biorxiv_session=biorxiv_session, chemrxiv_session=chemrxiv_session,
+        **context_identifiers))
+    records_by_source = {}
+    for source in _IDENTIFIER_SOURCES:
+        records = getattr(fetched, source.result_field)
+        records_by_source[source.name] = {
+            paper_id: records[identifier]
+            for identifier, paper_id in candidate_maps[source.name].items()
+            if identifier in records
+        }
 
+    applicable_papers['crossref'] = set(by_doi.values())
+    applicable_papers['openalex'] = set(by_doi.values()) | set(by_openalex.values())
     targets = [(paper_id, fetched.crossref_works.get(key),
-                fetched.openalex_by_doi.get(key), True)
+                fetched.openalex_by_doi.get(key))
                for key, paper_id in by_doi.items()]
-    targets += [(paper_id, None, fetched.openalex_by_id.get(key), False)
+    targets += [(paper_id, None, fetched.openalex_by_id.get(key))
                 for key, paper_id in by_openalex.items()]
-    targets += [(paper_id, None, None, False) for paper_id in identifier_only]
+    targets += [(paper_id, None, None) for paper_id in identifier_only]
 
     updates, authors, subjects, reference_records = [], [], [], []
-    for paper_id, crossref_work, openalex_work, keyed_by_doi in targets:
-        pubmed_article = pubmed_by_paper.get(paper_id)
-        arxiv_entry = arxiv_by_paper.get(paper_id)
-        medrxiv_entry = medrxiv_by_paper.get(paper_id)
-        biorxiv_entry = biorxiv_by_paper.get(paper_id)
-        chemrxiv_entry = chemrxiv_by_paper.get(paper_id)
+    for paper_id, crossref_work, openalex_work in targets:
+        provider_records = {
+            source.merge_parameter: records_by_source[source.name].get(paper_id)
+            for source in _IDENTIFIER_SOURCES
+        }
         requested = [source for source in sources
-                     if (source == 'crossref' and keyed_by_doi)
-                     or (source == 'openalex'
-                         and (keyed_by_doi or paper_id in openalex_papers))
-                     or (source == 'pubmed' and paper_id in pubmed_papers)
-                     or (source == 'arxiv' and paper_id in arxiv_papers)
-                     or (source == 'medrxiv' and paper_id in medrxiv_papers)
-                     or (source == 'biorxiv' and paper_id in biorxiv_papers)
-                     or (source == 'chemrxiv' and paper_id in chemrxiv_papers)]
+                     if paper_id in applicable_papers.get(source, ())]
         errors = {source: fetched.errors[source]
                   for source in requested if source in fetched.errors}
         update = _merge_fields(paper_id, crossref_work, openalex_work, requested,
-                              pubmed_article, arxiv_entry, medrxiv_entry, biorxiv_entry,
-                              chemrxiv_entry, provider_errors=errors)
+                              **provider_records, provider_errors=errors)
         if errors:
             stored = conn.execute(
                 'SELECT * FROM papers WHERE paper_id = ?', (paper_id,)).fetchone()
@@ -1603,11 +1614,8 @@ def _enrich_batch(conn: sqlite3.Connection,
             continue
         authors.extend(_author_rows(paper_id, crossref_work, openalex_work))
         subjects.extend(_subject_rows(paper_id, openalex_work))
-        subjects.extend(_pubmed_subject_rows(paper_id, pubmed_article))
-        subjects.extend(_arxiv_subject_rows(paper_id, arxiv_entry))
-        subjects.extend(_medrxiv_subject_rows(paper_id, medrxiv_entry))
-        subjects.extend(_biorxiv_subject_rows(paper_id, biorxiv_entry))
-        subjects.extend(_chemrxiv_subject_rows(paper_id, chemrxiv_entry))
+        for source in _IDENTIFIER_SOURCES:
+            subjects.extend(source.subject_rows(paper_id, provider_records[source.merge_parameter]))
         if references:
             reference_records.extend(_reference_rows(paper_id, crossref_work, openalex_work))
 
@@ -1617,7 +1625,7 @@ def _enrich_batch(conn: sqlite3.Connection,
     # disappeared. Replace rows only for providers that completed this batch.
     completed_sources = [source for source in sources if source not in fetched.errors]
     write_enrichment(conn, updates, authors, subjects, reference_records,
-                     sources=completed_sources)
+                     sources=completed_sources, replace_children=bool(completed_sources))
     summary['authors'] += len(authors)
     summary['subjects'] += len(subjects)
     summary['references'] += len(reference_records)

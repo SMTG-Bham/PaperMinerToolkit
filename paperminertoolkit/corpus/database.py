@@ -1259,7 +1259,9 @@ def write_enrichment(conn: sqlite3.Connection,
                      authors: Iterable[_PaperInput] = (),
                      subjects: Iterable[_PaperInput] = (),
                      references: Iterable[_PaperInput] = (),
-                     sources: Iterable[str] = ()) -> int:
+                     sources: Iterable[str] = (),
+                     *,
+                     replace_children: bool = True) -> int:
     """Write one batch of enrichment updates and child rows in a transaction.
 
     Child rows are replaced per paper rather than merged, so re-running
@@ -1282,6 +1284,10 @@ def write_enrichment(conn: sqlite3.Connection,
     sources : Iterable[str], optional
         Providers these rows came from. Only their rows are replaced; an empty
         value replaces every child row for the papers being updated.
+    replace_children : bool, default=True
+        Whether to replace child rows. Set to ``False`` for parent-only
+        updates, such as recording a provider outage without changing stored
+        authors, subjects, or references. Child-row inputs are ignored then.
 
     Returns
     -------
@@ -1295,7 +1301,7 @@ def write_enrichment(conn: sqlite3.Connection,
         'paper_authors': [dict(row) for row in authors],
         'paper_subjects': [dict(row) for row in subjects],
         'paper_references': [dict(row) for row in references],
-    }
+    } if replace_children else {}
     scoped = [str(source) for source in sources if str(source)]
     if scoped:
         placeholders = ', '.join('?' for _ in scoped)

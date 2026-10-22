@@ -800,6 +800,32 @@ def test_write_enrichment_rolls_back_a_failed_batch(tmp_path: Path) -> None:
     assert row['enrichment_status'] == 'pending'
 
 
+def test_parent_only_enrichment_preserves_all_child_rows(tmp_path: Path) -> None:
+    """Record a failed refresh without deleting or inserting provider child rows."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.write_enrichment(
+            conn, [enrichment_update('demo:1')],
+            authors=[{'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+                      'display_name': 'A. Author', 'source': 'openalex'}],
+            subjects=[{'paper_id': 'demo:1', 'scheme': 'topic', 'subject_id': 'T1',
+                       'source': 'openalex'}],
+            references=[{'paper_id': 'demo:1', 'source': 'crossref', 'reference_rank': 0,
+                         'referenced_doi': '10.1000/ref'}],
+        )
+        before = [list(conn.execute(f'SELECT * FROM {table}'))
+                  for table in corpus.ENRICHMENT_CHILD_TABLES]
+        assert corpus.write_enrichment(
+            conn, [enrichment_update('demo:1', enrichment_status='failed')],
+            authors=[{'paper_id': 'missing:1'}], sources=[], replace_children=False,
+        ) == 1
+        after = [list(conn.execute(f'SELECT * FROM {table}'))
+                 for table in corpus.ENRICHMENT_CHILD_TABLES]
+
+        assert after == before
+        assert corpus.paper_rows(conn)[0]['enrichment_status'] == 'failed'
+
+
 def test_child_rows_cascade_when_a_paper_is_deleted(tmp_path: Path) -> None:
     """Remove enrichment child rows when their paper is deleted."""
     with open_corpus(tmp_path / 'corpus.db') as conn:

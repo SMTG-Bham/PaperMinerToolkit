@@ -1062,6 +1062,99 @@ def test_enrich_batch_resolves_rows_only_pubmed_or_arxiv_can_reach(
     assert summary['unresolved'] == 1
 
 
+@pytest.mark.parametrize('reverse_sources', [False, True])
+def test_enrich_batch_combines_identifier_providers_in_metadata_precedence_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reverse_sources: bool,
+) -> None:
+    """Keep identifier records and subject schemes separate regardless of fetch order."""
+    sources = ['pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv']
+    db_path = tmp_path / 'papers.db'
+    identifiers = {
+        'pmid': '31234567', 'arxiv_id': '2301.12345',
+        'medrxiv_doi': '10.1101/2024.03.01.24303596',
+        'biorxiv_doi': '10.1101/2023.12.01.569634',
+        'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+    }
+    seed_corpus(db_path, [{'paper_id': 'paper:shared', **identifiers}])
+    monkeypatch.setattr(enrichment.pubmed, 'efetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.pubmed, 'parse_articles', lambda _: [pubmed_article()])
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: [arxiv_entry()])
+    monkeypatch.setattr(enrichment.medrxiv, 'fetch_doi', lambda *_, **__: medrxiv_entry())
+    monkeypatch.setattr(enrichment.biorxiv, 'fetch_doi', lambda *_, **__: biorxiv_entry())
+    monkeypatch.setattr(enrichment.chemrxiv, 'fetch_doi', lambda *_, **__: chemrxiv_entry())
+
+    with open_corpus(db_path) as conn:
+        summary = enrichment._enrich_batch(
+            conn, corpus.enrichment_candidates(conn),
+            sources[::-1] if reverse_sources else sources, '',
+        )
+        paper = corpus.paper_rows(conn)[0]
+        subjects = conn.execute('SELECT source, scheme FROM paper_subjects').fetchall()
+
+    assert summary['succeeded'] == 1
+    assert summary['partial'] == summary['unresolved'] == 0
+    assert paper['enrichment_sources'] == ';'.join(sources)
+    assert paper['title'] == 'PubMed title'
+    assert paper['doi'] == '10.1234/pubmed-one'
+    assert {column: paper[column] for column in identifiers} == identifiers
+    assert {source: {row['scheme'] for row in subjects if row['source'] == source}
+            for source in sources} == {
+        'pubmed': {'mesh', 'mesh_qualifier', 'publication_type', 'mesh_keyword'},
+        'arxiv': {'arxiv_category'},
+        'medrxiv': {'medrxiv_category'},
+        'biorxiv': {'biorxiv_category'},
+        'chemrxiv': {'chemrxiv_category', 'chemrxiv_keyword'},
+    }
+    assert summary['subjects'] == len(subjects)
+
+
+def test_enrich_batch_scopes_identifier_provider_failures_to_reachable_papers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distinguish missing records, unreachable providers, and failures in a mixed batch."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [
+        {'paper_id': 'paper:shared', 'pmid': '31234567', 'arxiv_id': '2301.12345'},
+        {'paper_id': 'paper:arxiv', 'arxiv_id': '2301.99999'},
+        {'paper_id': 'paper:pubmed', 'pmid': '9999'},
+        {'paper_id': 'paper:missing', 'arxiv_id': '2301.88888'},
+        {'paper_id': 'paper:unknown'},
+    ])
+    entries = [arxiv_entry(doi=''),
+               {**arxiv_entry(doi=''), 'arxiv_id': '2301.99999', 'paper_id': 'arxiv:2301.99999'}]
+
+    def unavailable(*_: object, **__: object) -> None:
+        """Fail PubMed lookups while arXiv still answers its own identifiers."""
+        raise RuntimeError('PubMed unavailable')
+
+    monkeypatch.setattr(enrichment.pubmed, 'efetch_ids', unavailable)
+    monkeypatch.setattr(enrichment.arxiv, 'fetch_ids', lambda *_, **__: object())
+    monkeypatch.setattr(enrichment.arxiv, 'parse_entries', lambda _: entries)
+
+    with open_corpus(db_path) as conn:
+        summary = enrichment._enrich_batch(
+            conn, corpus.enrichment_candidates(conn), ['pubmed', 'arxiv'], '',
+        )
+        papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
+
+    assert {paper_id: paper['enrichment_status'] for paper_id, paper in papers.items()} == {
+        'paper:shared': 'partial', 'paper:arxiv': 'succeeded', 'paper:pubmed': 'failed',
+        'paper:missing': 'not_found', 'paper:unknown': 'unresolved',
+    }
+    assert all(summary[status] == 1 for status in
+               ('partial', 'succeeded', 'failed', 'not_found', 'unresolved'))
+    for paper_id in ('paper:shared', 'paper:pubmed'):
+        assert json.loads(papers[paper_id]['enrichment_json'])['provider_errors'] == {
+            'pubmed': 'PubMed unavailable',
+        }
+    for paper_id in ('paper:arxiv', 'paper:missing'):
+        assert 'provider_errors' not in json.loads(papers[paper_id]['enrichment_json'])
+
+
 def test_enrich_batch_does_not_count_unreachable_openalex_as_requested(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1147,6 +1240,59 @@ def test_enrich_batch_preserves_child_rows_from_a_failed_provider(
     assert paper['cited_by_count'] == 42
     assert paper['is_oa'] == 1
     assert paper['oa_status'] == 'gold'
+
+
+def test_enrich_batch_preserves_all_child_rows_during_a_total_provider_outage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record failed refreshes without deleting previously enriched corpus data."""
+    db_path = tmp_path / 'papers.db'
+    seed_corpus(db_path, [{'doi': '10.1234/example', 'sources': 'seed'}])
+    child_tables = ('paper_authors', 'paper_subjects', 'paper_references')
+
+    def unavailable(*_: object, **__: object) -> None:
+        """Simulate a provider-wide outage after the initial successful enrichment."""
+        raise RuntimeError('service unavailable')
+
+    with open_corpus(db_path) as conn:
+        enrichment._enrich_batch(
+            conn, corpus.enrichment_candidates(conn), ['crossref', 'openalex'],
+            'me@example.com', pace=0,
+            crossref_session=make_crossref_session([{'items': [crossref_work()]}]),
+            openalex_session=make_openalex_session([
+                FakeResponse(payload={'results': [openalex_work()]}),
+            ]),
+        )
+        stored_children = {
+            table: [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
+            for table in child_tables
+        }
+        monkeypatch.setattr(enrichment.crossref_client, 'works_by_doi', unavailable)
+        monkeypatch.setattr(enrichment.openalex, 'works_batch', unavailable)
+        summary = enrichment._enrich_batch(
+            conn, corpus.enrichment_candidates(conn, statuses=('succeeded',)),
+            ['crossref', 'openalex'], 'me@example.com',
+        )
+        paper = corpus.paper_rows(conn)[0]
+        refreshed_children = {
+            table: [dict(row) for row in conn.execute(f'SELECT * FROM {table}')]
+            for table in child_tables
+        }
+
+    assert all(stored_children.values())
+    assert refreshed_children == stored_children
+    assert summary['failed'] == 1
+    assert summary['authors'] == summary['subjects'] == summary['references'] == 0
+    assert paper['enrichment_status'] == 'failed'
+    assert paper['publisher'] == 'Deposited Publisher'
+    assert paper['openalex_id'] == 'W123'
+    assert paper['cited_by_count'] == 42
+    assert paper['is_oa'] == 1
+    assert paper['oa_status'] == 'gold'
+    assert json.loads(paper['enrichment_json'])['provider_errors'] == {
+        'crossref': 'service unavailable', 'openalex': 'service unavailable',
+    }
 
 
 def test_enrich_batch_keeps_other_provider_subjects_when_only_arxiv_is_requested(
