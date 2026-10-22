@@ -9,6 +9,7 @@ from typing import Any
 from paperminertoolkit.providers import registry
 from paperminertoolkit.workflows.download import DOWNLOAD_FORMATS, download_papers
 from paperminertoolkit.workflows.search import search_for_papers
+from paperminertoolkit.workflows.supplements import normalize_supplement_sources
 
 
 def gather_papers(
@@ -23,6 +24,8 @@ def gather_papers(
     parallel: bool = False,
     workers: int | None = None,
     force: bool = False,
+    download_supplements: bool = True,
+    supplement_sources: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Search providers, merge matches, and download their requested assets.
 
@@ -36,13 +39,14 @@ def gather_papers(
         Search provider names. ``all`` selects every search provider.
     count : int, default=200
         Maximum records requested from each search provider, at least one.
-    download_format : {'abstract', 'both', 'pdf', 'text'}, default='both'
+    download_format : {'abstract', 'both', 'pdf', 'text', 'supplement'}, default='both'
         Asset types to acquire for papers matched by this search.
     download_sources : Iterable[str] or None, default=None
         Ordered download providers. ``None`` or ``all`` uses configured sources.
     download_abstract : bool, default=True
         Store available search abstracts and retrieve missing ones. Abstracts
-        are always requested when ``download_format`` is ``abstract``.
+        are always requested when ``download_format`` is ``abstract`` and
+        never requested when it is ``supplement``.
     enrich : bool, default=False
         Supplement search matches using configured enrichment providers.
     parallel : bool, default=False
@@ -51,6 +55,12 @@ def gather_papers(
         Maximum search workers. A positive value enables parallel search.
     force : bool, default=False
         Redownload requested asset types even when already present.
+    download_supplements : bool, default=True
+        Retrieve supporting information alongside text and PDF assets.
+        Abstract-only runs skip it; supplement-only runs always request it.
+    supplement_sources : Iterable[str] or None, default=None
+        Supporting-information sources, independent of article providers.
+        ``None`` or ``all`` selects every supported source.
 
     Returns
     -------
@@ -81,7 +91,8 @@ def gather_papers(
     )
     registry.resolve_names(selected_download_sources, registry.PDF,
                            preserve_order=True, label='download')
-    want_abstract = download_abstract or download_format == 'abstract'
+    selected_supplement_sources = normalize_supplement_sources(supplement_sources)
+    want_abstract = (download_abstract or download_format == 'abstract') and download_format != 'supplement'
     search_summary = search_for_papers(
         query,
         db_path=db_path,
@@ -101,5 +112,7 @@ def gather_papers(
             download_abstract=want_abstract,
             force=force,
             paper_ids=search_summary['paper_ids'],
+            download_supplements=download_supplements,
+            supplement_sources=selected_supplement_sources,
         )
     return {'search': search_summary, 'downloads': downloads}

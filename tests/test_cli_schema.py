@@ -81,6 +81,24 @@ def test_schema_reports_choices_defaults_repeatability_and_prompts() -> None:
     assert model_parameters['provider']['hide_input'] is False
 
 
+@pytest.mark.parametrize('command', ['download', 'gather', 'scrape'])
+def test_schema_describes_supplement_controls(command: str) -> None:
+    """Let agents discover default SI handling and acquisition source choices."""
+    result = CliRunner().invoke(cli.main, ['schema', command])
+    assert result.exit_code == 0, result.output
+    parameters = {parameter['name']: parameter for parameter in
+                  json.loads(result.stdout)['command']['parameters']}
+    toggle = 'include_supplements' if command == 'scrape' else 'download_supplements'
+    assert parameters[toggle]['default'] is True
+    assert parameters[toggle]['secondary_opts'] == ['--no-supplements']
+    if command != 'scrape':
+        assert 'supplement' in parameters['download_format']['type']['choices']
+        assert parameters['supplement_sources']['multiple'] is True
+        assert set(parameters['supplement_sources']['type']['choices']) == {
+            'all', 'structured', 'pubmed', 'figshare', 'publisher',
+        }
+
+
 @pytest.mark.parametrize('path', [['missing'], ['config', 'missing'], ['search', 'missing']])
 def test_unknown_schema_path_is_a_usage_error(path: list[str]) -> None:
     """Reject invalid paths on stderr before producing a JSON payload."""

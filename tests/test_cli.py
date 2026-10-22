@@ -284,7 +284,7 @@ def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: calls.update({
+        lambda path, download_format, sources, download_abstract, force, **kwargs: calls.update({
             'db_path': path,
             'download_format': download_format,
             'sources': sources,
@@ -336,7 +336,7 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update({
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update({
             'sources': sources,
             'force': force,
         }),
@@ -347,6 +347,50 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     assert result.exit_code == 0
     assert download_calls['sources'] == ['openalex']
     assert download_calls['force'] is False
+
+
+@pytest.mark.parametrize('arguments,expected', [
+    ([], {'download_supplements': True, 'supplement_sources': ['all']}),
+    (['--no-supplements'], {'download_supplements': False, 'supplement_sources': ['all']}),
+    (['--format', 'supplement', '--no-supplements'],
+     {'download_supplements': False, 'supplement_sources': ['all']}),
+    (['--format', 'supplement', '--supplement-source', 'structured',
+      '--supplement-source', 'publisher'],
+     {'download_supplements': True, 'supplement_sources': ['structured', 'publisher']}),
+])
+def test_download_passes_supplement_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    arguments: list[str],
+    expected: dict[str, Any],
+) -> None:
+    """Expose default, disabled, and SI-only acquisition through the CLI."""
+    seen: dict[str, Any] = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+
+    def collect(*args: Any, **kwargs: Any) -> dict[str, int]:
+        """Capture acquisition controls without making provider requests."""
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(cli, 'download_papers', collect)
+    result = CliRunner().invoke(cli.download, [str(db_path), *arguments])
+    assert result.exit_code == 0, result.output
+    assert {key: seen[key] for key in expected} == expected
+    if '--format' in arguments:
+        assert seen['download_format'] == 'supplement'
+
+
+def test_scrape_can_disable_supplements(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Pass the SI extraction opt-out independently of text and image modes."""
+    seen: dict[str, Any] = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    monkeypatch.setattr(cli, 'scrape_papers', lambda *args, **kwargs: seen.update(kwargs))
+    result = CliRunner().invoke(cli.scrape, [str(db_path), '--no-supplements'])
+    assert result.exit_code == 0, result.output
+    assert seen['include_supplements'] is False
 
 
 def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
@@ -808,6 +852,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
     assert calls['args'] == (str(db_path), 'custom_recipe')
     assert calls['kwargs'] == {
         'mode': 'text-images',
+        'include_supplements': True,
         'image_dir': 'images',
         'image_context': 'paper-text',
         'image_extraction': 'pages',
@@ -1146,7 +1191,7 @@ def test_search_download_and_enrich_source_choices_accept_arxiv(
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update(
             {'sources': sources}),
     )
 
@@ -1195,7 +1240,7 @@ def test_search_download_and_enrich_source_choices_accept_pubmed(
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update(
             {'sources': sources}),
     )
 

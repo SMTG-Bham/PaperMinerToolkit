@@ -840,7 +840,10 @@ def test_download_papers_accepts_medrxiv_as_a_full_text_source(
     monkeypatch.setattr(download, '_download_medrxiv_text', fake_medrxiv_text)
     monkeypatch.setattr(download, '_download_abstract', lambda *_, **__: (False, 'no abstract', ''))
 
-    download.download_papers(str(db_path), download_format='text', sources=['medrxiv'])
+    download.download_papers(
+        str(db_path), download_format='text', sources=['medrxiv'],
+        download_supplements=False,
+    )
 
     row = read_corpus(db_path)[0]
     assert row['text_download_status'] == 'succeeded'
@@ -850,7 +853,10 @@ def test_download_papers_accepts_medrxiv_as_a_full_text_source(
     # now names the preprint servers among the ways to satisfy it.
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['arxiv'])
     with pytest.raises(ValueError, match='--source medrxiv or --source biorxiv'):
-        download.download_papers(str(db_path), download_format='text', force=True)
+        download.download_papers(
+            str(db_path), download_format='text', force=True,
+            download_supplements=False,
+        )
 
 
 def test_download_paper_attempts_medrxiv_text_for_a_medrxiv_row(
@@ -1001,15 +1007,15 @@ def test_download_papers_validates_configuration(tmp_path: Path, monkeypatch: py
     write_corpus(db_path, [{'paper_id': 'paper-1'}])
 
     with pytest.raises(ValueError, match='download_format must be one of'):
-        download.download_papers(str(db_path), download_format='bad')
+        download.download_papers(str(db_path), download_format='bad', download_supplements=False)
 
     monkeypatch.setattr(download, '_configured_sources', lambda _: [])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
     with pytest.raises(ValueError, match='Text download requires an Elsevier API key'):
-        download.download_papers(str(db_path), download_format='text')
+        download.download_papers(str(db_path), download_format='text', download_supplements=False)
 
     with pytest.raises(ValueError, match='No PDF download sources are configured'):
-        download.download_papers(str(db_path), download_format='pdf')
+        download.download_papers(str(db_path), download_format='pdf', download_supplements=False)
 
 
 def test_download_papers_updates_text_and_pdf_statuses(
@@ -1050,7 +1056,10 @@ def test_download_papers_updates_text_and_pdf_statuses(
     monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
-    download.download_papers(str(db_path), download_format='both', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='both', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     output = capsys.readouterr().out
@@ -1094,7 +1103,10 @@ def test_download_papers_persists_openalex_pdf_source_and_url(
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
 
-    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='pdf', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     with corpus.connect(db_path) as conn:
@@ -1118,7 +1130,7 @@ def test_download_papers_downloads_abstract_by_default(
     monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(download, '_download_abstract', lambda paper, sources=None: (True, 'core', 'abstract text'))
 
-    download.download_papers(str(db_path), download_format='text')
+    download.download_papers(str(db_path), download_format='text', download_supplements=False)
 
     papers = read_corpus(db_path)
     output = capsys.readouterr().out
@@ -1155,7 +1167,7 @@ def test_download_papers_supports_abstract_only(
         lambda *args, **kwargs: pytest.fail('PDF download was attempted'),
     )
 
-    download.download_papers(str(db_path), download_format='abstract')
+    download.download_papers(str(db_path), download_format='abstract', download_supplements=False)
 
     with corpus.connect(db_path) as conn:
         abstract_asset = corpus.get_asset(conn, 'paper:abstract-only', 'abstract')
@@ -1189,7 +1201,7 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
         '_download_abstract', lambda paper, sources=None: (_ for _ in ()).throw(AssertionError('abstract should not be downloaded twice')),
     )
 
-    download.download_papers(str(db_path), download_format='text')
+    download.download_papers(str(db_path), download_format='text', download_supplements=False)
 
     papers = read_corpus(db_path)
     output = capsys.readouterr().out
@@ -1236,7 +1248,7 @@ def test_download_papers_skips_every_requested_existing_content_type(
         lambda *_: (_ for _ in ()).throw(AssertionError('PDF provider called')),
     )
 
-    download.download_papers(str(db_path), download_format='both')
+    download.download_papers(str(db_path), download_format='both', download_supplements=False)
 
     paper = read_corpus(db_path)[0]
     output = capsys.readouterr().out
@@ -1264,7 +1276,8 @@ def test_download_papers_existing_text_needs_no_elsevier_key(
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
 
     download.download_papers(
-        str(db_path), download_format='text', download_abstract=False
+        str(db_path), download_format='text', download_abstract=False,
+        download_supplements=False,
     )
 
     assert read_corpus(db_path)[0]['text_download_status'] == 'succeeded'
@@ -1319,7 +1332,10 @@ def test_download_papers_force_redownloads_existing_content(
     monkeypatch.setattr(download, '_download_elsevier_text', fake_text)
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_pdf)
 
-    download.download_papers(str(db_path), download_format='both', force=True)
+    download.download_papers(
+        str(db_path), download_format='both', force=True,
+        download_supplements=False,
+    )
 
     with corpus.connect(db_path) as conn:
         abstract_asset = corpus.get_asset(conn, 'paper:refresh', 'abstract')
@@ -1525,7 +1541,10 @@ def test_download_papers_records_text_and_pdf_failures(
                         lambda *_: (False, 'Elsevier text download failed', None))
     monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (False, 'no pdf', ''))
 
-    download.download_papers(str(db_path), download_format='both', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='both', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'failed'
@@ -1553,7 +1572,10 @@ def test_download_papers_records_initial_text_download_exception(
         lambda *_: (_ for _ in ()).throw(RuntimeError('text exploded')),
     )
 
-    download.download_papers(str(db_path), download_format='text', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='text', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'failed'
@@ -1596,7 +1618,10 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
     monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
 
-    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='pdf', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     assert papers[0]['pdf_download_status'] == 'failed'
@@ -1651,6 +1676,7 @@ def test_download_papers_stores_elsevier_text_and_xml_with_oa_pdf(
 
     summary = download.download_papers(
         str(db_path), download_format=download_format, download_abstract=False,
+        download_supplements=False,
     )
 
     papers = read_corpus(db_path)
@@ -2355,7 +2381,10 @@ def test_download_papers_accepts_biorxiv_as_a_full_text_source(
     monkeypatch.setattr(download, '_download_biorxiv_text', fake_biorxiv_text)
     monkeypatch.setattr(download, '_download_abstract', lambda *_, **__: (False, 'no abstract', ''))
 
-    download.download_papers(str(db_path), download_format='text', sources=['biorxiv'])
+    download.download_papers(
+        str(db_path), download_format='text', sources=['biorxiv'],
+        download_supplements=False,
+    )
 
     row = read_corpus(db_path)[0]
     assert row['text_download_status'] == 'succeeded'
@@ -2631,7 +2660,10 @@ def test_download_papers_allows_text_without_elsevier_when_pubmed_is_selected(
     monkeypatch.setattr(download, '_download_pmc_text',
                         lambda _, filepath: (Path(filepath).write_text('Body.', encoding='utf-8'), (True, ''))[1])
 
-    download.download_papers(str(db_path), download_format='text', download_abstract=False)
+    download.download_papers(
+        str(db_path), download_format='text', download_abstract=False,
+        download_supplements=False,
+    )
 
     papers = read_corpus(db_path)
     assert papers[0]['text_download_status'] == 'succeeded'

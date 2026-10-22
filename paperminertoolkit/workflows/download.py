@@ -36,8 +36,11 @@ from paperminertoolkit.corpus.filtering import active_filter_stack, current_filt
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
 from paperminertoolkit.settings import load_settings
+from paperminertoolkit.workflows.supplements import (
+    download_paper_supplements, normalize_supplement_sources,
+)
 
-DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both'}
+DOWNLOAD_FORMATS = {'abstract', 'text', 'pdf', 'both', 'supplement'}
 DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT),
                     *registry.names(registry.ABSTRACT)}
 # Providers that serve a machine-readable full text rather than only a PDF.
@@ -1703,15 +1706,18 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     sources: Iterable[str] | None = None,
                     download_abstract: bool = True,
                     force: bool = False,
-                    paper_ids: Iterable[str] | None = None) -> dict[str, int]:
+                    paper_ids: Iterable[str] | None = None,
+                    download_supplements: bool = True,
+                    supplement_sources: Iterable[str] | None = None) -> dict[str, int]:
     """Download paper assets and update a corpus in place.
 
     Parameters
     ----------
     db_path : str or os.PathLike[str], default='papers.db'
         Path to the SQLite paper corpus.
-    download_format : {'abstract', 'both', 'pdf', 'text'}, default='text'
-        Primary asset types to download.
+    download_format : {'abstract', 'both', 'pdf', 'text', 'supplement'}, default='text'
+        Primary asset types to download. ``supplement`` downloads SI alone,
+        without fetching abstracts or the main article.
     sources : Iterable[str] or None, optional
         Ordered content providers to try. ``all`` expands to the configured
         providers. The selection orders PDF retrieval and also decides whether
@@ -1725,13 +1731,22 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         selection downloads nothing. Explicit selections also respect active
         corpus filters: only papers with an ``included`` decision are eligible.
         ``None`` retains the legacy behavior of visiting every corpus row.
+    download_supplements : bool, default=True
+        Discover and download supplementary files alongside article content.
+        Abstract-only runs omit SI; the ``supplement`` format always requests it.
+    supplement_sources : Iterable[str] or None, optional
+        Independently selected SI discovery sources. Defaults to all supported
+        sources, including stored article XML, PMC, Figshare, and publisher pages.
 
     Returns
     -------
     dict[str, int]
         Downloaded ``texts``, ``pdfs``, and ``abstracts`` counts and the matching
         ``texts_skipped``, ``pdfs_skipped``, and ``abstracts_skipped`` counts.
-        Assets and status fields are written directly to the corpus.
+        Also includes ``supplements``, ``supplements_skipped``, and
+        ``supplements_failed`` file counts and ``supplements_unavailable`` paper
+        counts. ``supplement_discovery_failed`` counts papers with incomplete
+        SI discovery. Assets and status fields are written directly to the corpus.
 
     Raises
     ------
@@ -1742,7 +1757,13 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     download_format = download_format.lower()
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
-    sources = _configured_sources(sources or ['all'])
+    sources = [] if download_format == 'supplement' else _configured_sources(sources or ['all'])
+    selected_supplement_sources = normalize_supplement_sources(supplement_sources)
+    want_supplements = download_format == 'supplement' or (
+        download_supplements and download_format != 'abstract'
+    )
+    if download_format == 'supplement':
+        download_abstract = False
     selected_ids = None if paper_ids is None else set(paper_ids)
     summary = {
         'texts': 0,
@@ -1751,6 +1772,11 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         'texts_skipped': 0,
         'pdfs_skipped': 0,
         'abstracts_skipped': 0,
+        'supplements': 0,
+        'supplements_skipped': 0,
+        'supplements_failed': 0,
+        'supplements_unavailable': 0,
+        'supplement_discovery_failed': 0,
     }
     if selected_ids == set():
         return summary
@@ -1799,6 +1825,18 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                                                     force=force)
                     for key, value in paper_summary.items():
                         summary[key] += value
+                    if want_supplements:
+                        try:
+                            supplemental = download_paper_supplements(
+                                conn, paper, sources=selected_supplement_sources, force=force,
+                            )
+                        except Exception as error:
+                            # One failed SI provider must not abort the remaining corpus.
+                            _set_status(paper, 'supplement_download_status', 'failed', str(error))
+                            upsert_paper(conn, paper)
+                            supplemental = {'supplement_discovery_failed': 1}
+                        for key, value in supplemental.items():
+                            summary[key] += value
                     pbar.update(1)
     print(
         f"Download complete: {summary['texts']} text files, "
@@ -1810,6 +1848,14 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
             f"Skipped existing corpus assets: {summary['texts_skipped']} text files, "
             f"{summary['pdfs_skipped']} PDFs, {summary['abstracts_skipped']} abstracts. "
             "Use --force to redownload them."
+        )
+    if want_supplements:
+        print(
+            f"Supplementary files: {summary['supplements']} downloaded, "
+            f"{summary['supplements_skipped']} already stored, "
+            f"{summary['supplements_failed']} file failures, "
+            f"{summary['supplement_discovery_failed']} papers with discovery errors; "
+            f"{summary['supplements_unavailable']} papers without available SI."
         )
     return summary
 

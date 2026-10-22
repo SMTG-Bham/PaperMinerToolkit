@@ -114,6 +114,29 @@ papers and respects active filters. `search --store-abstract` stores abstracts p
 it does not guarantee that every paper has an abstract. Metadata enrichment
 makes additional provider requests and is optional.
 
+Text/PDF acquisition and non-abstract scraping include supporting information
+by default. Select `--supplement-source` independently from article providers;
+the repeatable choices are `all`, `structured`, `pubmed`, `figshare`, and
+`publisher`. Use `--no-supplements` on acquisition or scraping to opt out.
+Abstract-only runs skip SI. To add SI to existing entries without fetching
+article content or abstracts:
+
+```bash
+pmt schema download
+pmt download run/papers.db --format supplement --json
+```
+
+Retain all SI counts: `supplements`, `supplements_skipped`,
+`supplements_failed`, `supplements_unavailable`, and
+`supplement_discovery_failed`. File-download failures are counted separately
+from papers with discovery errors; unavailable means completed discovery found
+no SI. A missing supplement does
+not imply a failed article download, and a successful exit code does not mean
+every SI file was available. SI files retain separate source metadata and
+per-asset text/image extraction checkpoints. Scraping can process newly added
+SI even after article extraction succeeded. Consult {doc}`corpus` and
+{doc}`scraping` for discovery coverage and supported formats.
+
 ## Inspect papers and export content
 
 ```bash
@@ -135,12 +158,21 @@ Use `search_id` from a search result or `search.search_id` from a gather result;
 an unknown search ID is an error. The returned `total` then counts that search's
 matching papers.
 
-`show` returns `paper` metadata and pipeline state, `assets` metadata for the
-latest asset of each role, and provenance in `searches`, `authors`, `subjects`,
-and `references`. Binary content is excluded from the JSON. Export selects one
-stored `abstract`, `text`, or `pdf` asset and writes its content to the supplied
-file; its default role is `text`. Existing output files require `--force`. A
-missing asset is an error; export does not fetch it from a provider.
+`show` returns `paper` metadata and pipeline state, `assets` metadata for every
+supplement and the latest article asset of each other role, and provenance in
+`searches`, `authors`, `subjects`, and `references`. Binary content is excluded
+from the JSON. Export selects a stored `abstract`, `text`, `pdf`, or `supplement`
+asset and writes its content to the supplied file; its default role is `text`.
+When several distinct SI files exist, select the exact `blob_id` shown in the
+asset metadata:
+
+```bash
+pmt corpus export run/papers.db "PAPER_ID_FROM_RESULTS" run/supporting.pdf \
+  --role supplement --asset-id "BLOB_ID_FROM_SHOW" --json
+```
+
+Existing output files require `--force`. A missing asset or ambiguous SI
+selection is an error; export does not fetch content from a provider.
 
 These three commands open the corpus read-only and require the current database
 schema. They do not create or migrate a database. Missing, unsupported, or older
@@ -192,14 +224,14 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `probe --json`, `config providers --json` | `providers` diagnostic rows and an `ok` boolean. |
 | `search --json` | `search_id`, `status`, `sources`, `source_results`, `paper_ids`, `result_count`, `papers_added`, `papers_updated`, and `abstracts_stored`. |
 | `gather --json` | `search` with the search result above, and `downloads` with acquisition counts or `null` if there were no matches. |
-| `download --json` | `texts`, `pdfs`, `abstracts`, `texts_skipped`, `pdfs_skipped`, and `abstracts_skipped`. |
+| `download --json` | `texts`, `pdfs`, `abstracts`, their `*_skipped` counts, and `supplements`, `supplements_skipped`, `supplements_failed`, `supplements_unavailable`, `supplement_discovery_failed`. |
 | `enrich --json` | `succeeded`, `partial`, `not_found`, `unresolved`, `failed`, `authors`, `subjects`, `references`, and `batches` counts. |
 | `corpus stats --json` | `stats` storage counts and `enrichment` metadata counts. |
 | `corpus searches --json` | An array of recent search-history records, including provider outcomes. `--outfile` may also save the same JSON. |
 | `corpus list --json` | `papers`, `total`, `limit`, and `offset`. |
 | `corpus show --json` | `paper`, `assets`, `searches`, `authors`, `subjects`, and `references`. |
-| `corpus export --json` | `paper_id`, `role`, `path`, and exported `bytes`. |
-| `status --json` | `papers`, `papers_with_structured_documents`, `pipeline`, `text_materials`, and `image_materials`. |
+| `corpus export --json` | `paper_id`, `role`, `path`, and exported `bytes`; SI also includes `asset_id` and `original_filename`. |
+| `status --json` | `papers`, `papers_with_structured_documents`, `papers_with_supplements`, `supplements`, `pipeline`, `text_materials`, and `image_materials`. |
 | `filter status --json` | Active filter definitions and decision counts. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |
@@ -214,8 +246,9 @@ object. `--help` remains human-readable even on commands that support JSON.
 A multi-provider search can emit a useful result with `status: "partial"` and
 then exit with code 1. Successful papers remain in the corpus. A single-provider
 failure can exit before producing a summary. Download/enrichment summaries can
-report incomplete per-paper work while the command exits 0; download counts do
-not include a total failure count. Consult `status` and `corpus show` for those
+report incomplete per-paper work while the command exits 0; main-article counts
+do not include a total failure count, while SI has separate failed and
+unavailable counts. Consult `status` and `corpus show` for those
 details, rather than treating an exit code of 0 as proof every asset was fetched.
 The `status.pipeline` object maps status-column names to observed state counts;
 an absent state has count zero. For example, read failures with

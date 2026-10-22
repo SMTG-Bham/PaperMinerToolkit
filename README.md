@@ -16,7 +16,7 @@
 
 # PaperMinerToolkit
 
-PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
+PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, PDFs, and supporting information; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
 The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
 
@@ -62,6 +62,14 @@ pmt store papers.db \
 ```
 
 Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
+
+Text and PDF acquisition also attempts supporting information (SI), and text/image scraping includes stored SI by default. Use `--no-supplements` on `gather`, `download`, or `scrape` to opt out. Abstract-only runs skip SI. To acquire SI for existing entries without redownloading the article or fetching abstracts:
+
+```bash
+pmt download papers.db --format supplement
+```
+
+Discovery uses stored article links, PMC, public Figshare records tied to the paper DOI, and publisher supplement links. Each file retains its source and separate extraction status; see the [supporting-information workflow](https://paperminertoolkit.readthedocs.io/en/latest/workflow/corpus.html#supporting-information) for coverage and limits.
 
 ## CLI automation and AI agents
 

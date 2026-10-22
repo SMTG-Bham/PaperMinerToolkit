@@ -55,6 +55,41 @@ pmt scrape papers.db sse \
 
 When both modes produce records, the text model reconciles matching records into `text+image` rows. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
 
+### Supporting information
+
+Stored supporting information is processed by default in `text`, `images`, and
+`text-images` modes. Abstract-only runs do not process SI. Acquisition and
+extraction are separate: `scrape` reads stored assets, while `download` or
+`gather` discovers and retrieves them.
+
+```bash
+pmt download papers.db --format supplement
+pmt scrape papers.db sse --mode text-images --output extracted_with_si.csv
+
+# Exclude stored SI from a particular scrape run
+pmt scrape papers.db sse --mode text --no-supplements
+```
+
+Text extraction supports PDF, plain text, CSV, TSV, JSON, XML, HTML, DOCX text
+and tables, and XLSX cached cell values. PDF pages and supported raster images
+can be sent to the vision model. ZIP members are processed in memory within
+entry-count, expanded-size, and compression-ratio limits; nested ZIP archives
+are not expanded. Unsupported formats and processing errors are reported, and
+the original stored files are retained.
+
+Each SI file or archive member is processed separately. Extracted rows carry
+`supplement-text` or `supplement-image` provenance, the asset identity, and
+available source URL and label. SI records are not automatically reconciled
+with article records or other SI files, so a repeated material can produce
+several records with different evidence sources.
+
+Successful text and image stages are checkpointed per SI asset. A later run
+processes new or failed SI even when the main article was already scraped.
+`--force` repeats successful SI stages; `--no-supplements` leaves SI checkpoints
+unchanged. As with article scraping, use `--force` and a fresh output path when
+changing recipes. Paper-level SI text and image status fields summarize these
+separate stages.
+
 ### Choosing which images the model sees
 
 `--image-extraction` selects where images come from:
@@ -125,6 +160,11 @@ pmt store \
 
 Storage matches aliases, performs recipe-defined unit conversions, appends provenance metadata, merges the new rows with the final CSV, and records stored papers in the corpus. Review the intermediate file before omitting confirmation in unattended workflows.
 
+Supporting-information asset IDs, filenames, labels, source URLs, and archive
+member references remain in the final CSV, including when appending to an older
+output file. Separate SI files remain separate evidence rows. Papers with only
+successful SI results can also be marked as stored.
+
 Unit conversion batches values by unit-bearing column. All-missing columns need no model request; large populated columns may require several. A recipe's count of unit-bearing fields is not a fixed request count.
 
 Conversion can remove conditions embedded in unit-bearing values. Keep a copy of the scraped CSV before storage if you need its original wording; successful storage consumes the input file. To store without conversion, use the Python API:
@@ -161,3 +201,8 @@ pmt validate gui \
 The {doc}`validation` guide explains the CSV format, paper and record pairing,
 structured-field review, autosave and resume behavior, scoring rules, required
 run metadata, and exported scoring archive.
+
+The review GUI labels supporting-information entries in the pairing selector
+and displays their source details beside the selected record and in unpaired
+entry cards. Provenance is retained separately from the recipe fields being
+scored.

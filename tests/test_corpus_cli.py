@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from paperminertoolkit import _corpus_cli as cli
 from paperminertoolkit.corpus import database as corpus
+from paperminertoolkit.corpus.supplements import add_supplement
 from tests.corpus_helpers import open_corpus
 
 
@@ -126,6 +127,105 @@ def test_human_inspection_and_missing_paper(corpus_path: Path) -> None:
     assert missing.exit_code == 1
     assert missing.stdout == ''
     assert 'Paper not found: unknown' in missing.stderr
+
+
+def _supplements(corpus_path: Path) -> list[str]:
+    """Store two independently identified SI files for the existing fixture paper."""
+    with open_corpus(corpus_path) as conn:
+        return [add_supplement(
+            conn, {'paper_id': 'paper:a'}, content, source='test',
+            source_url=f'https://example.test/{filename}', original_filename=filename,
+            mime_type='text/plain', metadata={'label': f'Supplement {index}'},
+        ) for index, (filename, content) in enumerate([
+            ('supporting-1.txt', b'SI one'), ('supporting-2.txt', b'SI two'),
+        ], 1)]
+
+
+def test_show_lists_every_supplement_with_export_identifiers(corpus_path: Path) -> None:
+    """Expose every SI link and checkpoint without loading its binary contents."""
+    identifiers = _supplements(corpus_path)
+    before = corpus_path.read_bytes()
+    runner = CliRunner()
+    result = runner.invoke(cli.corpus_show, [str(corpus_path), 'paper:a', '--json'])
+    assert result.exit_code == 0, result.output
+    assets = [asset for asset in json.loads(result.stdout)['assets'] if asset['role'] == 'supplement']
+    assert [asset['blob_id'] for asset in assets] == identifiers
+    assert [asset['metadata']['label'] for asset in assets] == ['Supplement 1', 'Supplement 2']
+    assert all('content' not in asset for asset in assets)
+    human = runner.invoke(cli.corpus_show, [str(corpus_path), 'paper:a'])
+    assert human.exit_code == 0, human.output
+    assert all(identifier in human.stdout for identifier in identifiers)
+    assert 'supporting-1.txt' in human.stdout and 'supporting-2.txt' in human.stdout
+    assert corpus_path.read_bytes() == before
+
+
+def test_export_supplement_requires_unambiguous_selection(
+    corpus_path: Path, tmp_path: Path,
+) -> None:
+    """Reject ambiguous and foreign identifiers before replacing output files."""
+    identifiers = _supplements(corpus_path)
+    output = tmp_path / 'si.txt'
+    output.write_bytes(b'preserve output')
+    before = corpus_path.read_bytes()
+    runner = CliRunner()
+    arguments = [str(corpus_path), 'paper:a', str(output), '--role', 'supplement', '--force', '--json']
+    ambiguous = runner.invoke(cli.corpus_export, arguments)
+    assert ambiguous.exit_code == 1
+    assert '--asset-id' in ambiguous.stderr
+    assert output.read_bytes() == b'preserve output'
+    missing = runner.invoke(cli.corpus_export, [*arguments, '--asset-id', 'missing'])
+    assert missing.exit_code == 1
+    assert 'No stored supplement missing' in missing.stderr
+    assert output.read_bytes() == b'preserve output'
+    selected = runner.invoke(cli.corpus_export, [*arguments, '--asset-id', identifiers[1]])
+    assert selected.exit_code == 0, selected.output
+    assert output.read_bytes() == b'SI two'
+    assert json.loads(selected.stdout)['asset_id'] == identifiers[1]
+    assert json.loads(selected.stdout)['original_filename'] == 'supporting-2.txt'
+    assert corpus_path.read_bytes() == before
+
+
+def test_export_supplement_ignores_corrupt_unselected_files(
+    corpus_path: Path, tmp_path: Path,
+) -> None:
+    """Decompress only the selected file, allowing unaffected SI to be recovered."""
+    identifiers = _supplements(corpus_path)
+    with open_corpus(corpus_path) as conn:
+        conn.execute('UPDATE blobs SET content = ? WHERE blob_id = ?', (b'bad gzip', identifiers[0]))
+    output = tmp_path / 'si.txt'
+    result = CliRunner().invoke(cli.corpus_export, [
+        str(corpus_path), 'paper:a', str(output), '--role', 'supplement',
+        '--asset-id', identifiers[1],
+    ])
+    assert result.exit_code == 0, result.output
+    assert output.read_bytes() == b'SI two'
+
+
+def test_export_single_supplement_allows_duplicate_links_to_identical_content(
+    corpus_path: Path, tmp_path: Path,
+) -> None:
+    """No selector is needed when every SI link refers to the same stored bytes."""
+    with open_corpus(corpus_path) as conn:
+        for source in ['publisher', 'figshare']:
+            add_supplement(conn, {'paper_id': 'paper:a'}, b'identical SI', source=source,
+                           original_filename='si.txt', mime_type='text/plain')
+    output = tmp_path / 'si.txt'
+    result = CliRunner().invoke(cli.corpus_export, [
+        str(corpus_path), 'paper:a', str(output), '--role', 'supplement',
+    ])
+    assert result.exit_code == 0, result.output
+    assert output.read_bytes() == b'identical SI'
+
+
+def test_export_asset_selector_requires_supplement_role(corpus_path: Path, tmp_path: Path) -> None:
+    """Reject a selector that would otherwise be silently ignored for an article asset."""
+    output = tmp_path / 'text.txt'
+    result = CliRunner().invoke(cli.corpus_export, [
+        str(corpus_path), 'paper:a', str(output), '--asset-id', 'some-id',
+    ])
+    assert result.exit_code == 2
+    assert '--asset-id requires --role supplement' in result.stderr
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(('role', 'expected'), [

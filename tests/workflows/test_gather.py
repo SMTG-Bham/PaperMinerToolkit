@@ -87,7 +87,7 @@ def test_gather_deduplicates_search_matches_and_reuses_existing_assets(
 
     first = gather.gather_papers(
         'materials', db_path, source=['core', 'openalex', 'core'],
-        download_format='pdf', download_sources=['core'],
+        download_format='pdf', download_sources=['core'], download_supplements=False,
     )
 
     summary = first['search']
@@ -116,7 +116,7 @@ def test_gather_deduplicates_search_matches_and_reuses_existing_assets(
 
     second = gather.gather_papers(
         'materials', db_path, source=['core', 'openalex'],
-        download_format='pdf', download_sources=['core'],
+        download_format='pdf', download_sources=['core'], download_supplements=False,
     )
     assert second['search']['paper_ids'] == summary['paper_ids']
     assert second['search']['papers_added'] == 0
@@ -140,7 +140,7 @@ def test_gather_abstract_format_overrides_disabled_abstract_option(
     pdfs = _stub_pdfs(monkeypatch)
     result = gather.gather_papers(
         'materials', db_path, source='core', download_format=format_name,
-        download_sources=['core'], download_abstract=False,
+        download_sources=['core'], download_abstract=False, download_supplements=False,
     )
     with corpus.connect(db_path) as conn:
         asset = corpus.get_asset(conn, 'core:one', 'abstract')
@@ -170,6 +170,7 @@ def test_gather_reports_search_outcomes_without_downloading_unrelated_papers(
     result = gather.gather_papers(
         'materials', db_path, source=['core', 'openalex'],
         download_format='pdf', download_sources=['core'], download_abstract=False,
+        download_supplements=False,
     )
 
     assert result['search']['status'] == status
@@ -188,6 +189,7 @@ def test_gather_reports_search_outcomes_without_downloading_unrelated_papers(
     ({'source': ['core', 'unknown']}, 'search source'),
     ({'download_format': 'unknown'}, 'download_format'),
     ({'download_sources': ['unknown']}, 'download source'),
+    ({'supplement_sources': ['unknown']}, 'supplementary sources'),
 ])
 def test_gather_rejects_invalid_options_before_writing_or_searching(
     tmp_path: Path,
@@ -225,16 +227,19 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
 
     summary = download.download_papers(
         db_path, download_format='pdf', sources=['core'], download_abstract=False,
+        download_supplements=False,
         paper_ids=(name for name in ['included', 'included', 'excluded', 'unevaluated', 'unknown']),
     )
     assert calls == ['included']
     assert summary['pdfs'] == 1
     empty = download.download_papers(
         db_path, download_format='pdf', sources=['core'], force=True, paper_ids=[],
+        download_supplements=False,
     )
     assert not any(empty.values())
     filtered_out = download.download_papers(
         db_path, download_format='pdf', sources=['core'], force=True,
+        download_supplements=False,
         paper_ids=['excluded', 'unevaluated', 'unknown'],
     )
     assert not any(filtered_out.values())
@@ -243,3 +248,37 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
         assert corpus.get_asset(conn, 'excluded', 'pdf') is None
         assert corpus.get_asset(conn, 'unselected', 'pdf') is None
         assert corpus.get_asset(conn, 'unevaluated', 'pdf') is None
+
+
+@pytest.mark.parametrize('format_name,want_abstract', [('supplement', False), ('both', True)])
+def test_gather_forwards_supplement_controls_and_suppresses_si_only_abstracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    format_name: str,
+    want_abstract: bool,
+) -> None:
+    """Keep SI source selection and search-abstract storage consistent with the format."""
+    db_path = tmp_path / 'papers.db'
+    _stub_searches(monkeypatch, {
+        'core': _frame('core', [{'paper_id': 'core:one', 'abstract': 'From search.'}]),
+    })
+    seen: dict[str, Any] = {}
+
+    def collect(**kwargs: Any) -> dict[str, int]:
+        """Record scoped acquisition after the actual search and corpus merge."""
+        seen.update(kwargs)
+        return {'supplements': 1}
+
+    monkeypatch.setattr(gather, 'download_papers', collect)
+    result = gather.gather_papers(
+        'materials', db_path, source='core', download_format=format_name,
+        download_sources=['core'], supplement_sources=iter(['structured', 'pubmed']),
+    )
+    assert seen['download_supplements'] is True
+    assert seen['supplement_sources'] == ['structured', 'pubmed']
+    assert seen['paper_ids'] == ['core:one']
+    assert seen['download_abstract'] is want_abstract
+    assert result['search']['abstracts_stored'] == int(want_abstract)
+    assert result['downloads'] == {'supplements': 1}
+    with corpus.connect(db_path) as conn:
+        assert (corpus.get_asset(conn, 'core:one', 'abstract') is not None) is want_abstract

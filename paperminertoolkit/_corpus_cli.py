@@ -16,6 +16,7 @@ from paperminertoolkit.corpus.database import (
     ENRICHMENT_COLUMNS,
     PAPER_FIELDS,
     SCHEMA_VERSION,
+    _decompress,
     get_asset,
     get_asset_metadata,
     paper_authors,
@@ -23,6 +24,7 @@ from paperminertoolkit.corpus.database import (
     paper_search_history,
     paper_subjects,
 )
+from paperminertoolkit.corpus.supplements import SUPPLEMENT_ROLE, get_supplements
 
 
 _LIST_COLUMNS = [
@@ -151,10 +153,11 @@ def corpus_list(db_path: str, limit: int, offset: int,
 @click.option('--json', 'json_output', is_flag=True,
               help='Write complete paper metadata, asset metadata, and provenance as JSON.')
 def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
-    """Inspect one canonical paper ID, its latest assets, and provenance.
+    """Inspect one canonical paper ID, its assets, and provenance.
 
-    Asset metadata describes the newest stored asset for each role, matching
-    export. Content bytes are excluded. No provider requests or writes occur.
+    Asset metadata includes every supplementary file and the newest stored
+    article asset for each other role. Content bytes are excluded. No provider
+    requests or writes occur.
     """
     with _open_corpus(db_path) as conn:
         paper = _paper(conn, paper_id)
@@ -162,9 +165,15 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
             'SELECT DISTINCT role FROM paper_assets WHERE paper_id = ? ORDER BY role',
             (paper_id,),
         ).fetchall()
+        assets = []
+        for row in roles:
+            if row['role'] == SUPPLEMENT_ROLE:
+                assets.extend(get_supplements(conn, paper_id, include_content=False))
+            else:
+                assets.append(get_asset_metadata(conn, paper_id, row['role']))
         result = {
             'paper': paper,
-            'assets': [get_asset_metadata(conn, paper_id, row['role']) for row in roles],
+            'assets': assets,
             'searches': paper_search_history(conn, paper_id),
             'authors': paper_authors(conn, paper_id),
             'subjects': paper_subjects(conn, paper_id),
@@ -185,6 +194,8 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
     for asset in result['assets']:
         click.echo(f'  {asset["role"]}: {asset["original_size"]} bytes '
                    f'({asset["mime_type"]}; source={asset["source"] or "unknown"})')
+        if asset['role'] == SUPPLEMENT_ROLE:
+            click.echo(f'    {asset["original_filename"]} | asset-id={asset["blob_id"]}')
     click.echo(f'Contributing searches: {len(result["searches"])}')
 
 
@@ -192,13 +203,15 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('paper_id')
 @click.argument('outfile', type=click.Path(dir_okay=False))
-@click.option('--role', default='text', type=click.Choice(['abstract', 'text', 'pdf']),
-              show_default=True, help='Stored asset to export, using its newest version.')
+@click.option('--role', default='text', type=click.Choice(['abstract', 'text', 'pdf', SUPPLEMENT_ROLE]),
+              show_default=True, help='Stored asset to export; article roles use their newest version.')
+@click.option('--asset-id', default=None,
+              help='Supplement blob_id from corpus show; required when several distinct SI files exist.')
 @click.option('--force', is_flag=True, help='Overwrite an existing output file.')
 @click.option('--json', 'json_output', is_flag=True,
               help='Write the exported path, paper ID, role, and byte count as JSON.')
 def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
-                  force: bool, json_output: bool) -> None:
+                  asset_id: str | None, force: bool, json_output: bool) -> None:
     """Export one stored asset to OUTFILE without changing the corpus.
 
     Decompressed bytes are written exactly as stored. A missing paper or asset
@@ -206,6 +219,8 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
     corpus and its SQLite journal files can never be overwritten, including
     through symlinks or hard links.
     """
+    if asset_id is not None and role != SUPPLEMENT_ROLE:
+        raise click.UsageError('--asset-id requires --role supplement.')
     try:
         destination = Path(outfile).absolute()
         source = Path(db_path).resolve()
@@ -221,7 +236,24 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
             raise click.ClickException(f'Output file already exists: {outfile}. Use --force to overwrite.')
         with _open_corpus(db_path) as conn:
             _paper(conn, paper_id)
-            asset = get_asset(conn, paper_id, role)
+            if role == SUPPLEMENT_ROLE:
+                candidates = get_supplements(conn, paper_id, include_content=False)
+                selected = {item['blob_id']: item for item in candidates
+                            if asset_id is None or item['blob_id'] == asset_id}
+                if asset_id is not None and not selected:
+                    raise click.ClickException(f'No stored supplement {asset_id} for paper: {paper_id}')
+                if len(selected) > 1:
+                    raise click.ClickException(
+                        'Several supplementary files exist. Choose --asset-id using a blob_id '
+                        'from pmt corpus show.'
+                    )
+                asset = next(iter(selected.values()), None)
+                if asset is not None:
+                    blob = conn.execute('SELECT content, compression FROM blobs WHERE blob_id = ?',
+                                        (asset['blob_id'],)).fetchone()
+                    asset['content'] = _decompress(blob['content'], blob['compression'])
+            else:
+                asset = get_asset(conn, paper_id, role)
             if asset is None:
                 raise click.ClickException(f'No stored {role} asset for paper: {paper_id}')
             content = asset['content']
@@ -230,7 +262,10 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps({'paper_id': paper_id, 'role': role,
-                               'path': str(destination), 'bytes': len(content)}, indent=2))
+        result = {'paper_id': paper_id, 'role': role,
+                  'path': str(destination), 'bytes': len(content)}
+        if role == SUPPLEMENT_ROLE:
+            result.update(asset_id=asset['blob_id'], original_filename=asset['original_filename'])
+        click.echo(json.dumps(result, indent=2))
     else:
         click.echo(f'Exported {role} for {paper_id} to {destination} ({len(content)} bytes).')

@@ -35,7 +35,8 @@ from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
                                                   build_reconciliation_prompt,
                                                   build_text_extraction_prompt)
 from paperminertoolkit.extraction.recipes import RECIPES_PATH, load_recipe
-from paperminertoolkit.workflows.download import download_papers
+from paperminertoolkit.workflows.download import DOWNLOAD_FORMATS, download_papers
+from paperminertoolkit.workflows.supplements import SUPPLEMENT_SOURCES
 from paperminertoolkit.workflows.enrichment import enrich_corpus
 from paperminertoolkit.workflows.entities import extract_corpus_entities, extract_file_entities
 from paperminertoolkit.corpus.filtering import (apply_regex_filter,
@@ -165,15 +166,21 @@ def _check_search_status(summary: Mapping[str, Any]) -> None:
 @click.option('--count', default=200, type=click.IntRange(min=1), show_default=True,
               help='Maximum results to request from each selected search source.')
 @click.option('--format', 'download_format',
-              type=click.Choice(['abstract', 'text', 'pdf', 'both']),
+              type=click.Choice(sorted(DOWNLOAD_FORMATS)),
               default='both', show_default=True,
-              help='Paper assets to retrieve after searching; both means text and PDF.')
+              help='Paper assets to retrieve; both means text and PDF, supplement means SI only.')
 @click.option('--download-source', 'download_sources', multiple=True,
               type=click.Choice(DOWNLOAD_CHOICES), default=('all',), show_default=True,
               help='Content provider to try. Repeat to choose more than one.')
 @click.option('--abstract/--no-abstract', 'download_abstract',
               default=True, show_default=True,
-              help='Store search abstracts and retrieve missing abstracts alongside assets.')
+              help='Store search abstracts and retrieve missing abstracts; ignored for supplement-only runs.')
+@click.option('--supplements/--no-supplements', 'download_supplements',
+              default=True, show_default=True,
+              help='Retrieve supporting information alongside paper assets; the abstract/supplement formats take precedence.')
+@click.option('--supplement-source', 'supplement_sources', multiple=True,
+              type=click.Choice(['all', *SUPPLEMENT_SOURCES]), default=('all',), show_default=True,
+              help='Supporting-information source to use. Repeat to choose more than one.')
 @click.option('--enrich', 'enrich_metadata', is_flag=True,
               help='Supplement matching papers with configured enrichment providers.')
 @click.option('--parallel', is_flag=True,
@@ -186,7 +193,8 @@ def _check_search_status(summary: Mapping[str, Any]) -> None:
               help='Write a JSON summary to stdout and progress to stderr.')
 def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
            download_format: str, download_sources: tuple[str, ...],
-           download_abstract: bool, enrich_metadata: bool, parallel: bool,
+           download_abstract: bool, download_supplements: bool,
+           supplement_sources: tuple[str, ...], enrich_metadata: bool, parallel: bool,
            workers: int | None, force: bool, json_output: bool) -> None:
     """Search for papers, save metadata, and retrieve assets in one run.
 
@@ -202,6 +210,8 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
                 query, db_path, source=source[0] if len(source) == 1 else source,
                 count=count, download_format=download_format,
                 download_sources=list(download_sources), download_abstract=download_abstract,
+                download_supplements=download_supplements,
+                supplement_sources=list(supplement_sources),
                 enrich=enrich_metadata, parallel=parallel, workers=workers, force=force,
             )
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
@@ -279,7 +289,7 @@ def import_author(db_path: str,
 @click.command('download')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
-              type=click.Choice(['abstract', 'text', 'pdf', 'both']),
+              type=click.Choice(sorted(DOWNLOAD_FORMATS)),
               default='both',
               show_default=True)
 @click.option('--source', 'sources',
@@ -293,7 +303,13 @@ def import_author(db_path: str,
               'download_abstract',
               default=True,
               show_default=True,
-              help='Download and store abstracts alongside requested paper assets.')
+              help='Download and store abstracts alongside paper assets; ignored for supplement-only runs.')
+@click.option('--supplements/--no-supplements', 'download_supplements',
+              default=True, show_default=True,
+              help='Retrieve supporting information alongside paper assets; the abstract/supplement formats take precedence.')
+@click.option('--supplement-source', 'supplement_sources', multiple=True,
+              type=click.Choice(['all', *SUPPLEMENT_SOURCES]), default=('all',), show_default=True,
+              help='Supporting-information source to use. Repeat to choose more than one.')
 @click.option('--force', is_flag=True, default=False,
               help='Redownload requested assets even when that content type is already stored.')
 @_json_option
@@ -302,10 +318,15 @@ def download(
         download_format: str,
         sources: tuple[str, ...],
         download_abstract: bool,
+        download_supplements: bool,
+        supplement_sources: tuple[str, ...],
         force: bool,
         json_output: bool,
 ) -> None:
-    """Download abstracts, text, and/or PDFs for rows in the paper corpus."""
+    """Download abstracts, text, PDFs, and supporting information for corpus rows.
+
+    Supplement-only runs skip abstracts. Abstract-only runs skip supplements.
+    """
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
             summary = download_papers(
@@ -313,6 +334,8 @@ def download(
                 download_format=download_format,
                 sources=list(sources),
                 download_abstract=download_abstract,
+                download_supplements=download_supplements,
+                supplement_sources=list(supplement_sources),
                 force=force,
             )
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
@@ -423,6 +446,8 @@ def corpus_status(db_path: str, json_output: bool) -> None:
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
     click.echo(f'Papers with text: {stats["papers_with_text"]}')
     click.echo(f'Papers with PDFs: {stats["papers_with_pdf"]}')
+    click.echo(f'Papers with supporting information: {stats.get("papers_with_supplements", 0)}')
+    click.echo(f'Supplement files: {stats.get("supplements", 0)}')
     click.echo(
         f'Papers with structured documents: '
         f'{stats["papers_with_structured_documents"]}'
@@ -1063,6 +1088,9 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
 @click.option('--mode', type=click.Choice(['abstract', 'text', 'images', 'text-images']), default='text', show_default=True)
+@click.option('--supplements/--no-supplements', 'include_supplements',
+              default=True, show_default=True,
+              help='Include stored supporting information in text and image extraction.')
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction',
@@ -1132,6 +1160,7 @@ def scrape(
         db_path: str,
         recipe: str,
         mode: str,
+        include_supplements: bool,
         image_context: str,
         image_dir: str,
         image_extraction: str,
@@ -1159,6 +1188,7 @@ def scrape(
         db_path,
         recipe,
         mode=mode,
+        include_supplements=include_supplements,
         image_dir=image_dir,
         image_context=image_context,
         image_extraction=image_extraction,
