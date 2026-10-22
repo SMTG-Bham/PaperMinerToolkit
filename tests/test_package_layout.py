@@ -8,6 +8,7 @@ import pytest
 
 
 PUBLIC_MODULES = (
+    'paperminertoolkit.corpus.supplements',
     'paperminertoolkit.corpus.database',
     'paperminertoolkit.corpus.documents',
     'paperminertoolkit.corpus.filtering',
@@ -23,6 +24,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.extraction.scrape',
     'paperminertoolkit.extraction.store',
     'paperminertoolkit.extraction.tokenizer',
+    'paperminertoolkit.providers.supplements',
     'paperminertoolkit.providers.arxiv',
     'paperminertoolkit.providers.base',
     'paperminertoolkit.providers.biorxiv',
@@ -36,6 +38,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.providers.registry',
     'paperminertoolkit.providers.rxiv',
     'paperminertoolkit.providers.unpaywall',
+    'paperminertoolkit.workflows.supplements',
     'paperminertoolkit.workflows.download',
     'paperminertoolkit.workflows.enrichment',
     'paperminertoolkit.workflows.entities',

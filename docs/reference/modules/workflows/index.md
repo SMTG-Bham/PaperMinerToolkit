@@ -5,6 +5,7 @@ End-to-end operations for discovering, acquiring, enriching, importing, and anal
 ```{toctree}
 :maxdepth: 1
 
+supplements
 search
 gather
 download

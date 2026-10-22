@@ -22,7 +22,7 @@ from typing import Any, TypeAlias
 from paperminertoolkit._doi import clean_doi
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 STRUCTURED_DOCUMENT_ROLE = 'structured'
 FIGURE_ASSET_ROLE = 'figure'
@@ -52,6 +52,9 @@ PIPELINE_COLUMNS = {
     'abstract_download_status': 'pending',
     'text_download_status': 'pending',
     'pdf_download_status': 'pending',
+    'supplement_download_status': 'pending',
+    'supplement_text_scrape_status': 'pending',
+    'supplement_image_scrape_status': 'pending',
     'text_scrape_status': 'pending',
     'abstract_scrape_status': 'pending',
     'image_scrape_status': 'pending',
@@ -444,6 +447,8 @@ def init_corpus(conn: sqlite3.Connection) -> None:
         if column in existing_columns:
             continue
         conn.execute(f'ALTER TABLE papers ADD COLUMN {column} {column_type}')
+        if column in PIPELINE_COLUMNS:
+            conn.execute(f'UPDATE papers SET {column} = ?', (PIPELINE_COLUMNS[column],))
         added_columns.append(column)
     if 'enrichment_status' in added_columns:
         conn.execute(
@@ -2306,7 +2311,8 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
             'SELECT COUNT(DISTINCT paper_id) FROM paper_assets WHERE role = ?',
             (role,),
         ).fetchone()[0]
-        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE, FIGURE_ASSET_ROLE]
+        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE, FIGURE_ASSET_ROLE,
+                     'supplement']
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
     chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
@@ -2320,6 +2326,10 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
         'papers_with_pdf': asset_counts['pdf'],
         'papers_with_structured_documents': asset_counts[STRUCTURED_DOCUMENT_ROLE],
         'papers_with_figure_assets': asset_counts[FIGURE_ASSET_ROLE],
+        'papers_with_supplements': asset_counts['supplement'],
+        'supplements': conn.execute(
+            "SELECT COUNT(*) FROM paper_assets WHERE role = 'supplement'"
+        ).fetchone()[0],
         'papers_with_chunked_text': chunked_text,
         'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,

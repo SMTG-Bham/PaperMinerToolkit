@@ -15,6 +15,7 @@ from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
                                                corpus_stats,
                                                paper_rows,
                                                upsert_paper)
+from paperminertoolkit.corpus.supplements import get_supplements, set_supplement_extraction_status
 
 
 def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
@@ -36,6 +37,11 @@ def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
                 paper[column] = default
             paper['metadata_status'] = 'retrieved'
             upsert_paper(conn, paper)
+            for asset in get_supplements(conn, paper['paper_id'], include_content=False):
+                for stage in ('text', 'image'):
+                    set_supplement_extraction_status(
+                        conn, paper['paper_id'], asset['blob_id'], stage, 'pending', members={},
+                    )
 
 
 def progress_summary(db_path: str | PathLike[str] = 'papers.db') -> dict[str, Any]:
@@ -67,6 +73,8 @@ def progress_summary(db_path: str | PathLike[str] = 'papers.db') -> dict[str, An
     return {
         'papers': stats['papers'],
         'papers_with_structured_documents': stats['papers_with_structured_documents'],
+        'papers_with_supplements': stats['papers_with_supplements'],
+        'supplements': stats['supplements'],
         'pipeline': pipeline,
         'text_materials': totals[0],
         'image_materials': totals[1],
@@ -91,11 +99,19 @@ def status(db_path: str | PathLike[str] = 'papers.db') -> None:
     print('---------------------------')
     print(f'Total papers: {summary["papers"]}')
     print(f'Papers with structured documents: {summary["papers_with_structured_documents"]}')
+    print(f'Papers with supplementary files: {summary["papers_with_supplements"]} '
+          f'({summary["supplements"]} files)')
     rows = [
         ('Metadata retrieved', 'metadata_status', 'retrieved'),
         ('Metadata enriched', 'enrichment_status', 'succeeded'),
         ('Text downloaded', 'text_download_status', 'succeeded'),
         ('PDFs downloaded', 'pdf_download_status', 'succeeded'),
+        ('SI downloads completed', 'supplement_download_status', 'succeeded'),
+        ('No SI available', 'supplement_download_status', 'unavailable'),
+        ('Partial SI downloads', 'supplement_download_status', 'partial'),
+        ('Failed SI downloads', 'supplement_download_status', 'failed'),
+        ('SI text scraped', 'supplement_text_scrape_status', 'succeeded'),
+        ('SI images scraped', 'supplement_image_scrape_status', 'succeeded'),
         ('Text scraped', 'text_scrape_status', 'succeeded'),
         ('Images scraped', 'image_scrape_status', 'succeeded'),
         ('Stored', 'store_status', 'stored'),

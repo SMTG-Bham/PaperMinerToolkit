@@ -1212,7 +1212,9 @@ def pmc_cloud_pdf_url(
         If the listing request cannot be completed.
     """
     files = pmc_cloud_files(pmcid, session=session, timeout=timeout)
-    return next((url for name, url in files.items() if name.lower().endswith('.pdf')), '')
+    identifier = normalize_pmcid(pmcid)
+    return next((url for name, url in files.items()
+                 if re.fullmatch(rf'{re.escape(identifier)}\.\d+\.pdf', name, re.I)), '')
 
 
 def pmc_cloud_full_text_document(

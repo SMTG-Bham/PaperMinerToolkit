@@ -5,6 +5,7 @@ Clients and registry definitions for external scholarly-data services.
 ```{toctree}
 :maxdepth: 1
 
+supplements
 base
 registry
 crossref

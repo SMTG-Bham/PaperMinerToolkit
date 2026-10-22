@@ -410,7 +410,7 @@ def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         asset = corpus.get_asset_metadata(conn, 'legacy:1', 'text')
 
-    assert version == corpus.SCHEMA_VERSION == 12
+    assert version == corpus.SCHEMA_VERSION == 13
     assert 'metadata_json' in columns
     assert asset is not None
     assert asset['blob_id'] == 'text:legacy'
@@ -966,7 +966,7 @@ def test_corpus_migrates_identifier_columns_without_losing_rows(
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 12
+    assert version == corpus.SCHEMA_VERSION == 13
     assert set(added_identifiers) <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'

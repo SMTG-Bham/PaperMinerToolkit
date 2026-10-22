@@ -351,7 +351,9 @@ pmt download papers.db --format both
 ### Default source order
 
 Each capability has its own order, and a source is only asked when every source before it has
-failed or been skipped. A run skips any source it did not select and any the row cannot reach:
+failed or been skipped for article assets. SI combines files from its selected sources,
+with publisher HTML as a fallback when the other sources found none. A run skips any
+source it did not select and any the row cannot reach:
 PubMed is attempted for a row carrying a PMID or a DOI, and each preprint server for a row carrying
 the identifier it issued.
 
@@ -362,6 +364,7 @@ the identifier it issued.
 | PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv, **OpenAlex cached PDF** |
 | search | Elsevier, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
 | enrich | Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+| supplement | Structured, PubMed, Figshare, Publisher |
 
 `--source` filters this order rather than replacing it, and applies to abstracts, full text, and
 PDFs alike. Passing `--source openalex --source pubmed` asks PubMed first for text, because that is
