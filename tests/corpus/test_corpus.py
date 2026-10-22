@@ -977,6 +977,57 @@ def test_papers_match_on_a_shared_pubmed_identifier() -> None:
     assert corpus._papers_match({'pmcid': 'PMC1', 'paper_id': 'a'}, {'pmcid': 'PMC1', 'paper_id': 'b'})
 
 
+@pytest.mark.parametrize('column', ['doi', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi'])
+@pytest.mark.parametrize('presented', [
+    'DOI: 10.1234/EXAMPLE(test)',
+    'http://doi.org/10.1234/EXAMPLE(test)',
+    'https://dx.doi.org/10.1234/EXAMPLE(test)',
+    'http://dx.doi.org/10.1234/EXAMPLE%28test%29?source=pdf#abstract',
+    '10.1234/EXAMPLE(test)).',
+    '10.1234/EXAMPLE\u200b(test)',
+])
+def test_doi_presentations_share_corpus_identity(column: str, presented: str) -> None:
+    """Merge resolver URLs, labels, and extraction artifacts into one paper."""
+    canonical = '10.1234/example(test)'
+    assert corpus.normalize_paper({column: presented})['paper_id'] == f'doi:{canonical}'
+    with contextlib.closing(corpus.connect(':memory:')) as conn:
+        assert corpus.upsert_papers(conn, [
+            {column: presented, 'sources': 'first'},
+            {column: canonical, 'sources': 'second'},
+        ]) == (1, 1)
+        rows = corpus.paper_rows(conn)
+        assert len(rows) == 1
+        assert rows[0]['paper_id'] == f'doi:{canonical}'
+        assert rows[0]['sources'] == 'first;second'
+
+
+@pytest.mark.parametrize('column', ['doi', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi'])
+def test_canonical_doi_import_preserves_legacy_identity_and_assets(column: str) -> None:
+    """Match legacy URL identifiers without renaming papers or orphaning assets."""
+    legacy_id = 'doi:http://dx.doi.org/10.1234/example'
+    with contextlib.closing(corpus.connect(':memory:')) as conn:
+        corpus.add_asset(
+            conn,
+            {'paper_id': legacy_id, column: 'http://dx.doi.org/10.1234/EXAMPLE'},
+            'original text', role='text', kind='text', mime_type='text/plain', source='legacy',
+        )
+        assert corpus.upsert_papers(conn, [{
+            'paper_id': 'import:new', column: '10.1234/example', 'title': 'New metadata',
+        }]) == (0, 1)
+        rows = corpus.paper_rows(conn)
+        assert len(rows) == 1
+        assert rows[0]['paper_id'] == legacy_id
+        assert rows[0]['title'] == 'New metadata'
+        assert corpus.get_asset(conn, legacy_id, 'text')['content'] == b'original text'
+
+
+@pytest.mark.parametrize('missing', [None, '', '  ', float('nan')])
+def test_missing_dois_do_not_become_identifiers(missing: object) -> None:
+    """Retain the corpus missing-value rules around the shared normalizer."""
+    assert corpus._clean_doi(missing) == ''
+    assert corpus.normalize_paper({'doi': missing})['paper_id'].startswith('paper:')
+
+
 def test_papers_match_on_a_shared_arxiv_identifier() -> None:
     """Treat rows sharing an arXiv identifier as the same publication."""
     existing = {'paper_id': 'arxiv:2301.12345', 'arxiv_id': '2301.12345', 'title': 'One'}

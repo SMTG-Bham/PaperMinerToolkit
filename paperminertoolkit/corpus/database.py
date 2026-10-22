@@ -19,6 +19,8 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, TypeAlias
 
+from paperminertoolkit._doi import clean_doi
+
 
 SCHEMA_VERSION = 12
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
@@ -778,12 +780,7 @@ def _clean_doi(value: object) -> str:
     """
     if not _has_value(value):
         return ''
-    doi = str(value).strip()
-    if doi.lower().startswith('doi:'):
-        doi = doi[4:]
-    if doi.lower().startswith('https://doi.org/'):
-        doi = doi[16:]
-    return doi.strip().rstrip('.').lower()
+    return clean_doi(value)
 
 
 def _title_key(value: object) -> str:
@@ -970,8 +967,11 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
         return True
-    for column in ['paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi',
-                   'biorxiv_doi', 'chemrxiv_doi']:
+    for column in ['medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi']:
+        existing_identifier = _clean_doi(existing.get(column))
+        if existing_identifier and existing_identifier == _clean_doi(incoming.get(column)):
+            return True
+    for column in ['paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id']:
         if _has_value(existing.get(column)) and str(existing.get(column)) == str(incoming.get(column)):
             return True
     existing_title = _title_key(existing.get('title'))
