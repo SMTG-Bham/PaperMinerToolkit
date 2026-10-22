@@ -214,6 +214,32 @@ def test_select_papers_orders_and_limits_corpus_rows(monkeypatch: pytest.MonkeyP
         scrape._select_papers(papers, scrape_count=0)
 
 
+@pytest.mark.parametrize(('order', 'dated_ids'), [
+    ('publication-asc', ['older', 'newer-first', 'newer-second']),
+    ('publication-desc', ['newer-first', 'newer-second', 'older']),
+])
+def test_publication_order_keeps_missing_dates_last_and_preserves_ties(
+    order: str,
+    dated_ids: list[str],
+) -> None:
+    """Select dated papers before undated papers without changing equal-date order."""
+    papers = [
+        {'paper_id': 'missing', 'publication_date': None},
+        {'paper_id': 'newer-first', 'publication_date': '2026-01-01'},
+        {'paper_id': 'empty', 'publication_date': ''},
+        {'paper_id': 'older', 'publication_date': '2024-01-01'},
+        {'paper_id': 'absent'},
+        {'paper_id': 'newer-second', 'publication_date': '2026-01-01'},
+    ]
+    original_ids = [paper['paper_id'] for paper in papers]
+    expected = dated_ids + ['missing', 'empty', 'absent']
+
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order)] == expected
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order, 2)] == expected[:2]
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order, 4)] == expected[:4]
+    assert [paper['paper_id'] for paper in papers] == original_ids
+
+
 def test_scrape_papers_rejects_invalid_modes(tmp_path: Path) -> None:
     """Test validation of scrape, image, compression, and selection options."""
     papers_dir = tmp_path / 'papers'

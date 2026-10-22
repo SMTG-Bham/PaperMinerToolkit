@@ -498,9 +498,9 @@ def _publication_key(paper: Mapping[str, Any]) -> str:
     Returns
     -------
     str
-        Publication date, or a value that sorts missing dates last.
+        Publication date, or an empty string when the date is missing.
     """
-    return str(paper.get('publication_date') or '9999-99-99')
+    return str(paper.get('publication_date') or '')
 
 
 def _select_papers(
@@ -516,7 +516,8 @@ def _select_papers(
         Corpus paper rows.
     scrape_order : str, optional
         Selection order, such as corpus order, random order, or publication
-        date.
+        date. Missing publication dates sort last in either direction;
+        papers with equal dates retain their corpus order.
     scrape_count : int, optional
         Maximum number of papers to return.
 
@@ -537,10 +538,10 @@ def _select_papers(
     selected = list(papers)
     if scrape_order == 'random':
         random.shuffle(selected)
-    elif scrape_order == 'publication-asc':
-        selected.sort(key=_publication_key)
-    elif scrape_order == 'publication-desc':
-        selected.sort(key=_publication_key, reverse=True)
+    elif scrape_order in {'publication-asc', 'publication-desc'}:
+        selected.sort(key=_publication_key, reverse=scrape_order == 'publication-desc')
+        # A second stable sort keeps undated rows last without reversing ties.
+        selected.sort(key=lambda paper: not bool(paper.get('publication_date')))
     elif scrape_order == 'title':
         selected.sort(key=lambda paper: str(paper.get('title') or '').lower())
     elif scrape_order == 'paper-id':
