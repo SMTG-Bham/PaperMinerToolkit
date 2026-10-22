@@ -123,6 +123,30 @@ def test_request_json_sends_the_key_as_a_header() -> None:
     assert session.calls[0]['params'] == {}
 
 
+@pytest.mark.parametrize(('body', 'message'), [
+    ('not JSON', 'Elsevier returned malformed JSON'),
+    ('[]', 'Elsevier returned an unexpected payload of type list'),
+])
+def test_request_json_rejects_invalid_bodies(body: str, message: str) -> None:
+    """Keep decoding errors distinct from failed or missing HTTP requests."""
+    session = FakeSession([FakeResponse(text=body)])
+
+    with pytest.raises(RuntimeError, match=message):
+        elsevier.request_json(elsevier.BASE_URL, 'elsevier-key', session=session)
+    assert len(session.calls) == 1
+
+
+def test_request_json_preserves_retry_options_and_missing_results() -> None:
+    """Honor request options while returning None for a missing JSON record."""
+    session = FakeSession([FakeResponse(status_code=503), FakeResponse(status_code=404)])
+
+    assert elsevier.request_json(elsevier.BASE_URL, 'elsevier-key', params={'count': 1},
+                                 session=session, timeout=7.5, attempts=2) is None
+    assert len(session.calls) == 2
+    assert all(call['timeout'] == 7.5 and call['params'] == {'count': 1}
+               for call in session.calls)
+
+
 def test_full_text_document_requests_and_preserves_native_xml() -> None:
     """Request the full XML view and derive prose without discarding markup."""
     xml = '''<full-text-retrieval-response xmlns:ce="urn:ce">

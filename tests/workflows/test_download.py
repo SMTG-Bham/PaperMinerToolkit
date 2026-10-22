@@ -1606,11 +1606,13 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     assert papers[1]['last_error'] == 'text exploded'
 
 
-def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
+@pytest.mark.parametrize('download_format', ['both', 'pdf'])
+def test_download_papers_stores_elsevier_text_and_xml_with_oa_pdf(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    download_format: str,
 ) -> None:
-    """Download papers downloads Elsevier text after OA PDF success."""
+    """Store derived text and original XML for explicit and opportunistic downloads."""
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:oa-text',
@@ -1632,25 +1634,40 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
         return True, 'core', 'https://core/pdf'
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
+    document = download.provider.FullTextDocument(
+        'elsevier text', '<article/>', 'elsevier-xml', source_identifier='10.1234/oa-text',
+    )
 
     def fake_download_text(
         paper: Mapping[str, Any],
         filepath: str,
-    ) -> tuple[bool, str, None]:
+    ) -> tuple[bool, str, download.provider.FullTextDocument]:
         """Provide fake text download behavior for this test."""
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write('elsevier text')
-        return True, '', None
+            f.write(document.text)
+        return True, '', document
 
     monkeypatch.setattr(download, '_download_elsevier_text', fake_download_text)
 
-    download.download_papers(str(db_path), download_format='pdf', download_abstract=False)
+    summary = download.download_papers(
+        str(db_path), download_format=download_format, download_abstract=False,
+    )
 
     papers = read_corpus(db_path)
+    assert summary['texts'] == 1
+    assert summary['pdfs'] == 1
     assert papers[0]['pdf_download_status'] == 'succeeded'
     assert papers[0]['text_download_status'] == 'succeeded'
     assert papers[0]['text_source'] == 'elsevier'
     assert papers[0]['text_path'] == ''
+    with corpus.connect(db_path) as conn:
+        text_asset = corpus.get_asset(conn, papers[0]['paper_id'], 'text')
+        documents = corpus.get_structured_documents(conn, papers[0]['paper_id'])
+    assert text_asset is not None and text_asset['content'] == document.text.encode()
+    assert len(documents) == 1
+    assert documents[0]['content'].decode() == document.content
+    assert documents[0]['source'] == 'elsevier'
+    assert documents[0]['metadata']['document_format'] == 'elsevier-xml'
 
 
 def test_oa_pdf_followup_records_an_unavailable_elsevier_text(

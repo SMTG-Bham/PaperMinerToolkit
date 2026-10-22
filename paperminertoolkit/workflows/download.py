@@ -217,6 +217,27 @@ def _download_url_to_pdf(
         return False, str(e)
 
 
+def _download_pdf_candidates(
+    urls: Iterable[str],
+    filepath: str | PathLike[str],
+    missing_error: str,
+    headers: Callable[[], Mapping[str, str]] | None = None,
+) -> tuple[bool, str]:
+    """Try PDF URLs in order, returning the successful URL or the last failure.
+
+    Header factories run only for attempted URLs, so sources with no
+    candidates do not load credentials unnecessarily.
+    """
+    last_error = missing_error
+    for url in urls:
+        kwargs = {'headers': headers()} if headers is not None else {}
+        ok, error = _download_url_to_pdf(url, filepath, **kwargs)
+        if ok:
+            return True, url
+        last_error = error
+    return False, last_error
+
+
 def _download_unpaywall_pdf(
     paper: Mapping[str, Any],
     filepath: str | PathLike[str],
@@ -244,13 +265,9 @@ def _download_unpaywall_pdf(
         return False, str(e)
     if not metadata:
         return False, 'Unpaywall knows nothing of this DOI'
-    last_error = 'no Unpaywall PDF URL found'
-    for url in unpaywall.pdf_candidates(metadata):
-        ok, error = _download_url_to_pdf(url, filepath)
-        if ok:
-            return True, url
-        last_error = error
-    return False, last_error
+    return _download_pdf_candidates(
+        unpaywall.pdf_candidates(metadata), filepath, 'no Unpaywall PDF URL found',
+    )
 
 
 def _download_core_pdf(
@@ -265,13 +282,9 @@ def _download_core_pdf(
     core_id = core.resolve_core_id(paper)
     if core_id:
         urls.append(f'{core.work_url(core_id)}/download')
-    last_error = 'no CORE download URL found'
-    for candidate in dict.fromkeys(urls):
-        ok, error = _download_url_to_pdf(candidate, filepath, headers=core.request_headers())
-        if ok:
-            return True, candidate
-        last_error = error
-    return False, last_error
+    return _download_pdf_candidates(
+        dict.fromkeys(urls), filepath, 'no CORE download URL found', core.request_headers,
+    )
 
 
 def _openalex_identifier(paper: Mapping[str, Any]) -> str | None:
@@ -311,13 +324,9 @@ def _download_openalex_pdf(
         return False, str(e)
     if not work:
         return False, f'no OpenAlex work found for {identifier}'
-    last_error = 'no OpenAlex PDF URL found'
-    for url in openalex.pdf_candidates(work):
-        ok, error = _download_url_to_pdf(url, filepath)
-        if ok:
-            return True, url
-        last_error = error
-    return False, last_error
+    return _download_pdf_candidates(
+        openalex.pdf_candidates(work), filepath, 'no OpenAlex PDF URL found',
+    )
 
 
 def _download_openalex_cached_pdf(
@@ -1674,6 +1683,21 @@ def _store_structured_text_document(
     )
 
 
+def _store_text_download(
+    conn: sqlite3.Connection,
+    paper: _Paper,
+    filepath: str | PathLike[str],
+    source: str,
+    document: provider.FullTextDocument | None,
+) -> None:
+    """Record a text download and store its plain and structured representations."""
+    paper['text_path'] = ''
+    paper['text_source'] = source
+    _set_status(paper, 'text_download_status', 'succeeded')
+    _store_downloaded_asset(conn, paper, filepath, role='text', source=source)
+    _store_structured_text_document(conn, paper, source, document)
+
+
 def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     download_format: str = 'text',
                     sources: Iterable[str] | None = None,
@@ -1862,16 +1886,8 @@ def _download_paper(
             ok, text_source_or_error, structured_document = _download_text_from_sources(
                 paper, text_filepath, sources)
             if ok:
-                paper['text_path'] = ''
-                paper['text_source'] = text_source_or_error
-                _set_status(paper, 'text_download_status', 'succeeded')
-                _store_downloaded_asset(conn, paper, text_filepath, role='text',
-                                        source=text_source_or_error)
-                _store_structured_text_document(
-                    conn,
-                    paper,
-                    text_source_or_error,
-                    structured_document,
+                _store_text_download(
+                    conn, paper, text_filepath, text_source_or_error, structured_document,
                 )
                 summary['texts'] += 1
             else:
@@ -1917,15 +1933,8 @@ def _download_paper(
                 text_filepath,
             )
             if ok:
-                paper['text_path'] = ''
-                paper['text_source'] = 'elsevier'
-                _set_status(paper, 'text_download_status', 'succeeded')
-                _store_downloaded_asset(conn, paper, text_filepath, role='text', source='elsevier')
-                _store_structured_text_document(
-                    conn,
-                    paper,
-                    'elsevier',
-                    structured_document,
+                _store_text_download(
+                    conn, paper, text_filepath, 'elsevier', structured_document,
                 )
                 summary['texts'] += 1
             else:

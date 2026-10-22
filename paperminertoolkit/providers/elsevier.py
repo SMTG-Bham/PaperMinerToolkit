@@ -511,11 +511,10 @@ def request_json(url: str,
         If Elsevier has reported that this key's quota is exhausted, the
         request is rejected, or the body is not a JSON object.
     """
-    check_quota(api_key, url)
-    return provider.request_mapping(url, label='Elsevier', limiter=limiter_for(url), params=params,
-                                    headers=api_headers(api_key), session=session,
-                                    timeout=timeout, attempts=attempts,
-                                    on_response=lambda response: record_quota(response, api_key, url))
+    response = request(url, api_key, params=params, session=session,
+                       timeout=timeout, attempts=attempts)
+    payload = provider.decode_payload(response, label='Elsevier')
+    return provider.require_mapping(payload, label='Elsevier')
 
 
 def next_page_url(payload: Mapping[str, Any] | None) -> str:

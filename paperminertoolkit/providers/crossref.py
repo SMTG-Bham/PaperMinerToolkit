@@ -409,7 +409,7 @@ def work_by_doi(doi: str,
     session = session or requests.Session()
     url = f'{CROSSREF_SINGLE_WORK_URL}/{quote(doi, safe="")}'
     try:
-        return _request_page(session, contact_params(email), email, url=url)
+        return _request_page(session, contact_params(email), email, url=url, timeout=timeout)
     except RuntimeError:
         return None
 

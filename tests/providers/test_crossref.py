@@ -416,6 +416,16 @@ def test_works_by_doi_rejects_an_invalid_batch_size() -> None:
     assert session.calls == []
 
 
+def test_work_by_doi_honours_the_requested_timeout() -> None:
+    """Forward the caller's timeout to the underlying single-work request."""
+    record = work('10.1234/example')
+    session = FakeSession([record])
+
+    assert crossref.work_by_doi('10.1234/example', email='me@example.com',
+                                session=session, timeout=7.5) == record
+    assert session.calls[0]['timeout'] == 7.5
+
+
 def test_work_by_doi_returns_none_for_an_unknown_doi(monkeypatch: pytest.MonkeyPatch) -> None:
     """Return None when the single-work route exhausts its retries."""
     def failing(*args: Any, **kwargs: Any) -> NoReturn:

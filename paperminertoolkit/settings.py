@@ -7,7 +7,7 @@ profiles used by search, download, and extraction workflows.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import openai
 import os
@@ -411,6 +411,46 @@ def _show_current_setting(
     print(f'Current {label}: {value}')
 
 
+def _update_api_key(
+    settings: dict[str, Any] | Literal[True],
+    key: str,
+    label: str,
+    validate: Callable[[str], bool] | None = None,
+    *,
+    strip: bool = False,
+) -> None:
+    """Prompt for, optionally validate, and persist one provider API key.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True]
+        Empty mapping to update in place, or a truthy value to reload settings.
+    key : str
+        Settings key containing the credential.
+    label : str
+        Label used in the display, prompt, and validation error.
+    validate : callable or None, optional
+        Provider-specific check, if the provider supports key validation.
+    strip : bool, default=False
+        Whether this provider trims surrounding whitespace from entered keys.
+
+    Raises
+    ------
+    ValueError
+        If the provider rejects the entered key.
+    """
+    if settings:
+        settings = load_settings()
+    _show_current_setting(settings, key, label)
+    api_key = input(f'Enter {label}: ')
+    if strip:
+        api_key = api_key.strip()
+    if validate is not None and not validate(api_key):
+        raise ValueError(f'{label} is invalid.')
+    settings[key] = api_key
+    _save_settings(settings)
+
+
 def update_openai_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     """Prompt for, validate, and save an OpenAI API key.
 
@@ -424,15 +464,7 @@ def update_openai_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     ValueError
         If the entered key fails OpenAI authentication.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'openai_api_key', 'OpenAI API key')
-    api_key = input('Enter OpenAI API key: ')
-    if _check_openai_api_key(api_key):
-        settings['openai_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('OpenAI API key is invalid.')
+    _update_api_key(settings, 'openai_api_key', 'OpenAI API key', _check_openai_api_key)
 
 
 def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -443,12 +475,7 @@ def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True) -> Non
     settings : dict[str, Any] or Literal[True], default=True
         Settings mapping to update. A true value loads the current settings.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'anthropic_api_key', 'Anthropic API key')
-    api_key = input('Enter Anthropic API key: ')
-    settings['anthropic_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'anthropic_api_key', 'Anthropic API key')
 
 
 def _check_elsevier_api_key(api_key: str) -> bool:
@@ -481,15 +508,7 @@ def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True) -> None
     ValueError
         If the entered key fails Elsevier validation.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'elsevier_api_key', 'Elsevier API key')
-    api_key = input('Enter Elsevier API key: ')
-    if _check_elsevier_api_key(api_key):
-        settings['elsevier_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('Elsevier API key is invalid.')
+    _update_api_key(settings, 'elsevier_api_key', 'Elsevier API key', _check_elsevier_api_key)
 
 
 def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -500,12 +519,7 @@ def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     settings : dict[str, Any] or Literal[True], default=True
         Settings mapping to update. A true value loads the current settings.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'core_api_key', 'CORE API key')
-    api_key = input('Enter CORE API key: ')
-    settings['core_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'core_api_key', 'CORE API key')
 
 
 def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -623,12 +637,7 @@ def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     settings : dict[str, Any] or Literal[True], default=True
         Settings mapping to update. A true value loads the current settings.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'ncbi_api_key', 'NCBI API key')
-    api_key = input('Enter NCBI API key: ')
-    settings['ncbi_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'ncbi_api_key', 'NCBI API key')
 
 
 def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
@@ -694,12 +703,7 @@ def update_openalex_key(settings: dict[str, Any] | Literal[True] = True) -> None
     ValueError
         If OpenAlex explicitly rejects the entered key.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'openalex_api_key', 'OpenAlex API key')
-    api_key = input('Enter OpenAlex API key: ').strip()
-    if _check_openalex_api_key(api_key):
-        settings['openalex_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('OpenAlex API key is invalid.')
+    _update_api_key(
+        settings, 'openalex_api_key', 'OpenAlex API key', _check_openalex_api_key,
+        strip=True,
+    )

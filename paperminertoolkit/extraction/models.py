@@ -13,7 +13,7 @@ import openai
 import requests
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Self, TypedDict, Unpack
+from typing import Any, Literal, Self, TypedDict, Unpack
 
 from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
@@ -201,6 +201,69 @@ def _image_label(image_labels: Sequence[str] | None, index: int) -> str:
     return str(image_labels[index]).strip()
 
 
+def _image_messages(
+    prompt: str,
+    image_paths: list[str],
+    context: str | None,
+    config: ModelConfig,
+    compression_config: CompressionConfig | None,
+    image_labels: Sequence[str] | None,
+    api: Literal['responses', 'anthropic', 'chat'],
+) -> list[dict[str, Any]]:
+    """Build and optionally compress a provider's vision messages.
+
+    Parameters
+    ----------
+    prompt : str
+        Instructions preceding the image content.
+    image_paths : list[str]
+        Local images in request order.
+    context : str or None
+        Optional paper text following the instructions.
+    config : ModelConfig
+        Model configuration used by compression.
+    compression_config : CompressionConfig or None
+        Compression policy for the completed payload.
+    image_labels : Sequence[str] or None
+        Descriptions placed immediately before their images.
+    api : {'responses', 'anthropic', 'chat'}
+        Provider wire format for text and image content blocks.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Provider-formatted user messages, after optional compression.
+    """
+    text_type = 'input_text' if api == 'responses' else 'text'
+    content = [{'type': text_type, 'text': prompt}]
+    if context:
+        content.append({'type': text_type, 'text': context})
+    for index, image_path in enumerate(image_paths):
+        label = _image_label(image_labels, index)
+        if label:
+            content.append({'type': text_type, 'text': label})
+        if api == 'anthropic':
+            mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
+            with open(image_path, 'rb') as image_file:
+                encoded = base64.b64encode(image_file.read()).decode('ascii')
+            content.append({
+                'type': 'image',
+                'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
+            })
+        elif api == 'responses':
+            content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
+        else:
+            content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
+    return maybe_compress_image_messages(
+        [{'role': 'user', 'content': content}],
+        image_paths,
+        prompt,
+        context,
+        config,
+        compression_config,
+    )
+
+
 class BaseModelClient:
     """Abstract interface implemented by concrete model provider clients."""
 
@@ -344,16 +407,7 @@ class OpenAIResponsesClient(BaseModelClient):
             If the OpenAI request fails or returns no text.
         """
         self.config.require('text')
-        try:
-            response = self.client.responses.create(
-                model=self.config.name,
-                input=messages,
-                max_output_tokens=max_output_tokens,
-                **self.config.generation_args(),
-            )
-        except openai.OpenAIError as e:
-            raise RuntimeError(f'OpenAI request failed: {e}') from e
-        return self._response_text(response)
+        return self._request(messages, max_output_tokens, 'OpenAI request failed')
 
     def query_with_images(self,
                           prompt: str,
@@ -392,23 +446,33 @@ class OpenAIResponsesClient(BaseModelClient):
             If the OpenAI request fails or returns no text.
         """
         self.config.require('vision')
-        content = [{'type': 'input_text', 'text': prompt}]
-        if context:
-            content.append({'type': 'input_text', 'text': context})
-        for index, image_path in enumerate(image_paths):
-            label = _image_label(image_labels, index)
-            if label:
-                content.append({'type': 'input_text', 'text': label})
-            content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'responses',
         )
+        return self._request(messages, max_output_tokens, 'OpenAI vision request failed')
+
+    def _request(self, messages: list[dict[str, Any]], max_output_tokens: int, error_prefix: str) -> str:
+        """Send a prepared Responses request and extract its text.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Responses API input messages.
+        max_output_tokens : int
+            Maximum number of tokens to generate.
+        error_prefix : str
+            Context identifying a failed text or vision request.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        RuntimeError
+            If the request fails or returns no text.
+        """
         try:
             response = self.client.responses.create(
                 model=self.config.name,
@@ -417,7 +481,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 **self.config.generation_args(),
             )
         except openai.OpenAIError as e:
-            raise RuntimeError(f'OpenAI vision request failed: {e}') from e
+            raise RuntimeError(f'{error_prefix}: {e}') from e
         return self._response_text(response)
 
 
@@ -502,28 +566,8 @@ class AnthropicMessagesClient(BaseModelClient):
             If the provider request fails.
         """
         self.config.require('vision')
-        content = [{'type': 'text', 'text': prompt}]
-        if context:
-            content.append({'type': 'text', 'text': context})
-        for index, image_path in enumerate(image_paths):
-            label = _image_label(image_labels, index)
-            if label:
-                content.append({'type': 'text', 'text': label})
-            mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
-            with open(image_path, 'rb') as image_file:
-                encoded = base64.b64encode(image_file.read()).decode('ascii')
-            content.append({
-                'type': 'image',
-                'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
-            })
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'anthropic',
         )
         return self._request('', messages, max_output_tokens)
 
@@ -687,22 +731,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
             If the provider request fails.
         """
         self.config.require('vision')
-        content = [{'type': 'text', 'text': prompt}]
-        if context:
-            content.append({'type': 'text', 'text': context})
-        for index, image_path in enumerate(image_paths):
-            label = _image_label(image_labels, index)
-            if label:
-                content.append({'type': 'text', 'text': label})
-            content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'chat',
         )
         return self._chat(messages, max_output_tokens)
 
