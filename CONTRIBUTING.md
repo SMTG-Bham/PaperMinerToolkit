@@ -48,26 +48,27 @@ restructuring work.
 
 ## Checks before opening a pull request
 
-These are the same steps CI runs, in order:
+CI runs lint, tests, documentation, and distribution checks in parallel. To
+run them locally, install the test and documentation dependencies and build tools:
 
 ```bash
-pytest
+python -m pip install -e '.[test,docs]' build twine
 ```
 
 ```bash
 ruff check paperminertoolkit tests
-```
-
-```bash
-python -m compileall paperminertoolkit examples
-```
-
-```bash
+python -m pytest --cov=paperminertoolkit --cov-report=term-missing --cov-report=xml
+python -m compileall -q paperminertoolkit examples
 make -C docs html
+python -m build
+python -m twine check --strict dist/*
 ```
 
-The test job runs on Python 3.11 and 3.14 (the ends of the supported range)
-and uploads coverage to Codecov; the docs job builds Sphinx on 3.13.
+The test job runs on Python 3.11 and 3.14 (the oldest supported version and the
+development interpreter) and uploads coverage to Codecov. Ruff runs once on
+3.14, and the docs job builds Sphinx on 3.13. Pull requests and releases share
+the same distribution build and metadata checks on 3.14. Coverage and
+distribution artifacts are retained for seven days.
 
 ## Tests
 
@@ -150,9 +151,10 @@ installs the package with `--no-deps` and uses that file.
 
 Maintainers bump `__version__` in
 [paperminertoolkit/_version.py](paperminertoolkit/_version.py) and publish a
-GitHub release. That triggers `.github/workflows/publish.yml`, which builds the
-wheel and source distribution, validates them with `twine check`, and uploads
-to PyPI through trusted publishing.
+GitHub release. That triggers `.github/workflows/publish.yml`, which calls the
+same `.github/workflows/build.yml` used by pull-request CI to build and validate
+the release tag's wheel and source distribution. A separate publish job uploads
+those artifacts to PyPI through trusted publishing.
 
 ## License
 
