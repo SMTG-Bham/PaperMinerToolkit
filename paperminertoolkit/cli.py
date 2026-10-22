@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 
 import click
 from paperminertoolkit._cli_schema import schema_command
+from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
 from paperminertoolkit.providers import registry as sources
 from paperminertoolkit.corpus.database import (connect,
@@ -1519,6 +1520,9 @@ main.add_command(reset_miner, 'reset')
 
 corpus_group.add_command(corpus_status, 'stats')
 corpus_group.add_command(corpus_searches, 'searches')
+corpus_group.add_command(corpus_list)
+corpus_group.add_command(corpus_show)
+corpus_group.add_command(corpus_export)
 main.add_command(corpus_group)
 
 filter_group.add_command(filter_regex, 'regex')
