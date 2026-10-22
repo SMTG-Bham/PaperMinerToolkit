@@ -16,7 +16,7 @@ import paperminertoolkit.providers.crossref as crossref
 import paperminertoolkit.workflows.enrichment as enrichment
 from paperminertoolkit.providers import base as provider
 
-from tests.doubles import FakeResponse
+from tests.doubles import FakeResponse, FakeSession as ResponseSession
 
 
 def test_author_validation_and_safe_paging(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,6 +162,43 @@ def test_request_page_ignores_malformed_retry_after(monkeypatch: pytest.MonkeyPa
 
     assert message == {'items': []}
     assert 1 in sleeps
+
+
+@pytest.mark.parametrize(('body', 'message'), [
+    ('not JSON', 'Crossref returned malformed JSON'),
+    ('[]', 'Crossref returned an unexpected payload of type list'),
+    ('"unexpected"', 'Crossref returned an unexpected payload of type str'),
+    ('null', 'Crossref response is missing a message object'),
+    ('{}', 'Crossref response is missing a message object'),
+    ('{"message": null}', 'Crossref response is missing a message object'),
+    ('{"message": []}', 'Crossref message returned an unexpected payload of type list'),
+    ('{"message": "unexpected"}', 'Crossref message returned an unexpected payload of type str'),
+])
+def test_request_page_rejects_invalid_response_envelopes(body: str, message: str) -> None:
+    """Normalize malformed JSON and invalid message objects to RuntimeError."""
+    session = ResponseSession([FakeResponse(text=body)])
+
+    with pytest.raises(RuntimeError, match=message):
+        crossref._request_page(session, {}, 'me@example.com')
+    assert len(session.calls) == 1
+
+
+def test_request_page_preserves_transport_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep retries, timeout, pacing, and request arguments during validation."""
+    waits: list[float | None] = []
+    monkeypatch.setattr(crossref.LIMITER, 'wait', waits.append)
+    session = ResponseSession([
+        FakeResponse(status_code=503),
+        FakeResponse(payload={'message': {}}),
+    ])
+
+    assert crossref._request_page(session, {'rows': 1}, 'me@example.com',
+                                  timeout=7.5, attempts=2, pace=0.75) == {}
+    assert waits == [0.75, 0.75]
+    assert len(session.calls) == 2
+    assert all(call['timeout'] == 7.5 and call['params'] == {'rows': 1}
+               and call['headers'] == provider.default_headers('me@example.com')
+               for call in session.calls)
 
 
 def test_work_matches_exact_orcid_or_conservative_name_and_affiliation() -> None:
@@ -517,3 +554,24 @@ def test_works_by_doi_falls_back_to_single_lookups_when_a_batch_fails(
 
     assert set(works) == {'10.1234/one'}
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize('body', ['not JSON', '[]', '{}', '{"message": null}', '{"message": []}'])
+def test_works_by_doi_recovers_from_an_invalid_batch_response(body: str) -> None:
+    """Retry every DOI individually when a batch has no usable message object."""
+    first = work('10.1234/one')
+    second = work('10.1234/two')
+    session = ResponseSession([
+        FakeResponse(text=body),
+        FakeResponse(payload={'message': first}),
+        FakeResponse(payload={'message': second}),
+    ])
+
+    records = crossref.works_by_doi(['10.1234/one', '10.1234/two'],
+                                   email='me@example.com', session=session, pace=0)
+
+    assert records == {'10.1234/one': first, '10.1234/two': second}
+    assert len(session.calls) == 3
+    assert session.calls[0]['params']['filter'] == 'doi:10.1234/one,doi:10.1234/two'
+    assert session.calls[1]['url'].endswith('10.1234%2Fone')
+    assert session.calls[2]['url'].endswith('10.1234%2Ftwo')
