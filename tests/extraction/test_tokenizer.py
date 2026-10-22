@@ -10,6 +10,7 @@ import pytest
 
 import paperminertoolkit.settings as settings
 import paperminertoolkit.extraction.tokenizer as tokenizer
+from tests.doubles import FakeResponse
 
 
 def config(
@@ -211,7 +212,7 @@ def test_transformers_token_count_uses_auto_tokenizer(monkeypatch: pytest.Monkey
 def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """Route token counts by provider and fall back on failures."""
     monkeypatch.setattr(tokenizer, '_openai_token_count', lambda text, model: 5)
-    monkeypatch.setattr(tokenizer, '_anthropic_token_count', lambda text, model_config: 6)
+    monkeypatch.setattr(tokenizer, '_anthropic_token_count', lambda text, model_config, model: 6)
     monkeypatch.setattr(tokenizer, '_transformers_token_count', lambda text, model: 7)
 
     assert tokenizer.count_text_tokens('text', config(provider='openai')) == 5
@@ -240,6 +241,96 @@ def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest
         lambda *_: (_ for _ in ()).throw(ValueError('missing key')),
     )
     assert tokenizer.count_text_tokens('abcdefghij', config(provider='anthropic')) == 4
+
+
+@pytest.mark.parametrize('provider', ['openai', 'local'])
+@pytest.mark.parametrize(('model_fields', 'expected_model'), [
+    ({'name': 'configured-model'}, 'configured-model'),
+    ({'model': 'profile-model'}, 'profile-model'),
+    ({'name': 'configured-model', 'model': 'profile-model'}, 'configured-model'),
+    ({'name': None, 'model': 'profile-model'}, 'profile-model'),
+])
+def test_mapping_configs_select_tokenizers_and_bound_request_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    model_fields: dict[str, str | None],
+    expected_model: str,
+) -> None:
+    """Honor mapping models, provider overrides, and limits throughout budgeting."""
+    calls = []
+    monkeypatch.setattr(tokenizer, '_openai_token_count',
+                        lambda text, model: calls.append(('openai', model)) or 3)
+    monkeypatch.setattr(tokenizer, '_transformers_token_count',
+                        lambda text, model: calls.append(('local', model)) or 7)
+    values = {'provider': provider.upper(), 'input_token_limit': '4096', **model_fields}
+    model_config = types.MappingProxyType(values)
+    expected_count = 3 if provider == 'openai' else 7
+
+    assert tokenizer.count_text_tokens('paper text', model_config) == expected_count
+    assert tokenizer.request_token_budget('instructions', model_config) == 4096 - expected_count - 500
+    assert calls == [(provider, expected_model)] * 2
+
+    override_provider = 'local' if provider == 'openai' else 'openai'
+    override_count = 7 if override_provider == 'local' else 3
+    assert tokenizer.count_text_tokens(
+        'paper text', model_config, provider=override_provider, model='explicit-model',
+    ) == override_count
+    assert calls[-1] == (override_provider, 'explicit-model')
+    assert values == {'provider': provider.upper(), 'input_token_limit': '4096', **model_fields}
+
+
+@pytest.mark.parametrize('source', ['object', 'mapping', 'profile'])
+@pytest.mark.parametrize('override_model', [None, 'explicit-model'])
+def test_anthropic_token_counts_read_configurations_and_explicit_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    override_model: str | None,
+) -> None:
+    """Use configured credentials and profile names without losing explicit overrides."""
+    calls = []
+
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        """Capture a token-count request without contacting the provider."""
+        calls.append({'url': url, 'headers': headers, 'json': json, 'timeout': timeout})
+        return FakeResponse(payload={'input_tokens': 23})
+
+    monkeypatch.setattr(tokenizer.requests, 'post', fake_post)
+    configured = config(
+        provider='local' if override_model else 'anthropic',
+        name='configured-model',
+        api_key='configured-key',
+        base_url='https://anthropic.example/proxy/v1/',
+    )
+    model_config = configured
+    if source != 'object':
+        values = vars(configured).copy()
+        if source == 'profile':
+            values['model'] = values.pop('name')
+        model_config = types.MappingProxyType(values)
+
+    assert tokenizer.count_text_tokens(
+        'paper text', model_config, model=override_model,
+        provider='ANTHROPIC' if override_model else None,
+    ) == 23
+    assert len(calls) == 1
+    assert calls[0]['url'] == 'https://anthropic.example/proxy/v1/messages/count_tokens'
+    assert calls[0]['headers']['x-api-key'] == 'configured-key'
+    assert calls[0]['json'] == {
+        'model': override_model or 'configured-model',
+        'messages': [{'role': 'user', 'content': 'paper text'}],
+    }
+    assert calls[0]['timeout'] == 60
+
+
+@pytest.mark.parametrize('model_config', [{}, {'input_token_limit': None}, {'input_token_limit': 'bad'}])
+def test_mapping_configs_preserve_missing_or_invalid_limit_fallbacks(model_config: dict[str, object]) -> None:
+    """Keep the default budget when a mapping omits or misconfigures its limit."""
+    assert tokenizer.usable_input_token_limit(model_config) == tokenizer.DEFAULT_INPUT_TOKEN_LIMIT - 2000
 
 
 def test_usable_input_token_limit_uses_configured_limit_with_reserve_and_fallback() -> None:

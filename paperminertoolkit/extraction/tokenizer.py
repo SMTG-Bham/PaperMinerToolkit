@@ -40,6 +40,32 @@ class _ModelConfigLike(Protocol):
 _ModelConfigSource: TypeAlias = _ModelConfigLike | Mapping[str, object]
 
 
+def _config_value(
+    model_config: _ModelConfigSource | None,
+    key: str,
+    default: object = None,
+) -> object:
+    """Read a model setting from a configuration object or mapping.
+
+    Parameters
+    ----------
+    model_config : _ModelConfigSource or None
+        Model configuration object or settings profile mapping.
+    key : str
+        Setting name to read.
+    default : object, optional
+        Value returned when the setting is absent.
+
+    Returns
+    -------
+    object
+        Configured setting, or the supplied default.
+    """
+    if isinstance(model_config, Mapping):
+        return model_config.get(key, default)
+    return getattr(model_config, key, default)
+
+
 class _TokenizerLike(Protocol):
     """Structural type returned by dynamically loaded tokenizers."""
 
@@ -73,7 +99,7 @@ def _provider_name(model_config: _ModelConfigSource | None = None, provider: str
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Object that may expose a ``provider`` attribute.
+        Object or mapping containing a ``provider`` setting.
     provider : str, optional
         Explicit provider name, which takes precedence over ``model_config``.
 
@@ -82,7 +108,7 @@ def _provider_name(model_config: _ModelConfigSource | None = None, provider: str
     str
         Lowercase provider name with underscores replaced by hyphens.
     """
-    value = provider or getattr(model_config, 'provider', '') or ''
+    value = provider or _config_value(model_config, 'provider', '') or ''
     return str(value).lower().replace('_', '-')
 
 
@@ -92,7 +118,8 @@ def _model_name(model_config: _ModelConfigSource | None = None, model: str | Non
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Object that may expose a ``name`` attribute.
+        Object or mapping containing a ``name`` setting. Settings profiles
+        may use ``model`` instead; ``name`` takes precedence when both exist.
     model : str, optional
         Explicit model name, which takes precedence over ``model_config``.
 
@@ -101,7 +128,10 @@ def _model_name(model_config: _ModelConfigSource | None = None, model: str | Non
     str
         Resolved model name, falling back to the package default.
     """
-    return model or getattr(model_config, 'name', None) or DEFAULT_MODEL
+    if model:
+        return model
+    value = _config_value(model_config, 'name') or _config_value(model_config, 'model')
+    return str(value or DEFAULT_MODEL)
 
 
 def _openai_token_count(text: str, model: str | None = None) -> int:
@@ -128,16 +158,22 @@ def _openai_token_count(text: str, model: str | None = None) -> int:
     return len(encoding.encode(text))
 
 
-def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
+def _anthropic_token_count(
+    text: str,
+    model_config: _ModelConfigSource | None,
+    model: str | None = None,
+) -> int:
     """Count text tokens with Anthropic's Messages API.
 
     Parameters
     ----------
     text : str
         Text to count as a single user message.
-    model_config : _ModelConfigSource
-        Configuration exposing model, API key, and optional base URL
-        attributes.
+    model_config : _ModelConfigSource or None
+        Configuration object or mapping containing the model, API key,
+        and optional base URL.
+    model : str, optional
+        Explicit model name, which takes precedence over ``model_config``.
 
     Returns
     -------
@@ -151,17 +187,17 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     requests.RequestException
         If the token-counting request fails.
     """
-    api_key = getattr(model_config, 'api_key', None)
+    api_key = _config_value(model_config, 'api_key')
     if not api_key:
         raise ValueError('Anthropic token counting requires an API key.')
-    model = _model_name(model_config)
+    model = _model_name(model_config, model)
     payload = {
         'model': model,
         'messages': [{'role': 'user', 'content': text}],
     }
     headers = request_headers(api_key)
     response = requests.post(
-        f'{messages_url(getattr(model_config, "base_url", None))}/count_tokens',
+        f'{messages_url(_config_value(model_config, "base_url"))}/count_tokens',
         headers=headers,
         json=payload,
         timeout=60,
@@ -245,7 +281,7 @@ def count_text_tokens(
             return _conservative_token_estimate(text)
     if provider_name == 'anthropic':
         try:
-            return _anthropic_token_count(text, model_config)
+            return _anthropic_token_count(text, model_config, model_name)
         except Exception:
             return _conservative_token_estimate(text)
     if provider_name == 'local':
@@ -266,7 +302,7 @@ def usable_input_token_limit(
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Configuration that may expose an ``input_token_limit`` attribute.
+        Object or mapping containing an ``input_token_limit`` setting.
     reserve_tokens : int, default=2000
         Tokens reserved for prompts, metadata, and output framing.
     minimum : int, default=1000
@@ -277,7 +313,7 @@ def usable_input_token_limit(
     int
         Usable input token budget.
     """
-    configured = getattr(model_config, 'input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT)
+    configured = _config_value(model_config, 'input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT)
     try:
         configured = int(configured)
     except (TypeError, ValueError):
