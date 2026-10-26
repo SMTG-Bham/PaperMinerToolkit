@@ -16,7 +16,8 @@
 #                          models sharing one database would skip each other's
 #                          papers
 #   scraped_<recipe>.csv   the extracted records, appended across resubmissions
-#   run_history.jsonl      one line per job: model, settings, versions, timing
+#   run_history.jsonl      one line per job: model, settings, versions, and
+#                          timing split into server start-up and scrape phases
 #   scrape-<jobid>.log     this log
 #
 # The scrape is resumable. A job that hits the wall clock loses only the paper
@@ -159,6 +160,15 @@ entry = {
     'started': env['STARTED'], 'finished': finished.strftime('%Y-%m-%dT%H:%M:%SZ'),
     'elapsed_s': int((finished - started).total_seconds()), 'exit_status': int(status),
 }
+# The scrape phase starts once vLLM answers; before that the job is loading
+# weights and compiling HPU graphs. Both halves are kept so the summary can
+# report server start-up and per-paper throughput separately.
+scrape_started = env.get('SCRAPE_STARTED')
+if scrape_started:
+    ready = datetime.strptime(scrape_started, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+    entry['scrape_started'] = scrape_started
+    entry['server_startup_s'] = int((ready - started).total_seconds())
+    entry['scrape_elapsed_s'] = int((finished - ready).total_seconds())
 with open(history, 'a', encoding='utf-8') as handle:
     handle.write(json.dumps(entry) + '\n')
 PY
@@ -214,7 +224,9 @@ until curl -sf "${BASE_URL}/models" >/dev/null 2>&1; do
   fi
   sleep 10
 done
-echo "=== vLLM ready ($(date -u +%FT%TZ)) ==="
+SCRAPE_STARTED="$(date -u +%FT%TZ)"
+export SCRAPE_STARTED
+echo "=== vLLM ready ($SCRAPE_STARTED) ==="
 
 # --- Scrape -------------------------------------------------------------------
 activate_env "$PMT_ENV"

@@ -4,10 +4,11 @@ Each run directory written by ``scrape_model.sbatch`` holds the model's copy of
 the corpus, its scraped CSV and a ``run_history.jsonl`` of job records. This
 script reports, per model, how many papers were scraped, how many records and
 band-gap items came back, how often each recipe field was filled, how many list
-cells were not valid JSON, and the throughput. It then measures pairwise
-agreement between models on the materials and principal band-gap values they
-extracted from the same papers. It calls no model and modifies nothing under
-the run directories; run it on a login node once the jobs have finished.
+cells were not valid JSON, and timing: server start-up, scrape hours, seconds
+per paper and per text chunk. It then measures pairwise agreement between
+models on the materials and principal band-gap values they extracted from the
+same papers. It calls no model and modifies nothing under the run directories;
+run it on a login node once the jobs have finished.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ import ast
 import json
 import re
 import sqlite3
+import statistics
 import sys
+from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -161,6 +164,112 @@ def paper_outcomes(db_path: Path, mode: str) -> dict[str, Any]:
     }
 
 
+def _timestamp(value: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp as written by the toolkit or the job script.
+
+    Parameters
+    ----------
+    value : object
+        ``2026-10-26T13:40:10+00:00`` or ``2026-10-26T13:40:10Z``; anything
+        else gives ``None``.
+
+    Returns
+    -------
+    datetime.datetime or None
+        A timezone-aware instant in UTC.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def paper_durations(db_path: Path, mode: str, history: list[dict[str, Any]]) -> tuple[list[float], int]:
+    """Estimate how long each succeeded paper took, from the corpus timestamps.
+
+    The scrape commits each paper as it finishes and stamps ``updated_at``, and
+    papers are processed one after another, so the gap between consecutive
+    stamps inside a job's scrape window is that paper's duration. The first
+    paper of a window is measured from the moment vLLM became ready.
+
+    Parameters
+    ----------
+    db_path : pathlib.Path
+        The model's ``papers.db``.
+    mode : str
+        Scrape mode, which selects the status column.
+    history : list[dict[str, Any]]
+        Job records with ``scrape_started`` (or ``started``) and ``finished``.
+
+    Returns
+    -------
+    tuple[list[float], int]
+        Seconds per succeeded paper, and the total text chunks those papers
+        used.
+    """
+    column = 'abstract_scrape_status' if mode == 'abstract' else 'text_scrape_status'
+    chunk_column = 'num_abstract_chunks' if mode == 'abstract' else 'num_text_chunks'
+    con = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+    try:
+        columns = {row[1] for row in con.execute('PRAGMA table_info(papers)')}
+        chunk_select = chunk_column if chunk_column in columns else 'NULL'
+        # Column names come from the fixed mappings above, never from input.
+        rows = con.execute(
+            f"SELECT updated_at, COALESCE({column}, ''), {chunk_select} FROM papers"
+            " WHERE updated_at IS NOT NULL ORDER BY updated_at",
+        ).fetchall()
+    finally:
+        con.close()
+    windows = []
+    for entry in history:
+        begin = _timestamp(entry.get('scrape_started') or entry.get('started'))
+        end = _timestamp(entry.get('finished'))
+        if begin and end:
+            windows.append((begin, end))
+
+    durations: list[float] = []
+    chunks = 0
+    for begin, end in windows:
+        previous = begin
+        for stamp, status, chunk_count in rows:
+            moment = _timestamp(stamp)
+            if moment is None or moment < begin or moment > end:
+                continue
+            if status == 'succeeded':
+                durations.append((moment - previous).total_seconds())
+                chunks += int(chunk_count or 0)
+            previous = moment
+    return durations, chunks
+
+
+def percentile(values: list[float], fraction: float) -> float | None:
+    """Return a nearest-rank percentile.
+
+    Parameters
+    ----------
+    values : list[float]
+        Sample.
+    fraction : float
+        Percentile as a fraction, such as ``0.9``.
+
+    Returns
+    -------
+    float or None
+        The value, or ``None`` for an empty sample.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, round(fraction * len(ordered)) - 1))
+    return ordered[index]
+
+
 def load_records(csv_path: Path) -> pd.DataFrame:
     """Read a scraped CSV as strings.
 
@@ -194,7 +303,7 @@ def summarise_run(model: dict[str, str], run_dir: Path, recipe: str) -> dict[str
     Returns
     -------
     dict[str, Any]
-        Coverage, record, fill-rate, validity and throughput figures, plus the
+        Coverage, record, fill-rate, validity and timing figures, plus the
         succeeded paper ids and per-paper extractions used for agreement.
     """
     history_path = run_dir / 'run_history.jsonl'
@@ -203,11 +312,16 @@ def summarise_run(model: dict[str, str], run_dir: Path, recipe: str) -> dict[str
         history = [json.loads(line) for line in history_path.read_text(encoding='utf-8').splitlines() if line.strip()]
     mode = history[-1]['mode'] if history else 'text'
     hours = sum(entry.get('elapsed_s', 0) for entry in history) / 3600
+    # Jobs written before the scrape phase was recorded separately fall back
+    # to the whole job time, which then includes model loading.
+    scrape_hours = sum(entry.get('scrape_elapsed_s', entry.get('elapsed_s', 0)) for entry in history) / 3600
+    startups = [entry['server_startup_s'] for entry in history if entry.get('server_startup_s') is not None]
     db_path = run_dir / 'papers.db'
     outcomes = paper_outcomes(db_path, mode) if db_path.is_file() else {
         'papers': 0, 'succeeded': 0, 'failed': 0, 'untouched': 0, 'succeeded_ids': set(), 'top_error': '',
     }
     records = load_records(run_dir / f'scraped_{recipe}.csv')
+    durations, chunks = paper_durations(db_path, mode, history) if db_path.is_file() else ([], 0)
 
     row: dict[str, Any] = {
         'label': model['label'], 'class': model['class'], 'model': model['model'],
@@ -216,8 +330,17 @@ def summarise_run(model: dict[str, str], run_dir: Path, recipe: str) -> dict[str
         'succeeded': outcomes['succeeded'], 'failed': outcomes['failed'],
         'untouched': outcomes['untouched'], 'records': len(records),
         'papers_with_records': records['Paper id'].nunique() if 'Paper id' in records else 0,
-        'papers_per_hour': round(outcomes['succeeded'] / hours, 1) if hours else None,
         'invalid_list_cells': 0, 'top_error': outcomes['top_error'],
+        'server_startup_s': round(statistics.mean(startups)) if startups else None,
+        'scrape_hours': round(scrape_hours, 2),
+        'papers_per_hour': round(outcomes['succeeded'] / scrape_hours, 1) if scrape_hours else None,
+        'timed_papers': len(durations),
+        'paper_s_median': round(statistics.median(durations)) if durations else None,
+        'paper_s_mean': round(statistics.mean(durations)) if durations else None,
+        'paper_s_p90': round(percentile(durations, 0.9)) if durations else None,
+        'paper_s_max': round(max(durations)) if durations else None,
+        'chunks_per_paper': round(chunks / len(durations), 2) if durations else None,
+        's_per_chunk': round(sum(durations) / chunks, 1) if chunks else None,
     }
     row['records_per_paper'] = round(len(records) / outcomes['succeeded'], 2) if outcomes['succeeded'] else None
 
@@ -358,10 +481,14 @@ def main(argv: list[str] | None = None) -> int:
     pd.DataFrame(public).to_csv(output_dir / 'comparison_summary.csv', index=False)
     pd.DataFrame(pairs).to_csv(output_dir / 'comparison_agreement.csv', index=False)
 
-    print('## Coverage and throughput\n')
+    print('## Coverage\n')
     print(markdown_table(public, [
-        'label', 'class', 'tensor_parallel', 'jobs', 'wall_hours', 'papers', 'succeeded', 'failed',
-        'untouched', 'papers_per_hour', 'top_error',
+        'label', 'class', 'tensor_parallel', 'jobs', 'papers', 'succeeded', 'failed', 'untouched', 'top_error',
+    ]))
+    print('\n## Timing\n')
+    print(markdown_table(public, [
+        'label', 'wall_hours', 'server_startup_s', 'scrape_hours', 'papers_per_hour', 'timed_papers',
+        'paper_s_median', 'paper_s_mean', 'paper_s_p90', 'paper_s_max', 'chunks_per_paper', 's_per_chunk',
     ]))
     print('\n## Records\n')
     print(markdown_table(public, [

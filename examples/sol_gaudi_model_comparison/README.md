@@ -151,7 +151,7 @@ Once every job has finished:
 python summarize_comparison.py
 ```
 
-It prints three Markdown tables and writes `runs/comparison_summary.csv` and
+It prints four Markdown tables and writes `runs/comparison_summary.csv` and
 `runs/comparison_agreement.csv`:
 
 - **Coverage and throughput**: papers succeeded, failed and untouched per
@@ -161,6 +161,12 @@ It prints three Markdown tables and writes `runs/comparison_summary.csv` and
   succeeded paper, the share of records with a populated `Band gap`,
   `All band gaps` and `Cited literature band gaps`, items per record, and how
   many list cells were not valid JSON.
+- **Timing**: server start-up (weight load plus HPU graph warm-up) and
+  scrape-phase hours per model, summed over resubmissions; seconds per
+  succeeded paper as median, mean, 90th percentile and maximum, derived from
+  the corpus timestamps each paper receives when its result is committed;
+  text chunks per paper and seconds per chunk, which normalises for paper
+  length. Papers per hour uses the scrape phase only.
 - **Pairwise agreement**: for every pair of models, over the papers both
   scraped successfully, the mean Jaccard similarity of the material names
   (normalised to lower-case alphanumerics) and of the numeric principal
@@ -201,23 +207,9 @@ for the review rules and metric definitions.
 - Supporting information is included by default (`PMT_SUPPLEMENTS=0` turns it
   off), so papers whose gap tables sit in the SI are extracted the same way
   for every model.
+- Newer families (Gemma 4, Qwen3.5 and later) need vLLM 0.19 or newer and
+  are not runnable under ASU's shared Gaudi environment (vLLM 0.14).
 - Only `Qwen3-30B-A3B-Instruct-2507` is on Intel's Gaudi 2 validated list.
   The dense Qwen2.5 models are validated on Gaudi 3 and run on Gaudi 2 through
   the same code path; if one fails during HPU graph warmup, lower
   `PMT_GPU_MEMORY_UTILIZATION` or `PMT_MAX_NUM_SEQS` for that label first.
-
-## Requested models that cannot run here yet
-
-Checked on 2026-10-26 against ASU's shared `gaudi-pytorch-vllm` (vLLM 0.14.2,
-`vllm_gaudi` 0.14.1, transformers 4.57.6). The server environment is the
-limit, not the toolkit.
-
-| Model | Why not | What would unblock it |
-| --- | --- | --- |
-| `google/gemma-4-12B-it`, `google/gemma-4-26B-A4B-it`, `google/gemma-4-31B-it` | `Gemma4ForConditionalGeneration` and `Gemma4UnifiedForConditionalGeneration` were added in vLLM 0.19.0 with transformers 5.5; Sol's Gaudi build predates both. All three are ungated | A newer Gaudi plugin from ASU, or serving on Sol's NVIDIA nodes with a private CUDA vLLM environment (12B fits one A100, 26B-A4B one 80 GB card, 31B two A100s). The toolkit needs no change; only the server job differs. Use the `-it` variants: the base models do not follow the JSON extraction prompt |
-| `moonshotai/Kimi-K3` | 2.78 trillion parameters, about 2.8 TB of weights. A whole Gaudi node holds 768 GB | Nothing on Sol. A frontier-scale point in the lineup has to come from a hosted API through the toolkit's `openai` or `anthropic` providers, which is a different experiment |
-| `Qwen/Qwen3.8-27B` and other Qwen3.5/3.8 models | Same vLLM version gap (`Qwen3_5ForConditionalGeneration`, `Qwen4ExpForConditionalGeneration`) | As for Gemma 4 |
-
-ASU's `ollama/0.20.4` module can serve `gemma4:12b`, `26b` and `31b` on NVIDIA
-nodes with no build work, but those tags are roughly 4-bit quantised, which
-would confound model size with quantisation in the comparison.
