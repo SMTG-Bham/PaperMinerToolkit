@@ -1,0 +1,21 @@
+# One model per line: label, Hugging Face repo id, tensor-parallel size (= Gaudi
+# cards), size class. submit_comparison.sh and prefetch_weights.sbatch read this
+# file; blank lines and comments are ignored.
+#
+# All four are ungated Qwen instruction models, so the lineup isolates model
+# size from model family, and all run under the vLLM build in ASU's shared
+# gaudi-pytorch-vllm environment. Qwen3-30B-A3B is on Intel's Gaudi 2 validated
+# list; the dense Qwen2.5 models are validated on Gaudi 3 and run on Gaudi 2
+# through the same Qwen2ForCausalLM code path. Thinking variants are excluded
+# because they spend the fixed 10000-token completion budget on reasoning.
+#
+# Weights in BF16 take 2 bytes per parameter and a Gaudi 2 card holds 96 GB, so
+# the tensor-parallel size is the smallest card count that leaves room for a
+# 32768-token KV cache. Swap in a gated model (meta-llama/Llama-3.1-70B-Instruct,
+# TP 4) once HF_TOKEN is set in ~/.paperminertoolkit_env.
+#
+# label	repo_id	tensor_parallel	class
+qwen25-7b	Qwen/Qwen2.5-7B-Instruct	1	small
+qwen25-32b	Qwen/Qwen2.5-32B-Instruct	2	medium
+qwen3-30b-a3b	Qwen/Qwen3-30B-A3B-Instruct-2507	4	medium-moe
+qwen25-72b	Qwen/Qwen2.5-72B-Instruct	4	large

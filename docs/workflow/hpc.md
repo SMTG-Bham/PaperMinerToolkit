@@ -33,6 +33,24 @@ sbatch install.sbatch
 
 The supplied workflow defaults to biodegradable polymers. Override `PMT_RECIPE`, the query, model, context size, and scheduler resources for other projects.
 
+## Comparing models on the same corpus
+
+`examples/sol_gaudi_model_comparison/` runs one corpus through a small/medium/large lineup of models and tabulates how the extracted records differ. It reuses the installer and preflight check above and adds:
+
+- `models.tsv`, the lineup with each model's Hugging Face id and Gaudi card count.
+- `prefetch_weights.sbatch` to download all weights on `htc` before any Gaudi job.
+- `submit_comparison.sh` and `scrape_model.sbatch` to scrape a private copy of the corpus per model, with the papers in the same order for every model and a `run_history.jsonl` recording versions, settings and timing.
+- `summarize_comparison.py` to report coverage, record counts, field fill rates, throughput, and pairwise agreement between models, ready for `pmt validate` against a curated reference.
+
+```bash
+cd examples/sol_gaudi_model_comparison
+sbatch --array=0-3 prefetch_weights.sbatch
+./submit_comparison.sh --corpus /scratch/$USER/corpus/papers.db --count 5
+python summarize_comparison.py
+```
+
+The example defaults to the `band_gap_validation` recipe; its README explains the lineup and how to swap models in.
+
 ## Context and memory sizing
 
 The model server's advertised context limit, its actual memory allocation, and PaperMinerToolkit's configured input limit must agree. A large context can consume substantial accelerator memory before inference begins. Start conservatively, inspect server logs and PaperMinerToolkit's chunk plan, then increase only when the server is stable.
