@@ -14,6 +14,12 @@
 # 32768-token KV cache. Swap in a gated model (meta-llama/Llama-3.1-70B-Instruct,
 # TP 4) once HF_TOKEN is set in ~/.paperminertoolkit_env.
 #
+# Wanted but not runnable on Sol's Gaudi vLLM build as of 2026-10-26 (see
+# README, "Requested models that cannot run here yet"):
+#   google/gemma-4-12B-it, google/gemma-4-26B-A4B-it, google/gemma-4-31B-it
+#     (need vLLM >= 0.19; would run on Sol's NVIDIA nodes with a CUDA vLLM env)
+#   moonshotai/Kimi-K3 (2.78T parameters; does not fit any Sol node)
+#
 # label	repo_id	tensor_parallel	class
 qwen25-7b	Qwen/Qwen2.5-7B-Instruct	1	small
 qwen25-32b	Qwen/Qwen2.5-32B-Instruct	2	medium

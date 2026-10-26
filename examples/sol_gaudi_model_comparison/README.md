@@ -205,5 +205,19 @@ for the review rules and metric definitions.
   The dense Qwen2.5 models are validated on Gaudi 3 and run on Gaudi 2 through
   the same code path; if one fails during HPU graph warmup, lower
   `PMT_GPU_MEMORY_UTILIZATION` or `PMT_MAX_NUM_SEQS` for that label first.
-- Newer families (Qwen3.5, Qwen3.8, Gemma 4) need a vLLM Gaudi plugin newer
-  than the one in ASU's shared environment and are not runnable here yet.
+
+## Requested models that cannot run here yet
+
+Checked on 2026-10-26 against ASU's shared `gaudi-pytorch-vllm` (vLLM 0.14.2,
+`vllm_gaudi` 0.14.1, transformers 4.57.6). The server environment is the
+limit, not the toolkit.
+
+| Model | Why not | What would unblock it |
+| --- | --- | --- |
+| `google/gemma-4-12B-it`, `google/gemma-4-26B-A4B-it`, `google/gemma-4-31B-it` | `Gemma4ForConditionalGeneration` and `Gemma4UnifiedForConditionalGeneration` were added in vLLM 0.19.0 with transformers 5.5; Sol's Gaudi build predates both. All three are ungated | A newer Gaudi plugin from ASU, or serving on Sol's NVIDIA nodes with a private CUDA vLLM environment (12B fits one A100, 26B-A4B one 80 GB card, 31B two A100s). The toolkit needs no change; only the server job differs. Use the `-it` variants: the base models do not follow the JSON extraction prompt |
+| `moonshotai/Kimi-K3` | 2.78 trillion parameters, about 2.8 TB of weights. A whole Gaudi node holds 768 GB | Nothing on Sol. A frontier-scale point in the lineup has to come from a hosted API through the toolkit's `openai` or `anthropic` providers, which is a different experiment |
+| `Qwen/Qwen3.8-27B` and other Qwen3.5/3.8 models | Same vLLM version gap (`Qwen3_5ForConditionalGeneration`, `Qwen4ExpForConditionalGeneration`) | As for Gemma 4 |
+
+ASU's `ollama/0.20.4` module can serve `gemma4:12b`, `26b` and `31b` on NVIDIA
+nodes with no build work, but those tags are roughly 4-bit quantised, which
+would confound model size with quantisation in the comparison.
