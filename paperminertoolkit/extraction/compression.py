@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Protocol
 
-from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, prompt_token_reserve, usable_input_token_limit
+from paperminertoolkit.extraction.tokenizer import (
+    _ModelConfigSource,
+    count_text_tokens,
+    request_token_budget as _request_token_budget,
+)
 
 COMPRESSION_SCOPES = {'none', 'text', 'images', 'both'}
 COMPRESSION_MODES = {'auto', 'always'}
@@ -130,25 +134,6 @@ def compression_config(scope: str = 'none',
         If any option is invalid.
     """
     return CompressionConfig(scope=scope, mode=mode, ratio=ratio, content_detection=content_detection)
-
-
-def _request_token_budget(prompt: str, model_config: _ModelConfigSource | None) -> int:
-    """Calculate the input budget remaining after prompt reservation.
-
-    Parameters
-    ----------
-    prompt : str
-        Prompt that shares the model context window with the content.
-    model_config : _ModelConfigSource or None
-        Model configuration used to determine token limits.
-
-    Returns
-    -------
-    int
-        Number of tokens available for content.
-    """
-    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
-    return usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
 
 
 def ideal_compression_ratio(input_tokens: int, token_budget: int, config: CompressionConfig) -> float:

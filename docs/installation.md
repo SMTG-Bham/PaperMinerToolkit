@@ -2,6 +2,20 @@
 
 PaperMinerToolkit requires Python 3.11 or newer. Create an isolated environment before installing it.
 
+## BERT entity extraction
+
+Install local token-classification dependencies when using fine-tuned BERTs:
+
+```bash
+python -m pip install 'paperminertoolkit[bert]'
+```
+
+For an editable checkout, use `python -m pip install -e '.[bert]'`.
+Supply an existing fine-tuned checkpoint with `pmt entities`; see
+{doc}`workflow/entities` for checkpoint selection, local execution, and JSONL
+annotations. CPU execution is the default. For accelerator execution, use a
+PyTorch build compatible with your environment and select `--device`.
+
 ## Development installation
 
 Clone the repository, activate your environment, and install the package in editable mode:
@@ -46,6 +60,7 @@ pmt status --help
 pmt search --help
 pmt scrape --help
 pmt topics train --help
+pmt entities corpus --help
 ```
 
 ## HPC environments

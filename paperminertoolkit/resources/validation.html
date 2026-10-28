@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PaperMinerToolkit · Validation review</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202a34;background:#f4f6f6}*{box-sizing:border-box}body{margin:0}button,select,input,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}header{background:#102d31;color:#fff;padding:18px 26px;display:flex;align-items:center;justify-content:space-between;gap:18px}h1{font-size:19px;margin:0;font-weight:650}header small{color:#b9d8d3}main{max-width:1600px;margin:0 auto;padding:22px}.panel{background:#fff;border:1px solid #dce4e3;border-radius:12px;box-shadow:0 2px 8px #18343a0b}.setup{max-width:750px;margin:55px auto;padding:32px}.setup h2{margin:0 0 7px;font-size:25px}.setup p{color:#5d6a70;margin:0 0 24px}.setup-grid{display:grid;gap:17px}label{display:block;font-size:13px;font-weight:650;color:#42555a;margin-bottom:6px}input[type=file],select,textarea{width:100%;background:#fff;border:1px solid #c9d6d4;border-radius:8px;padding:10px;color:#263439}input[type=file]{padding:8px}.primary{background:#116d65;color:white;border:1px solid #116d65;border-radius:8px;padding:10px 15px;font-weight:650}.primary:hover{background:#0d5953}.secondary{background:#fff;color:#174d4d;border:1px solid #bad0cc;border-radius:8px;padding:8px 12px}.secondary:hover{background:#eef7f5}.danger{color:#9b3b30;border-color:#e9b9b3}.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.muted{color:#6b7a7e}.error{color:#a6382f;background:#fff1ef;border:1px solid #f1c7c2;padding:10px 12px;border-radius:8px;margin-top:14px}.layout{display:grid;grid-template-columns:300px 300px minmax(0,1fr);gap:14px;min-height:calc(100vh - 120px)}.sidebar,.entries,.detail{min-height:500px;overflow:auto}.section-head{padding:17px;border-bottom:1px solid #e6eceb;position:sticky;top:0;background:#fff;z-index:2}.section-head h2{font-size:15px;margin:0 0 4px}.scroll{padding:8px}.paper-button,.entry-button{width:100%;text-align:left;border:1px solid transparent;background:transparent;border-radius:8px;padding:11px 10px;margin-bottom:4px;color:#263439}.paper-button:hover,.entry-button:hover{background:#f4f8f7}.paper-button.active,.entry-button.active{background:#e7f3f0;border-color:#b9d8d1}.paper-button strong,.entry-button strong{display:block;font-size:13px;line-height:1.35}.paper-button small,.entry-button small{display:block;color:#637479;margin-top:5px;line-height:1.3}.badge{font-size:11px;border-radius:99px;padding:2px 7px;background:#eaf0ef;color:#46615f;white-space:nowrap}.badge.good{background:#dff3e7;color:#236345}.badge.bad{background:#fde8e3;color:#a23c32}.badge.warn{background:#fff2d8;color:#855f19}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px}.detail{padding:20px 24px}.detail h2{font-size:22px;margin:0 0 6px}.detail h3{font-size:15px;margin:24px 0 10px}.meta{color:#66777c;font-size:13px;line-height:1.5}.summary{background:#f4f8f7;border:1px solid #e1eae8;border-radius:9px;padding:12px 14px;margin:16px 0;font-size:13px}.warning{color:#916017;background:#fff5e2;border:1px solid #f1dcae;padding:10px 12px;border-radius:8px;margin:14px 0}.pairing{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}.compare{display:grid;grid-template-columns:1fr 1fr;gap:12px}.value{border:1px solid #dce6e4;background:#fbfcfc;border-radius:9px;padding:12px;min-height:52px;word-break:break-word;font-size:13px;line-height:1.5}.value ul{margin:0;padding-left:19px}.value li{margin:3px 0}.value code{background:#eaf1ef;border-radius:4px;padding:1px 3px}.field{border-top:1px solid #e7eeec;padding:15px 0}.field-name{font-weight:650;font-size:14px;margin-bottom:9px}.decision{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}.choice{border:1px solid #cfdcda;background:#fff;padding:6px 11px;border-radius:7px;color:#46595d;font-size:12px}.choice.selected.good{border-color:#77bc92;background:#e8f7ed;color:#256841}.choice.selected.bad{border-color:#df9d94;background:#ffefec;color:#a13c32}.choice.selected.neutral{border-color:#97ada9;background:#ecf2f0}.note{margin-top:9px;min-height:58px;resize:vertical}.tiny{font-size:12px}.footer-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:19px}.placeholder{padding:35px;color:#708085;text-align:center}.inline-label{font-size:12px;font-weight:650;margin-bottom:4px}.extra-card{border:1px solid #e1e9e7;border-radius:9px;padding:12px;margin:9px 0}.extra-card .row{justify-content:space-between}details{margin-top:8px}details summary{cursor:pointer;color:#53706c;font-size:12px}pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:#64747a}.hidden{display:none!important}@media(max-width:1100px){.layout{grid-template-columns:250px minmax(0,1fr);grid-template-rows:230px minmax(0,1fr);height:calc(100vh - 110px);min-height:560px}.sidebar{min-height:0;max-height:230px}.entries{grid-column:1;grid-row:2;min-height:0;max-height:550px}.detail{grid-column:2;grid-row:1 / span 2}}@media(max-width:700px){main{padding:10px}.layout{display:block;height:auto}.sidebar,.entries{min-height:0;max-height:280px;margin-bottom:10px}.detail{min-height:400px}.pairing,.compare{grid-template-columns:1fr}header{padding:13px}}
+.item-card{border:1px solid #dce6e4;border-radius:9px;padding:12px;margin:12px 0;background:#fafdfc}.item-card label{margin:10px 0 5px}.item-card .value{margin:6px 0}.part-group{border-left:2px solid #dce6e4;margin:10px 0 10px 7px;padding-left:13px}.part-leaf{border:1px solid #e1e9e7;border-radius:8px;padding:11px;margin:9px 0;background:#fff}.part-leaf .value{margin:4px 0}.score-panel{max-width:1100px;margin:0 auto;padding:26px}.score-panel h2{margin:0}.score-panel h3{margin:25px 0 10px}.score-panel input{width:100%;background:#fff;border:1px solid #c9d6d4;border-radius:8px;padding:10px;color:#263439}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid #dce6e4;text-align:right}th:first-child,td:nth-child(2),.part-stat-cell{text-align:left}thead{background:#f1f6f4}.source-list{font-size:12px;line-height:1.8;overflow-wrap:anywhere}.source-list code{display:block;color:#5d6a70}
+</style>
+<style>
+.resume-box{border:1px solid #dce6e4;border-radius:9px;background:#f8fbfa;padding:14px;margin:0 0 20px}.resume-box p{margin:9px 0 0}.resume-box .row select{flex:1;min-width:200px}
+.layout{height:calc(100dvh - 120px);min-height:0;overflow:hidden}.layout>.sidebar,.layout>.entries,.layout>.detail{height:100%;min-height:0;max-height:none;overflow:auto;overscroll-behavior:contain}
+@media(max-width:1100px){.layout{grid-template-rows:minmax(0,.7fr) minmax(0,1fr);height:calc(100dvh - 110px);min-height:0}.layout>.sidebar,.layout>.entries,.layout>.detail{min-height:0;max-height:none}}
+@media(max-width:700px){.layout{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,.65fr) minmax(0,.65fr) minmax(0,1.7fr);gap:8px;height:calc(100dvh - 90px);min-height:0}.layout>.sidebar,.layout>.entries,.layout>.detail{grid-column:1;grid-row:auto;min-height:0;max-height:none;margin:0}}
+</style>
+<style>
+/* Keep the reviewer in the same visual family as the PyData themed docs. */
+:root{font-family:Lato,"Helvetica Neue",Arial,sans-serif;color:#202124;background:#fff}
+body{background:#fff;color:#202124}
+header{background:#fff;color:#202124;padding:12px 28px;border-bottom:1px solid #d8dedb;box-shadow:0 1px 3px #2021240a}
+header .brand{display:flex;align-items:center;gap:18px;min-width:0}
+header .brand-logo{display:block;width:132px;height:48px;object-fit:contain}
+header .brand-copy{border-left:1px solid #d8dedb;padding-left:18px}
+h1{font-size:18px;font-weight:650;letter-spacing:-.01em}
+header small{display:block;color:#626b70;margin-top:3px;font-size:12px}
+main{max-width:1720px}
+.panel{border-color:#d8dedb;border-radius:5px;box-shadow:0 1px 3px #2021240a}
+.setup{border-top:3px solid #97baa9}
+.setup h2,.score-panel h2{color:#202124;letter-spacing:-.02em}
+.muted,.setup p{color:#626b70}
+label{color:#343a40}
+input[type=file],select,textarea,.score-panel input{border-color:#cbd2cf;border-radius:4px;color:#202124}
+input[type=file]:focus,select:focus,textarea:focus,.score-panel input:focus{outline:2px solid #97baa966;outline-offset:1px;border-color:#729986}
+.primary{background:#4e7767;border-color:#4e7767;border-radius:4px}
+.primary:hover{background:#3d6254}
+.secondary{color:#365c4d;border-color:#b9c9c1;border-radius:4px}
+.secondary:hover{background:#eef4f0}
+.danger{color:#9b3b30;border-color:#e9b9b3}
+.layout{gap:12px}
+.section-head{border-color:#e0e5e2}
+.section-head h2,.detail h2,.detail h3,.score-panel h3{color:#202124}
+.paper-button,.entry-button{border-radius:4px;color:#202124}
+.paper-button:hover,.entry-button:hover{background:#f4f6f5}
+.paper-button.active,.entry-button.active{background:#edf4f0;border-color:#97baa9}
+.paper-button small,.entry-button small{color:#626b70}
+.badge{background:#eef1ef;color:#49534e}
+.badge.good{background:#e3f0e8;color:#365c4d}
+.badge.bad{background:#f9e9e6;color:#93453b}
+.badge.warn{background:#fbf1df;color:#805d25}
+.summary{background:#f5f7f6;border-color:#e0e5e2;border-radius:4px}
+.value,.item-card,.part-leaf{background:#fafbfa;border-color:#d8dedb;border-radius:4px}
+.value code{background:#edf1ef}
+.field{border-color:#e0e5e2}
+.choice{border-radius:4px}
+.choice.selected.good{border-color:#729986;background:#e7f2eb;color:#365c4d}
+.choice.selected.bad{border-color:#d6978d;background:#f9e9e6;color:#93453b}
+.choice.selected.neutral{border-color:#aebcb5;background:#edf1ef}
+thead{background:#f2f4f3}
+th,td{border-color:#d8dedb}
+.resume-box{background:#f7f9f8;border-color:#d8dedb;border-radius:4px}
+@media(max-width:700px){header{padding:10px 14px}header .brand{gap:10px}header .brand-logo{width:86px;height:38px}header .brand-copy{padding-left:10px}h1{font-size:15px}}
+</style>
+</head>
+<body>
+<header><div class="brand"><img class="brand-logo" src="/brand.svg?token=__TOKEN__" alt="PaperMinerToolkit"><div class="brand-copy"><h1>Validation review</h1><small>Compare extracted records with a human validation set</small></div></div><div class="row"><span id="save-state" class="tiny"></span><button id="change-inputs" class="secondary hidden">Change inputs</button><button id="show-score" class="secondary hidden">Scoring summary</button><button id="export" class="secondary hidden">Download scoring run</button></div></header>
+<main>
+<section id="setup" class="panel setup"><h2>Start a review</h2><p>Choose a validation CSV, a scraped CSV, and the extraction recipe. Your decisions are saved locally as you go.</p><div id="resume-wrap" class="resume-box hidden"><label for="resume-select">In-progress reviews</label><div class="row"><select id="resume-select"><option value="">Choose a saved review…</option></select><button id="resume-review" class="secondary" disabled>Resume review</button></div><p class="muted tiny">Saved reviews keep local copies of their CSVs so you can resume without finding the files again.</p></div><div class="setup-grid"><div><label for="validation-file">Validation CSV</label><input id="validation-file" type="file" accept=".csv,text/csv"></div><div><label for="scraped-file">Scraped CSV</label><input id="scraped-file" type="file" accept=".csv,text/csv"></div><div><label for="recipe-select">Recipe</label><select id="recipe-select"><option value="">Choose recipe…</option><option value="__custom__">Custom recipe JSON…</option></select></div><div id="custom-recipe-wrap" class="hidden"><label for="recipe-file">Recipe JSON file</label><input id="recipe-file" type="file" accept=".json,application/json"><p class="muted tiny">Choose a standalone recipe object or a JSON file containing one named recipe.</p></div><div class="row"><button id="load" class="primary">Open review</button><span class="muted tiny">Source CSVs stay unchanged.</span></div></div><div id="setup-error" class="error hidden"></div></section>
+<section id="review" class="layout hidden"><aside class="panel sidebar"><div class="section-head"><div class="toolbar"><h2>Papers</h2><span id="paper-count" class="badge"></span></div><div id="overall" class="tiny muted"></div></div><div id="paper-list" class="scroll"></div></aside><aside class="panel entries"><div class="section-head"><h2>Entries</h2><div id="entry-summary" class="tiny muted"></div></div><div id="entry-list" class="scroll"></div></aside><article id="detail" class="panel detail"></article></section>
+<section id="score" class="panel score-panel hidden"></section>
+</main>
+<script>window.PMT_TOKEN='__TOKEN__';</script>
+<script src="/review.js?token=__TOKEN__"></script>
+</body>
+</html>

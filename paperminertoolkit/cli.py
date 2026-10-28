@@ -6,16 +6,35 @@ download, scrape, store, configuration, and maintenance functions.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+import csv
+import hashlib
+import json
+import sqlite3
+import sys
+from contextlib import nullcontext, redirect_stdout
+from functools import partial
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 import click
 from paperminertoolkit.providers import registry as sources
-from paperminertoolkit.corpus.database import connect, corpus_stats, enrichment_stats
+from paperminertoolkit.corpus.database import (connect,
+                                               corpus_stats,
+                                               enrichment_stats,
+                                               search_history)
 from paperminertoolkit.providers.crossref import import_author_works
 from paperminertoolkit.workflows.search import search_for_papers
+from paperminertoolkit.workflows.gather import gather_papers
+from paperminertoolkit.probe_cli import probe, report_provider_status
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
+from paperminertoolkit.extraction.entities import EntityExtractionConfig
+from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
+                                                  build_reconciliation_prompt,
+                                                  build_text_extraction_prompt)
+from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.workflows.download import download_papers
 from paperminertoolkit.workflows.enrichment import enrich_corpus
+from paperminertoolkit.workflows.entities import extract_corpus_entities, extract_file_entities
 from paperminertoolkit.corpus.filtering import (apply_regex_filter,
                                     apply_topic_filter,
                                     filter_overview,
@@ -23,6 +42,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
 from paperminertoolkit.workflows.imports import import_pdfs
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.store import store_results
+from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
 from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
@@ -37,6 +57,7 @@ from paperminertoolkit.settings import (get_model_profile,
                                    set_model_profile,
                                    update_anthropic_key,
                                    update_core_key,
+                                   update_core_rate,
                                    update_crossref_email,
                                    update_elsevier_key,
                                    update_ncbi_email,
@@ -68,15 +89,16 @@ def _format_bytes(size: int) -> str:
 
 @click.command('search')
 @click.argument('query', default='Lithium solid electrolyte', type=str)
-@click.argument('db_path', default='papers.db', type=click.Path())
+@click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
 @click.option('--source',
               type=click.Choice(sources.choices(sources.SEARCH)),
-              default='all',
+              multiple=True,
+              default=('all',),
               show_default=True,
-              help='Search source to use.')
+              help='Search source to use. Repeat to choose more than one.')
 @click.option('--count',
               default=200,
-              type=int,
+              type=click.IntRange(min=1),
               show_default=True,
               help='Maximum results to request from each selected source.')
 @click.option('--store-abstract',
@@ -87,11 +109,98 @@ def _format_bytes(size: int) -> str:
               is_flag=True,
               default=False,
               help='Supplement newly stored papers with all enrichment providers.')
-def paper_search(query: str, db_path: str, source: str, count: int,
-                 store_abstract: bool, enrich_metadata: bool) -> None:
+@click.option('--parallel', is_flag=True, default=False,
+              help='Search selected providers concurrently.')
+@click.option('--workers', default=None, type=click.IntRange(min=1),
+              help='Maximum provider workers; also enables parallel search.')
+def paper_search(query: str, db_path: str, source: tuple[str, ...], count: int,
+                 store_abstract: bool, enrich_metadata: bool, parallel: bool,
+                 workers: int | None) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
-    search_for_papers(query, db_path, source=source, count=count,
-                      store_abstract=store_abstract, enrich=enrich_metadata)
+    if not query.strip():
+        raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
+    try:
+        summary = search_for_papers(
+            query, db_path, source=source[0] if len(source) == 1 else source, count=count,
+            store_abstract=store_abstract, enrich=enrich_metadata,
+            parallel=parallel, workers=workers,
+        )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if summary:
+        _check_search_status(summary)
+
+
+def _check_search_status(summary: Mapping[str, Any]) -> None:
+    """Report incomplete searches after preserving their available results."""
+    if summary['status'] in {'partial', 'failed'}:
+        failed = [name for name, result in summary['source_results'].items()
+                  if result['status'] == 'failed']
+        raise click.ClickException(
+            f'Search {summary["status"]}: {", ".join(failed)} failed. '
+            'Available results have been saved; inspect pmt corpus searches for details.'
+        )
+
+
+@click.command('gather')
+@click.argument('query')
+@click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
+@click.option('--source', multiple=True,
+              type=click.Choice(sources.choices(sources.SEARCH)),
+              default=('all',), show_default=True,
+              help='Search source to use. Repeat to choose more than one.')
+@click.option('--count', default=200, type=click.IntRange(min=1), show_default=True,
+              help='Maximum results to request from each selected search source.')
+@click.option('--format', 'download_format',
+              type=click.Choice(['abstract', 'text', 'pdf', 'both']),
+              default='both', show_default=True,
+              help='Paper assets to retrieve after searching; both means text and PDF.')
+@click.option('--download-source', 'download_sources', multiple=True,
+              type=click.Choice(DOWNLOAD_CHOICES), default=('all',), show_default=True,
+              help='Content provider to try. Repeat to choose more than one.')
+@click.option('--abstract/--no-abstract', 'download_abstract',
+              default=True, show_default=True,
+              help='Store search abstracts and retrieve missing abstracts alongside assets.')
+@click.option('--enrich', 'enrich_metadata', is_flag=True,
+              help='Supplement matching papers with configured enrichment providers.')
+@click.option('--parallel', is_flag=True,
+              help='Search selected providers concurrently.')
+@click.option('--workers', default=None, type=click.IntRange(min=1),
+              help='Maximum provider workers; also enables parallel search.')
+@click.option('--force', is_flag=True,
+              help='Redownload requested assets even when already stored.')
+@click.option('--json', 'json_output', is_flag=True,
+              help='Write a JSON summary to stdout and progress to stderr.')
+def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
+           download_format: str, download_sources: tuple[str, ...],
+           download_abstract: bool, enrich_metadata: bool, parallel: bool,
+           workers: int | None, force: bool, json_output: bool) -> None:
+    """Search for papers, save metadata, and retrieve assets in one run.
+
+    Only papers matched by this search are considered for download. Existing
+    assets are reused unless --force is set. No language model is required.
+    A failed search source gives exit status 1 after available results are saved.
+    """
+    if not query.strip():
+        raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
+    try:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = gather_papers(
+                query, db_path, source=source[0] if len(source) == 1 else source,
+                count=count, download_format=download_format,
+                download_sources=list(download_sources), download_abstract=download_abstract,
+                enrich=enrich_metadata, parallel=parallel, workers=workers, force=force,
+            )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
+    else:
+        matched = len(summary['search']['paper_ids'])
+        click.echo(f'Gathered metadata for {matched} matching papers in {db_path}.')
+        if not matched:
+            click.echo('No matching papers to download.')
+    _check_search_status(summary['search'])
 
 
 @click.command('pdfs')
@@ -281,6 +390,10 @@ def corpus_status(db_path: str) -> None:
     click.echo(f'Papers with abstracts: {stats["papers_with_abstract"]}')
     click.echo(f'Papers with text: {stats["papers_with_text"]}')
     click.echo(f'Papers with PDFs: {stats["papers_with_pdf"]}')
+    click.echo(
+        f'Papers with structured documents: '
+        f'{stats["papers_with_structured_documents"]}'
+    )
     click.echo(f'Text scrapes split into chunks: {stats["papers_with_chunked_text"]}')
     click.echo(f'Abstract scrapes split into chunks: {stats["papers_with_chunked_abstracts"]}')
     click.echo(f'Blobs: {stats["blobs"]}')
@@ -294,6 +407,51 @@ def corpus_status(db_path: str) -> None:
                f'({enrichment["authors_with_orcid"]} with ORCID)')
     click.echo(f'Subject records: {enrichment["subject_records"]}')
     click.echo(f'Reference records: {enrichment["reference_records"]}')
+
+
+@click.command('searches')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.option('--limit', default=20, type=click.IntRange(min=1), show_default=True,
+              help='Maximum number of recent searches to show.')
+@click.option('--outfile', default=None, type=click.Path(dir_okay=False),
+              help='Write the complete search history to a JSON file.')
+def corpus_searches(db_path: str, limit: int, outfile: str | None) -> None:
+    """Print the searches recorded in a paper corpus.
+
+    Parameters
+    ----------
+    db_path : str
+        Corpus database to inspect.
+    limit : int
+        Maximum number of recent searches to display.
+    outfile : str or None
+        Optional JSON output path. A ``.json`` suffix is appended when absent.
+    """
+    with connect(db_path) as conn:
+        searches = search_history(conn, limit=limit)
+    if outfile is not None:
+        output_path = Path(outfile)
+        if output_path.suffix.lower() != '.json':
+            output_path = Path(f'{output_path}.json')
+        output_path.write_text(f'{json.dumps(searches, indent=2)}\n', encoding='utf-8')
+        click.echo(f'Search history written to {output_path}.')
+        return
+    click.echo(f'Corpus searches: {db_path}')
+    if not searches:
+        click.echo('No searches recorded.')
+        return
+    for item in searches:
+        click.echo(
+            f'#{item["search_id"]} {item["started_at"]} {item["status"]} | '
+            f'source={item["requested_source"]} | requested={item["requested_count"]} | '
+            f'parallel={"yes" if item["parallel"] else "no"} | workers={item["workers"]} | '
+            f'results={item["result_count"]} | added={item["papers_added"]} | '
+            f'updated={item["papers_updated"]}'
+        )
+        click.echo(f'  {" ".join(item["query"].split())}')
+        for source_name, outcome in item['source_results'].items():
+            if outcome['status'] == 'failed':
+                click.echo(f'  {source_name} failed: {outcome.get("error", "unknown error")}', err=True)
 
 
 def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
@@ -416,37 +574,77 @@ def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
     _echo_filter_overview(db_path, overview)
 
 
+# Reuse option definitions while retaining each command's ordering and help.
+# Click decorators construct a separate Option object for each callback.
+_topic_field_option = click.option(
+    '--field', 'text_fields', multiple=True,
+    type=click.Choice(['title', 'abstract', 'text']),
+    default=('title', 'abstract'), show_default=True,
+    help='Corpus text field to model. Repeat to combine fields.',
+)
+_topic_min_df_option = partial(
+    click.option, '--min-df', default=2, type=click.IntRange(min=1), show_default=True,
+)
+_topic_max_df_option = partial(
+    click.option, '--max-df', default=0.95,
+    type=click.FloatRange(min=0.0, max=1.0, min_open=True), show_default=True,
+)
+_topic_max_features_option = click.option(
+    '--max-features', default=20000, type=click.IntRange(min=2), show_default=True,
+)
+_topic_learning_method_option = click.option(
+    '--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True,
+)
+_topic_iterations_option = click.option(
+    '--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True,
+)
+_topic_top_terms_option = click.option(
+    '--top-terms', default=15, type=click.IntRange(min=1), show_default=True,
+)
+_topic_representative_papers_option = click.option(
+    '--representative-papers', default=5, type=click.IntRange(min=1), show_default=True,
+)
+_topic_stopwords_file_option = click.option(
+    '--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
+    help='UTF-8 file containing one corpus-specific stopword per line.',
+)
+_topic_ngram_max_option = partial(
+    click.option, '--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True,
+)
+_topic_batch_size_option = click.option(
+    '--batch-size', default=128, type=click.IntRange(min=1), show_default=True,
+)
+_topic_cache_dir_option = click.option(
+    '--cache-dir', default=None, type=click.Path(file_okay=False),
+    help='Parent directory for temporary streaming caches.',
+)
+_topic_evaluation_sample_size_option = click.option(
+    '--evaluation-sample-size', default=10000, type=click.IntRange(min=1), show_default=True,
+)
+
+
 @click.command('train')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('model_dir', default='topic_model', type=click.Path())
 @click.option('--topics', 'num_topics', default=10, type=click.IntRange(min=2), show_default=True)
-@click.option('--field', 'text_fields', multiple=True,
-              type=click.Choice(['title', 'abstract', 'text']),
-              default=('title', 'abstract'), show_default=True,
-              help='Corpus text field to model. Repeat to combine fields.')
-@click.option('--min-df', default=2, type=click.IntRange(min=1), show_default=True,
-              help='Minimum number of documents containing a retained term.')
-@click.option('--max-df', default=0.95, type=click.FloatRange(min=0.0, max=1.0, min_open=True),
-              show_default=True, help='Maximum fraction of documents containing a retained term.')
-@click.option('--max-features', default=20000, type=click.IntRange(min=2), show_default=True)
-@click.option('--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True)
-@click.option('--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True)
+@_topic_field_option
+@_topic_min_df_option(help='Minimum number of documents containing a retained term.')
+@_topic_max_df_option(help='Maximum fraction of documents containing a retained term.')
+@_topic_max_features_option
+@_topic_learning_method_option
+@_topic_iterations_option
 @click.option('--random-seed', 'random_state', default=0, type=int, show_default=True)
-@click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
-@click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
-@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
-              help='UTF-8 file containing one corpus-specific stopword per line.')
-@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True,
-              help='Largest generated n-gram; use 2 to include bigrams.')
+@_topic_top_terms_option
+@_topic_representative_papers_option
+@_topic_stopwords_file_option
+@_topic_ngram_max_option(help='Largest generated n-gram; use 2 to include bigrams.')
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known model artifact files in a non-empty model directory.')
 @click.option('--streaming/--in-memory', default=True, show_default=True,
               help='Use disk-backed bounded batches or materialize the corpus in memory.')
-@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
-              help='Parent directory for temporary streaming caches.')
-@click.option('--evaluation-sample-size', default=10000,
-              type=click.IntRange(min=1), show_default=True)
+@_topic_batch_size_option
+@_topic_cache_dir_option
+@_topic_evaluation_sample_size_option
 def topics_train(db_path: str,
                  model_dir: str,
                  num_topics: int,
@@ -510,30 +708,23 @@ def topics_train(db_path: str,
               help='Topic count to train. Repeat to compare several values.')
 @click.option('--seed', 'random_states', multiple=True, type=int, default=(0, 1), show_default=True,
               help='Random seed to train. Repeat to assess stability.')
-@click.option('--field', 'text_fields', multiple=True,
-              type=click.Choice(['title', 'abstract', 'text']),
-              default=('title', 'abstract'), show_default=True,
-              help='Corpus text field to model. Repeat to combine fields.')
-@click.option('--min-df', default=2, type=click.IntRange(min=1), show_default=True)
-@click.option('--max-df', default=0.95, type=click.FloatRange(min=0.0, max=1.0, min_open=True),
-              show_default=True)
-@click.option('--max-features', default=20000, type=click.IntRange(min=2), show_default=True)
-@click.option('--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True)
-@click.option('--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True)
-@click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
-@click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
-@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
-              help='UTF-8 file containing one corpus-specific stopword per line.')
-@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True)
+@_topic_field_option
+@_topic_min_df_option()
+@_topic_max_df_option()
+@_topic_max_features_option
+@_topic_learning_method_option
+@_topic_iterations_option
+@_topic_top_terms_option
+@_topic_representative_papers_option
+@_topic_stopwords_file_option
+@_topic_ngram_max_option()
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known comparison and model artifact files.')
 @click.option('--streaming/--in-memory', default=True, show_default=True,
               help='Use one reusable disk-backed corpus cache or in-memory matrices.')
-@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
-              help='Parent directory for temporary streaming caches.')
-@click.option('--evaluation-sample-size', default=10000,
-              type=click.IntRange(min=1), show_default=True)
+@_topic_batch_size_option
+@_topic_cache_dir_option
+@_topic_evaluation_sample_size_option
 def topics_compare(db_path: str,
                    output_dir: str,
                    topic_counts: tuple[int, ...],
@@ -730,6 +921,94 @@ def topics_models(db_path: str, batch_size: int) -> None:
         )
 
 
+def _entity_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """Apply the shared inference and export options to an entity command."""
+    options = [
+        click.option('--model', required=True,
+                     help='Fine-tuned token-classification checkpoint: Hugging Face ID or local directory.'),
+        click.option('--device', default='cpu', show_default=True,
+                     help='PyTorch device, for example cpu or cuda:0.'),
+        click.option('--batch-size', default=8, type=click.IntRange(min=1), show_default=True,
+                     help='Maximum number of text windows per inference batch.'),
+        click.option('--stride', default=64, type=click.IntRange(min=0), show_default=True,
+                     help='Overlapping tokens between long-document windows.'),
+        click.option('--max-length', default=None, type=click.IntRange(min=1),
+                     help='Tokens per window, including special tokens; defaults to the model limit.'),
+        click.option('--revision', default=None,
+                     help='Hugging Face checkpoint revision, such as a commit hash.'),
+        click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
+                     help='Directory for downloaded model and tokenizer files.'),
+        click.option('--local-files-only', is_flag=True,
+                     help='Load only local or already cached checkpoint files.'),
+        click.option('--min-score', default=0.0, type=click.FloatRange(0, 1), show_default=True,
+                     help='Minimum entity confidence to include in the output.'),
+        click.option('--label', 'labels', multiple=True,
+                     help='Include this checkpoint-specific entity label; repeat for several.'),
+        click.option('--overwrite', is_flag=True,
+                     help='Replace an existing JSONL output file.'),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+@click.command('corpus')
+@click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('output_path', type=click.Path(dir_okay=False))
+@click.option('--field', 'text_fields', multiple=True, default=('abstract',),
+              type=click.Choice(['title', 'abstract', 'text']), show_default=True,
+              help='Corpus text field to annotate; repeat to process several fields separately.')
+@_entity_options
+def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...],
+                    model: str, device: str, batch_size: int, stride: int,
+                    max_length: int | None, revision: str | None, cache_dir: str | None,
+                    local_files_only: bool, min_score: float, labels: tuple[str, ...],
+                    overwrite: bool) -> None:
+    """Extract named entities from stored corpus text into a JSONL file."""
+    try:
+        config = EntityExtractionConfig(
+            model=model, device=device, batch_size=batch_size, stride=stride,
+            max_length=max_length, revision=revision, cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        summary = extract_corpus_entities(
+            db_path, output_path, config, text_fields=text_fields,
+            min_score=min_score, labels=labels or None, overwrite=overwrite,
+        )
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f'Extracted {summary["entities"]} entities from {summary["documents"]} documents '
+        f'across {summary["papers"]} papers.'
+    )
+    click.echo(f'Entity annotations: {summary["output"]}')
+
+
+@click.command('text')
+@click.argument('input_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('output_path', type=click.Path(dir_okay=False))
+@_entity_options
+def entities_text(input_path: str, output_path: str, model: str, device: str,
+                  batch_size: int, stride: int, max_length: int | None,
+                  revision: str | None, cache_dir: str | None, local_files_only: bool,
+                  min_score: float, labels: tuple[str, ...], overwrite: bool) -> None:
+    """Extract named entities from one UTF-8 text file into a JSONL file."""
+    try:
+        config = EntityExtractionConfig(
+            model=model, device=device, batch_size=batch_size, stride=stride,
+            max_length=max_length, revision=revision, cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        summary = extract_file_entities(
+            input_path, output_path, config, min_score=min_score,
+            labels=labels or None, overwrite=overwrite,
+        )
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Extracted {summary["entities"]} entities from {summary["documents"]} documents.')
+    click.echo(f'Entity annotations: {summary["output"]}')
+
+
 @click.command('scrape')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
@@ -737,10 +1016,10 @@ def topics_models(db_path: str, batch_size: int) -> None:
 @click.option('--image-context', type=click.Choice(['none', 'paper-text']), default='none', show_default=True)
 @click.option('--image-dir', default='paper_images', type=click.Path(), show_default=True)
 @click.option('--image-extraction',
-              type=click.Choice(['auto', 'embedded', 'pages']),
+              type=click.Choice(['auto', 'embedded', 'pages', 'layout']),
               default='auto',
               show_default=True,
-              help='How to turn PDFs into images for vision analysis.')
+              help='How to choose images for vision analysis. "layout" sends figures with their captions.')
 @click.option('--image-dpi', default=200, type=int, show_default=True,
               help='DPI for rendered page images when page rendering is used.')
 @click.option('--image-batch-size', default='1', show_default=True,
@@ -866,6 +1145,93 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
+@click.command('gui')
+@click.option('--validation', 'validation_path', type=click.Path(exists=True, dir_okay=False),
+              help='Validation CSV to open immediately.')
+@click.option('--scraped', 'scraped_path', type=click.Path(exists=True, dir_okay=False),
+              help='Scraped CSV to open immediately.')
+@click.option('--recipe', 'recipe_name', help='Bundled recipe name or recipe JSON path.')
+@click.option('--output', type=click.Path(dir_okay=False),
+              help='Review decisions JSON path; defaults to the local review directory.')
+@click.option('--no-browser', is_flag=True, help='Print the local URL without opening a browser.')
+def validation_gui(validation_path: str | None, scraped_path: str | None,
+                   recipe_name: str | None, output: str | None, no_browser: bool) -> None:
+    """Review recipe extraction against a validation CSV in a local browser."""
+    supplied = [validation_path, scraped_path, recipe_name]
+    if any(supplied) and not all(supplied):
+        raise click.UsageError('Supply --validation, --scraped, and --recipe together, or choose all three in the browser.')
+    app = ReviewApp(output=Path(output) if output else None)
+    if all(supplied):
+        try:
+            validation_bytes = Path(validation_path).read_bytes()
+            scraped_bytes = Path(scraped_path).read_bytes()
+            app.load(validation_bytes.decode('utf-8-sig'),
+                     scraped_bytes.decode('utf-8-sig'), recipe_name,
+                     validation_name=validation_path, scraped_name=scraped_path,
+                     validation_sha256=hashlib.sha256(validation_bytes).hexdigest(),
+                     scraped_sha256=hashlib.sha256(scraped_bytes).hexdigest())
+        except (OSError, ValueError, KeyError) as error:
+            raise click.ClickException(str(error)) from error
+    serve_validation(app, open_browser=not no_browser)
+
+
+@click.command('prompt')
+@click.argument('recipe', default='sse', type=str)
+@click.option(
+    '--kind',
+    type=click.Choice(['text', 'image', 'image-context', 'reconciliation']),
+    default='text',
+    show_default=True,
+    help='Prompt variant to render.',
+)
+@click.option('--outfile', default=None, type=click.Path(dir_okay=False),
+              help='Write the prompt to this file instead of standard output.')
+def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
+    """Render the exact LLM system prompt generated from a recipe."""
+    try:
+        loaded = load_recipe(recipe)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    if kind == 'text':
+        prompt = build_text_extraction_prompt(loaded)
+    elif kind == 'image':
+        prompt = build_image_extraction_prompt(loaded)
+    elif kind == 'image-context':
+        prompt = build_image_extraction_prompt(loaded, with_context=True)
+    else:
+        prompt = build_reconciliation_prompt(loaded)
+
+    if outfile is None:
+        click.echo(prompt)
+        return
+    try:
+        Path(outfile).write_text(prompt + '\n', encoding='utf-8')
+    except OSError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Prompt written to {outfile}.')
+
+
+@click.command('template')
+@click.argument('recipe', type=str)
+@click.argument('outfile', type=click.Path(dir_okay=False))
+def validation_template(recipe: str, outfile: str) -> None:
+    """Create an empty validation CSV for a bundled or file-based recipe."""
+    try:
+        loaded = load_recipe(recipe)
+        columns = ['Identifier', 'Title', 'DOI']
+        existing = {column.casefold() for column in columns}
+        columns.extend(
+            field for field in loaded['search fields']
+            if field.casefold() not in existing
+        )
+        with Path(outfile).open('w', encoding='utf-8', newline='') as handle:
+            csv.writer(handle).writerow(columns)
+    except (FileNotFoundError, KeyError, OSError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Validation template written to {outfile}.')
+
+
 def update_elsevier_api_key() -> None:
     """Prompt for and save an Elsevier API key."""
     update_elsevier_key()
@@ -874,6 +1240,11 @@ def update_elsevier_api_key() -> None:
 def update_core_api_key() -> None:
     """Prompt for and save a CORE API key."""
     update_core_key()
+
+
+def update_core_request_rate() -> None:
+    """Prompt for and save the seconds to leave between CORE requests."""
+    update_core_rate()
 
 
 def update_unpaywall_api_email() -> None:
@@ -964,6 +1335,25 @@ def model_status() -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
+@click.command('providers')
+@click.option('--no-probe', is_flag=True,
+              help='Report what is configured without making any requests.')
+@click.option('--source', 'sources', multiple=True,
+              type=click.Choice(['all', *sources.SOURCES]),
+              help='Report on one provider. Repeat for several.')
+@click.option('--json', 'json_output', is_flag=True,
+              help='Emit machine-readable JSON with provider rows and an ok flag.')
+def provider_status_command(no_probe: bool, sources: tuple[str, ...],
+                            json_output: bool) -> None:
+    """Show which providers are set up and which are answering.
+
+    Requests respect each provider's rate limiter. Checking openalex-content
+    costs 100 OpenAlex credits when its key is configured. Exits non-zero when
+    a configured provider is not answering, so it can gate a script.
+    """
+    report_provider_status(no_probe, sources, json_output=json_output)
+
+
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def reset_miner(db_path: str) -> None:
@@ -1003,12 +1393,29 @@ def import_group() -> None:
     """Import existing papers or an author's publication list."""
 
 
+@click.group('entities')
+def entities_group() -> None:
+    """Extract named entities with fine-tuned BERT and transformer checkpoints."""
+
+
 @click.group('config')
 def config_group() -> None:
     """Configure model profiles and provider credentials."""
 
 
+@click.group('recipe')
+def recipe_group() -> None:
+    """Inspect extraction recipes and their generated prompts."""
+
+
+@click.group('validate')
+def validate_group() -> None:
+    """Create validation sets and review extraction results."""
+
+
 main.add_command(paper_search, 'search')
+main.add_command(probe)
+main.add_command(gather)
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
@@ -1017,6 +1424,7 @@ main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
 
 corpus_group.add_command(corpus_status, 'stats')
+corpus_group.add_command(corpus_searches, 'searches')
 main.add_command(corpus_group)
 
 filter_group.add_command(filter_regex, 'regex')
@@ -1035,14 +1443,20 @@ topics_group.add_command(topics_store, 'store')
 topics_group.add_command(topics_models, 'models')
 main.add_command(topics_group)
 
+entities_group.add_command(entities_corpus, 'corpus')
+entities_group.add_command(entities_text, 'text')
+main.add_command(entities_group)
+
 import_group.add_command(import_pdf_folder, 'pdfs')
 import_group.add_command(import_author, 'author')
 main.add_command(import_group)
 
 config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
+config_group.add_command(provider_status_command, 'providers')
 config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
 config_group.add_command(click.command('core-key')(update_core_api_key))
+config_group.add_command(click.command('core-rate')(update_core_request_rate))
 config_group.add_command(click.command('unpaywall-email')(update_unpaywall_api_email))
 config_group.add_command(click.command('crossref-email')(update_crossref_api_email))
 config_group.add_command(click.command('openalex-key')(update_openalex_api_key))
@@ -1051,3 +1465,10 @@ config_group.add_command(click.command('ncbi-email')(update_ncbi_api_email))
 config_group.add_command(click.command('openai-key')(update_openai_api_key))
 config_group.add_command(click.command('anthropic-key')(update_anthropic_api_key))
 main.add_command(config_group)
+
+recipe_group.add_command(recipe_prompt, 'prompt')
+main.add_command(recipe_group)
+
+validate_group.add_command(validation_gui, 'gui')
+validate_group.add_command(validation_template, 'template')
+main.add_command(validate_group)

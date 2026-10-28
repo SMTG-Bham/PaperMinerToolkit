@@ -334,34 +334,52 @@ let successive jobs grow it.
 
 ### Choosing a recipe
 
-Both polymer recipes carry the biodegradation fields; they differ in how much
-else they drag along, and that difference is a token budget question.
+Both polymer recipes cover reported biodegradation tests. They keep distinct
+samples and separate degradation experiments in separate records; `polymer_db`
+adds more detailed characterization and test metadata.
 
 | | `polymer` (default) | `polymer_db` |
 | --- | --- | --- |
 | Fields | 36 | 86 |
-| Degradation-related | 8 | 15 |
-| Output tokens per record | ~450 | ~1100 |
-| Records before truncation | ~22 | ~9 |
-| Unit conversions in `pmt store` | 12 | 30 |
+| Unit-bearing fields | 12 | 30 |
 
 `polymer` covers the test standard, medium, extent, duration, mechanism,
-degrading organisms, and certification — enough to reproduce something like
-`tests/data/verification_data/bio.csv`, which is keyed on substance, guideline
-(OECD 301B, 301D, …), and molecular weight.
+degrading organisms, and certification. Structure identifiers are copied only
+when printed in the source; neither recipe reconstructs curated SMILES or
+BigSMILES from polymer names or drawings.
 
-`polymer_db` adds the full OECD 301/310 setup, mineralisation kinetics, and the
-in vitro acid, base, hydrolytic, and enzymatic degradation curves. The cost is
-that responses are capped at 10000 tokens, so a paper reporting a long sample
-series truncates mid-JSON and loses the tail. Prefer it for papers with few
-samples and deep characterisation.
+`polymer_db` adds OECD test metadata, mineralisation kinetics, and acid, base,
+hydrolytic, and enzymatic degradation time series. Its larger schema uses more
+of the 10000-token completion budget, especially when values include conditions
+or multiple time points. There is no fixed number of records that fits: a long
+response can be truncated and fail JSON parsing. Inspect a representative paper
+before scaling up, and prefer the wider recipe when that detail is needed.
 
 Each recipe writes its own files — `materials_polymer.csv`,
 `materials_polymer_db.csv` — because `pmt store` reuses an existing output file's
 columns for matching, so two recipes sharing one CSV will not work.
 
-Note that `pmt store`'s unit conversions are per unit-bearing column, not per row:
-`polymer_db` costs 30 model round trips even for a single scraped record.
+`pmt store` batches unit conversions by column. All-missing columns need no model
+call, while a large populated column may need several, so the counts above are
+schema fields rather than guaranteed model round trips. Conversion can remove
+conditions embedded in unit-bearing values. Preserve a copy of the scraped CSV
+before storing if those details matter; successful storage consumes that file.
+The Python API supports `store_results(..., unit_conversion=False)` to preserve
+the extracted values without conversion.
+
+Scrape statuses belong to the corpus and stage, not to a recipe. Changing
+`PMT_RECIPE` alone skips papers already scraped successfully with another
+recipe. To change recipes, run the CLI with `--force` in an environment
+configured for a running model, using fresh output paths for the new run:
+
+```bash
+pmt scrape papers.db polymer_db --mode text --force --output scraped_polymer_db_rerun.csv
+pmt store papers.db scraped_polymer_db_rerun.csv materials_polymer_db_rerun.csv polymer_db --assume-yes
+```
+
+The batch script does not pass `--force`; its normal resubmission behavior is
+for continuing the same recipe. Keep the original CSVs if you need to compare
+the two extractions.
 
 The script configures the model through `PAPERMINERTOOLKIT_MODEL_*` environment
 variables rather than `pmt config model`, because `pmt config model` persists to

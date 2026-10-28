@@ -28,17 +28,27 @@ PaperMinerToolkit requires Python 3.11 or newer:
 pip install paperminertoolkit
 ```
 
+For local entity extraction with fine-tuned BERT checkpoints, install
+`pip install 'paperminertoolkit[bert]'`.
+
 ## Quickstart
 
-Configure a text model and any search/download credentials you need, then run a small workflow:
+Probe a public source, then gather a small corpus of abstracts. These steps need no model or API key:
+
+```bash
+pmt probe --source arxiv
+
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv
+pmt corpus stats papers.db
+```
+
+`pmt gather` combines search and download, merging duplicate records and downloading only papers matched by that search. Repeat `--source` to search several providers and `--download-source` to select content providers separately. Configure only the [provider credentials](https://paperminertoolkit.readthedocs.io/en/latest/workflow/configuration.html) you need. Use `--json` on `probe` or `gather` for scriptable summaries.
+
+To extract structured records from those abstracts, configure a text model:
 
 ```bash
 pmt config model text --provider openai --model YOUR_TEXT_MODEL
-
-pmt search "lithium solid electrolyte" papers.db \
-  --source openalex --count 25
-pmt enrich papers.db
-pmt download papers.db --format abstract
 
 pmt scrape papers.db sse \
   --mode abstract \
@@ -51,7 +61,28 @@ pmt store papers.db \
   --assume-yes
 ```
 
-Use `pmt corpus stats papers.db` to inspect stored content and `pmt status papers.db` to inspect pipeline progress.
+Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
+
+## BERT entity extraction
+
+Annotate stored abstracts with a fine-tuned token-classification checkpoint:
+
+```bash
+pmt entities corpus papers.db entities.jsonl \
+  --model ./models/matscibert-ner --field abstract
+```
+
+Replace the example path with your trained checkpoint directory or Hugging Face
+model ID. Use `pmt entities text paper.txt entities.jsonl --model CHECKPOINT` for
+a UTF-8 file. Results include entity labels, confidence scores, exact text,
+character offsets, and source metadata; long documents use overlapping windows.
+
+The published [MatSciBERT](https://huggingface.co/m3rg-iitd/matscibert) base model
+requires entity fine-tuning. The published
+[polyBERT](https://huggingface.co/HAYDERphd/polyBERT) produces polymer PSMILES
+fingerprints and is not a prose entity tagger. Supply a compatible fine-tuned
+token classifier; training is not part of this workflow. See the
+[entity extraction guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/entities.html).
 
 ## Documentation
 

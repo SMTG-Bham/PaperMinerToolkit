@@ -506,6 +506,27 @@ def full_text(entry: Mapping[str, Any], session: provider.HTTPClient | None = No
     return _rxiv.full_text(SERVER_CONFIG, entry, session=session)
 
 
+def full_text_document(
+    entry: Mapping[str, Any],
+    session: provider.HTTPClient | None = None,
+) -> provider.FullTextDocument:
+    """Fetch medRxiv JATS together with its derived plain text.
+
+    Parameters
+    ----------
+    entry : Mapping[str, Any]
+        Normalized medRxiv record containing its JATS URL.
+    session : provider.HTTPClient or None, optional
+        HTTP client exposing a ``get`` method.
+
+    Returns
+    -------
+    provider.FullTextDocument
+        Original JATS and derived prose from one request.
+    """
+    return _rxiv.full_text_document(SERVER_CONFIG, entry, session=session)
+
+
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:
     """Split a medRxiv search phrase into match terms and interval scope.
 

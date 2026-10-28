@@ -503,7 +503,18 @@ Common failures include:
 - placing paper-specific facts in the recipe rather than extraction rules; and
 - sharing one final CSV between recipes with unrelated schemas.
 
-Before a large scrape, inspect the prompt and run a small representative batch. The Python prompt builders can be used without calling a model:
+Before a large scrape, inspect the exact prompt without calling a model:
+
+```bash
+pmt recipe prompt ./cycling_recipe.json
+pmt recipe prompt ./cycling_recipe.json --kind image-context
+pmt recipe prompt band_gap_validation --kind reconciliation --outfile reconciliation.txt
+```
+
+The available prompt kinds are `text`, `image`, `image-context`, and `reconciliation`. The text
+prompt is shown by default. Prompts are printed to standard output unless `--outfile` is supplied.
+
+The same prompt builders are also available from Python:
 
 ```python
 from paperminertoolkit.extraction.extract import build_image_extraction_prompt, build_text_extraction_prompt

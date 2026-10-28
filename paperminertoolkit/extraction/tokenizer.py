@@ -17,11 +17,14 @@ from typing import Protocol, TypeAlias
 import requests
 import tiktoken
 
+from paperminertoolkit.extraction._anthropic import (
+    ANTHROPIC_VERSION as ANTHROPIC_VERSION,
+    DEFAULT_ANTHROPIC_BASE_URL as DEFAULT_ANTHROPIC_BASE_URL,
+    messages_url,
+    request_headers,
+)
 from paperminertoolkit.settings import DEFAULT_MODEL
 from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT
-
-ANTHROPIC_VERSION = '2023-06-01'
-DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 
 
 class _ModelConfigLike(Protocol):
@@ -152,18 +155,13 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     if not api_key:
         raise ValueError('Anthropic token counting requires an API key.')
     model = _model_name(model_config)
-    base_url = getattr(model_config, 'base_url', None) or DEFAULT_ANTHROPIC_BASE_URL
     payload = {
         'model': model,
         'messages': [{'role': 'user', 'content': text}],
     }
-    headers = {
-        'x-api-key': api_key,
-        'anthropic-version': ANTHROPIC_VERSION,
-        'content-type': 'application/json',
-    }
+    headers = request_headers(api_key)
     response = requests.post(
-        f'{base_url.rstrip("/")}/v1/messages/count_tokens',
+        f'{messages_url(getattr(model_config, "base_url", None))}/count_tokens',
         headers=headers,
         json=payload,
         timeout=60,
@@ -311,3 +309,23 @@ def prompt_token_reserve(prompt: str,
     """
     prompt_tokens = count_text_tokens(prompt or '', model_config=model_config)
     return max(minimum, prompt_tokens + int(buffer_tokens))
+
+
+def request_token_budget(prompt: str, model_config: _ModelConfigSource | None = None) -> int:
+    """Calculate the content budget after reserving the request's prompt.
+
+    Parameters
+    ----------
+    prompt : str
+        Instructions sharing the model context window with input content.
+    model_config : _ModelConfigSource or None, optional
+        Model configuration used for token counting and input limits.
+
+    Returns
+    -------
+    int
+        Usable content tokens after reserving the prompt and a 500-token
+        buffer, subject to the existing minimum input budget.
+    """
+    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
+    return usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)

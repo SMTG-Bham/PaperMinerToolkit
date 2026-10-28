@@ -8,19 +8,28 @@ that appear in multiple sources.
 from __future__ import annotations
 
 import datetime
-import html
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import Any
 import pandas as pd
-import re
 from tqdm import tqdm
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed)
 from paperminertoolkit.workflows.enrichment import enrich_papers
-from paperminertoolkit.corpus.database import PAPER_FIELDS, add_asset, connect, find_paper, normalize_paper, upsert_paper, upsert_papers
+from paperminertoolkit.corpus.database import (PAPER_FIELDS,
+                                               add_asset,
+                                               add_search_result,
+                                               begin_search_run,
+                                               connect,
+                                               find_paper,
+                                               finish_search_run,
+                                               normalize_paper,
+                                               upsert_paper,
+                                               upsert_papers)
+from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry as sources
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
@@ -133,10 +142,7 @@ def _clean_search_abstract(value: object) -> str:
         return ''
     if isinstance(value, list):
         value = ' '.join(str(part) for part in value if part)
-    text = html.unescape(str(value))
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return provider.html_plain_text(str(value))
 
 
 def _abstract_from_search_record(record: Mapping[str, Any]) -> str:
@@ -169,6 +175,27 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
+def _paper_rows(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Normalize mapped provider records and their search abstracts.
+
+    Parameters
+    ----------
+    records : Iterable[Mapping[str, Any]]
+        Records already mapped onto paper field names by their provider.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Paper rows in input order with the fixed search column order.
+    """
+    rows = []
+    for record in records:
+        normalized = normalize_paper(record)
+        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
 def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert CORE work records into normalized paper rows.
 
@@ -182,13 +209,7 @@ def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     pandas.DataFrame
         Normalized paper rows.
     """
-    rows = []
-    for work in works:
-        record = core.work_to_paper(work)
-        normalized = normalize_paper(record)
-        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(core.work_to_paper(work) for work in works)
 
 
 def core_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -237,13 +258,7 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _openalex_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert OpenAlex work records into normalized paper rows."""
-    rows = []
-    for work in works:
-        normalized = normalize_paper(openalex.work_to_paper(work))
-        abstract = openalex.reconstruct_abstract(work.get('abstract_inverted_index'))
-        normalized['abstract'] = _clean_search_abstract(abstract)
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(openalex.work_to_paper(work) for work in works)
 
 
 def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -288,12 +303,7 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _pubmed_rows(articles: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert PubMed article records into normalized paper rows."""
-    rows = []
-    for article in articles:
-        normalized = normalize_paper(article)
-        normalized['abstract'] = _clean_search_abstract(article.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(articles)
 
 
 def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -350,12 +360,7 @@ def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _arxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert arXiv entry records into normalized paper rows."""
-    rows = []
-    for entry in entries:
-        normalized = normalize_paper(entry)
-        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(entries)
 
 
 def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -438,12 +443,7 @@ def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _rxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert preprint-server records into normalized paper rows."""
-    rows = []
-    for entry in entries:
-        normalized = normalize_paper(entry)
-        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(entries)
 
 
 def _medrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -812,10 +812,12 @@ def _store_search_abstracts(
 
 def search_for_papers(query: str,
                       db_path: str = 'papers.db',
-                      source: str = 'all',
+                      source: str | Iterable[str] = 'all',
                       count: int = 200,
                       store_abstract: bool = False,
-                      enrich: bool = False) -> None:
+                      enrich: bool = False,
+                      parallel: bool = False,
+                      workers: int | None = None) -> dict[str, Any]:
     """Search providers and merge results into a corpus.
 
     Parameters
@@ -824,8 +826,9 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv'}, default='all'
-        Provider or provider set to search.
+    source : str or Iterable[str], default='all'
+        Provider names to search. ``all`` expands to every search provider;
+        repeated names are searched only once.
     count : int, default=200
         Maximum number of records requested from each provider.
     store_abstract : bool, default=False
@@ -833,41 +836,156 @@ def search_for_papers(query: str,
     enrich : bool, default=False
         Whether to supplement stored rows with metadata from the configured
         enrichment providers.
+    parallel : bool, default=False
+        Whether to search selected providers concurrently. Each provider still
+        performs its own requests sequentially.
+    workers : int or None, default=None
+        Maximum provider workers. Supplying a value enables parallel mode;
+        otherwise ``parallel=True`` uses one worker per selected provider.
 
     Returns
     -------
-    None
-        Results are written directly to ``db_path``.
+    dict[str, Any]
+        Search identifier, final ``status``, resolved ``sources``, per-provider
+        ``source_results``, deduplicated canonical corpus ``paper_ids``, and
+        ``result_count``, ``papers_added``, ``papers_updated``, and
+        ``abstracts_stored`` counts. Results are also written to ``db_path``.
 
     Raises
     ------
     ValueError
         If ``source`` is unsupported or required provider configuration is
-        missing.
+        missing, the query is blank, or ``count`` or ``workers`` is less than one.
     Exception
         Whatever the provider raised, when exactly one source was selected. A
         run over several sources reports a failing one and carries on with the
         rest, because a partial corpus is more useful than none.
     """
-    requested = sources.resolve_names([source], sources.SEARCH)
-    frames = []
-    for name in requested:
-        try:
-            frames.append(_source_search(name)(query, count=count))
-        except Exception as e:
-            if len(requested) == 1:
-                raise
-            print(f'{sources.SOURCES[name].label} search skipped: {e}')
+    if not query.strip():
+        raise ValueError('query must not be blank')
+    if count < 1:
+        raise ValueError('count must be at least 1')
+    selectors = [source] if isinstance(source, str) else list(source)
+    requested = sources.resolve_names(selectors, sources.SEARCH)
+    if workers is not None and workers < 1:
+        raise ValueError('workers must be at least 1')
+    parallel = parallel or workers is not None
+    worker_count = min(workers or len(requested), len(requested)) if parallel else 1
+    with connect(db_path) as conn:
+        search_id = begin_search_run(
+            conn,
+            query,
+            source if isinstance(source, str) else ','.join(selectors),
+            requested,
+            count,
+            store_abstract=store_abstract,
+            enrich=enrich,
+            parallel=parallel,
+            workers=worker_count,
+        )
 
-    new_papers = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SEARCH_FIELDS)
+    frames_by_source: dict[str, pd.DataFrame] = {}
+    source_results: dict[str, dict[str, Any]] = {}
+    provider_errors: dict[str, Exception] = {}
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix='pmt-search') as executor:
+        future_sources = {
+            executor.submit(_source_search(name), query, count=count): name
+            for name in requested
+        }
+        for future in as_completed(future_sources):
+            name = future_sources[future]
+            try:
+                frame = future.result()
+                frames_by_source[name] = frame
+                source_results[name] = {'status': 'completed', 'result_count': len(frame)}
+            except Exception as error:
+                provider_errors[name] = error
+                source_results[name] = {
+                    'status': 'failed',
+                    'result_count': 0,
+                    'error_type': type(error).__name__,
+                    'error': str(error),
+                }
+                if len(requested) > 1:
+                    print(f'{sources.SOURCES[name].label} search skipped: {error}')
+
+    if len(requested) == 1 and provider_errors:
+        with connect(db_path) as conn:
+            finish_search_run(conn, search_id, 'failed', source_results)
+        raise provider_errors[requested[0]]
+
+    frames = [
+        (name, frames_by_source[name])
+        for name in requested
+        if name in frames_by_source
+    ]
+
+    new_papers = (
+        pd.concat([frame for _, frame in frames], ignore_index=True)
+        if frames
+        else pd.DataFrame(columns=SEARCH_FIELDS)
+    )
+    records = new_papers.to_dict('records')
+    result_count = len(records)
+    added = updated = abstract_count = 0
+    paper_ids: dict[str, None] = {}
+    enrichment_summary: dict[str, int] = {}
+    failed_sources = sum(
+        result['status'] == 'failed' for result in source_results.values()
+    )
+    if failed_sources == len(source_results):
+        final_status = 'failed'
+    elif failed_sources:
+        final_status = 'partial'
+    else:
+        final_status = 'completed'
+    try:
+        with connect(db_path) as conn:
+            if records:
+                added, updated = upsert_papers(conn, records)
+                abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
+                enrichment_summary = enrich_papers(conn, records) if enrich else {}
+                for provider_name, frame in frames:
+                    for result_rank, paper in enumerate(frame.to_dict('records')):
+                        add_search_result(conn, search_id, paper, provider_name, result_rank)
+                        matched = find_paper(conn, paper)
+                        if matched is not None:
+                            paper_ids[matched['paper_id']] = None
+            finish_search_run(
+                conn,
+                search_id,
+                final_status,
+                source_results,
+                result_count=result_count,
+                papers_added=added,
+                papers_updated=updated,
+                abstracts_stored=abstract_count,
+            )
+    except Exception as error:
+        source_results['corpus'] = {
+            'status': 'failed',
+            'result_count': 0,
+            'error_type': type(error).__name__,
+            'error': str(error),
+        }
+        with connect(db_path) as conn:
+            finish_search_run(conn, search_id, 'failed', source_results)
+        raise
+
+    summary = {
+        'search_id': search_id,
+        'status': final_status,
+        'sources': requested,
+        'source_results': source_results,
+        'paper_ids': list(paper_ids),
+        'result_count': result_count,
+        'papers_added': added,
+        'papers_updated': updated,
+        'abstracts_stored': abstract_count,
+    }
     if new_papers.empty:
         print('Document search found 0 new results.')
-        return
-    with connect(db_path) as conn:
-        records = new_papers.to_dict('records')
-        added, updated = upsert_papers(conn, records)
-        abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
-        enrichment_summary = enrich_papers(conn, records) if enrich else {}
+        return summary
     print(f'Document search found {added} new results and updated {updated} existing rows.')
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')
@@ -875,3 +993,4 @@ def search_for_papers(query: str,
         print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers '
               f'({enrichment_summary.get("partial", 0)} partial, '
               f'{enrichment_summary.get("not_found", 0)} not found).')
+    return summary

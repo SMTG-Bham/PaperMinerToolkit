@@ -1,0 +1,272 @@
+"""Unit tests for paperminertoolkit.extraction.recipes.
+
+This module tests recipe validation, loading bundled and file-based recipes,
+building output columns, alias collection, and canonical column matching.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import paperminertoolkit.extraction.recipes as recipes
+
+
+def sample_recipe() -> dict[str, Any]:
+    """Return a minimal valid recipe for recipe unit tests."""
+    return {
+        'record definition': {
+            'subject': 'test materials',
+            'singular': 'material',
+            'plural': 'materials',
+            'unit': 'a distinct test material',
+            'identity fields': ['Name'],
+        },
+        'search fields': {
+            'Name': {
+                'prompt': 'Material name',
+                'aliases': ['Compound name'],
+            },
+            'Conductivity': {
+                'prompt': 'Ionic conductivity',
+                'unit': 'S cm^-1',
+                'aliases': ['sigma'],
+            },
+        },
+    }
+
+
+def test_validate_recipe_accepts_valid_recipe_and_adds_prompt_default() -> None:
+    """Test validation of a valid recipe dictionary."""
+    recipe = sample_recipe()
+    recipe.pop('additional prompts', None)
+
+    validated = recipes._validate_recipe(recipe, 'test')
+
+    assert validated['record definition']['subject'] == 'test materials'
+    assert validated['additional prompts'] == ''
+
+
+def test_validate_recipe_rejects_invalid_recipe_shapes() -> None:
+    """Test recipe validation errors for invalid recipe shapes."""
+    with pytest.raises(ValueError, match='must be a JSON object'):
+        recipes._validate_recipe([], 'test')
+
+    with pytest.raises(ValueError, match='missing required key'):
+        recipes._validate_recipe({'record definition': {}}, 'test')
+
+    with pytest.raises(ValueError, match='one or more search fields'):
+        recipes._validate_recipe({'record definition': {}, 'search fields': {}}, 'test')
+
+
+def test_validate_recipe_rejects_invalid_record_definitions() -> None:
+    """Test record terminology, granularity, and identity-field validation."""
+    recipe = sample_recipe()
+    recipe['record definition'] = []
+    with pytest.raises(ValueError, match='must define "record definition" as a JSON object'):
+        recipes._validate_recipe(recipe, 'test')
+
+    recipe = sample_recipe()
+    recipe['record definition'].pop('unit')
+    with pytest.raises(ValueError, match='record definition is missing required key.*unit'):
+        recipes._validate_recipe(recipe, 'test')
+
+    recipe = sample_recipe()
+    recipe['record definition']['plural'] = ''
+    with pytest.raises(ValueError, match='"plural" must be a non-empty string'):
+        recipes._validate_recipe(recipe, 'test')
+
+    recipe = sample_recipe()
+    recipe['record definition']['identity fields'] = 'Name'
+    with pytest.raises(ValueError, match='"identity fields" must be a list of strings'):
+        recipes._validate_recipe(recipe, 'test')
+
+    recipe = sample_recipe()
+    recipe['record definition']['identity fields'] = ['Unknown']
+    with pytest.raises(ValueError, match='unknown identity field.*Unknown'):
+        recipes._validate_recipe(recipe, 'test')
+
+
+def test_load_recipe_file_accepts_direct_and_named_recipe_files(tmp_path: Path) -> None:
+    """Test loading standalone recipe JSON files."""
+    direct_path = tmp_path / 'direct.json'
+    named_path = tmp_path / 'named.json'
+    direct_path.write_text(json.dumps(sample_recipe()))
+    named_path.write_text(json.dumps({'custom': sample_recipe()}))
+
+    assert recipes._load_recipe_file(direct_path)['record definition']['subject'] == 'test materials'
+    assert recipes._load_recipe_file(named_path)['record definition']['subject'] == 'test materials'
+
+
+def test_load_recipe_file_rejects_invalid_json_and_ambiguous_files(tmp_path: Path) -> None:
+    """Test recipe file loading errors."""
+    invalid_path = tmp_path / 'invalid.json'
+    ambiguous_path = tmp_path / 'ambiguous.json'
+    invalid_path.write_text('{bad json')
+    ambiguous_path.write_text(json.dumps({'one': sample_recipe(), 'two': sample_recipe()}))
+
+    with pytest.raises(ValueError, match='not valid JSON'):
+        recipes._load_recipe_file(invalid_path)
+
+    with pytest.raises(ValueError, match='single recipe object'):
+        recipes._load_recipe_file(ambiguous_path)
+
+
+def test_load_recipe_reads_files_bundled_recipes_and_reports_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Test public recipe loading from paths and bundled recipes."""
+    recipe_path = tmp_path / 'recipe.json'
+    bundled_path = tmp_path / 'recipes.json'
+    recipe_path.write_text(json.dumps(sample_recipe()))
+    bundled_path.write_text(json.dumps({'demo': sample_recipe()}))
+    monkeypatch.setattr(recipes, 'RECIPES_PATH', bundled_path)
+
+    assert recipes.load_recipe(str(recipe_path))['record definition']['subject'] == 'test materials'
+    assert recipes.load_recipe('DEMO')['record definition']['subject'] == 'test materials'
+
+    with pytest.raises(KeyError, match='does not exist'):
+        recipes.load_recipe('missing')
+
+
+def test_load_recipe_reports_missing_or_invalid_bundled_recipe_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Test errors from the bundled recipe file."""
+    missing_path = tmp_path / 'missing.json'
+    invalid_path = tmp_path / 'recipes.json'
+
+    monkeypatch.setattr(recipes, 'RECIPES_PATH', missing_path)
+    with pytest.raises(FileNotFoundError):
+        recipes.load_recipe('demo')
+
+    invalid_path.write_text('{bad json')
+    monkeypatch.setattr(recipes, 'RECIPES_PATH', invalid_path)
+    with pytest.raises(ValueError, match='not valid JSON'):
+        recipes.load_recipe('demo')
+
+
+def test_bundled_band_gap_recipe_uses_structured_lists_and_material_granularity() -> None:
+    """Keep band-gap values structured while returning one record per material."""
+    recipe = recipes.load_recipe('band_gap_validation')
+
+    assert recipe['record definition'] == {
+        'subject': 'materials with reported electronic band gaps',
+        'singular': 'material',
+        'plural': 'materials',
+        'unit': 'a distinct material, sample, composition, phase, or structure',
+        'identity fields': ['Material system'],
+    }
+    assert list(recipe['search fields']) == [
+        'Material system',
+        'Band gap',
+        'All band gaps',
+        'Cited literature band gaps',
+    ]
+    assert 'one record per distinct material' in recipe['additional prompts']
+    assert 'Do not split one material' in recipe['additional prompts']
+    assert 'Return [] for the whole response' in recipe['additional prompts']
+    assert 'prior work' in recipe['additional prompts']
+    assert 'general missing value \'None\'' in recipe['additional prompts']
+
+    gap_fields = ['Band gap', 'All band gaps', 'Cited literature band gaps']
+    item_keys = {'value', 'method_or_source', 'gap_type', 'conditions'}
+    for field in gap_fields:
+        example = recipe['search fields'][field]['example']
+        assert isinstance(example, list)
+        assert example
+        assert all(set(item) == item_keys for item in example)
+
+    aliases = recipes._aliases_for(recipe)
+    for field, field_aliases in aliases.items():
+        other_aliases = set().union(*(names for owner, names in aliases.items() if owner != field))
+        assert field_aliases.isdisjoint(other_aliases)
+
+
+@pytest.mark.parametrize('recipe_name', ['sse', 'polymer', 'polymer_db', 'band_gap_validation'])
+def test_bundled_recipes_define_generic_record_metadata(recipe_name: str) -> None:
+    """Test that every bundled recipe has a valid record definition."""
+    recipe = recipes.load_recipe(recipe_name)
+    definition = recipe['record definition']
+
+    assert definition['subject']
+    assert definition['singular']
+    assert definition['plural']
+    assert definition['unit']
+    assert set(definition['identity fields']).issubset(recipe['search fields'])
+
+
+def test_sse_recipe_preserves_material_specific_matching_rules() -> None:
+    """Keep chemistry-specific matching behaviour out of the general prompt."""
+    additional_prompts = recipes.load_recipe('sse')['additional prompts']
+
+    assert 'composition and experimental context are compatible' in additional_prompts
+    assert 'stoichiometry, dopant, substitution level' in additional_prompts
+    assert 'parent phase and another is doped or substituted' in additional_prompts
+    assert 'neat material and another is a composite' in additional_prompts
+
+
+@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db'])
+def test_polymer_aliases_match_unambiguously_to_their_own_columns(recipe_name: str) -> None:
+    """Keep incoming polymer aliases from silently selecting another field."""
+    recipe = recipes.load_recipe(recipe_name)
+    columns = recipes.field_columns(recipe)
+    aliases = recipes._aliases_for(recipe)
+    owners: dict[str, str] = {}
+
+    for field, field_aliases in aliases.items():
+        expected_column = next(column for column in columns if column.split(' [')[0] == field)
+        for alias in field_aliases:
+            assert alias not in owners, f'{alias!r} belongs to both {owners.get(alias)!r} and {field!r}'
+            owners[alias] = field
+            assert recipes.canonical_match(f' {alias.swapcase()} ', columns, recipe) == expected_column
+
+
+def test_polymer_tga_aliases_distinguish_onset_from_fixed_mass_loss() -> None:
+    """Prevent a 5-percent mass-loss temperature from becoming an onset value."""
+    compact = recipes.load_recipe('polymer')
+    detailed = recipes.load_recipe('polymer_db')
+    compact_columns = recipes.field_columns(compact)
+    detailed_columns = recipes.field_columns(detailed)
+
+    assert recipes.canonical_match('T5%', compact_columns, compact) is None
+    assert recipes.canonical_match('TGA onset', compact_columns, compact) == 'Decomposition temperature [C]'
+    assert recipes.canonical_match('T5%', detailed_columns, detailed) == 'Degradation temperature 5 percent [C]'
+    assert recipes.canonical_match('TGA onset', detailed_columns, detailed) == 'Degradation temperature onset [C]'
+
+
+def test_field_columns_builds_recipe_columns_and_respects_existing_columns() -> None:
+    """Test output column construction for recipe fields."""
+    columns = recipes.field_columns(sample_recipe())
+
+    assert columns[:2] == ['Name', 'Conductivity [S cm^-1]']
+    assert columns[-5:] == recipes.METADATA_FIELDS
+    assert recipes.field_columns(sample_recipe(), existing_columns=['Existing']) == ['Existing']
+
+
+def test_aliases_for_includes_fields_prompts_aliases_and_metadata_fields() -> None:
+    """Test alias construction for recipe and metadata fields."""
+    aliases = recipes._aliases_for(sample_recipe())
+
+    assert aliases['Name'] == {'name', 'material name', 'compound name'}
+    assert aliases['Conductivity'] == {'conductivity', 'ionic conductivity', 'sigma'}
+    assert aliases['doi'] == {'doi'}
+
+
+def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test canonical matching of incoming scrape columns."""
+    recipe = sample_recipe()
+    columns = recipes.field_columns(recipe)
+
+    assert recipes.canonical_match(' sigma ', columns, recipe) == 'Conductivity [S cm^-1]'
+    assert recipes.canonical_match('doi', columns, recipe) == 'doi'
+    monkeypatch.setattr(recipes, '_aliases_for', lambda _: {'Extra Column': {'different alias'}})
+    assert recipes.canonical_match('extra column', ['Extra Column [kg]'], recipe) == 'Extra Column [kg]'
+    assert recipes.canonical_match('Unknown field', columns, recipe) is None

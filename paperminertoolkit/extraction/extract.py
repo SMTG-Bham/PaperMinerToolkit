@@ -7,7 +7,7 @@ records are stored.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 import json
 import math
 from os import PathLike
@@ -18,7 +18,7 @@ from typing import Any
 from paperminertoolkit.extraction.compression import CompressionConfig
 from paperminertoolkit.extraction.models import ModelConfig, query_images, query_text
 from paperminertoolkit.settings import DEFAULT_MODEL
-from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, prompt_token_reserve, usable_input_token_limit
+from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, request_token_budget
 
 
 def token_length(
@@ -211,6 +211,61 @@ def build_scrape_prompt(
     return build_text_extraction_prompt(recipe)
 
 
+def build_reconciliation_prompt(recipe: Mapping[str, Any]) -> str:
+    """Build the prompt used to reconcile text and image records.
+
+    Parameters
+    ----------
+    recipe : Mapping[str, Any]
+        Extraction recipe defining the record schema and identity fields.
+
+    Returns
+    -------
+    str
+        Text/image reconciliation system prompt.
+    """
+    definition = recipe['record definition']
+    subject = definition['subject']
+    singular = definition['singular']
+    plural = definition['plural']
+    unit = definition['unit']
+    identity_fields = definition['identity fields']
+    additional_prompts = recipe.get('additional prompts', '')
+    identity_description = ', '.join(f'"{field}"' for field in identity_fields)
+    if not identity_description:
+        identity_description = 'No primary identity fields are configured; use the full record context.'
+
+    return f'''You reconcile two sets of structured records about {subject} extracted from the same paper.
+
+Each output object represents {unit}. The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
+Compare the text-derived and image-derived records and merge only records that refer to the same {singular}.
+
+Primary identity fields:
+{identity_description}
+
+Rules:
+- Use the recipe schema keys exactly. Do not add extra keys.
+- Use compatible values in the primary identity fields as the strongest evidence that two records describe the same {singular}. Also consider the full record context and the configured record unit.
+- If one record has a more specific identity than another, merge them only when the less-specific record clearly applies to that same {singular}.
+- Keep records separate when their identity fields or defining context conflict.
+- Do not merge records only because they share a reported value, method, source location, or broad category.
+- Prefer explicit non-None values over None.
+- If text and image records provide complementary fields for the same {singular}, combine them into one record.
+- If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
+- Keep genuinely distinct {plural} as separate records according to the configured record unit.
+- Do not invent values. If neither source supports a field, use "None".
+- Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
+
+Additional recipe instructions:
+{additional_prompts}
+
+Schema. Use these keys exactly and do not add extra keys:
+{_field_schema(recipe)}
+
+Example output shape:
+{_example_record(recipe)}'''
+
+
 def query_model(messages: list[dict[str, Any]], model_config: ModelConfig | None = None) -> str:
     """Send extraction messages to a text model.
 
@@ -366,6 +421,7 @@ def scrape_images(
     model_config: ModelConfig | None = None,
     context: str | None = None,
     compression_config: CompressionConfig | None = None,
+    image_labels: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured recipe-defined records from paper images.
 
@@ -381,6 +437,9 @@ def scrape_images(
         Paper text supplied as additional context.
     compression_config : CompressionConfig | None, optional
         Compression policy for the model payload.
+    image_labels : Sequence[str] or None, optional
+        Per-image descriptions, such as a figure label and caption, sent
+        immediately before their image.
 
     Returns
     -------
@@ -394,7 +453,8 @@ def scrape_images(
                             config=config,
                             context=context,
                             max_output_tokens=10000,
-                            compression_config=compression_config)
+                            compression_config=compression_config,
+                            image_labels=image_labels)
     return _extract_json_objects(response)
 
 
@@ -422,46 +482,7 @@ def combine_material_records(
     list[dict[str, Any]]
         Reconciled records.
     """
-    definition = recipe['record definition']
-    subject = definition['subject']
-    singular = definition['singular']
-    plural = definition['plural']
-    unit = definition['unit']
-    identity_fields = definition['identity fields']
-    additional_prompts = recipe.get('additional prompts', '')
-    identity_description = ', '.join(f'"{field}"' for field in identity_fields)
-    if not identity_description:
-        identity_description = 'No primary identity fields are configured; use the full record context.'
-
-    prompt = f'''You reconcile two sets of structured records about {subject} extracted from the same paper.
-
-Each output object represents {unit}. The recipe terminology is "{singular}" for one record subject and "{plural}" for multiple record subjects.
-Compare the text-derived and image-derived records and merge only records that refer to the same {singular}.
-
-Primary identity fields:
-{identity_description}
-
-Rules:
-- Use the recipe schema keys exactly. Do not add extra keys.
-- Use compatible values in the primary identity fields as the strongest evidence that two records describe the same {singular}. Also consider the full record context and the configured record unit.
-- If one record has a more specific identity than another, merge them only when the less-specific record clearly applies to that same {singular}.
-- Keep records separate when their identity fields or defining context conflict.
-- Do not merge records only because they share a reported value, method, source location, or broad category.
-- Prefer explicit non-None values over None.
-- If text and image records provide complementary fields for the same {singular}, combine them into one record.
-- If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
-- Keep genuinely distinct {plural} as separate records according to the configured record unit.
-- Do not invent values. If neither source supports a field, use "None".
-- Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
-
-Additional recipe instructions:
-{additional_prompts}
-
-Schema. Use these keys exactly and do not add extra keys:
-{_field_schema(recipe)}
-
-Example output shape:
-{_example_record(recipe)}'''
+    prompt = build_reconciliation_prompt(recipe)
     payload = {
         'text_extracted_records': text_materials,
         'image_extracted_records': image_materials,
@@ -534,8 +555,7 @@ def convert_units(
             memory.append(1)
             values_str += f'{value}\n'
     config = model_config or ModelConfig.from_profile('text')
-    reserve_tokens = prompt_token_reserve(prompt, model_config=config, buffer_tokens=500)
-    token_budget = usable_input_token_limit(config, reserve_tokens=reserve_tokens)
+    token_budget = request_token_budget(prompt, config)
     coeff = token_length(values_str, model_config=config) / token_budget
     if coeff <= 1:
         values_strs = [values_str]

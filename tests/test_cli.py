@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from typing import Any, NoReturn
@@ -26,10 +27,13 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     root_help = runner.invoke(cli.main, ['--help'])
     filter_help = runner.invoke(cli.main, ['filter', '--help'])
     topics_help = runner.invoke(cli.main, ['topics', '--help'])
+    entities_help = runner.invoke(cli.main, ['entities', '--help'])
+    recipe_help = runner.invoke(cli.main, ['recipe', '--help'])
+    validate_help = runner.invoke(cli.main, ['validate', '--help'])
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
-                    'config', 'scrape', 'store', 'status', 'reset']:
+                    'config', 'recipe', 'entities', 'scrape', 'store', 'validate', 'status', 'reset']:
         assert command in root_help.output
     assert filter_help.exit_code == 0
     assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}
@@ -38,21 +42,146 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     assert set(cli.topics_group.commands) == {
         'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models',
     }
+    assert recipe_help.exit_code == 0
+    assert entities_help.exit_code == 0
+    assert set(cli.entities_group.commands) == {'corpus', 'text'}
+    assert all(command in entities_help.output for command in cli.entities_group.commands)
+    assert 'prompt' in recipe_help.output
+    assert validate_help.exit_code == 0
+    assert all(command in validate_help.output for command in ['gui', 'template'])
 
 
 def test_nested_groups_register_every_command_at_its_public_path() -> None:
     """Keep the installed command hierarchy from drifting from its design."""
-    assert set(cli.corpus_group.commands) == {'stats'}
+    assert set(cli.corpus_group.commands) == {'stats', 'searches'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
+    assert set(cli.recipe_group.commands) == {'prompt'}
+    assert set(cli.validate_group.commands) == {'gui', 'template'}
     assert set(cli.config_group.commands) == {
-        'model', 'status', 'elsevier-key', 'core-key', 'unpaywall-email',
-        'crossref-email', 'openalex-key', 'ncbi-key', 'ncbi-email',
-        'openai-key', 'anthropic-key',
+        'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
+        'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
+        'ncbi-email', 'openai-key', 'anthropic-key',
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
-                  cli.import_group, cli.config_group]:
+                  cli.import_group, cli.config_group, cli.recipe_group,
+                  cli.validate_group, cli.entities_group]:
         for public_name, command in group.commands.items():
             assert command.name == public_name
+
+
+@pytest.mark.parametrize(
+    ('kind', 'builder', 'expected_kwargs'),
+    [
+        ('text', 'build_text_extraction_prompt', {}),
+        ('image', 'build_image_extraction_prompt', {}),
+        ('image-context', 'build_image_extraction_prompt', {'with_context': True}),
+        ('reconciliation', 'build_reconciliation_prompt', {}),
+    ],
+)
+def test_recipe_prompt_renders_each_prompt_kind(
+    kind: str,
+    builder: str,
+    expected_kwargs: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Render each recipe prompt without making a model request."""
+    recipe = {'recipe': 'data'}
+    calls: dict[str, Any] = {}
+    monkeypatch.setattr(cli, 'load_recipe', lambda name: recipe if name == 'custom' else None)
+
+    def build(loaded: dict[str, str], **kwargs: Any) -> str:
+        """Capture the selected recipe and builder options."""
+        calls.update({'recipe': loaded, 'kwargs': kwargs})
+        return f'{kind} prompt'
+
+    monkeypatch.setattr(cli, builder, build)
+
+    result = CliRunner().invoke(cli.recipe_prompt, ['custom', '--kind', kind])
+
+    assert result.exit_code == 0
+    assert result.output == f'{kind} prompt\n'
+    assert calls == {'recipe': recipe, 'kwargs': expected_kwargs}
+
+
+def test_recipe_prompt_writes_an_output_file_and_reports_recipe_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Write long prompts to a file and present loading failures cleanly."""
+    output = tmp_path / 'prompt.txt'
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {})
+    monkeypatch.setattr(cli, 'build_text_extraction_prompt', lambda _: 'rendered prompt')
+
+    result = CliRunner().invoke(cli.recipe_prompt, ['custom', '--outfile', str(output)])
+
+    assert result.exit_code == 0
+    assert output.read_text() == 'rendered prompt\n'
+    assert result.output == f'Prompt written to {output}.\n'
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: (_ for _ in ()).throw(ValueError('bad recipe')))
+    invalid = CliRunner().invoke(cli.recipe_prompt, ['custom'])
+    assert invalid.exit_code == 1
+    assert 'Error: bad recipe' in invalid.output
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {})
+    unwritable = CliRunner().invoke(
+        cli.recipe_prompt,
+        ['custom', '--outfile', str(tmp_path / 'missing' / 'prompt.txt')],
+    )
+    assert unwritable.exit_code == 1
+    assert 'Error:' in unwritable.output
+
+
+def test_validation_template_writes_metadata_and_recipe_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Create a header-only CSV in the format consumed by validation."""
+    output = tmp_path / 'validation.csv'
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {
+        'search fields': {
+            'Material system': {},
+            'Band gap': {},
+            'All band gaps': {},
+        },
+    })
+
+    result = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert output.read_text() == (
+        'Identifier,Title,DOI,Material system,Band gap,All band gaps\n'
+    )
+    assert result.output == f'Validation template written to {output}.\n'
+
+
+def test_validation_template_reports_recipe_and_output_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Present invalid recipes and unwritable destinations as CLI errors."""
+    monkeypatch.setattr(
+        cli,
+        'load_recipe',
+        lambda _: (_ for _ in ()).throw(ValueError('bad recipe')),
+    )
+    invalid = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(tmp_path / 'validation.csv')],
+    )
+    assert invalid.exit_code == 1
+    assert 'Error: bad recipe' in invalid.output
+
+    monkeypatch.setattr(cli, 'load_recipe', lambda _: {'search fields': {'Name': {}}})
+    unwritable = CliRunner().invoke(
+        cli.validation_template,
+        ['custom', str(tmp_path / 'missing' / 'validation.csv')],
+    )
+    assert unwritable.exit_code == 1
+    assert 'Error:' in unwritable.output
 
 
 def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,18 +190,21 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: calls.update({
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: calls.update({
             'query': query,
             'db_path': path,
             'source': source,
             'count': count,
             'store_abstract': store_abstract,
             'enrich': enrich,
+            'parallel': parallel,
+            'workers': workers,
         }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['Lithium solid electrolyte', 'papers.db', '--source', 'core',
-                                                   '--count', '10', '--store-abstract', '--enrich'])
+                                                   '--count', '10', '--store-abstract', '--enrich',
+                                                   '--parallel', '--workers', '2'])
 
     assert result.exit_code == 0
     assert calls == {
@@ -82,6 +214,8 @@ def test_paper_search_passes_query_db_path_source_and_count(monkeypatch: pytest.
         'count': 10,
         'store_abstract': True,
         'enrich': True,
+        'parallel': True,
+        'workers': 2,
     }
 
 
@@ -184,13 +318,17 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'openalex'])
 
     assert result.exit_code == 0
     assert search_calls['source'] == 'openalex'
+    assert search_calls['parallel'] is False
+    assert search_calls['workers'] is None
 
     download_calls = {}
     db_path = tmp_path / 'papers.db'
@@ -239,6 +377,14 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
             kind='pdf',
             mime_type='application/pdf',
         )
+        corpus.add_structured_document(
+            conn,
+            {'paper_id': 'paper:1', 'title': 'Corpus paper'},
+            '<article/>',
+            document_format='jats',
+            source='pubmed',
+            original_filename='paper.nxml',
+        )
         papers = {paper['paper_id']: paper for paper in corpus.paper_rows(conn)}
         papers['paper:1']['num_text_chunks'] = 3
         papers['paper:2']['num_abstract_chunks'] = 2
@@ -253,12 +399,58 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
     assert 'Papers with abstracts: 1' in result.output
     assert 'Papers with text: 1' in result.output
     assert 'Papers with PDFs: 1' in result.output
+    assert 'Papers with structured documents: 1' in result.output
     assert 'Text scrapes split into chunks: 1' in result.output
     assert 'Abstract scrapes split into chunks: 1' in result.output
-    assert 'Blobs: 3' in result.output
+    assert 'Blobs: 4' in result.output
     assert 'Original size:' in result.output
     assert 'Stored size:' in result.output
     assert 'Storage saved:' in result.output
+
+
+def test_corpus_searches_prints_recent_queries_and_failures(tmp_path: Path) -> None:
+    """Show reproducible search settings, outcomes, and an empty-history message."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        empty_result = CliRunner().invoke(cli.corpus_searches, [str(db_path)])
+        search_id = corpus.begin_search_run(conn, 'solid   electrolyte', 'all', ['core'], 10)
+        corpus.finish_search_run(
+            conn,
+            search_id,
+            'partial',
+            {'core': {'status': 'failed', 'result_count': 0, 'error': 'service unavailable'}},
+        )
+
+    result = CliRunner().invoke(cli.corpus_searches, [str(db_path), '--limit', '1'])
+    json_path = tmp_path / 'searches.json'
+    suffixed_path = tmp_path / 'searches-copy.json'
+    json_result = CliRunner().invoke(
+        cli.corpus_searches,
+        [str(db_path), '--limit', '1', '--outfile', str(json_path)],
+    )
+    suffixed_result = CliRunner().invoke(
+        cli.corpus_searches,
+        [str(db_path), '--limit', '1', '--outfile', str(tmp_path / 'searches-copy')],
+    )
+
+    assert empty_result.exit_code == 0
+    assert 'No searches recorded.' in empty_result.output
+    assert result.exit_code == 0
+    assert f'Corpus searches: {db_path}' in result.output
+    assert f'#{search_id}' in result.output
+    assert ('partial | source=all | requested=10 | parallel=no | workers=1 | '
+            'results=0 | added=0 | updated=0') in result.output
+    assert 'solid electrolyte' in result.output
+    assert 'core failed: service unavailable' in result.output
+    assert json_result.exit_code == 0
+    assert f'Search history written to {json_path}.' in json_result.output
+    json_rows = json.loads(json_path.read_text())
+    assert json_rows[0]['query'] == 'solid   electrolyte'
+    assert json_rows[0]['sources'] == ['core']
+    assert json_rows[0]['source_results']['core']['error'] == 'service unavailable'
+    assert suffixed_result.exit_code == 0
+    assert suffixed_path.exists()
+    assert json.loads(suffixed_path.read_text()) == json_rows
 
 
 def test_import_author_translates_service_failures(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -676,6 +868,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     calls = []
     monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
     monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
+    monkeypatch.setattr(cli, 'update_core_rate', lambda: calls.append('core-rate'))
     monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
     monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
     monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
@@ -686,6 +879,7 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
 
     cli.update_elsevier_api_key()
     cli.update_core_api_key()
+    cli.update_core_request_rate()
     cli.update_unpaywall_api_email()
     cli.update_crossref_api_email()
     cli.update_openalex_api_key()
@@ -694,8 +888,8 @@ def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.Monke
     cli.update_openai_api_key()
     cli.update_anthropic_api_key()
 
-    assert calls == ['elsevier', 'core', 'unpaywall', 'crossref', 'openalex',
-                     'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
+    assert calls == ['elsevier', 'core', 'core-rate', 'unpaywall', 'crossref',
+                     'openalex', 'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -936,7 +1130,9 @@ def test_search_download_and_enrich_source_choices_accept_arxiv(
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'arxiv'])
@@ -983,7 +1179,9 @@ def test_search_download_and_enrich_source_choices_accept_pubmed(
     monkeypatch.setattr(
         cli,
         'search_for_papers',
-        lambda query, path, source, count, store_abstract, enrich: search_calls.update({'source': source}),
+        lambda query, path, source, count, store_abstract, enrich, parallel, workers: search_calls.update({
+            'source': source, 'parallel': parallel, 'workers': workers,
+        }),
     )
 
     result = CliRunner().invoke(cli.paper_search, ['query', 'papers.db', '--source', 'pubmed'])
@@ -1037,3 +1235,190 @@ def test_filter_topic_prints_the_successful_overview(
     result = CliRunner().invoke(cli.filter_topic, [str(db_path), str(rules_path)])
     assert result.exit_code == 0
     assert seen == [(str(db_path), overview)]
+
+
+def test_config_providers_prints_a_row_per_provider_and_flags_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report every provider, and exit non-zero only for a configured failure.
+
+    The exit code is what lets this gate a script, so it has to distinguish a
+    service that is down from a credential nobody supplied.
+    """
+    import paperminertoolkit.workflows.diagnostics as diagnostics
+    from click.testing import CliRunner
+
+    rows = [
+        diagnostics.ProviderStatus('arxiv', 'arXiv', '', diagnostics.OK, 'answered', 0.4),
+        diagnostics.ProviderStatus('core', 'CORE', 'CORE_API_KEY', diagnostics.NOT_SET_UP,
+                                   'unusable without it; run pmt config core-key'),
+    ]
+    monkeypatch.setattr(diagnostics, 'provider_status', lambda *_, **__: rows)
+    result = CliRunner().invoke(cli.main, ['config', 'providers', '--no-probe'])
+    assert result.exit_code == 0
+    assert 'arXiv' in result.output and 'answered 0.4s' in result.output
+    assert 'unusable without it' in result.output
+
+    rows.append(diagnostics.ProviderStatus('chemrxiv', 'chemRxiv', '',
+                                           diagnostics.NOT_RESPONDING, '403 bot challenge', 0.1))
+    result = CliRunner().invoke(cli.main, ['config', 'providers'])
+    assert result.exit_code == 1
+    assert '1 configured provider(s) not responding: chemRxiv' in result.output
+
+
+@pytest.mark.parametrize('command', ['corpus', 'text'])
+def test_entity_commands_forward_model_and_export_options(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass checkpoint settings and export filters through both public commands."""
+    input_path = tmp_path / ('papers.db' if command == 'corpus' else 'paper.txt')
+    input_path.write_text('')
+    output_path = tmp_path / 'entities.jsonl'
+    cache_dir = tmp_path / 'cache'
+    seen: dict[str, Any] = {}
+
+    def extract(source: str, output: str, config: cli.EntityExtractionConfig,
+                **kwargs: Any) -> dict[str, Any]:
+        """Capture the workflow arguments without loading a model."""
+        seen.update(source=source, output=output, config=config, **kwargs)
+        return {'papers': 2, 'documents': 3, 'entities': 7, 'output': output}
+
+    workflow = 'extract_corpus_entities' if command == 'corpus' else 'extract_file_entities'
+    monkeypatch.setattr(cli, workflow, extract)
+    arguments = [
+        'entities', command, str(input_path), str(output_path),
+        '--model', 'organisation/materials-ner', '--device', 'cuda:0',
+        '--batch-size', '3', '--stride', '32', '--max-length', '256',
+        '--revision', 'saved-commit', '--cache-dir', str(cache_dir),
+        '--local-files-only', '--min-score', '0.8',
+        '--label', 'MAT', '--label', 'PROPERTY', '--overwrite',
+    ]
+    if command == 'corpus':
+        arguments.extend(['--field', 'title', '--field', 'text'])
+
+    result = CliRunner().invoke(cli.main, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert seen['source'] == str(input_path)
+    assert seen['output'] == str(output_path)
+    assert seen['config'] == cli.EntityExtractionConfig(
+        model='organisation/materials-ner', device='cuda:0', batch_size=3,
+        stride=32, max_length=256, revision='saved-commit', cache_dir=str(cache_dir),
+        local_files_only=True,
+    )
+    assert seen['min_score'] == 0.8
+    assert seen['labels'] == ('MAT', 'PROPERTY')
+    assert seen['overwrite'] is True
+    assert seen.get('text_fields') == (('title', 'text') if command == 'corpus' else None)
+    assert 'Extracted 7 entities from 3 documents' in result.output
+    assert f'Entity annotations: {output_path}' in result.output
+
+
+@pytest.mark.parametrize('command', ['corpus', 'text'])
+def test_entity_commands_default_to_cpu_and_unfiltered_output(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use explicit checkpoint selection and consistent inference defaults."""
+    source = tmp_path / 'source'
+    source.write_text('')
+    output = tmp_path / 'entities.jsonl'
+    seen: dict[str, Any] = {}
+
+    def extract(source: str, output: str, config: cli.EntityExtractionConfig,
+                **kwargs: Any) -> dict[str, Any]:
+        """Capture default inference settings and return an empty summary."""
+        seen.update(config=config, **kwargs)
+        return {'papers': 0, 'documents': 0, 'entities': 0, 'output': output}
+
+    workflow = 'extract_corpus_entities' if command == 'corpus' else 'extract_file_entities'
+    monkeypatch.setattr(cli, workflow, extract)
+
+    result = CliRunner().invoke(
+        cli.main, ['entities', command, str(source), str(output), '--model', './local-ner'],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen['config'] == cli.EntityExtractionConfig(model='./local-ner')
+    assert seen['min_score'] == 0.0
+    assert seen['labels'] is None
+    assert seen['overwrite'] is False
+    assert seen.get('text_fields') == (('abstract',) if command == 'corpus' else None)
+
+
+@pytest.mark.parametrize('command', ['corpus', 'text'])
+@pytest.mark.parametrize('error', [
+    ImportError('Install paperminertoolkit[bert]'),
+    OSError('Cannot write output'),
+    RuntimeError('Checkpoint is not a trained token classifier'),
+    ValueError('Unknown entity label'),
+])
+def test_entity_commands_report_actionable_workflow_errors(
+    command: str,
+    error: Exception,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turn model, dependency, and export failures into clean CLI errors."""
+    source = tmp_path / 'source'
+    source.write_text('')
+
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Raise the workflow failure being exercised."""
+        raise error
+
+    workflow = 'extract_corpus_entities' if command == 'corpus' else 'extract_file_entities'
+    monkeypatch.setattr(cli, workflow, fail)
+    result = CliRunner().invoke(
+        cli.main,
+        ['entities', command, str(source), str(tmp_path / 'entities.jsonl'), '--model', 'ner'],
+    )
+
+    assert result.exit_code == 1
+    assert f'Error: {error}' in result.output
+
+
+@pytest.mark.parametrize('arguments', [
+    [],
+    ['--model', 'ner', '--min-score', '-0.1'],
+    ['--model', 'ner', '--min-score', '1.1'],
+    ['--model', 'ner', '--batch-size', '0'],
+    ['--model', 'ner', '--stride', '-1'],
+    ['--model', 'ner', '--max-length', '0'],
+    ['--model', 'ner', '--field', 'pdf'],
+])
+def test_entity_command_rejects_invalid_arguments_before_inference(
+    arguments: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject missing checkpoints and out-of-range options before any model work."""
+    source = tmp_path / 'papers.db'
+    source.write_text('')
+
+    def unexpected(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail if invalid input reaches inference."""
+        pytest.fail('Entity extraction must not run for invalid options.')
+
+    monkeypatch.setattr(cli, 'extract_corpus_entities', unexpected)
+    result = CliRunner().invoke(
+        cli.main,
+        ['entities', 'corpus', str(source), str(tmp_path / 'entities.jsonl'), *arguments],
+    )
+
+    assert result.exit_code == 2
+    assert 'Error:' in result.output
+
+
+@pytest.mark.parametrize('command', ['corpus', 'text'])
+def test_entity_command_help_explains_checkpoint_requirement(command: str) -> None:
+    """Expose fine-tuned checkpoint, overlap, offline, and label options in help."""
+    result = CliRunner().invoke(cli.main, ['entities', command, '--help'])
+
+    assert result.exit_code == 0
+    for option in ['--model', '--stride', '--local-files-only', '--label', '--overwrite']:
+        assert option in result.output
+    assert 'Fine-tuned token-classification' in result.output

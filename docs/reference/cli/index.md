@@ -12,6 +12,8 @@ pmt filter regex --help
 
 | Command | Purpose |
 | --- | --- |
+| `pmt probe` | Check provider configuration and availability. |
+| `pmt gather` | Search and retrieve content for matching papers in one run. |
 | `pmt search` | Find papers and add them to a corpus. |
 | `pmt enrich` | Supplement stored bibliographic metadata. |
 | `pmt download` | Retrieve abstracts, full text, and PDFs. |
@@ -27,8 +29,10 @@ pmt filter regex --help
 | `pmt corpus` | Inspect corpus contents and storage. |
 | `pmt filter` | Apply, inspect, and reset regex or topic filters. |
 | `pmt topics` | Train, compare, inspect, name, apply, and store LDA models. |
+| `pmt entities` | Annotate corpus or file text using fine-tuned BERT token classifiers. |
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
+| `pmt recipe` | Inspect recipes and render their LLM prompts. |
 
 Exact arguments and options are generated from the installed commands on the pages below. For task-oriented instructions, use the {doc}`../../workflow/index` and the {doc}`../../examples/index`.
 
@@ -39,6 +43,8 @@ core
 corpus
 filtering
 topics
+entities
 imports
 configuration
+recipes
 ```

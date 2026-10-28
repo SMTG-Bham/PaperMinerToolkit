@@ -6,8 +6,11 @@ End-to-end operations for discovering, acquiring, enriching, importing, and anal
 :maxdepth: 1
 
 search
+gather
 download
+figures
 enrichment
+entities
 imports
 topics
 utilities

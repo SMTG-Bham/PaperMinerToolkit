@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial
 from os import PathLike
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, TypeVar
@@ -34,6 +35,9 @@ _RegexRule: TypeAlias = dict[str, str]
 _RegexDefinition: TypeAlias = dict[str, Any]
 _CompiledDefinition: TypeAlias = dict[str, list[tuple[_RegexRule, regex.Pattern]]]
 _FilterOverview: TypeAlias = dict[str, Any]
+_FilterEvaluator: TypeAlias = Callable[
+    [Mapping[str, Any]], tuple[_FilterStatus, dict[str, Any], str]
+]
 
 
 def _require_type(value: object, expected_type: type[T], label: str) -> T:
@@ -999,6 +1003,164 @@ def filter_overview(conn: sqlite3.Connection) -> _FilterOverview:
     }
 
 
+def _normalize_join_operator(join_operator: str | None) -> str | None:
+    """Normalize an optional filter-stack join operator.
+
+    Parameters
+    ----------
+    join_operator : str or None
+        Requested Boolean operator.
+
+    Returns
+    -------
+    str or None
+        Lower-case operator, or ``None`` when no override was supplied.
+
+    Raises
+    ------
+    ValueError
+        If the operator is not supported.
+    """
+    if join_operator is not None:
+        join_operator = join_operator.lower()
+        if join_operator not in JOIN_OPERATORS:
+            raise ValueError('join_operator must be "and" or "or".')
+    return join_operator
+
+
+def _replace_filter_results(
+    conn: sqlite3.Connection,
+    filter_id: int,
+    evaluate: _FilterEvaluator,
+    evaluated_at: str,
+) -> None:
+    """Replace a filter's per-paper decisions inside the caller's transaction.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection with an active transaction.
+    filter_id : int
+        Filter whose previous decisions are being replaced.
+    evaluate : callable
+        Prepared evaluator returning status, evidence, and unavailable reason
+        for one corpus paper.
+    evaluated_at : str
+        Timestamp shared by all decisions in this operation.
+    """
+    conn.execute('DELETE FROM paper_filter_results WHERE filter_id = ?', (filter_id,))
+    for paper in paper_rows(conn):
+        status, evidence, unavailable_reason = evaluate(paper)
+        conn.execute(
+            """
+            INSERT INTO paper_filter_results (
+                filter_id, paper_id, status, evidence_json,
+                unavailable_reason, evaluated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                filter_id, paper['paper_id'], status,
+                json.dumps(evidence, sort_keys=True), unavailable_reason, evaluated_at,
+            ),
+        )
+
+
+def _apply_filter(
+    conn: sqlite3.Connection,
+    definition: Mapping[str, Any],
+    method: str,
+    join_operator: str | None,
+    replace: bool,
+    evaluate: _FilterEvaluator,
+) -> _FilterOverview:
+    """Persist a prepared filter and its decisions as one atomic update.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection after method-specific validation.
+    definition : Mapping[str, Any]
+        Normalized filter definition.
+    method : str
+        Evaluation method recorded with the filter.
+    join_operator : str or None
+        Validated join override, or ``None`` to preserve an existing join.
+    replace : bool
+        Whether an existing filter of the same name may be reevaluated.
+    evaluate : callable
+        Prepared evaluator for one corpus paper.
+
+    Returns
+    -------
+    dict[str, Any]
+        Updated overview after the filter transaction commits.
+
+    Raises
+    ------
+    ValueError
+        If the name, method, or join conflicts with the existing stack.
+    """
+    existing = conn.execute(
+        'SELECT * FROM corpus_filters WHERE name = ?', (definition['name'],)
+    ).fetchone()
+    if existing is not None and not replace:
+        raise ValueError(
+            f'Filter {definition["name"]!r} is already active; use --replace to reevaluate it.'
+        )
+    stack_size = conn.execute('SELECT COUNT(*) FROM corpus_filters').fetchone()[0]
+    now = utc_now()
+    try:
+        conn.execute('BEGIN')
+        if existing is None:
+            position = stack_size
+            if position == 0 and join_operator is not None:
+                raise ValueError('The first filter cannot have a join operator.')
+            resolved_join = None if position == 0 else (join_operator or 'and')
+            cursor = conn.execute(
+                """
+                INSERT INTO corpus_filters (
+                    name, method, description, definition_json, stack_position,
+                    join_operator, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    definition['name'], method, definition['description'],
+                    json.dumps(definition, sort_keys=True), position,
+                    resolved_join, now, now,
+                ),
+            )
+            filter_id = cursor.lastrowid
+        else:
+            if existing['method'] != method:
+                raise ValueError(
+                    f'Filter {definition["name"]!r} already exists with method '
+                    f'{existing["method"]!r}.'
+                )
+            position = existing['stack_position']
+            if position == 0 and join_operator is not None:
+                raise ValueError('The first filter cannot have a join operator.')
+            resolved_join = existing['join_operator'] if join_operator is None else join_operator
+            conn.execute(
+                """
+                UPDATE corpus_filters
+                SET description = ?, definition_json = ?, join_operator = ?, updated_at = ?
+                WHERE filter_id = ?
+                """,
+                (
+                    definition['description'], json.dumps(definition, sort_keys=True),
+                    resolved_join, now, existing['filter_id'],
+                ),
+            )
+            filter_id = existing['filter_id']
+        _replace_filter_results(conn, filter_id, evaluate, now)
+        _recompute_filter_state(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return filter_overview(conn)
+
+
 def apply_regex_filter(db_path: str | PathLike[str],
                        rules_path: str | PathLike[str],
                        fields: Iterable[str] | None = None,
@@ -1036,88 +1198,12 @@ def apply_regex_filter(db_path: str | PathLike[str],
     """
     definition = load_regex_definition(rules_path, fields=fields, timeout_ms=timeout_ms)
     compiled = compile_regex_definition(definition)
-    if join_operator is not None:
-        join_operator = join_operator.lower()
-        if join_operator not in JOIN_OPERATORS:
-            raise ValueError('join_operator must be "and" or "or".')
-
+    join_operator = _normalize_join_operator(join_operator)
     with connect(db_path) as conn:
-        existing = conn.execute(
-            'SELECT * FROM corpus_filters WHERE name = ?', (definition['name'],)
-        ).fetchone()
-        if existing is not None and not replace:
-            raise ValueError(
-                f'Filter {definition["name"]!r} is already active; use --replace to reevaluate it.'
-            )
-        stack_size = conn.execute('SELECT COUNT(*) FROM corpus_filters').fetchone()[0]
-        now = utc_now()
-        try:
-            conn.execute('BEGIN')
-            if existing is None:
-                position = stack_size
-                if position == 0 and join_operator is not None:
-                    raise ValueError('The first filter cannot have a join operator.')
-                resolved_join = None if position == 0 else (join_operator or 'and')
-                cursor = conn.execute(
-                    """
-                    INSERT INTO corpus_filters (
-                        name, method, description, definition_json, stack_position,
-                        join_operator, created_at, updated_at
-                    ) VALUES (?, 'regex', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        definition['name'], definition['description'],
-                        json.dumps(definition, sort_keys=True), position,
-                        resolved_join, now, now,
-                    ),
-                )
-                filter_id = cursor.lastrowid
-            else:
-                if existing['method'] != 'regex':
-                    raise ValueError(
-                        f'Filter {definition["name"]!r} already exists with method '
-                        f'{existing["method"]!r}.'
-                    )
-                position = existing['stack_position']
-                if position == 0 and join_operator is not None:
-                    raise ValueError('The first filter cannot have a join operator.')
-                resolved_join = existing['join_operator'] if join_operator is None else join_operator
-                conn.execute(
-                    """
-                    UPDATE corpus_filters
-                    SET description = ?, definition_json = ?, join_operator = ?, updated_at = ?
-                    WHERE filter_id = ?
-                    """,
-                    (
-                        definition['description'], json.dumps(definition, sort_keys=True),
-                        resolved_join, now, existing['filter_id'],
-                    ),
-                )
-                filter_id = existing['filter_id']
-                conn.execute('DELETE FROM paper_filter_results WHERE filter_id = ?', (filter_id,))
-
-            for paper in paper_rows(conn):
-                status, evidence, unavailable_reason = evaluate_regex_paper(
-                    conn, paper, definition, compiled
-                )
-                conn.execute(
-                    """
-                    INSERT INTO paper_filter_results (
-                        filter_id, paper_id, status, evidence_json,
-                        unavailable_reason, evaluated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        filter_id, paper['paper_id'], status,
-                        json.dumps(evidence, sort_keys=True), unavailable_reason, now,
-                    ),
-                )
-            _recompute_filter_state(conn)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        return filter_overview(conn)
+        return _apply_filter(
+            conn, definition, 'regex', join_operator, replace,
+            partial(evaluate_regex_paper, conn, definition=definition, compiled=compiled),
+        )
 
 
 def apply_topic_filter(
@@ -1152,10 +1238,7 @@ def apply_topic_filter(
         If the definition, join operation, stored model, or stored scores are
         invalid or stale.
     """
-    if join_operator is not None:
-        join_operator = join_operator.lower()
-        if join_operator not in JOIN_OPERATORS:
-            raise ValueError('join_operator must be "and" or "or".')
+    join_operator = _normalize_join_operator(join_operator)
     with connect(db_path) as conn:
         definition = load_topic_definition(conn, rules_path)
         model = conn.execute(
@@ -1172,81 +1255,10 @@ def apply_topic_filter(
                 f'Topic scores for {definition["model"]!r} are stale; '
                 'run pmt topics store again before applying this filter.'
             )
-        existing = conn.execute(
-            'SELECT * FROM corpus_filters WHERE name = ?', (definition['name'],)
-        ).fetchone()
-        if existing is not None and not replace:
-            raise ValueError(
-                f'Filter {definition["name"]!r} is already active; use --replace to reevaluate it.'
-            )
-        stack_size = conn.execute('SELECT COUNT(*) FROM corpus_filters').fetchone()[0]
-        now = utc_now()
-        try:
-            conn.execute('BEGIN')
-            if existing is None:
-                position = stack_size
-                if position == 0 and join_operator is not None:
-                    raise ValueError('The first filter cannot have a join operator.')
-                resolved_join = None if position == 0 else (join_operator or 'and')
-                cursor = conn.execute(
-                    """
-                    INSERT INTO corpus_filters (
-                        name, method, description, definition_json, stack_position,
-                        join_operator, created_at, updated_at
-                    ) VALUES (?, 'topic', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        definition['name'], definition['description'],
-                        json.dumps(definition, sort_keys=True), position,
-                        resolved_join, now, now,
-                    ),
-                )
-                filter_id = cursor.lastrowid
-            else:
-                if existing['method'] != 'topic':
-                    raise ValueError(
-                        f'Filter {definition["name"]!r} already exists with method '
-                        f'{existing["method"]!r}.'
-                    )
-                position = existing['stack_position']
-                if position == 0 and join_operator is not None:
-                    raise ValueError('The first filter cannot have a join operator.')
-                resolved_join = existing['join_operator'] if join_operator is None else join_operator
-                conn.execute(
-                    """
-                    UPDATE corpus_filters
-                    SET description = ?, definition_json = ?, join_operator = ?, updated_at = ?
-                    WHERE filter_id = ?
-                    """,
-                    (
-                        definition['description'], json.dumps(definition, sort_keys=True),
-                        resolved_join, now, existing['filter_id'],
-                    ),
-                )
-                filter_id = existing['filter_id']
-                conn.execute('DELETE FROM paper_filter_results WHERE filter_id = ?', (filter_id,))
-            for paper in paper_rows(conn):
-                status, evidence, unavailable_reason = evaluate_topic_paper(
-                    conn, paper, definition
-                )
-                conn.execute(
-                    """
-                    INSERT INTO paper_filter_results (
-                        filter_id, paper_id, status, evidence_json,
-                        unavailable_reason, evaluated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        filter_id, paper['paper_id'], status,
-                        json.dumps(evidence, sort_keys=True), unavailable_reason, now,
-                    ),
-                )
-            _recompute_filter_state(conn)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        return filter_overview(conn)
+        return _apply_filter(
+            conn, definition, 'topic', join_operator, replace,
+            partial(evaluate_topic_paper, conn, definition=definition),
+        )
 
 
 def refresh_topic_filters(
@@ -1279,26 +1291,10 @@ def refresh_topic_filters(
         try:
             conn.execute('BEGIN')
             for item in filters:
-                conn.execute(
-                    'DELETE FROM paper_filter_results WHERE filter_id = ?',
-                    (item['filter_id'],),
+                _replace_filter_results(
+                    conn, item['filter_id'],
+                    partial(evaluate_topic_paper, conn, definition=item['definition']), now,
                 )
-                for paper in paper_rows(conn):
-                    status, evidence, reason = evaluate_topic_paper(
-                        conn, paper, item['definition']
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO paper_filter_results (
-                            filter_id, paper_id, status, evidence_json,
-                            unavailable_reason, evaluated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            item['filter_id'], paper['paper_id'], status,
-                            json.dumps(evidence, sort_keys=True), reason, now,
-                        ),
-                    )
             _recompute_filter_state(conn)
             conn.commit()
         except Exception:

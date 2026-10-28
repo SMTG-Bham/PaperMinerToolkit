@@ -329,19 +329,31 @@ def request_payload(
         If the request fails, the response is a challenge page, or the body is
         not well-formed JSON.
     """
-    response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    try:
-        return response.json()
-    except ValueError as error:
+    def challenge(response: provider.ResponseLike, error: ValueError) -> str:
+        """Describe a successful HTTP response containing a bot challenge.
+
+        Parameters
+        ----------
+        response : provider.ResponseLike
+            Response whose JSON decoding failed.
+        error : ValueError
+            Decoder failure, retained by the shared decoder as the cause.
+
+        Returns
+        -------
+        str
+            Challenge explanation, or an empty string for normal JSON errors.
+        """
         if (response.text or '').lstrip()[:1] == '<':
-            raise RuntimeError(
+            return (
                 f'chemRxiv returned an HTML challenge page rather than JSON from {url}. '
                 f'chemrxiv.org is behind a bot challenge that PaperMinerToolkit does not try '
                 f'to bypass; the same papers can be reached through the openalex or '
-                f'crossref sources.') from error
-        raise RuntimeError(f'chemRxiv returned malformed JSON: {error}') from error
+                f'crossref sources.')
+        return ''
+
+    response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
+    return provider.decode_payload(response, label='chemRxiv', decode_error=challenge)
 
 
 def request_json(
@@ -379,11 +391,7 @@ def request_json(
     """
     payload = request_payload(url, params=params, session=session, timeout=timeout,
                               attempts=attempts)
-    if payload is None:
-        return None
-    if not isinstance(payload, Mapping):
-        raise RuntimeError(f'chemRxiv returned an unexpected payload of type {type(payload).__name__}')
-    return dict(payload)
+    return provider.require_mapping(payload, label='chemRxiv')
 
 
 def normalize_chemrxiv_doi(value: object) -> str:
@@ -778,22 +786,6 @@ def total_results(payload: Mapping[str, Any] | None) -> int:
     return int(total) if total.isdigit() else 0
 
 
-def _version_rank(entry: Mapping[str, Any]) -> int:
-    """Return a record's posted version as a sortable number.
-
-    Parameters
-    ----------
-    entry : Mapping[str, Any]
-        Parsed chemRxiv record.
-
-    Returns
-    -------
-    int
-        Version number, or ``0`` when the record carries none.
-    """
-    return _rxiv._version_rank(entry)
-
-
 def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecord]:
     """Reduce parsed records to one entry per preprint, keeping the newest.
 
@@ -821,24 +813,12 @@ def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecor
     list[dict[str, Any]]
         One record per preprint, in first-appearance order.
     """
-    best: dict[str, _ChemrxivRecord] = {}
-    for entry in entries:
-        key = str(entry.get('chemrxiv_stem') or chemrxiv_stem(entry.get('chemrxiv_doi'))
-                  or entry.get('paper_id') or '')
-        if not key:
-            continue
-        current = best.get(key)
-        if current is None:
-            best[key] = dict(entry)
-            continue
-        newer, older = ((entry, current) if _version_rank(entry) >= _version_rank(current)
-                        else (current, entry))
-        merged = {**dict(older), **{field: value for field, value in newer.items() if value}}
-        merged['publication_date'] = min(filter(None, (current.get('publication_date'),
-                                                       entry.get('publication_date'))),
-                                         default='')
-        best[key] = merged
-    return list(best.values())
+    return _rxiv.collapse_versions(
+        entries,
+        lambda entry: str(entry.get('chemrxiv_stem')
+                          or chemrxiv_stem(entry.get('chemrxiv_doi'))
+                          or entry.get('paper_id') or ''),
+    )
 
 
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:

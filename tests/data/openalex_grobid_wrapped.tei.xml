@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?><html><body><tei xml:space="preserve" xmlns="http://www.tei-c.org/ns/1.0" xmlns:xlink="http://www.w3.org/1999/xlink">
+<teiheader xml:lang="en"><filedesc><titlestmt><title level="a" type="main">Thermometry example</title></titlestmt></filedesc></teiheader>
+<text xml:lang="en"><body>
+<div xmlns="http://www.tei-c.org/ns/1.0"><head n="1">Results</head><p>Temperature rose, as shown in figure 1.</p></div>
+<figure xml:id="fig_1" xmlns="http://www.tei-c.org/ns/1.0"><head>1</head><label>1</label><figdesc>Figure 1 | Nitrogen-vacancy-based nanoscale thermometry.</figdesc></figure>
+<figure type="table" xml:id="tab_0" xmlns="http://www.tei-c.org/ns/1.0"><head>1</head><label>1</label><figdesc>Table 1 | Measured sensitivities.</figdesc><table /></figure>
+</body></text></tei></body></html>

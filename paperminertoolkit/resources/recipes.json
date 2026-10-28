@@ -243,16 +243,20 @@
     "polymer": {
         "record definition": {
             "subject": "polymers and their reported properties",
-            "singular": "polymer sample or degradation experiment",
-            "plural": "polymer samples or degradation experiments",
-            "unit": "a distinct polymer sample or distinct degradation experiment",
+            "singular": "polymer sample record",
+            "plural": "polymer sample records",
+            "unit": "a distinct polymer sample in one degradation test, or a distinct polymer sample when no degradation test is reported",
             "identity fields": [
                 "Name",
                 "Copolymer type and composition",
-                "Additives fillers and blends"
+                "Additives fillers and blends",
+                "Synthesis method",
+                "Biodegradation test standard",
+                "Degradation medium",
+                "Degrading organisms or enzymes"
             ]
         },
-        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nBiodegradation rules:\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\n- Keep reported test conditions with the test they belong to. If the paper reports several degradation tests for the same material in different media, return one record per test.\n- Report percentage biodegradation, mass loss, and molecular weight loss in their own fields. Do not copy the same number into more than one of them.",
+        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample and degradation test. If no degradation test is reported for a sample, return one record for that sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing conditions as distinct samples.\nKeep separate degradation tests for the same sample in separate records, even when they use the same medium. Keep the reported protocol, medium, temperature, pH, inoculum or enzyme, and other test conditions with their own results. Time points within one test belong to the same record.\nDuring reconciliation, merge records only when both the sample identity and test context are compatible. A shared polymer name alone is not enough. Repeat sample properties across test records only when the paper supports that they describe the same sample.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nBiodegradation rules:\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\n- Use the end of the test as the common reporting time for scalar biodegradation and mass-loss results and 'Biodegradation test duration'. Do not substitute a maximum or a measurement from another time; if an endpoint value is not reported, use 'None'. Do not infer a missing duration from the test standard.\n- Report percentage biodegradation, mass loss, and molecular weight loss in their own fields. Do not copy the same number into more than one of them.\nExample values illustrate one hypothetical sample and one test. They are not evidence about the paper; do not copy them into extracted records.",
         "search fields": {
             "Name": {
                 "prompt": "Name of the polymer as reported, including any sample label, grade, or trade name",
@@ -278,10 +282,7 @@
             },
             "Monomers": {
                 "prompt": "Monomer or comonomer names used to make the polymer, exactly as reported",
-                "example": [
-                    "L-lactide",
-                    "glycolide"
-                ],
+                "example": "L-lactide",
                 "aliases": [
                     "Monomer",
                     "Comonomers",
@@ -301,7 +302,7 @@
             },
             "Copolymer type and composition": {
                 "prompt": "Copolymer architecture and comonomer composition, such as homopolymer, random, alternating, block, or graft, together with the reported comonomer ratio or blend ratio",
-                "example": "Random copolymer, 82:18 L-lactide:glycolide",
+                "example": "Homopolymer",
                 "aliases": [
                     "Copolymer type",
                     "Copolymer composition",
@@ -342,7 +343,7 @@
             },
             "Additives fillers and blends": {
                 "prompt": "Additives, plasticizers, fillers, compatibilizers, reinforcements, or blend partners present in the sample, with loading when reported",
-                "example": "20 wt% cellulose nanocrystals",
+                "example": "None",
                 "aliases": [
                     "Additives",
                     "Fillers",
@@ -366,7 +367,7 @@
             },
             "Polymer SMILES": {
                 "prompt": "SMILES string for the polymer or its repeat unit, copied exactly as it is printed as text in the paper or its supporting information, including any * or [*] attachment points. Only report a SMILES string that is printed as text. If none is printed, report None.",
-                "example": "*OC(C)C(=O)*",
+                "example": "None",
                 "aliases": [
                     "SMILES",
                     "PSMILES",
@@ -378,10 +379,7 @@
             },
             "Monomer SMILES": {
                 "prompt": "SMILES strings for the monomers, copied exactly as they are printed as text in the paper or its supporting information. Only report SMILES strings that are printed as text. If none is printed, report None.",
-                "example": [
-                    "CC1OC(=O)C(C)OC1=O",
-                    "O=C1COC(=O)CO1"
-                ],
+                "example": "None",
                 "aliases": [
                     "Monomer SMILES string",
                     "Monomer SMILES strings",
@@ -390,7 +388,7 @@
             },
             "BigSMILES": {
                 "prompt": "BigSMILES string copied exactly as it is printed as text in the paper or its supporting information. BigSMILES uses stochastic objects in curly braces with bonding descriptors, for example {[][$]CC[$][]}. Only report a BigSMILES string that is printed as text. Never build, complete, or convert one from a SMILES string, a drawn structure, a formula, or a polymer name. If none is printed, report None.",
-                "example": "{[][$]OC(C)C(=O)[$][]}",
+                "example": "None",
                 "aliases": [
                     "BigSMILES string",
                     "Big SMILES",
@@ -399,7 +397,7 @@
             },
             "Other structure identifier": {
                 "prompt": "Any other machine-readable structure identifier printed in the paper, such as an InChI, InChIKey, CAS Registry Number, PubChem CID, or PolyInfo identifier, copied exactly as printed",
-                "example": "CAS 26100-51-6",
+                "example": "None",
                 "aliases": [
                     "InChI",
                     "InChIKey",
@@ -442,7 +440,7 @@
             },
             "Degree of polymerization": {
                 "prompt": "Degree of polymerization or reported average number of repeat units per chain",
-                "example": "310",
+                "example": "None",
                 "aliases": [
                     "DP",
                     "Degree of polymerisation",
@@ -483,15 +481,14 @@
                 ]
             },
             "Decomposition temperature": {
-                "prompt": "Thermal decomposition or degradation onset temperature from TGA. Do not confuse this with the melting temperature or with biodegradation results.",
+                "prompt": "Thermal decomposition or degradation onset temperature from TGA. Do not confuse this with the melting temperature or with biodegradation results. Do not substitute a temperature defined by a fixed percentage of mass loss for the onset temperature.",
                 "example": "312 C",
                 "unit": "C",
                 "aliases": [
                     "Td",
                     "Thermal decomposition temperature",
                     "Degradation onset temperature",
-                    "TGA onset",
-                    "T5%"
+                    "TGA onset"
                 ]
             },
             "Tensile strength": {
@@ -529,7 +526,7 @@
                 ]
             },
             "Biodegradability": {
-                "prompt": "What the paper itself states about the biodegradability, compostability, or bio-based origin of this material, using the paper's own wording. Only report a statement the paper makes about this material. If the paper makes no such statement, report None.",
+                "prompt": "What the paper itself states about the biodegradability or compostability of this sample under the reported conditions, using the paper's own wording. Bio-based origin alone is not a biodegradability claim. Do not infer biodegradability, certification, or a pass/fail classification from the polymer name or a measured percentage. If the paper makes no such statement, report None.",
                 "example": "Reported as biodegradable under industrial composting conditions",
                 "aliases": [
                     "Biodegradable",
@@ -564,7 +561,7 @@
                 ]
             },
             "Biodegradation extent": {
-                "prompt": "Percentage biodegradation or mineralization reached in the test, usually evolved CO2 as a percentage of theoretical. Report the highest value reported for this material and test.",
+                "prompt": "Percentage biodegradation reported at the end of this test, at the time in 'Biodegradation test duration'. Use the reported endpoint from the test method, such as CO2 evolution, oxygen uptake, or dissolved organic carbon removal. Do not substitute mass loss, molecular weight loss, the highest value, or a value from another time. If no endpoint biodegradation is reported, report None.",
                 "example": "91%",
                 "unit": "%",
                 "aliases": [
@@ -577,7 +574,7 @@
                 ]
             },
             "Biodegradation test duration": {
-                "prompt": "Duration of the degradation test at which the reported degradation extent was measured",
+                "prompt": "Reported elapsed time at the end of this degradation test. Scalar biodegradation and mass-loss results must refer to this same endpoint. Do not infer the duration from the test standard; if it is not reported, report None.",
                 "example": "90 days",
                 "unit": "days",
                 "aliases": [
@@ -589,8 +586,8 @@
                 ]
             },
             "Mass loss": {
-                "prompt": "Percentage mass loss or weight loss of the sample during degradation. Report the highest value reported for this material and test.",
-                "example": "38%",
+                "prompt": "Percentage mass loss or weight loss of the sample at the end of this degradation test, at the time in 'Biodegradation test duration'. Do not substitute the highest value or a value from another time. If no endpoint mass loss is reported, report None.",
+                "example": "None",
                 "unit": "%",
                 "aliases": [
                     "Weight loss",
@@ -600,8 +597,8 @@
                 ]
             },
             "Molecular weight loss": {
-                "prompt": "Change in molecular weight during degradation, reported either as a percentage decrease or as the initial and final molecular weight",
-                "example": "Mn decreased from 45000 to 12000 g/mol",
+                "prompt": "Change in molecular weight during degradation, reported either as a percentage decrease or as the initial and final molecular weight. Include the measurement times and whether the values describe Mn or Mw; do not mix measurements from separate tests.",
+                "example": "None",
                 "aliases": [
                     "Molecular weight reduction",
                     "Molecular weight decrease",
@@ -621,7 +618,7 @@
             },
             "Degrading organisms or enzymes": {
                 "prompt": "Enzymes, microbial strains, or consortia used in or identified by the degradation test, with their source when reported",
-                "example": "Proteinase K from Tritirachium album",
+                "example": "Mixed microorganisms from industrial compost",
                 "aliases": [
                     "Enzymes",
                     "Enzyme",
@@ -634,7 +631,7 @@
             },
             "Biodegradation certification": {
                 "prompt": "Compostability or biodegradability certification or label reported for this material, such as TUV OK compost INDUSTRIAL, TUV OK compost HOME, OK biodegradable SOIL or MARINE, BPI certified, DIN CERTCO, or the Seedling logo",
-                "example": "TUV OK compost INDUSTRIAL",
+                "example": "None",
                 "aliases": [
                     "Certification",
                     "Compostability certification",
@@ -655,16 +652,23 @@
     "polymer_db": {
         "record definition": {
             "subject": "polymers and their reported properties",
-            "singular": "polymer sample or degradation experiment",
-            "plural": "polymer samples or degradation experiments",
-            "unit": "a distinct polymer sample or distinct degradation or biodegradation experiment",
+            "singular": "polymer sample record",
+            "plural": "polymer sample records",
+            "unit": "a distinct polymer sample in one degradation test, or a distinct polymer sample when no degradation test is reported",
             "identity fields": [
                 "Name",
                 "Monomer ratios",
-                "Additives fillers and blends"
+                "Additives fillers and blends",
+                "Synthesis method",
+                "Biodegradation test standard",
+                "Degradation medium",
+                "Degrading organisms or enzymes",
+                "Test substance concentration",
+                "Inoculum source",
+                "Inoculum concentration"
             ]
         },
-        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing or degradation conditions as distinct entries.\nIf the same polymer is put through several separate degradation or biodegradation tests, return one record per test.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', 'Monomer CAS numbers', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Do not derive a CAS Registry Number from a chemical name. Report a CAS number only when the paper prints it.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nControlled vocabulary rules:\n- Several fields list the values this database expects, such as 'Backbone linkage', 'Architecture', 'Microstructure', 'Ionic character', and 'Inoculum source'. Use the listed value when the paper clearly describes it, even if the paper uses a synonym.\n- If the paper describes something outside the listed values, report the paper wording instead of forcing it into the list. Do not choose a listed value just because it is listed.\nMeasurement rules:\n- Keep each measured value with the method and conditions it belongs to. For molar mass, record the eluent, column, and detector in the GPC method field rather than splitting the mass across several records.\n- For degradation experiments reported as a curve, report the individual time points and their values in the matching field, for example as a molar mass or percentage at each time.\n- Report percentage biodegradation, mass loss, and molar mass loss in their own fields. Do not copy the same number into more than one of them.\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\nReported-only rules. These apply to the 'Structural confidence', 'Klimisch score', and 'GLP compliance' fields:\n- These are curation values. Report them only when the paper states them outright.\n- Never assign, estimate, or infer them yourself. Your own confidence in an answer is not evidence, and a study being well conducted is not a stated Klimisch score or a stated GLP declaration.",
+        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PHBV, use that abbreviation as the name.\nReturn one record per distinct polymer sample and degradation test. If no degradation test is reported for a sample, return one record for that sample. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, and processing conditions as distinct samples.\nKeep separate degradation tests for the same sample in separate records, even when they use the same medium. Keep the reported protocol, medium, temperature, pH, inoculum or enzyme, and other test conditions with their own results. Time points within one test belong to the same record.\nDuring reconciliation, merge records only when both the sample identity and test context are compatible. A shared polymer name alone is not enough. Repeat sample properties across test records only when the paper supports that they describe the same sample.\nIf the paper is talking about a result from a previous paper, don't report that result.\nLine notation rules. These apply to the 'Polymer SMILES', 'Monomer SMILES', 'BigSMILES', 'Monomer CAS numbers', and 'Other structure identifier' fields:\n- Only report a string that is printed as literal text in the paper, its tables, its figure captions, or its supporting information. Copy it character for character, including brackets, asterisks, dollar signs, angle brackets, and stereochemistry markers.\n- Never write a structure string from your own chemical knowledge. Knowing the structure of a named polymer such as polyethylene, polystyrene, PET, or PLA is not evidence that this paper printed it.\n- A drawn chemical structure, reaction scheme, or skeletal formula is not a line notation. Do not read a drawing and write it out as SMILES or BigSMILES.\n- Never convert between notations. Do not turn a SMILES string into a BigSMILES string, do not turn a BigSMILES string into a SMILES string, and do not expand, canonicalize, or reformat a printed string.\n- Do not repair, complete, or tidy a string that looks wrong or truncated. Copy it as printed.\n- Do not derive a CAS Registry Number from a chemical name. Report a CAS number only when the paper prints it.\n- Most papers print no line notation at all. 'None' is the correct and expected answer for these fields, and reporting 'None' is never a failure.\nControlled vocabulary rules:\n- Several fields list the values this database expects, such as 'Backbone linkage', 'Architecture', 'Microstructure', 'Ionic character', and 'Inoculum source'. Use the listed value when the paper clearly describes it, even if the paper uses a synonym.\n- If the paper describes something outside the listed values, report the paper wording instead of forcing it into the list. Do not choose a listed value just because it is listed.\nMeasurement rules:\n- Keep each measured value with the method and conditions it belongs to. For molar mass, record the eluent, column, and detector in the GPC method field rather than splitting the mass across several records.\n- Use the end of the test as the common reporting time for scalar biodegradation and mass-loss results and 'Biodegradation test duration'. Do not substitute a maximum or a measurement from another time; if an endpoint value is not reported, use 'None'. Do not infer a missing duration from the test standard.\n- Preserve all reported time points and values in 'Mineralisation kinetics' and the matching accelerated, hydrolytic, or enzymatic degradation field. Fill these fields only for the test represented by this record; use 'None' for other tests.\n- Report percentage biodegradation, mass loss, and molar mass loss in their own fields. Do not copy the same number into more than one of them.\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\nReported-only rules. These apply to the 'Structural confidence', 'Klimisch score', and 'GLP compliance' fields:\n- These are curation values. Report them only when the paper states them outright.\n- Never assign, estimate, or infer them yourself. Your own confidence in an answer is not evidence, and a study being well conducted is not a stated Klimisch score or a stated GLP declaration.\nExample values illustrate one hypothetical sample and one test. They are not evidence about the paper; do not copy them into extracted records.",
         "search fields": {
             "Name": {
                 "prompt": "Name of the polymer as reported, including any sample label, grade, or trade name",
@@ -679,10 +683,7 @@
             },
             "Monomers": {
                 "prompt": "Monomer or comonomer names used to make the polymer, exactly as reported",
-                "example": [
-                    "L-lactide",
-                    "glycolide"
-                ],
+                "example": "L-lactide",
                 "aliases": [
                     "Monomer",
                     "Comonomers",
@@ -693,10 +694,7 @@
             },
             "Monomer CAS numbers": {
                 "prompt": "CAS Registry Numbers for the monomers or reagents, copied exactly as printed in the paper. Do not derive a CAS number from a chemical name.",
-                "example": [
-                    "95-96-5",
-                    "502-97-6"
-                ],
+                "example": "None",
                 "aliases": [
                     "Monomer CAS",
                     "Reagent CAS",
@@ -708,7 +706,7 @@
             },
             "Monomer ratios": {
                 "prompt": "Molar or mass ratio of the monomers or reagents in the polymer, in the order the monomers are listed, for example 82:18",
-                "example": "82:18",
+                "example": "None",
                 "aliases": [
                     "Monomer ratio",
                     "Comonomer ratio",
@@ -752,7 +750,7 @@
             },
             "Microstructure": {
                 "prompt": "Arrangement of the monomers along the chain. Expected values are homopolymer, block polymer, statistical copolymer, random copolymer, and alternating copolymer.",
-                "example": "random copolymer",
+                "example": "homopolymer",
                 "aliases": [
                     "Copolymer type",
                     "Copolymer microstructure",
@@ -804,7 +802,7 @@
             },
             "Polymer SMILES": {
                 "prompt": "SMILES string for the polymer or its repeat unit, copied exactly as it is printed as text in the paper or its supporting information, including any * or [*] attachment points. Only report a SMILES string that is printed as text. If none is printed, report None.",
-                "example": "*OC(C)C(=O)*",
+                "example": "None",
                 "aliases": [
                     "SMILES",
                     "PSMILES",
@@ -816,10 +814,7 @@
             },
             "Monomer SMILES": {
                 "prompt": "SMILES strings for the monomers, copied exactly as they are printed as text in the paper or its supporting information. Only report SMILES strings that are printed as text. If none is printed, report None.",
-                "example": [
-                    "CC1OC(=O)C(C)OC1=O",
-                    "O=C1COC(=O)CO1"
-                ],
+                "example": "None",
                 "aliases": [
                     "Monomer SMILES string",
                     "Monomer SMILES strings",
@@ -828,7 +823,7 @@
             },
             "BigSMILES": {
                 "prompt": "BigSMILES string copied exactly as it is printed as text in the paper or its supporting information. BigSMILES uses stochastic objects in curly braces with bonding descriptors, for example {[][$]CC[$][]}. Only report a BigSMILES string that is printed as text. Never build, complete, or convert one from a SMILES string, a drawn structure, a formula, or a polymer name. If none is printed, report None.",
-                "example": "{[][$]OC(C)C(=O)[$][]}",
+                "example": "None",
                 "aliases": [
                     "BigSMILES string",
                     "Big SMILES",
@@ -837,7 +832,7 @@
             },
             "Other structure identifier": {
                 "prompt": "Any other machine-readable structure identifier printed in the paper, such as an InChI, InChIKey, PubChem CID, or PolyInfo identifier, copied exactly as printed",
-                "example": "InChIKey JVTAAEKCZFNVCJ-UHFFFAOYSA-N",
+                "example": "None",
                 "aliases": [
                     "InChI",
                     "InChIKey",
@@ -857,7 +852,7 @@
             },
             "Amine number": {
                 "prompt": "Amine number or amine value of the polymer",
-                "example": "42",
+                "example": "None",
                 "aliases": [
                     "Amine value",
                     "Amine index"
@@ -865,7 +860,7 @@
             },
             "Acid number": {
                 "prompt": "Acid number or acid value of the polymer",
-                "example": "12.5",
+                "example": "None",
                 "aliases": [
                     "Acid value",
                     "Acid index",
@@ -874,7 +869,7 @@
             },
             "Hydroxyl number": {
                 "prompt": "Alcohol or hydroxyl number of the polymer",
-                "example": "56",
+                "example": "None",
                 "aliases": [
                     "Hydroxyl value",
                     "Alcohol number",
@@ -884,7 +879,7 @@
             },
             "Reactive functional group equivalents": {
                 "prompt": "Reactive functional group equivalents per gram of polymer",
-                "example": "1.8 meq/g",
+                "example": "None",
                 "unit": "meq/g",
                 "aliases": [
                     "Functional group equivalents",
@@ -1082,7 +1077,7 @@
             },
             "Solution viscosity": {
                 "prompt": "Viscosity of the polymer in solution from rheometry, including the solvent and the polymer concentration",
-                "example": "450 mPa.s in water at 2 wt%",
+                "example": "None",
                 "unit": "mPa.s",
                 "aliases": [
                     "Solution viscosity in water",
@@ -1126,7 +1121,7 @@
             },
             "LogP experimental": {
                 "prompt": "Experimentally measured partition coefficient (logP)",
-                "example": "2.4",
+                "example": "None",
                 "aliases": [
                     "Experimental logP",
                     "Measured logP",
@@ -1136,7 +1131,7 @@
             },
             "LogP calculated": {
                 "prompt": "Calculated or predicted partition coefficient (logP), including the method or software when reported",
-                "example": "2.1 (XLogP3)",
+                "example": "None",
                 "aliases": [
                     "Calculated logP",
                     "Predicted logP",
@@ -1146,7 +1141,7 @@
             },
             "LogP per surface area": {
                 "prompt": "Partition coefficient normalised by molecular surface area",
-                "example": "0.004 A^-2",
+                "example": "None",
                 "unit": "A^-2",
                 "aliases": [
                     "LogP/SA",
@@ -1156,7 +1151,7 @@
             },
             "Zeta potential": {
                 "prompt": "Zeta potential, including the pH and medium when reported",
-                "example": "-24 mV at pH 7.4",
+                "example": "None",
                 "unit": "mV",
                 "aliases": [
                     "Surface charge",
@@ -1165,7 +1160,7 @@
             },
             "Water solubility": {
                 "prompt": "Solubility of the polymer in water",
-                "example": "12 g/L",
+                "example": "None",
                 "unit": "g/L",
                 "aliases": [
                     "Aqueous solubility",
@@ -1174,7 +1169,7 @@
             },
             "Critical micelle concentration": {
                 "prompt": "Critical micelle concentration (CMC)",
-                "example": "0.005 mg/mL",
+                "example": "None",
                 "unit": "mg/mL",
                 "aliases": [
                     "CMC",
@@ -1183,7 +1178,7 @@
             },
             "Lower critical solution temperature": {
                 "prompt": "Lower critical solution temperature (LCST) or cloud point",
-                "example": "32 C",
+                "example": "None",
                 "unit": "C",
                 "aliases": [
                     "LCST",
@@ -1223,7 +1218,7 @@
             },
             "Hydrophilic-lipophilic balance": {
                 "prompt": "Hydrophilic-lipophilic balance (HLB)",
-                "example": "12.5",
+                "example": "None",
                 "aliases": [
                     "HLB",
                     "HLB value"
@@ -1231,7 +1226,7 @@
             },
             "Basic accelerated degradation": {
                 "prompt": "Result of an accelerated degradation experiment under basic conditions, such as 1M NaOH at 37 C. Report the reported time points and the molar mass or property measured at each, together with the conditions.",
-                "example": "Mn 45000 g/mol at 0 h, 21000 at 24 h, 8000 at 72 h (1M NaOH, 37 C)",
+                "example": "None",
                 "aliases": [
                     "Alkaline degradation",
                     "Base catalysed degradation",
@@ -1251,7 +1246,7 @@
             },
             "Neutral hydrolytic degradation": {
                 "prompt": "Result of a neutral hydrolytic degradation experiment, such as PBS at 37 C. Report the reported time points and the molar mass or property measured at each, together with the conditions.",
-                "example": "Mn 45000 g/mol at 0 d, 31000 at 14 d, 18000 at 28 d (PBS, 37 C)",
+                "example": "None",
                 "aliases": [
                     "Hydrolytic degradation",
                     "Hydrolysis",
@@ -1261,7 +1256,7 @@
             },
             "Enzymatic degradation": {
                 "prompt": "Result of an enzymatic degradation experiment, such as lipase in water at 37 C. Report the enzyme, its source or supplier, the conditions, and the reported time points and values.",
-                "example": "Mass loss 12% at 24 h, 38% at 72 h (lipase Novozym 435, water, 37 C)",
+                "example": "None",
                 "aliases": [
                     "Enzyme degradation",
                     "Lipase degradation",
@@ -1270,7 +1265,7 @@
             },
             "Biodegradation test standard": {
                 "prompt": "Standard test method or protocol used for the biodegradation test, such as OECD 301A, OECD 301B, OECD 301C, OECD 301D, OECD 301E, OECD 301F, OECD 310, ISO 14855, ISO 17556, ISO 14851, ASTM D6400, ASTM D5988, ASTM D6691, or EN 13432, copied exactly as named",
-                "example": "OECD 301B",
+                "example": "ISO 14855-1",
                 "aliases": [
                     "Test standard",
                     "Standard method",
@@ -1301,8 +1296,8 @@
                 ]
             },
             "Biodegradation test duration": {
-                "prompt": "Duration of the biodegradation test at which the reported degradation extent was measured",
-                "example": "28 days",
+                "prompt": "Reported elapsed time at the end of this degradation test. Scalar biodegradation and mass-loss results must refer to this same endpoint. Do not infer the duration from the test standard; if it is not reported, report None.",
+                "example": "90 days",
                 "unit": "days",
                 "aliases": [
                     "Test duration",
@@ -1314,7 +1309,7 @@
             },
             "Test substance purity": {
                 "prompt": "Purity of the test substance as a percentage",
-                "example": "98%",
+                "example": "None",
                 "aliases": [
                     "Substance purity",
                     "Sample purity",
@@ -1323,7 +1318,7 @@
             },
             "Test substance additives and impurities": {
                 "prompt": "Additives, carriers, or impurities present in the test substance, with their percentage when reported",
-                "example": "2% residual monomer",
+                "example": "None",
                 "aliases": [
                     "Carriers",
                     "Impurities",
@@ -1334,7 +1329,7 @@
             },
             "Test substance concentration": {
                 "prompt": "Concentration of the test substance in the biodegradation test, as reported, whether as mg/L, mg DOC/L, or mg ThOD/L",
-                "example": "20 mg DOC/L",
+                "example": "None",
                 "aliases": [
                     "Substance concentration",
                     "Test concentration",
@@ -1345,7 +1340,7 @@
             },
             "Test volume": {
                 "prompt": "Volume of the biodegradation test vessel or medium",
-                "example": "500 mL",
+                "example": "None",
                 "unit": "mL",
                 "aliases": [
                     "Vessel volume",
@@ -1364,7 +1359,7 @@
             },
             "Positive controls": {
                 "prompt": "Whether a positive control such as sodium benzoate or aniline was included, and which substance was used",
-                "example": "Yes, sodium benzoate",
+                "example": "None",
                 "aliases": [
                     "Positive control",
                     "Reference substance",
@@ -1373,7 +1368,7 @@
             },
             "Toxicity control": {
                 "prompt": "Whether a toxicity control was included, and its outcome",
-                "example": "Yes, no inhibition observed",
+                "example": "None",
                 "aliases": [
                     "Toxicity controls",
                     "Inhibition control"
@@ -1381,7 +1376,7 @@
             },
             "Inoculum source": {
                 "prompt": "Source of the inoculum. Expected values are effluent, activated sludge, mixed inocula, household inocula, industrial inocula, and other, with details when given.",
-                "example": "activated sludge from a municipal wastewater treatment plant",
+                "example": "other: industrial compost",
                 "aliases": [
                     "Inoculum",
                     "Inocolum source",
@@ -1392,7 +1387,7 @@
             },
             "Inoculum concentration": {
                 "prompt": "Concentration or loading of the inoculum, as reported, whether as a percentage, a CFU count, or mg/L suspended solids",
-                "example": "30 mg/L SS",
+                "example": "None",
                 "aliases": [
                     "Inoculum loading",
                     "Inoculum density",
@@ -1413,7 +1408,7 @@
             },
             "Specific chemical analytical monitoring": {
                 "prompt": "Whether the test substance itself was monitored by a specific chemical analysis such as HPLC, GC, or NMR, in addition to the standard respirometric or DOC measurement, with details",
-                "example": "Yes, HPLC monitoring of residual monomer",
+                "example": "None",
                 "aliases": [
                     "Chemical analytical monitoring",
                     "Analytical monitoring",
@@ -1422,8 +1417,8 @@
                 ]
             },
             "Substance degradation at end of test": {
-                "prompt": "Percentage biodegradation or mineralisation reached at the end of the test, usually evolved CO2 or oxygen demand as a percentage of theoretical. Report the value at the end of the test.",
-                "example": "68%",
+                "prompt": "Percentage biodegradation reported at the end of this test, at the time in 'Biodegradation test duration'. Use the reported endpoint from the test method, such as CO2 evolution, oxygen uptake, or dissolved organic carbon removal. Do not substitute mass loss, molecular weight loss, the highest value, or a value from another time. If no endpoint biodegradation is reported, report None.",
+                "example": "91%",
                 "unit": "%",
                 "aliases": [
                     "Biodegradation",
@@ -1437,7 +1432,7 @@
             },
             "Ten day window criterion": {
                 "prompt": "Whether the 10-day window criterion was fulfilled",
-                "example": "Yes",
+                "example": "None",
                 "aliases": [
                     "10-day window",
                     "10 day window",
@@ -1447,7 +1442,7 @@
             },
             "Mineralisation kinetics": {
                 "prompt": "Biodegradation curve over time, reported as the percentage biodegradation at each reported time point",
-                "example": "0% at 0 d, 12% at 7 d, 55% at 14 d, 68% at 28 d",
+                "example": "0% at 0 d, 35% at 30 d, 72% at 60 d, 91% at 90 d (CO2 evolution)",
                 "aliases": [
                     "Biodegradation kinetics",
                     "Kinetic data on mineralisation",
@@ -1458,7 +1453,7 @@
             },
             "Test substance recovery": {
                 "prompt": "Percentage of the test substance recovered at the end of the test",
-                "example": "92%",
+                "example": "None",
                 "aliases": [
                     "Substance recovery",
                     "Recovery",
@@ -1467,8 +1462,8 @@
                 ]
             },
             "Biodegradability": {
-                "prompt": "What the paper itself states about the biodegradability, compostability, or bio-based origin of this material, using the paper's own wording. Only report a statement the paper makes about this material. If the paper makes no such statement, report None.",
-                "example": "Reported as readily biodegradable",
+                "prompt": "What the paper itself states about the biodegradability or compostability of this sample under the reported conditions, using the paper's own wording. Bio-based origin alone is not a biodegradability claim. Do not infer biodegradability, certification, or a pass/fail classification from the polymer name or a measured percentage. If the paper makes no such statement, report None.",
+                "example": "Reported as biodegradable under industrial composting conditions",
                 "aliases": [
                     "Biodegradable",
                     "Biodegradability claim",
@@ -1479,7 +1474,7 @@
             },
             "Degradation medium": {
                 "prompt": "Medium or environment used for the degradation test, such as industrial compost, home compost, soil, seawater, marine sediment, activated sludge, freshwater, phosphate buffer, or simulated body fluid, including the reported temperature and pH",
-                "example": "Activated sludge at 22 C, pH 7.4",
+                "example": "Industrial compost at 58 C",
                 "aliases": [
                     "Test medium",
                     "Degradation environment",
@@ -1489,8 +1484,8 @@
                 ]
             },
             "Mass loss": {
-                "prompt": "Percentage mass loss or weight loss of the sample during degradation. Report the highest value reported for this material and test.",
-                "example": "38%",
+                "prompt": "Percentage mass loss or weight loss of the sample at the end of this degradation test, at the time in 'Biodegradation test duration'. Do not substitute the highest value or a value from another time. If no endpoint mass loss is reported, report None.",
+                "example": "None",
                 "unit": "%",
                 "aliases": [
                     "Weight loss",
@@ -1500,8 +1495,8 @@
                 ]
             },
             "Molar mass loss": {
-                "prompt": "Change in molar mass during degradation, reported either as a percentage decrease or as the initial and final molar mass",
-                "example": "Mn decreased from 45000 to 12000 g/mol",
+                "prompt": "Change in molar mass during degradation, reported either as a percentage decrease or as the initial and final molar mass. Include the measurement times and whether the values describe Mn or Mw; do not mix measurements from separate tests.",
+                "example": "None",
                 "aliases": [
                     "Molecular weight loss",
                     "Molecular weight reduction",
@@ -1522,7 +1517,7 @@
             },
             "Degrading organisms or enzymes": {
                 "prompt": "Enzymes, microbial strains, or consortia used in or identified by the degradation test, with their source when reported",
-                "example": "Proteinase K from Tritirachium album",
+                "example": "Mixed microorganisms from industrial compost",
                 "aliases": [
                     "Enzymes",
                     "Enzyme",
@@ -1534,7 +1529,7 @@
             },
             "Biodegradation certification": {
                 "prompt": "Compostability or biodegradability certification or label reported for this material, such as TUV OK compost INDUSTRIAL, TUV OK compost HOME, OK biodegradable SOIL or MARINE, BPI certified, DIN CERTCO, or the Seedling logo",
-                "example": "TUV OK compost INDUSTRIAL",
+                "example": "None",
                 "aliases": [
                     "Certification",
                     "Compostability certification",
@@ -1545,7 +1540,7 @@
             },
             "Additives fillers and blends": {
                 "prompt": "Additives, plasticizers, fillers, compatibilizers, reinforcements, or blend partners present in the polymer sample, with loading when reported",
-                "example": "20 wt% cellulose nanocrystals",
+                "example": "None",
                 "aliases": [
                     "Additives",
                     "Fillers",
@@ -1586,7 +1581,7 @@
                 "Material system"
             ]
         },
-        "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Put all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, figures, captions, and supporting information.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
+        "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Put all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, figures, captions, and supporting information.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- 'method_or_source': Report how the band gap was determined. For experimental values, include the measurement technique and extraction procedure where stated, e.g. 'UV–vis diffuse reflectance; Tauc plot' or 'absorption spectroscopy; absorption onset'. For computational values, include the calculation method, exchange–correlation functional, and explicitly reported corrections, e.g. 'DFT; HSE06; SOC'. For cited values, also include the reference identifier where available. Include only details explicitly reported in the paper.\n- 'gap_type': Describe only the nature of the gap: 'optical', 'direct', 'indirect', or 'fundamental', including combinations such as 'direct optical' or 'indirect fundamental' when explicitly supported. Do not include measurement techniques, computational methods, citation information, or conditions. Do not infer the gap type from the method.\n- 'conditions': Include only explicitly reported experimental measurement conditions, such as temperature, pressure, or atmosphere. Use 'None' for computational values or when experimental conditions are unreported. Do not include computational settings or sample synthesis conditions.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
         "search fields": {
             "Material system": {
                 "prompt": "Specific material, sample, composition, phase, or structure represented by this record, including a reported sample label where available",
@@ -1600,7 +1595,7 @@
                 ]
             },
             "Band gap": {
-                "prompt": "JSON list of the principal band-gap value or values produced in this paper for this material, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "prompt": "JSON list of the principal band-gap value or values produced in this paper for this material, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Select values explicitly presented as principal or representative; do not choose solely by magnitude.",
                 "example": [
                     {
                         "value": "0.92 eV",
@@ -1617,7 +1612,7 @@
                 ]
             },
             "All band gaps": {
-                "prompt": "JSON list of every distinct experimental or computational band gap produced in this paper for this material, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "prompt": "JSON list of every distinct experimental or computational band gap produced in this paper for this material, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Preserve separate values determined by different methods, gap types, or experimental conditions. Exclude values attributed to prior work.",
                 "example": [
                     {
                         "value": "0.92 eV",
@@ -1633,7 +1628,7 @@
                     },
                     {
                         "value": "1.35 eV",
-                        "method_or_source": "experiment-this-work, diffuse reflectance/Tauc",
+                        "method_or_source": "UV–vis diffuse reflectance; Tauc plot",
                         "gap_type": "optical",
                         "conditions": "room temperature"
                     }
@@ -1643,7 +1638,7 @@
                 ]
             },
             "Cited literature band gaps": {
-                "prompt": "JSON list of every distinct numeric band gap for this material that is explicitly attributed to cited literature, prior work, or an external database, including when only one value is reported; each item is an object with exactly 'value', 'method_or_source', 'gap_type', and 'conditions' keys, using 'None' for an unsupported item component",
+                "prompt": "JSON list of every distinct numeric band gap for this material explicitly attributed to another publication, prior work, or an external database, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Include the cited reference identifier in 'method_or_source' where available, alongside any reported measurement or computational method.",
                 "example": [
                     {
                         "value": "1.30 eV",
