@@ -22,9 +22,19 @@ def _json_default(value: Any) -> str | list[Any]:
 def _command_schema(command: click.Command, context: click.Context,
                     path: tuple[str, ...]) -> dict[str, Any]:
     """Read command and parameter declarations without parsing their values."""
+    declared = command.get_params(context)
+    # Click 8.5 stores the implicit help option under the reserved name
+    # ``_click_default_help`` so that a command may declare its own ``help``
+    # parameter. The schema keeps calling it ``help``, so its output does not
+    # change with the installed Click, unless the command has claimed that name.
+    help_option = command.get_help_option(context)
+    help_name_free = all(parameter.name != 'help' for parameter in declared
+                         if parameter is not help_option)
     parameters = []
-    for parameter in command.get_params(context):
+    for parameter in declared:
         info = parameter.to_info_dict()
+        if parameter is help_option and help_name_free:
+            info['name'] = 'help'
         if isinstance(parameter, click.Option):
             info.update(
                 prompt_required=parameter.prompt_required,

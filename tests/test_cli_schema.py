@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 import json
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import paperminertoolkit.settings as settings
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._version import __version__
 
+_CLICK_VERSION = tuple(int(part) for part in version('click').split('.')[:2])
+
 
 def _assert_live_tree(command: click.Command, node: dict[str, Any],
                       path: tuple[str, ...]) -> None:
@@ -25,8 +28,11 @@ def _assert_live_tree(command: click.Command, node: dict[str, Any],
     assert node['name'] == path[-1]
     assert node['path'] == ' '.join(path)
     assert node['help'] == command.help
+    # Click 8.5 renamed the implicit help option; the schema still calls it help.
+    help_option = command.get_help_option(context)
     assert [parameter['name'] for parameter in node['parameters']] == [
-        parameter.name for parameter in command.get_params(context)
+        'help' if parameter is help_option else parameter.name
+        for parameter in command.get_params(context)
     ]
     if isinstance(command, click.Group):
         assert [child['name'] for child in node['commands']] == command.list_commands(context)
@@ -165,6 +171,24 @@ def test_schema_never_parses_child_defaults_or_invokes_parameter_callbacks() -> 
     assert secret['confirmation_prompt'] is True
     help_option = next(parameter for parameter in node['parameters'] if parameter['name'] == 'help')
     assert set(help_option['opts']) == {'-h', '--help'}
+
+
+@pytest.mark.skipif(_CLICK_VERSION < (8, 5),
+                    reason='Click before 8.5 lets a help parameter clobber the help option.')
+def test_schema_leaves_the_help_name_to_a_declared_help_parameter() -> None:
+    """Keep parameter names unique when a command declares its own ``help``."""
+    root = click.Group('temporary')
+    root.add_command(schema_command)
+    root.add_command(click.Command('child', params=[click.Argument(['help'], required=False)]))
+
+    result = CliRunner().invoke(root, ['schema', 'child'])
+
+    assert result.exit_code == 0, result.output
+    parameters = json.loads(result.stdout)['command']['parameters']
+    names = [parameter['name'] for parameter in parameters]
+    assert len(names) == len(set(names))
+    declared = next(parameter for parameter in parameters if parameter['name'] == 'help')
+    assert declared['param_type_name'] == 'argument'
 
 
 @pytest.mark.parametrize('option', ['--help', '--version'])
