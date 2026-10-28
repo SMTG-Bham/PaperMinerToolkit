@@ -757,6 +757,11 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Configured sources resolve ``all``, deduplicate, and reject invalid values."""
+    # A credential also counts when only its environment variable is set, so a
+    # developer's own keys would otherwise leak in and add their sources.
+    for entry in download.registry.SOURCES.values():
+        if entry.credential_env:
+            monkeypatch.delenv(entry.credential_env, raising=False)
     monkeypatch.setattr(
         download,
         'load_settings',
@@ -775,8 +780,6 @@ def test_configured_sources_resolves_all_deduplicates_and_rejects_invalid(
         download._configured_sources(['bad'])
 
     monkeypatch.setattr(download, 'load_settings', lambda: {})
-    monkeypatch.delenv('UNPAYWALL_EMAIL', raising=False)
-    monkeypatch.delenv('CORE_API_KEY', raising=False)
     assert download._configured_sources(['all']) == ['openalex', 'pubmed', 'medrxiv', 'biorxiv',
                                                      'chemrxiv', 'arxiv']
 
