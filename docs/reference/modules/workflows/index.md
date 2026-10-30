@@ -12,6 +12,7 @@ figures
 enrichment
 entities
 imports
+recipe_optimisation
 topics
 utilities
 ```
