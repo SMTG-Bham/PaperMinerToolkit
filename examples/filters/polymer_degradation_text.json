@@ -1,0 +1,13 @@
+{
+  "name": "polymer-degradation-measurements",
+  "description": "Papers that degrade, age, or erode a material and report a measured outcome such as mass loss, mineralisation, or molecular weight change",
+  "fields": ["title", "abstract", "full_text"],
+  "case_sensitive": false,
+  "include_mode": "all",
+  "timeout_ms": 500,
+  "include": [
+    {"name": "degradation-experiment", "pattern": "\\b(?:bio)?degrad(?:ation|ed|es|ing)\\b|\\bdisintegrat(?:ion|ed|es)\\b|\\bweathering\\b|\\bhydrolytic\\b|\\bsoil burial\\b|\\bcompost(?:ing|ed)?\\b|\\b(?:photo|thermo)-?oxidati(?:on|ve)\\b|\\b(?:accelerated |UV |artificial )?(?:ageing|aging)\\b"},
+    {"name": "measured-outcome", "pattern": "\\b(?:mass|weight)[ -](?:loss|losses|remaining|retention|retained)\\b|\\b(?:residual|remaining) (?:mass|weight)\\b|\\bmineraliz(?:ation|ed)\\b|\\bmineralis(?:ation|ed)\\b|\\bCO2 evolution\\b|\\bbiogas\\b|\\bmethane yield\\b|\\bdegree of disintegration\\b|\\bcarbonyl index\\b|\\b(?:molecular weight|molar mass) (?:loss|decrease|reduction|retention)\\b"}
+  ],
+  "exclude": []
+}

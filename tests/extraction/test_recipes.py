@@ -188,7 +188,7 @@ def test_bundled_band_gap_recipe_uses_structured_lists_and_material_granularity(
         assert field_aliases.isdisjoint(other_aliases)
 
 
-@pytest.mark.parametrize('recipe_name', ['sse', 'polymer', 'polymer_db', 'band_gap_validation'])
+@pytest.mark.parametrize('recipe_name', ['sse', 'polymer', 'polymer_db', 'polymer_degradation', 'band_gap_validation'])
 def test_bundled_recipes_define_generic_record_metadata(recipe_name: str) -> None:
     """Test that every bundled recipe has a valid record definition."""
     recipe = recipes.load_recipe(recipe_name)
@@ -211,7 +211,7 @@ def test_sse_recipe_preserves_material_specific_matching_rules() -> None:
     assert 'neat material and another is a composite' in additional_prompts
 
 
-@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db'])
+@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db', 'polymer_degradation'])
 def test_polymer_aliases_match_unambiguously_to_their_own_columns(recipe_name: str) -> None:
     """Keep incoming polymer aliases from silently selecting another field."""
     recipe = recipes.load_recipe(recipe_name)

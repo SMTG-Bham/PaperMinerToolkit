@@ -1571,6 +1571,542 @@
             }
         }
     },
+    "polymer_degradation": {
+        "record definition": {
+            "subject": "biotic and abiotic polymer degradation experiments and their results",
+            "singular": "polymer degradation record",
+            "plural": "polymer degradation records",
+            "unit": "a distinct polymer sample in one degradation test, with each stage of a sequential test and each abiotic control as its own test",
+            "identity fields": [
+                "Name",
+                "Composition",
+                "Additives fillers and blends",
+                "Specimen form and dimensions",
+                "Pre-treatment",
+                "Degradation pathway",
+                "Degradation test type",
+                "Degradation medium",
+                "Test temperature",
+                "Inoculum or microorganisms",
+                "Enzyme"
+            ]
+        },
+        "additional prompts": "Always fill the 'Name' field using the reported polymer name, sample label, grade, or trade name; if the paper only reports an abbreviation such as PLA or PBAT, use that abbreviation as the name.\nReturn records only for polymer samples that are degraded, aged, eroded, or incubated in an experiment reported in this paper. If the paper reports no such experiment, return [].\nReturn one record per distinct polymer sample and degradation test. Treat different comonomer compositions, blend ratios, molecular weight grades, filler loadings, specimen forms or thicknesses, and pre-treatments as distinct samples.\nKeep separate degradation tests for the same sample in separate records, even when they use the same medium. A different temperature, pH, medium, inoculum, enzyme, light condition, or chemical agent makes a separate test. Keep each test's conditions with its own results. Time points within one test belong to the same record.\nBiotic and abiotic rules:\n- Set 'Degradation pathway' from the experimental design: biotic when living organisms or their enzymes act on the polymer, abiotic when no organisms are involved, combined when both act together by design, such as outdoor exposure in soil, and abiotic control for a sterile, poisoned, or enzyme-free counterpart of a biotic test. Do not decide it from the name of the medium alone: compost also hydrolyses polymers, and a buffer can carry enzymes.\n- Return each abiotic control as its own record, so the biotic and abiotic contributions stay separate.\n- For a sequential test, such as UV ageing followed by soil burial, return one record per stage and describe the earlier stage in the 'Pre-treatment' field of the later one.\nEndpoint and curve rules:\n- 'Test duration' is the elapsed time at the end of this test. 'Mineralisation', 'Disintegration', and 'Mass loss' report the values at that time. Do not substitute a maximum or a value from another time; if an endpoint value is not reported, use 'None'. Do not infer a missing duration from the test standard.\n- Preserve every reported time point in 'Mass loss curve' and 'Mineralisation curve', in time order and with units, including the final one. Use values stated in the text or in tables. When a curve is only plotted and you have only its caption, do not estimate values; name the figure in 'Mass loss figure' instead. When you are shown the figure itself, you may read approximate values from the plot, and must mark them as read from the figure.\n- If the paper gives remaining mass rather than mass loss, label the curve values as remaining mass and do not convert them. Report 'Mass loss' only when the paper states the mass loss at the end of the test.\n- Report mineralisation, disintegration, mass loss, and molecular weight change in their own fields. Do not copy the same number into more than one of them.\n- Only report degradation results that come from an experiment or an explicit claim in this paper. Do not report a material as biodegradable because polymers of its chemical class usually are.\nIf the paper is talking about a result from a previous paper, don't report that result.\nDuring reconciliation, merge records only when both the sample identity and test context are compatible. A shared polymer name alone is not enough. Repeat sample properties across test records only when the paper supports that they describe the same sample.\nExample values illustrate one hypothetical sample and one test. They are not evidence about the paper; do not copy them into extracted records.",
+        "search fields": {
+            "Name": {
+                "prompt": "Name of the polymer sample as reported, including any sample label, grade, or trade name",
+                "example": "PLLA-F1 (poly(L-lactide) film)",
+                "aliases": [
+                    "Polymer name",
+                    "Name of polymer",
+                    "Sample label",
+                    "Sample name",
+                    "Material name"
+                ]
+            },
+            "Polymer class": {
+                "prompt": "Polymer class or backbone chemistry, such as polyester, polyamide, polyolefin, polycarbonate, polyurethane, polysaccharide, polypeptide, polyether, or vinyl polymer",
+                "example": "Aliphatic polyester",
+                "aliases": [
+                    "Backbone chemistry",
+                    "Polymer family",
+                    "Polymer type",
+                    "Chemical class"
+                ]
+            },
+            "Monomers": {
+                "prompt": "Monomer or comonomer names used to make the polymer, exactly as reported",
+                "example": "L-lactide",
+                "aliases": [
+                    "Monomer",
+                    "Comonomers",
+                    "Monomer names"
+                ]
+            },
+            "Composition": {
+                "prompt": "Copolymer type and comonomer ratio, or blend ratio, as reported, such as homopolymer, random copolymer with 85:15 lactide:glycolide, or PLA/PBAT 70/30 blend",
+                "example": "Homopolymer",
+                "aliases": [
+                    "Copolymer composition",
+                    "Copolymer type",
+                    "Comonomer ratio",
+                    "Blend ratio"
+                ]
+            },
+            "Additives fillers and blends": {
+                "prompt": "Additives, plasticizers, fillers, compatibilizers, reinforcements, or blend partners present in the sample, with loading when reported",
+                "example": "None",
+                "aliases": [
+                    "Additives",
+                    "Fillers",
+                    "Plasticizers",
+                    "Plasticisers",
+                    "Blend components",
+                    "Reinforcement"
+                ]
+            },
+            "Specimen preparation": {
+                "prompt": "How the test specimen was made, such as solvent casting, compression moulding, melt extrusion, injection moulding, electrospinning, 3D printing, or cryo-milling, with the reported conditions",
+                "example": "Compression moulded at 190 C",
+                "aliases": [
+                    "Processing method",
+                    "Sample preparation",
+                    "Fabrication method",
+                    "Specimen processing"
+                ]
+            },
+            "Specimen form and dimensions": {
+                "prompt": "Physical form and size of the test specimen, such as film thickness and area, fibre diameter, foam density, pellet size, powder particle size, or specific surface area",
+                "example": "Film, 100 um thick, 25 mm x 25 mm",
+                "aliases": [
+                    "Specimen form",
+                    "Sample form",
+                    "Sample dimensions",
+                    "Film thickness",
+                    "Particle size",
+                    "Specimen geometry"
+                ]
+            },
+            "Initial number average molecular weight": {
+                "prompt": "Number average molecular weight (Mn) of the sample before degradation",
+                "example": "85000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mn",
+                    "Initial Mn",
+                    "Number average molecular weight",
+                    "Number-average molecular weight",
+                    "Number average molar mass"
+                ]
+            },
+            "Initial weight average molecular weight": {
+                "prompt": "Weight average molecular weight (Mw) of the sample before degradation",
+                "example": "150000 g/mol",
+                "unit": "g/mol",
+                "aliases": [
+                    "Mw",
+                    "Initial Mw",
+                    "Weight average molecular weight",
+                    "Weight-average molecular weight",
+                    "Weight average molar mass"
+                ]
+            },
+            "Initial crystallinity": {
+                "prompt": "Degree of crystallinity of the sample before degradation, usually from DSC or XRD",
+                "example": "35%",
+                "unit": "%",
+                "aliases": [
+                    "Crystallinity",
+                    "Xc",
+                    "Degree of crystallinity",
+                    "Initial degree of crystallinity"
+                ]
+            },
+            "Glass transition temperature": {
+                "prompt": "Glass transition temperature (Tg) of the sample before degradation",
+                "example": "60 C",
+                "unit": "C",
+                "aliases": [
+                    "Tg",
+                    "Glass transition"
+                ]
+            },
+            "Melting temperature": {
+                "prompt": "Melting temperature (Tm) of the sample before degradation",
+                "example": "175 C",
+                "unit": "C",
+                "aliases": [
+                    "Tm",
+                    "Melting point"
+                ]
+            },
+            "Pre-treatment": {
+                "prompt": "Any ageing or treatment applied to the sample before this test, such as UV pre-ageing, thermal annealing, sterilisation, gamma irradiation, or an earlier stage of a sequential test, with its conditions and duration",
+                "example": "None",
+                "aliases": [
+                    "Pretreatment",
+                    "Pre-ageing",
+                    "Pre-aging",
+                    "Pre-conditioning",
+                    "Prior treatment"
+                ]
+            },
+            "Degradation pathway": {
+                "prompt": "Whether this test is biotic, abiotic, combined, or an abiotic control. Expected values are biotic, abiotic, combined, and abiotic control. Decide from the experimental design the paper describes, not from the name of the medium.",
+                "example": "biotic",
+                "aliases": [
+                    "Biotic or abiotic",
+                    "Degradation type",
+                    "Test pathway"
+                ]
+            },
+            "Degradation test type": {
+                "prompt": "Kind of degradation test. Expected values are composting, soil burial, marine, freshwater, anaerobic digestion, activated sludge, enzymatic, microbial culture, in vivo, acidic hydrolysis, neutral hydrolysis, alkaline hydrolysis, photodegradation, thermo-oxidative ageing, natural weathering, chemical oxidation, irradiation, mechanical, and other, with details for other.",
+                "example": "composting",
+                "aliases": [
+                    "Test type",
+                    "Type of degradation test",
+                    "Degradation test",
+                    "Ageing type",
+                    "Aging type"
+                ]
+            },
+            "Test standard": {
+                "prompt": "Standard test method or protocol used for this test, such as ISO 14855, ISO 20200, ISO 16929, ISO 17556, ISO 14851, ISO 19679, ISO 4892, ASTM D5338, ASTM D5988, ASTM D6691, ASTM D6400, ASTM G154, OECD 301B, OECD 310, or EN 13432, copied exactly as named",
+                "example": "ISO 20200",
+                "aliases": [
+                    "Standard method",
+                    "Standard test method",
+                    "Biodegradation test standard",
+                    "ASTM standard",
+                    "ISO standard",
+                    "OECD test",
+                    "Test protocol"
+                ]
+            },
+            "Degradation medium": {
+                "prompt": "Medium or environment in contact with the sample, such as industrial compost, home compost, soil, seawater, marine sediment, freshwater, activated sludge, phosphate buffered saline, sodium hydroxide solution, simulated body fluid, air, or an outdoor exposure site",
+                "example": "Synthetic solid waste with mature compost inoculum",
+                "aliases": [
+                    "Test medium",
+                    "Degradation environment",
+                    "Test environment",
+                    "Incubation medium"
+                ]
+            },
+            "Test temperature": {
+                "prompt": "Temperature of this test, or its range or cycle when it is not constant",
+                "example": "58 C",
+                "unit": "C",
+                "aliases": [
+                    "Temperature",
+                    "Incubation temperature",
+                    "Ageing temperature",
+                    "Aging temperature"
+                ]
+            },
+            "pH": {
+                "prompt": "pH of the medium at the start of the test, and as maintained or measured during it",
+                "example": "None",
+                "aliases": [
+                    "Medium pH",
+                    "Initial pH",
+                    "Buffer pH"
+                ]
+            },
+            "Moisture or humidity": {
+                "prompt": "Moisture content or water holding capacity of a solid medium, or relative humidity of the surrounding air",
+                "example": "55% moisture content",
+                "aliases": [
+                    "Moisture content",
+                    "Relative humidity",
+                    "RH",
+                    "Water content",
+                    "Water holding capacity"
+                ]
+            },
+            "Oxygen condition": {
+                "prompt": "Whether the test was aerobic or anaerobic, with how it was aerated or kept free of oxygen",
+                "example": "Aerobic, mixed by hand twice a week",
+                "aliases": [
+                    "Aerobic or anaerobic",
+                    "Aeration",
+                    "Atmosphere"
+                ]
+            },
+            "Light exposure": {
+                "prompt": "Light exposure for photodegradation or weathering, including lamp type, wavelength range, irradiance, total radiant dose, light and dark or spray cycles, and chamber or outdoor site",
+                "example": "None",
+                "aliases": [
+                    "Light source",
+                    "UV exposure",
+                    "Irradiation conditions",
+                    "Irradiance",
+                    "UV lamp",
+                    "Radiant exposure"
+                ]
+            },
+            "Chemical agent": {
+                "prompt": "Chemical agent driving abiotic degradation and its concentration, such as sodium hydroxide, hydrochloric acid, phosphate buffer, hydrogen peroxide, Fenton reagent, or ozone",
+                "example": "None",
+                "aliases": [
+                    "Reagent",
+                    "Oxidant",
+                    "Hydrolysis reagent",
+                    "Degradation reagent"
+                ]
+            },
+            "Agitation and medium renewal": {
+                "prompt": "Shaking or stirring rate, flow, and whether and how often the medium, buffer, or enzyme solution was replaced",
+                "example": "None",
+                "aliases": [
+                    "Agitation",
+                    "Shaking speed",
+                    "Stirring",
+                    "Buffer replacement",
+                    "Medium renewal"
+                ]
+            },
+            "Sample loading": {
+                "prompt": "Amount of polymer relative to the medium, such as sample mass and medium mass or volume, mg of polymer per g of compost or soil, or mg/L",
+                "example": "1 g of film in 100 g of dry synthetic waste",
+                "aliases": [
+                    "Sample to medium ratio",
+                    "Test substance concentration",
+                    "Polymer loading",
+                    "Sample mass"
+                ]
+            },
+            "Inoculum or microorganisms": {
+                "prompt": "Inoculum, microbial strains, or consortia used in or identified by this test, with their source and concentration or activity when reported, such as activated sludge from a municipal plant at 30 mg/L suspended solids, or Pseudomonas sp. strain",
+                "example": "Mature compost from an industrial composting plant",
+                "aliases": [
+                    "Inoculum",
+                    "Inoculum source",
+                    "Microorganisms",
+                    "Microbial strain",
+                    "Microbial consortium",
+                    "Bacteria",
+                    "Fungi"
+                ]
+            },
+            "Enzyme": {
+                "prompt": "Enzyme used in this test, with its source or supplier, concentration, activity, and buffer, such as proteinase K from Tritirachium album at 0.2 mg/mL in Tris-HCl buffer",
+                "example": "None",
+                "aliases": [
+                    "Enzymes",
+                    "Enzyme source",
+                    "Enzyme concentration",
+                    "Enzyme activity"
+                ]
+            },
+            "Controls": {
+                "prompt": "Reference materials, blanks, and sterile or abiotic controls run alongside this test, with their results when reported, such as a cellulose reference reaching 85% biodegradation or a sterile control showing 2% mass loss",
+                "example": "Cellulose filter paper reference, fully disintegrated by 30 d",
+                "aliases": [
+                    "Positive control",
+                    "Reference material",
+                    "Sterile control",
+                    "Abiotic control",
+                    "Negative control",
+                    "Blank"
+                ]
+            },
+            "Test duration": {
+                "prompt": "Elapsed time at the end of this test. Every endpoint value in this record refers to this time. Do not infer the duration from the test standard; if it is not reported, report None.",
+                "example": "45 days",
+                "unit": "days",
+                "aliases": [
+                    "Duration",
+                    "Incubation time",
+                    "Degradation time",
+                    "Exposure time",
+                    "Test period",
+                    "Biodegradation test duration",
+                    "Ageing time"
+                ]
+            },
+            "Mineralisation": {
+                "prompt": "Percentage biodegradation at the end of this test measured as carbon conversion, such as CO2 evolution, oxygen demand, biogas, or dissolved organic carbon removal, at the time in 'Test duration'. Do not substitute mass loss, disintegration, or molecular weight loss.",
+                "example": "None",
+                "unit": "%",
+                "aliases": [
+                    "Biodegradation",
+                    "Biodegradation extent",
+                    "Percent biodegradation",
+                    "Mineralization",
+                    "Biodegradation percentage",
+                    "CO2 evolution"
+                ]
+            },
+            "Mineralisation curve": {
+                "prompt": "Every reported time point of carbon-conversion biodegradation for this test, in time order, as value at time, with the measurement method, such as CO2 evolution, oxygen demand, or biogas",
+                "example": "None",
+                "aliases": [
+                    "Mineralization curve",
+                    "Mineralisation kinetics",
+                    "Biodegradation curve",
+                    "Biodegradation kinetics",
+                    "CO2 evolution curve"
+                ]
+            },
+            "Biogas or methane yield": {
+                "prompt": "Biogas or methane produced in an anaerobic test, with units and time, such as mL CH4 per g of volatile solids after 60 d",
+                "example": "None",
+                "aliases": [
+                    "Methane yield",
+                    "Biogas yield",
+                    "Biomethane potential",
+                    "BMP",
+                    "Methane production"
+                ]
+            },
+            "Disintegration": {
+                "prompt": "Degree of disintegration at the end of this test, such as the fraction no longer retained on a 2 mm sieve under ISO 20200 or ISO 16929, at the time in 'Test duration'",
+                "example": "92%",
+                "unit": "%",
+                "aliases": [
+                    "Degree of disintegration",
+                    "Disintegration degree",
+                    "Fragmentation"
+                ]
+            },
+            "Mass loss": {
+                "prompt": "Percentage mass loss or weight loss of the sample at the end of this test, at the time in 'Test duration'. Do not substitute the highest value or a value from another time, and do not convert a remaining mass. If no endpoint mass loss is reported, report None.",
+                "example": "85%",
+                "unit": "%",
+                "aliases": [
+                    "Weight loss",
+                    "Percent mass loss",
+                    "Gravimetric mass loss",
+                    "Sample mass loss"
+                ]
+            },
+            "Mass loss curve": {
+                "prompt": "Every reported time point of mass loss or remaining mass for this test, in time order, as value at time, stating whether the values are mass loss or remaining mass and whether they come from the text or a table",
+                "example": "8% at 7 d, 30% at 14 d, 62% at 28 d, 85% at 45 d (mass loss, Table 2)",
+                "aliases": [
+                    "Mass loss kinetics",
+                    "Mass loss time course",
+                    "Mass loss profile",
+                    "Weight loss curve",
+                    "Remaining mass curve",
+                    "Residual mass"
+                ]
+            },
+            "Mass loss figure": {
+                "prompt": "Figure in which mass loss or remaining mass for this test is plotted against time, such as Figure 4a, identified from its number and caption. Report it even when the plotted values are not given in the text, so the curve can be digitised later.",
+                "example": "Figure 3",
+                "aliases": [
+                    "Mass loss plot",
+                    "Mass loss graph",
+                    "Weight loss figure",
+                    "Weight loss plot"
+                ]
+            },
+            "Mass loss method": {
+                "prompt": "How mass loss was measured, including specimen recovery, washing, drying conditions, and the number of replicates",
+                "example": "Recovered on a 2 mm sieve, washed with water, dried at 40 C under vacuum to constant mass, triplicates",
+                "aliases": [
+                    "Gravimetric method",
+                    "Weight loss method",
+                    "Drying conditions"
+                ]
+            },
+            "Molecular weight change": {
+                "prompt": "Change in Mn or Mw during this test, as the reported values over time or a percentage decrease, with the time points and measurement method",
+                "example": "Mn fell from 85000 to 21000 g/mol after 14 d (GPC)",
+                "aliases": [
+                    "Molecular weight loss",
+                    "Molar mass loss",
+                    "Molecular weight reduction",
+                    "Mn loss",
+                    "Molecular weight decrease"
+                ]
+            },
+            "Mechanical property retention": {
+                "prompt": "Change in tensile strength, elongation at break, modulus, or another mechanical property during this test, with time points",
+                "example": "None",
+                "aliases": [
+                    "Tensile strength retention",
+                    "Elongation retention",
+                    "Mechanical properties after degradation",
+                    "Retained tensile strength"
+                ]
+            },
+            "Crystallinity change": {
+                "prompt": "Change in crystallinity or thermal transitions during this test, with time points and method",
+                "example": "Crystallinity rose from 35% to 52% after 14 d (DSC)",
+                "aliases": [
+                    "Change in crystallinity",
+                    "Crystallinity after degradation"
+                ]
+            },
+            "Chemical changes": {
+                "prompt": "Spectroscopic or chemical changes during this test, such as carbonyl, hydroxyl, or vinyl index from FTIR, NMR or XPS changes, end-group titration, or yellowness index, with values and time points",
+                "example": "None",
+                "aliases": [
+                    "Carbonyl index",
+                    "FTIR changes",
+                    "Spectroscopic changes",
+                    "Yellowness index"
+                ]
+            },
+            "Surface and morphology changes": {
+                "prompt": "Surface erosion, cracks, pits, fragmentation, roughness, contact angle, discolouration, or biofilm seen during this test by SEM, AFM, or optical inspection, with time points",
+                "example": "Cracks and holes after 14 d, fragmented after 28 d (SEM)",
+                "aliases": [
+                    "Morphology changes",
+                    "Surface morphology",
+                    "SEM observations",
+                    "Surface erosion",
+                    "Contact angle"
+                ]
+            },
+            "Water uptake": {
+                "prompt": "Water absorption or swelling of the sample during this test, with time points",
+                "example": "None",
+                "aliases": [
+                    "Water absorption",
+                    "Swelling",
+                    "Water uptake ratio"
+                ]
+            },
+            "Degradation products": {
+                "prompt": "Degradation products, released monomers or oligomers, microplastic or nanoplastic fragments, and the analytical method, such as lactic acid by HPLC",
+                "example": "None",
+                "aliases": [
+                    "Released monomers",
+                    "Oligomers",
+                    "Metabolites",
+                    "Microplastics",
+                    "Breakdown products"
+                ]
+            },
+            "Ecotoxicity": {
+                "prompt": "Ecotoxicity of the degraded residue, medium, or products, such as plant germination, earthworm, Daphnia, or Vibrio fischeri tests, with results",
+                "example": "None",
+                "aliases": [
+                    "Toxicity",
+                    "Phytotoxicity",
+                    "Ecotoxicity test",
+                    "Germination index"
+                ]
+            },
+            "Kinetic parameters": {
+                "prompt": "Reported rate constant, half-life, lag phase, or time to a stated extent of degradation, with the fitted model and units, such as a first-order rate constant of 0.035 per day",
+                "example": "None",
+                "aliases": [
+                    "Rate constant",
+                    "Half-life",
+                    "Degradation rate",
+                    "Lag phase",
+                    "Kinetic model"
+                ]
+            },
+            "Degradation mechanism": {
+                "prompt": "Degradation mechanism as reported, such as hydrolytic, enzymatic, oxidative, photo-oxidative, thermal, or microbial assimilation, including bulk or surface erosion and random or chain-end scission when stated",
+                "example": "Bulk hydrolysis followed by microbial assimilation",
+                "aliases": [
+                    "Mechanism",
+                    "Erosion mode",
+                    "Scission mode",
+                    "Hydrolysis mechanism"
+                ]
+            },
+            "Biodegradability statement": {
+                "prompt": "What the paper itself states about the biodegradability, compostability, or environmental persistence of this sample under the reported conditions, using the paper's own wording",
+                "example": "Reported as disintegrating under industrial composting conditions",
+                "aliases": [
+                    "Biodegradability",
+                    "Biodegradable",
+                    "Compostability",
+                    "Biodegradability claim",
+                    "Persistence"
+                ]
+            }
+        }
+    },
     "band_gap_validation": {
         "record definition": {
             "subject": "materials with reported electronic band gaps",

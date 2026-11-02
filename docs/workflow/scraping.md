@@ -13,6 +13,9 @@ A recipe defines what one output record represents, the extraction instructions,
 `polymer_db`
 : A wider polymer-database schema with identifiers, composition, microstructure, solution properties, degradation time series, and OECD test metadata, using the same separation of samples and tests. Its larger schema leaves less completion space for additional records.
 
+`polymer_degradation`
+: Biotic and abiotic degradation experiments: composting, soil, marine, anaerobic, enzymatic and microbial tests alongside hydrolysis, photodegradation, thermo-oxidative ageing, and weathering. Each record is one sample in one test, with its conditions, controls, endpoint values, and complete mass loss and mineralisation curves. Sterile controls and each stage of a sequential test are separate records, and a plotted mass loss curve is identified by its figure so it can be digitised later.
+
 `band_gap_validation`
 : One record per distinct material, sample, composition, phase, or structure. Principal results, every gap reported by the study, and cited literature gaps are kept in separate JSON lists.
 

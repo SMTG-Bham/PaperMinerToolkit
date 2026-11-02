@@ -112,7 +112,10 @@ PMT_COUNT="${PMT_COUNT:-}"
 #   acid/base/hydrolytic/enzymatic degradation time series, with 30 unit-bearing
 #   fields. Its larger schema leaves less of the 10000-token completion budget
 #   for additional records; the number that fits depends on the reported detail.
-# Both recipes separate distinct samples and degradation experiments. Scrape
+# polymer_degradation: 48 fields, covering biotic and abiotic degradation tests,
+#   their conditions and controls, and complete mass loss and mineralisation
+#   curves, with 10 unit-bearing fields.
+# The recipes separate distinct samples and degradation experiments. Scrape
 # statuses are corpus-wide: changing PMT_RECIPE does not rerun successful stages.
 # See README.md for an explicit CLI --force rerun with fresh output paths.
 PMT_RECIPE="${PMT_RECIPE:-polymer}"

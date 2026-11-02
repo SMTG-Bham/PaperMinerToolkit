@@ -163,6 +163,55 @@ def test_polymer_prompt_example_contains_one_homopolymer_and_one_test(recipe_nam
         assert example['Biodegradation test duration'] == f'{duration} days'
 
 
+@pytest.mark.parametrize('prompt_kind', ['text', 'image', 'reconciliation'])
+def test_polymer_degradation_prompts_keep_biotic_abiotic_and_curve_rules(prompt_kind: str) -> None:
+    """Carry pathway, control, sequential-stage, and curve rules into every prompt."""
+    recipe = load_recipe('polymer_degradation')
+    if prompt_kind == 'reconciliation':
+        prompt = extract.build_reconciliation_prompt(recipe)
+    else:
+        prompt = extract.build_scrape_prompt(recipe, source=prompt_kind)
+
+    assert recipe['record definition']['unit'] in prompt
+    assert 'one record per distinct polymer sample and degradation test' in prompt
+    assert 'Time points within one test belong to the same record' in prompt
+    assert 'Return each abiotic control as its own record' in prompt
+    assert 'return one record per stage' in prompt
+    assert 'Do not decide it from the name of the medium alone' in prompt
+    assert "name the figure in 'Mass loss figure'" in prompt
+    assert 'If the paper reports no such experiment, return []' in prompt
+    assert 'both the sample identity and test context are compatible' in prompt
+
+    if prompt_kind == 'reconciliation':
+        identity_fields = set(recipe['record definition']['identity fields'])
+        assert {'Name', 'Degradation pathway', 'Degradation test type', 'Pre-treatment'}.issubset(identity_fields)
+        identity_section = prompt.split('Primary identity fields:\n', 1)[1].split('\n\n', 1)[0]
+        assert all(f'"{field}"' in identity_section for field in identity_fields)
+
+
+def test_polymer_degradation_example_is_one_consistent_mass_loss_test() -> None:
+    """Keep the example's endpoint fields consistent with its mass loss curve."""
+    recipe = load_recipe('polymer_degradation')
+    prompt = extract.build_text_extraction_prompt(recipe)
+    examples = json.loads(prompt.split('Example output shape:\n', 1)[1])
+
+    assert len(examples) == 1
+    example = examples[0]
+    assert set(example) == set(recipe['search fields'])
+    assert example['Degradation pathway'] in {'biotic', 'abiotic', 'combined', 'abiotic control'}
+    assert example['Composition'].lower() == 'homopolymer'
+
+    time_points = re.findall(r'(\d+(?:\.\d+)?)% at (\d+(?:\.\d+)?) d', example['Mass loss curve'])
+    assert len(time_points) > 1
+    assert [float(time) for _, time in time_points] == sorted(float(time) for _, time in time_points)
+    endpoint, duration = time_points[-1]
+    assert example['Mass loss'] == f'{endpoint}%'
+    assert example['Test duration'] == f'{duration} days'
+    assert example['Mineralisation'] == 'None'
+    assert example['Mineralisation curve'] == 'None'
+    assert 'hypothetical sample and one test' in prompt
+
+
 def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that model queries use the text profile and output limit."""
     calls = {}

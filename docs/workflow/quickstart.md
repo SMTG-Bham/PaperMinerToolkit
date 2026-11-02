@@ -51,7 +51,7 @@ pmt config model text --provider openai --model YOUR_TEXT_MODEL
 pmt scrape papers.db sse --mode abstract --output temp_scraped_materials.csv
 ```
 
-The recipe may be a bundled name such as `sse`, `polymer`, `polymer_db`, or `band_gap_validation`, or a path to your own JSON recipe.
+The recipe may be a bundled name such as `sse`, `polymer`, `polymer_db`, `polymer_degradation`, or `band_gap_validation`, or a path to your own JSON recipe.
 
 ## 4. Store the results
 
