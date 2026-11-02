@@ -340,6 +340,26 @@ def _json_decoder_scan(response: str) -> list[dict[str, Any]]:
     return data
 
 
+def _opens_with_empty_array(response: str) -> bool:
+    """Report whether a response begins with an empty JSON array.
+
+    Parameters
+    ----------
+    response : str
+        Model response with surrounding whitespace and code fences removed.
+
+    Returns
+    -------
+    bool
+        Whether the first JSON value in the response is ``[]``.
+    """
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(response)
+    except JSONDecodeError:
+        return False
+    return parsed == []
+
+
 def _extract_json_objects(response: str) -> list[dict[str, Any]]:
     """Parse model output into JSON object records.
 
@@ -351,12 +371,14 @@ def _extract_json_objects(response: str) -> list[dict[str, Any]]:
     Returns
     -------
     list[dict[str, Any]]
-        Parsed object records.
+        Parsed object records. An empty list when the response is ``[]``,
+        or opens with ``[]`` followed by prose that holds no JSON objects.
 
     Raises
     ------
     ValueError
-        If the response contains no valid JSON objects.
+        If the response contains no valid JSON objects and does not open
+        with an empty array.
     """
     response = _strip_fences(response)
     try:
@@ -381,6 +403,10 @@ def _extract_json_objects(response: str) -> list[dict[str, Any]]:
             continue
     if data:
         return data
+    # Models often answer "no records" with the required `[]` and then
+    # explain themselves. That is an empty result, not an unparseable one.
+    if _opens_with_empty_array(response):
+        return []
     preview = response[:500].replace('\n', ' ')
     raise ValueError(f'Model response did not contain valid JSON objects. Response preview: {preview}')
 

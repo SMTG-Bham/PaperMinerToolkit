@@ -216,6 +216,25 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() 
         extract._extract_json_objects('No records were found.')
 
 
+def test_extract_json_objects_reads_leading_empty_array_with_prose_as_no_records() -> None:
+    """Test that an empty array followed by an explanation means no records."""
+    fence = chr(96) * 3
+    responses = [
+        '[]\n\nThe paper reports no band gap values.',
+        '[] The text contains no relevant measurements.',
+        f'{fence}json\n[]\n{fence}\n\n### Explanation:\nNo band gaps are reported.',
+        '[ ]\nNothing relevant was found.',
+    ]
+    for response in responses:
+        assert extract._extract_json_objects(response) == []
+
+    assert extract._extract_json_objects('[]\nOne value: {"Name": "ZnO"}') == [{'Name': 'ZnO'}]
+
+    for response in ('No records [] were found.', 'Based on the text, nothing is reported.'):
+        with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
+            extract._extract_json_objects(response)
+
+
 def test_extract_json_objects_uses_regex_fallback_after_decoder_scan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test regex recovery after the JSON decoder scan finds no records."""
     monkeypatch.setattr(extract, '_json_decoder_scan', lambda _: [])

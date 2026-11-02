@@ -181,7 +181,7 @@ PaperMinerToolkit constructs a system prompt in a fixed order:
 4. **Source rules.** Text prompts distinguish this paper's results from citations and background. Image prompts cover captions, tables, plots, labels, readable values, and optional text context.
 5. **Schema.** Each `search fields` key and its `prompt` are rendered in recipe order.
 6. **Additional recipe instructions.** The complete `additional prompts` string is inserted without template substitution.
-7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist.
+7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist. A response that opens with `[]` and then adds an explanation is read as no records; a response with no JSON at all is recorded as a failure.
 8. **Example output.** The `example` value from every field is combined into one example JSON object.
 
 The paper text itself is sent as the user message; it is not interpolated into the system prompt. For image extraction, images and optional context are supplied through the configured vision provider.
