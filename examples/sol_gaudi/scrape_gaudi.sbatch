@@ -302,42 +302,14 @@ for err, n in rows:
     print(f"[{n}x] {err}")
 PY
 
-# --- What is left ----------------------------------------------------------
-# A corpus large enough to need this script is larger than one four-hour
-# allocation, so the normal end state is "partly done". Say so explicitly, and
-# print the command that continues it.
+# --- What is left ---------------------------------------------------------
+# A corpus large enough to need this script is larger than one allocation, so
+# the normal end state is "partly done". scrape_progress.py counts only the
+# papers pmt scrape would select (those the active filters include), separates
+# papers with no downloaded document (a resubmission fails them again at once)
+# from ones it would retry, counts supporting-information files the same way,
+# and prints the command that continues the scrape.
 echo "=== Remaining work ==="
-python - "$PMT_DB" "$PMT_MODE" <<'PY'
-import sqlite3
-import sys
-
-db_path, mode = sys.argv[1], sys.argv[2]
-stages = {
-    'abstract': ['abstract_scrape_status'],
-    'text': ['text_scrape_status'],
-    'images': ['image_scrape_status'],
-    'text-images': ['text_scrape_status', 'image_scrape_status'],
-}[mode]
-
-con = sqlite3.connect(db_path)
-total = con.execute('SELECT COUNT(*) FROM papers').fetchone()[0]
-remaining = 0
-for column in stages:
-    # column comes from the table above, never from user input.
-    done = con.execute(
-        f"SELECT COUNT(*) FROM papers WHERE COALESCE({column}, '') = 'succeeded'"
-    ).fetchone()[0]
-    print(f'{column}: {done} of {total} succeeded, {total - done} to go')
-    remaining = max(remaining, total - done)
-
-if remaining:
-    print()
-    print(f'{remaining} papers still to scrape. The scrape is resumable and skips')
-    print('what already succeeded, so continue it by submitting the same job again:')
-    print(f'  sbatch --export=ALL,PMT_DB={db_path} scrape_gaudi.sbatch')
-else:
-    print()
-    print('Corpus fully scraped.')
-PY
+python "$GAUDI_EXAMPLE_DIR/scrape_progress.py" "$PMT_DB" "$PMT_MODE"
 
 echo "=== Done ==="

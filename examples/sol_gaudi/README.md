@@ -315,9 +315,14 @@ to run this:
 - `pmt scrape` skips any stage already marked `succeeded`, so re-submitting the
   same job continues where the last one stopped. Finished papers cost
   milliseconds each.
-- The job now ends with a **Remaining work** section: how many papers are done,
-  how many are left, and the command to continue. Resubmit until it says
-  `Corpus fully scraped.`
+- The job ends with a **Remaining work** section from `scrape_progress.py`. It
+  counts only the papers `pmt scrape` selects (those the active corpus filters
+  include) and splits them into succeeded, without a downloaded document (a
+  resubmission fails these again at once; they need `pmt download`), failed,
+  and not yet attempted, then counts supporting-information files the same
+  way. It prints the command to continue while a resubmission still has work
+  to do, and `Corpus fully scraped` once it has none. Run it by hand with
+  `python scrape_progress.py papers.db text`.
 
 ```bash
 sbatch scrape_gaudi.sbatch   # repeat until nothing remains
