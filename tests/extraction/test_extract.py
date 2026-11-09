@@ -177,6 +177,24 @@ def test_every_model_reply_is_checked_against_the_recipe(monkeypatch: pytest.Mon
     assert extract.scrape_images(['figure.png'], recipe, model_config=object())[0]['Pathway'] == 'abiotic'
 
 
+def test_polymer_degradation_pathway_folds_the_variants_models_returned() -> None:
+    """Map the off-vocabulary pathways of a real run onto the four values, and drop the rest."""
+    recipe = load_recipe('polymer_degradation')
+    expected = {
+        'enzymatic': 'biotic',
+        'enzymatic degradation': 'biotic',
+        'abiotic and biotic (combined)': 'combined',
+        'combined': 'combined',
+        'Abiotic control': 'abiotic control',
+        'outdoor weathering': 'None',
+    }
+    records = [{'Degradation pathway': value} for value in expected]
+
+    extract.check_record_values(records, recipe)
+
+    assert [record['Degradation pathway'] for record in records] == list(expected.values())
+
+
 def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> None:
     """Test that prompt builders include recipe and source instructions."""
     recipe = sample_recipe()
@@ -305,8 +323,8 @@ def test_polymer_degradation_prompts_keep_biotic_abiotic_and_curve_rules(prompt_
         assert all(f'"{field}"' in identity_section for field in identity_fields)
 
 
-def test_polymer_degradation_example_is_one_consistent_mass_loss_test() -> None:
-    """Keep the example's endpoint fields consistent with its mass loss curve."""
+def test_polymer_degradation_example_is_one_schematic_mass_loss_test() -> None:
+    """Describe one test's shape with placeholders, never with numbers a model could copy as results."""
     recipe = load_recipe('polymer_degradation')
     prompt = extract.build_text_extraction_prompt(recipe)
     examples = json.loads(prompt.split('Example output shape:\n', 1)[1])
@@ -314,15 +332,13 @@ def test_polymer_degradation_example_is_one_consistent_mass_loss_test() -> None:
     assert len(examples) == 1
     example = examples[0]
     assert set(example) == set(recipe['search fields'])
-    assert example['Degradation pathway'] in {'biotic', 'abiotic', 'combined', 'abiotic control'}
+    assert example['Degradation pathway'] in recipe['search fields']['Degradation pathway']['values']
     assert example['Composition'].lower() == 'homopolymer'
-
-    time_points = re.findall(r'(\d+(?:\.\d+)?)% at (\d+(?:\.\d+)?) d', example['Mass loss curve'])
-    assert len(time_points) > 1
-    assert [float(time) for _, time in time_points] == sorted(float(time) for _, time in time_points)
-    endpoint, duration = time_points[-1]
-    assert example['Mass loss'] == f'{endpoint}%'
-    assert example['Test duration'] == f'{duration} days'
+    # A 2026 run copied the old example's numbers into a PLA paper's records.
+    assert [field for field, value in example.items() if re.search(r'\d', str(value))] == []
+    assert example['Mass loss curve'].count('<value>% at <time> d') > 1
+    assert example['Mass loss'] == '<value>%'
+    assert example['Test duration'] == '<time> days'
     assert example['Mineralisation'] == 'None'
     assert example['Mineralisation curve'] == 'None'
     assert 'hypothetical sample and one test' in prompt
