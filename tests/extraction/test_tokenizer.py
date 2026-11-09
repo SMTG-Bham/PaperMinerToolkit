@@ -243,6 +243,28 @@ def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest
     assert tokenizer.count_text_tokens('abcdefghij', config(provider='anthropic')) == 4
 
 
+def test_count_text_tokens_warns_once_per_model_when_it_estimates(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Name the tokenizer that failed, once per model, whenever counts become estimates."""
+    monkeypatch.setattr(tokenizer, '_ESTIMATE_WARNINGS', set())
+    monkeypatch.setattr(
+        tokenizer,
+        '_transformers_token_count',
+        lambda *_: (_ for _ in ()).throw(OSError('gpt-5.4-mini is not a local folder')),
+    )
+
+    for _ in range(3):
+        assert tokenizer.count_text_tokens('abcdef', config(provider='local', name='gpt-5.4-mini')) == 2
+    err = capsys.readouterr().err
+    assert err.count('Warning: could not count tokens') == 1
+    assert "local tokenizer for 'gpt-5.4-mini' (OSError" in err
+
+    tokenizer.count_text_tokens('abcdef', config(provider='local', name='Qwen/Qwen3'))
+    assert "tokenizer for 'Qwen/Qwen3'" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('provider', ['openai', 'local'])
 @pytest.mark.parametrize(('model_fields', 'expected_model'), [
     ({'name': 'configured-model'}, 'configured-model'),

@@ -86,6 +86,10 @@ available source URL and label. SI records are not automatically reconciled
 with article records or other SI files, so a repeated material can produce
 several records with different evidence sources.
 
+A supporting-information file whose text would need more than 20 requests, such
+as a genome annotation or instrument export, is marked unsupported with the
+request count instead of being sent.
+
 Successful text and image stages are checkpointed per SI asset. A later run
 processes new or failed SI even when the main article was already scraped.
 `--force` repeats successful SI stages; `--no-supplements` leaves SI checkpoints
@@ -126,6 +130,8 @@ results into the corpus as figure assets, which is what layout mode calls. Use
 ## Context limits and compression
 
 PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.
+
+Tokens are counted with the configured model's own tokenizer: tiktoken for OpenAI models, the token-counting endpoint for Anthropic, and the Hugging Face tokenizer named by the model setting for local servers. Text is cut at line breaks where possible, and every piece is measured again and split further until it fits, because token density is not uniform: a table of numbers can need three times the tokens of the same length of prose. When a tokenizer cannot be loaded, counts fall back to an estimate of one token per three characters and a warning names the tokenizer that failed. Treat that warning as a fault to fix (for a local server, the model name must be its exact Hugging Face repository ID): the estimate can undercount numeric text badly enough to overflow the context.
 
 :::{warning}
 Records extracted from separate chunks are not reconciled automatically. A material spanning chunk boundaries may be duplicated or incomplete. Increase the configured input limit only when the serving model genuinely supports it.

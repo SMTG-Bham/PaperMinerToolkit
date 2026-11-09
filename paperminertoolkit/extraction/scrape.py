@@ -50,8 +50,57 @@ _Paper: TypeAlias = dict[str, Any]
 _Material: TypeAlias = dict[str, Any]
 
 
+# A supporting-information file that needs more text requests than this is a
+# raw data dump, such as a genome annotation or instrument export, not reported
+# results: one was split into 180 requests in a 2026 polymer-degradation run.
+MAX_SUPPLEMENT_TEXT_REQUESTS = 20
+
+
+def _split_text(text: str, parts: int) -> list[str]:
+    """Split text into about ``parts`` contiguous pieces at line breaks where possible.
+
+    Each cut goes after the last line break, or failing that the last space,
+    in the quarter of a piece before the point that splits the remaining text
+    evenly, so table rows and words stay whole. With neither there, the cut is
+    made at that point itself. Targets are recomputed from what remains, so a
+    cut moved back does not leave a stub piece at the end.
+
+    Parameters
+    ----------
+    text : str
+        Text to split.
+    parts : int
+        Number of pieces wanted; two or more.
+
+    Returns
+    -------
+    list[str]
+        Non-empty pieces whose concatenation is `text`.
+    """
+    pieces = []
+    start = 0
+    for remaining_parts in range(parts, 1, -1):
+        size = math.ceil((len(text) - start) / remaining_parts)
+        target = start + size
+        earliest = max(start + 1, target - size // 4)
+        cut = text.rfind('\n', earliest, target)
+        if cut < earliest:
+            cut = text.rfind(' ', earliest, target)
+        cut = cut + 1 if cut >= earliest else target
+        pieces.append(text[start:cut])
+        start = cut
+    pieces.append(text[start:])
+    return [piece for piece in pieces if piece]
+
+
 def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
     """Split text into chunks that fit a model context window.
+
+    The text is split into as many pieces as its token count needs, and every
+    piece is measured again and split further until it fits. Token density
+    is not uniform: a table of numbers can need three times the tokens of the
+    same length of prose, so pieces of equal length may not fit even when
+    their total does.
 
     Parameters
     ----------
@@ -65,21 +114,31 @@ def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') 
     Returns
     -------
     list[str]
-        One or more character-contiguous text chunks.
+        One or more character-contiguous text chunks, each measured within
+        the budget. A single character is kept even if it measures over.
     """
     token_budget = request_token_budget(prompt, model_config)
-    coeff = token_length(text, model_config=model_config) / token_budget
-    if coeff <= 1:
-        return [text]
-    coeff = math.ceil(coeff)
-    char_per_split = math.ceil(len(text) / coeff)
-    chunks = []
-    for split in range(coeff):
-        if (split + 1) * char_per_split >= len(text):
-            chunks.append(text[split * char_per_split:])
-        else:
-            chunks.append(text[split * char_per_split:(split + 1) * char_per_split])
-    return chunks
+
+    def fit(piece: str) -> list[str]:
+        """Return `piece`, or its parts split until each fits the budget.
+
+        Parameters
+        ----------
+        piece : str
+            Text to fit.
+
+        Returns
+        -------
+        list[str]
+            Contiguous parts of `piece`, in order.
+        """
+        tokens = token_length(piece, model_config=model_config)
+        if tokens <= token_budget or len(piece) < 2:
+            return [piece]
+        return [part for split in _split_text(piece, math.ceil(tokens / token_budget))
+                for part in fit(split)]
+
+    return fit(text)
 
 
 def _record_chunk_plan(
@@ -610,6 +669,12 @@ def _scrape_supplements(
                         prompt = build_scrape_prompt(recipe, source='text')
                         text = maybe_compress_text(text, prompt, text_config, compression)
                         chunks = _text_chunks(text, text_config, prompt=f'{prompt}\n{description}')
+                        if len(chunks) > MAX_SUPPLEMENT_TEXT_REQUESTS:
+                            members[key] = 'unsupported'
+                            summary['supplement_unsupported'] += 1
+                            errors.append(f'{key}: too large for text extraction ({len(chunks)} requests, '
+                                          f'limit {MAX_SUPPLEMENT_TEXT_REQUESTS})')
+                            continue
                         if len(chunks) > 1:
                             print(f'Warning: supporting information {reference} was split into '
                                   f'{len(chunks)} independent text requests.', file=sys.stderr)

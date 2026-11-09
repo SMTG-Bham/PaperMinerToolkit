@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import sys
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import Protocol, TypeAlias
@@ -244,6 +245,35 @@ def _transformers_token_count(text: str, model: str) -> int:
     return len(tokens)
 
 
+_ESTIMATE_WARNINGS: set[tuple[str, str]] = set()
+
+
+def _warn_estimated_tokens(provider: str, model: str, error: Exception) -> None:
+    """Warn once per provider and model that token counts fell back to an estimate.
+
+    The character estimate is a guess, not a bound: digit-heavy text such as
+    spreadsheet tables runs at close to one character per token under some
+    tokenizers, three times what the estimate assumes. Chunks sized with it can
+    overflow the model context, so the fallback must never be silent.
+
+    Parameters
+    ----------
+    provider : str
+        Normalized provider name.
+    model : str
+        Model whose tokenizer could not be used.
+    error : Exception
+        Why tokenization failed.
+    """
+    key = (provider, model)
+    if key in _ESTIMATE_WARNINGS:
+        return
+    _ESTIMATE_WARNINGS.add(key)
+    print(f'Warning: could not count tokens with the {provider} tokenizer for {model!r} '
+          f'({type(error).__name__}: {error}). Using a character estimate instead, which can '
+          'undercount tables and other numeric text and overflow the model context.', file=sys.stderr)
+
+
 def count_text_tokens(
     text: str,
     model_config: _ModelConfigSource | None = None,
@@ -277,17 +307,20 @@ def count_text_tokens(
     if provider_name in {'', 'openai'}:
         try:
             return _openai_token_count(text, model_name)
-        except Exception:
+        except Exception as error:
+            _warn_estimated_tokens(provider_name or 'openai', model_name, error)
             return _conservative_token_estimate(text)
     if provider_name == 'anthropic':
         try:
             return _anthropic_token_count(text, model_config, model_name)
-        except Exception:
+        except Exception as error:
+            _warn_estimated_tokens(provider_name, model_name, error)
             return _conservative_token_estimate(text)
     if provider_name == 'local':
         try:
             return _transformers_token_count(text, model_name)
-        except Exception:
+        except Exception as error:
+            _warn_estimated_tokens(provider_name, model_name, error)
             return _conservative_token_estimate(text)
     return _conservative_token_estimate(text)
 

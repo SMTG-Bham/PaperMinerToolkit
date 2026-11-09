@@ -206,7 +206,10 @@ def _office_text(part: SupplementPart) -> str:
                 if cell.get('t') == 's' and value:
                     value = shared[int(value)]
                 elif cell.get('t') == 'inlineStr':
-                    value = ''.join(cell.find('s:is', ns).itertext())
+                    # Writers such as openpyxl emit an empty inline-string cell
+                    # with no <is> child at all.
+                    inline = cell.find('s:is', ns)
+                    value = ''.join(inline.itertext()) if inline is not None else ''
                 elif not value and cell.find('s:f', ns) is not None:
                     value = f'={cell.findtext("s:f", namespaces=ns)} [no cached value]'
                 cells.append(f'{cell.get("r", "")}: {value}')

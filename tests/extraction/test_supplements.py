@@ -100,6 +100,21 @@ def test_xml_and_office_readers_preserve_data_without_external_entities() -> Non
         readers.supplement_text(readers.supplement_parts(asset(b'abc\x00def', 'SI.txt'))[0])
 
 
+def test_xlsx_reader_accepts_empty_inline_string_cells() -> None:
+    """Read a worksheet whose writer left an inline-string cell without any text node."""
+    xlsx = archive_bytes({'xl/worksheets/sheet1.xml': (
+        b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        b'<row r="1"><c r="A1" t="inlineStr"><is><t>Soil properties</t></is></c></row>'
+        b'<row r="2"><c r="A2" t="inlineStr"></c><c r="B2"><v>6.8</v></c></row>'
+        b'</sheetData></worksheet>'
+    )})
+
+    text = readers.supplement_text(readers.supplement_parts(asset(xlsx, 'SI.xlsx'))[0])
+
+    assert 'A1: Soil properties' in text
+    assert 'A2: \tB2: 6.8' in text
+
+
 def test_pdf_and_raster_readers_render_full_pages_with_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Read real PDF text and render pages, rejecting rendering over budget."""
     import fitz
@@ -215,6 +230,28 @@ def test_si_archive_partial_failure_retries_only_failed_member(
     assert rows['Source path'].str.contains('!').all()
     with corpus.connect(db_path) as conn:
         assert get_supplements(conn, paper['paper_id'])[0]['content'] == payload
+
+
+def test_si_needing_too_many_text_requests_is_unsupported_without_model_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_models: None,
+) -> None:
+    """Refuse a data-dump supplement before it costs one model request per chunk."""
+    db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
+    paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
+    with corpus.connect(db_path) as conn:
+        add_supplement(conn, paper, b'0123\t4567\n' * 50, original_filename='genome.csv')
+    monkeypatch.setattr(scrape, 'MAX_SUPPLEMENT_TEXT_REQUESTS', 3)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text] * 4)
+    monkeypatch.setattr(scrape, 'scrape_text',
+                        lambda *_args, **_kwargs: pytest.fail('an oversized supplement must not reach the model'))
+
+    scrape.scrape_papers(str(db_path), mode='text', output_path=str(output))
+
+    with corpus.connect(db_path) as conn:
+        metadata = get_supplements(conn, paper['paper_id'])[0]['metadata']
+    assert metadata['text_extraction_status'] == 'unsupported'
+    assert 'genome.csv: too large for text extraction (4 requests, limit 3)' in metadata['text_extraction_error']
+    assert not output.exists()
 
 
 def test_si_image_mode_supplies_labels_and_preserves_stable_asset_provenance(

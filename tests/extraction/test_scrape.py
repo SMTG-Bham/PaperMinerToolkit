@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+import math
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -134,9 +135,35 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: p
     assert scrape._text_chunks('short text', text_config, prompt='extract prompt') == ['short text']
     assert budget_calls == [('extract prompt', text_config)]
 
-    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 240001)
-    chunks = scrape._text_chunks('abcdef', text_config)
-    assert chunks == ['ab', 'cd', 'ef']
+    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 40000 * len(text))
+    assert scrape._text_chunks('abcdef', text_config) == ['abc', 'def']
+    assert scrape._text_chunks('abcdefg', text_config) == ['abc', 'de', 'fg']
+
+
+def test_text_chunks_measure_every_piece_and_cut_at_line_breaks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-split dense pieces so no chunk overflows, and keep table rows and words whole."""
+    text_config = FakeModelConfig('text', name='model')
+    monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
+
+    def tokens(text: str, model_config: object = None) -> int:
+        """Count prose at four characters a token and every digit as a token."""
+        digits = sum(character.isdigit() for character in text)
+        return digits + math.ceil((len(text) - digits) / 4)
+
+    monkeypatch.setattr(scrape, 'token_length', tokens)
+    prose = ''.join(f'Paragraph {chr(97 + index % 26)} of the methods section.\n' for index in range(30))
+    table = ''.join(f'{index:04d}\t{index * 37 % 1000:03d}\t{index * 91 % 1000:03d}\n' for index in range(60))
+    text = prose + table
+
+    chunks = scrape._text_chunks(text, text_config)
+
+    assert ''.join(chunks) == text
+    assert all(tokens(chunk) <= 100 for chunk in chunks)
+    assert all(chunk[-1] in '\n ' for chunk in chunks)
+    # Equal-length pieces, as chunks used to be cut, overflow inside the table.
+    count = math.ceil(tokens(text) / 100)
+    size = math.ceil(len(text) / count)
+    assert max(tokens(text[start:start + size]) for start in range(0, len(text), size)) > 100
 
 
 def test_material_file_and_image_helpers_handle_common_inputs(tmp_path: Path) -> None:
