@@ -126,7 +126,13 @@ Each field can define:
 : Required for scraping. Describes what evidence and value belong in the field. Field-specific requirements should live here rather than being repeated in the general prompt.
 
 `example`
-: Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one.
+: Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one. Models copy plausible example values into records for papers that resemble the example, so write measurements and specific facts as placeholders in angle brackets, such as `"<value>% at <time> d"`, and keep concrete examples for vocabulary terms. A value that exactly repeats its field's example is replaced with `"None"` when the example is a placeholder or at least 25 characters long.
+
+`values`
+: Optional closed vocabulary: the only values the field may take. The schema line lists them, and each extracted value is folded onto one of them ignoring case, hyphens, underscores, spacing, and surrounding punctuation. Anything else becomes `"None"`. A list of values that all fold onto the same entry becomes that entry.
+
+`value aliases`
+: Optional, with `values`: a mapping from other spellings a model returns onto entries of `values`, such as `{"enzymatic": "biotic"}`. Aliases are matched the same tolerant way.
 
 `aliases`
 : Optional alternative headings accepted by `pmt store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
@@ -179,10 +185,12 @@ PaperMinerToolkit constructs a system prompt in a fixed order:
 2. **Record definition.** `unit`, `singular`, and `plural` define record granularity and provide natural terminology.
 3. **General evidence rules.** These require source-supported values, preserve relevant methods and conditions, use the general missing value `"None"`, and prohibit invented values.
 4. **Source rules.** Text prompts distinguish this paper's results from citations and background. Image prompts cover captions, tables, plots, labels, readable values, and optional text context.
-5. **Schema.** Each `search fields` key and its `prompt` are rendered in recipe order.
+5. **Schema.** Each `search fields` key and its `prompt` are rendered in recipe order, followed by its allowed `values` when it has them.
 6. **Additional recipe instructions.** The complete `additional prompts` string is inserted without template substitution.
-7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist. A response that opens with `[]` and then adds an explanation is read as no records; a response with no JSON at all is recorded as a failure.
+7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist. A response that opens with `[]` and then adds an explanation is read as no records; a response with no JSON at all is recorded as a failure. The contract also says that example values and placeholders only show a record's shape and must never be copied into a record.
 8. **Example output.** The `example` value from every field is combined into one example JSON object.
+
+Every parsed reply, from text, images, or reconciliation, is then checked against the recipe: values are folded onto each field's `values`, and copies of long or placeholder examples are dropped. Each replacement is recorded with the original value in a `Value warnings` column, which `pmt store` carries into the final CSV, so nothing is discarded silently.
 
 The paper text itself is sent as the user message; it is not interpolated into the system prompt. For image extraction, images and optional context are supplied through the configured vision provider.
 
@@ -266,6 +274,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -318,6 +327,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -370,6 +380,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -410,6 +421,7 @@ Rules:
 - If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
 - Keep genuinely distinct experiments as separate records according to the configured record unit.
 - Do not invent values. If neither source supports a field, use "None".
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 - Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
 
 Additional recipe instructions:

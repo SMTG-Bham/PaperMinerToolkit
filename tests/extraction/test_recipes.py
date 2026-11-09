@@ -62,6 +62,37 @@ def test_validate_recipe_rejects_invalid_recipe_shapes() -> None:
         recipes._validate_recipe({'record definition': {}, 'search fields': {}}, 'test')
 
 
+def test_validate_recipe_accepts_a_field_vocabulary_with_aliases() -> None:
+    """Accept closed values and aliases that map onto them."""
+    recipe = sample_recipe()
+    recipe['search fields']['Kind'] = {'prompt': 'Kind', 'values': ['bulk', 'thin film'],
+                                       'value aliases': {'film': 'thin film'}}
+
+    assert recipes._validate_recipe(recipe, 'test')['search fields']['Kind']['values'] == ['bulk', 'thin film']
+
+
+@pytest.mark.parametrize(('field', 'message'), [
+    ({'prompt': 'Kind', 'values': []}, 'non-empty list of strings'),
+    ({'prompt': 'Kind', 'values': ['bulk', ' ']}, 'non-empty list of strings'),
+    ({'prompt': 'Kind', 'values': 'bulk'}, 'non-empty list of strings'),
+    ({'prompt': 'Kind', 'value aliases': {'film': 'thin film'}}, 'without "values"'),
+    ({'prompt': 'Kind', 'values': ['bulk'], 'value aliases': {'film': 'thin film'}}, 'map strings to entries'),
+    ({'prompt': 'Kind', 'values': ['bulk'], 'value aliases': ['bulk']}, 'map strings to entries'),
+])
+def test_validate_recipe_rejects_malformed_field_vocabularies(field: dict[str, Any], message: str) -> None:
+    """Reject vocabularies a scrape could not apply."""
+    recipe = sample_recipe()
+    recipe['search fields']['Kind'] = field
+
+    with pytest.raises(ValueError, match=message):
+        recipes._validate_recipe(recipe, 'test')
+
+
+def test_value_warnings_travel_with_provenance() -> None:
+    """Let pmt store and validation carry the column that records replaced values."""
+    assert recipes.VALUE_WARNINGS_FIELD in recipes.PROVENANCE_FIELDS
+
+
 def test_validate_recipe_rejects_invalid_record_definitions() -> None:
     """Test record terminology, granularity, and identity-field validation."""
     recipe = sample_recipe()

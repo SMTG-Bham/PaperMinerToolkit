@@ -79,6 +79,104 @@ def test_token_length_counts_with_the_configured_model_by_default(monkeypatch: p
     assert seen == ['Qwen/Qwen3-30B-A3B-Instruct-2507', 'other/model']
 
 
+def vocabulary_recipe() -> dict[str, Any]:
+    """Return a recipe with a closed vocabulary, a long example and a placeholder example."""
+    recipe = sample_recipe()
+    recipe['search fields'] |= {
+        'Pathway': {
+            'prompt': 'Biotic or abiotic.',
+            'example': 'biotic',
+            'values': ['biotic', 'abiotic', 'abiotic control'],
+            'value aliases': {'enzymatic': 'biotic'},
+        },
+        'Method': {'prompt': 'How it was measured.', 'example': 'Dried at 40 C under vacuum to constant mass'},
+        'Endpoint': {'prompt': 'Final value.', 'example': '<value>%'},
+    }
+    return recipe
+
+
+def test_prompts_list_allowed_values_and_forbid_copying_examples() -> None:
+    """Show a field's vocabulary and the no-copying rule in every prompt."""
+    recipe = vocabulary_recipe()
+    prompts = [
+        extract.build_text_extraction_prompt(recipe),
+        extract.build_image_extraction_prompt(recipe),
+        extract.build_reconciliation_prompt(recipe),
+    ]
+
+    for prompt in prompts:
+        assert ('"Pathway": Biotic or abiotic. Allowed values: "biotic", "abiotic", "abiotic control", '
+                'or "None".') in prompt
+        assert 'never copy an example value or placeholder into a record' in prompt
+    assert 'Allowed values' not in extract._field_schema(sample_recipe())
+
+
+def test_check_record_values_maps_variants_and_records_what_it_replaced() -> None:
+    """Fold spellings and aliases onto the vocabulary and keep rejected values visible."""
+    recipe = vocabulary_recipe()
+    records: list[Any] = [
+        {'Name': 'A', 'Pathway': ' Abiotic-Control. '},
+        {'Name': 'B', 'Pathway': 'Enzymatic'},
+        {'Name': 'C', 'Pathway': 'photolysis'},
+        {'Name': 'D', 'Pathway': ['biotic', 'enzymatic']},
+        {'Name': 'E', 'Pathway': ['biotic', 'abiotic']},
+        {'Name': 'F', 'Pathway': 'None'},
+        {'Name': 'G'},
+        'not a record',
+    ]
+
+    checked = extract.check_record_values(records, recipe)
+
+    assert checked is records
+    assert [record['Pathway'] for record in records[:6]] == [
+        'abiotic control', 'biotic', 'None', 'biotic', 'None', 'None',
+    ]
+    assert records[2]['Value warnings'] == 'Pathway: "photolysis" is not one of biotic, abiotic, abiotic control'
+    assert records[4]['Value warnings'] == (
+        'Pathway: ["biotic", "abiotic"] is not one of biotic, abiotic, abiotic control'
+    )
+    assert all('Value warnings' not in record for record in (records[0], records[1], records[3], records[5]))
+    assert records[6] == {'Name': 'G'}
+    assert records[7] == 'not a record'
+
+    snapshot = json.dumps(records)
+    extract.check_record_values(records, recipe)
+    assert json.dumps(records) == snapshot
+
+
+def test_check_record_values_drops_copied_examples_but_keeps_short_real_values() -> None:
+    """Blank exact copies of long or placeholder examples; keep short values that match by chance."""
+    recipe = vocabulary_recipe()
+    records = [
+        {'Name': 'LLZO', 'Conductivity': '1e-3 S cm^-1',
+         'Method': 'dried at 40 C under vacuum to constant mass', 'Endpoint': '<value>%'},
+        {'Name': 'LATP', 'Method': 'Dried at 60 C', 'Endpoint': '85%'},
+    ]
+
+    extract.check_record_values(records, recipe)
+
+    assert records[0]['Name'] == 'LLZO'
+    assert records[0]['Conductivity'] == '1e-3 S cm^-1'
+    assert records[0]['Method'] == 'None'
+    assert records[0]['Endpoint'] == 'None'
+    assert records[0]['Value warnings'] == (
+        'Method: dropped a copy of the recipe example; Endpoint: dropped a copy of the recipe example'
+    )
+    assert records[1] == {'Name': 'LATP', 'Method': 'Dried at 60 C', 'Endpoint': '85%'}
+
+
+def test_every_model_reply_is_checked_against_the_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apply the vocabulary to text, image and reconciliation replies alike."""
+    recipe = vocabulary_recipe()
+    monkeypatch.setattr(extract, 'query_model',
+                        lambda messages, model_config=None: '[{"Name": "A", "Pathway": "enzymatic"}]')
+    monkeypatch.setattr(extract, 'query_images', lambda *_args, **_kwargs: '[{"Name": "B", "Pathway": "Abiotic"}]')
+
+    assert extract.scrape_text('paper text', recipe)[0]['Pathway'] == 'biotic'
+    assert extract.combine_material_records([], [], recipe)[0]['Pathway'] == 'biotic'
+    assert extract.scrape_images(['figure.png'], recipe, model_config=object())[0]['Pathway'] == 'abiotic'
+
+
 def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> None:
     """Test that prompt builders include recipe and source instructions."""
     recipe = sample_recipe()

@@ -169,8 +169,9 @@ pmt store \
 
 Storage matches aliases, performs recipe-defined unit conversions, appends provenance metadata, merges the new rows with the final CSV, and records stored papers in the corpus. Review the intermediate file before omitting confirmation in unattended workflows.
 
-Supporting-information asset IDs, filenames, labels, source URLs, and archive
-member references remain in the final CSV, including when appending to an older
+Supporting-information asset IDs, filenames, labels, source URLs, archive
+member references, and the `Value warnings` that record values replaced during
+extraction remain in the final CSV, including when appending to an older
 output file. Separate SI files remain separate evidence rows. Papers with only
 successful SI results can also be marked as stored.
 

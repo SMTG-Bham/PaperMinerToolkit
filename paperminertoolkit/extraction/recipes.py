@@ -15,9 +15,11 @@ from typing import Any, TypeAlias
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 RECIPES_PATH = PACKAGE_DIR / 'resources' / 'recipes.json'
 METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
+VALUE_WARNINGS_FIELD = 'Value warnings'
 PROVENANCE_FIELDS = [
     'Source', 'Source path', 'Figure id', 'Figure label', 'Figure source',
     'Supplement id', 'Supplement label', 'Supplement filename', 'Supplement source URL',
+    VALUE_WARNINGS_FIELD,
 ]
 _Recipe: TypeAlias = dict[str, Any]
 
@@ -75,8 +77,52 @@ def _validate_recipe(recipe: object, source: str) -> _Recipe:
             f'Recipe in {source} record definition references unknown identity field(s): '
             f'{", ".join(unknown_identity_fields)}.'
         )
+    for field, config in recipe['search fields'].items():
+        _validate_field_values(field, config, source)
     recipe.setdefault('additional prompts', '')
     return recipe
+
+
+def _validate_field_values(field: str, config: object, source: str) -> None:
+    """Check a search field's optional closed vocabulary.
+
+    ``values`` lists the only values the field may take; ``value aliases``
+    maps other spellings a model may return onto those values.
+
+    Parameters
+    ----------
+    field : str
+        Search field name, for error messages.
+    config : object
+        The field's recipe entry.
+    source : str
+        Human-readable recipe source used in validation errors.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` is not a non-empty list of strings, or ``value
+        aliases`` is given without ``values`` or maps to anything else.
+    """
+    if not isinstance(config, dict):
+        return
+    values = config.get('values')
+    aliases = config.get('value aliases')
+    if values is None:
+        if aliases is not None:
+            raise ValueError(f'Recipe in {source} field "{field}" defines "value aliases" without "values".')
+        return
+    if not isinstance(values, list) or not values or any(
+        not isinstance(value, str) or not value.strip() for value in values
+    ):
+        raise ValueError(f'Recipe in {source} field "{field}" "values" must be a non-empty list of strings.')
+    if aliases is not None and (not isinstance(aliases, dict) or any(
+        not isinstance(alias, str) or not alias.strip() or target not in values
+        for alias, target in aliases.items()
+    )):
+        raise ValueError(
+            f'Recipe in {source} field "{field}" "value aliases" must map strings to entries of its "values".'
+        )
 
 
 def _load_recipe_file(path: Path) -> _Recipe:
