@@ -13,6 +13,7 @@ serves, so text from either needs no PDF scrape.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import os
 import re
@@ -25,6 +26,8 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Any, TypeAlias
 from urllib.parse import quote, urlparse
+
+from pypdf import PdfReader
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed, unpaywall)
@@ -147,8 +150,35 @@ def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
     return urls
 
 
+def _pdf_page_count(content: bytes) -> int | None:
+    """Count the pages of a PDF, or return ``None`` when the bytes do not parse."""
+    try:
+        return len(PdfReader(io.BytesIO(content)).pages)
+    except Exception:
+        return None
+
+
 def _download_pdf(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
-    """Try to download an Elsevier PDF for one paper row."""
+    """Try to download an Elsevier PDF for one paper row.
+
+    Without a full-text entitlement for the article from the calling network,
+    Elsevier still answers with a PDF: the first page only. Accepting that
+    preview would mark the paper downloaded and stop the search for an
+    open-access copy, so a PDF that parses and has exactly one page is
+    rejected. Bytes that do not parse are kept, as before.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    filepath : str or os.PathLike[str]
+        Destination path for the PDF.
+
+    Returns
+    -------
+    bool
+        Whether a full PDF was written to `filepath`.
+    """
     api_key = elsevier.configured_api_key()
     params = {'httpAccept': 'application/pdf'}
     last_error = None
@@ -157,6 +187,10 @@ def _download_pdf(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bo
             response = elsevier.get_content(api_key, url, accept='application/pdf', params=params)
             content_type = response.headers.get('Content-Type', '').lower()
             if 'pdf' in content_type or response.content.startswith(b'%PDF'):
+                if _pdf_page_count(response.content) == 1:
+                    last_error = (f'one-page preview from {url}; the Elsevier key has no full-text '
+                                  'entitlement for this article from this network')
+                    continue
                 with open(filepath, 'wb') as out_file:
                     out_file.write(response.content)
                 return True

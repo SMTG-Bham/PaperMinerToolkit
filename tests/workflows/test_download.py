@@ -8,12 +8,14 @@ configured source resolution, and corpus status updates.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+import io
 import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NoReturn
 
 import pytest
+from pypdf import PdfWriter
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.download as download
@@ -1430,6 +1432,46 @@ def test_download_pdf_requires_key_and_handles_success_and_failures(
     )
     assert download._download_pdf({'paper_id': 'paper-1'}, str(out_path)) is False
     assert 'non-PDF response' in capsys.readouterr().out
+
+
+def blank_pdf(pages: int) -> bytes:
+    """Return a valid PDF with the given number of blank pages."""
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=72, height=72)
+    stream = io.BytesIO()
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def test_download_pdf_refuses_elsevier_first_page_previews(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Refuse Elsevier's one-page preview so open-access sources still get their turn."""
+    class PdfResponse:
+        """Provide an Elsevier PDF response."""
+
+        def __init__(self, content: bytes) -> None:
+            """Store the PDF bytes."""
+            self.content = content
+            self.headers = {'Content-Type': 'application/pdf'}
+
+    pages = [1]
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
+    monkeypatch.setattr(download, '_pdf_urls', lambda _: ['https://api.elsevier.com/content/article/doi/10.1/x'])
+    monkeypatch.setattr(download.elsevier, 'get_content', lambda *_args, **_kwargs: PdfResponse(blank_pdf(pages[0])))
+    out_path = tmp_path / 'paper.pdf'
+
+    assert download._download_pdf({'paper_id': 'paper-1'}, str(out_path)) is False
+    assert not out_path.exists()
+    assert 'one-page preview' in capsys.readouterr().out
+
+    pages[0] = 2
+    assert download._download_pdf({'paper_id': 'paper-1'}, str(out_path)) is True
+    assert download._pdf_page_count(out_path.read_bytes()) == 2
+    assert download._pdf_page_count(b'%PDF not really a document') is None
 
 
 def test_download_unpaywall_pdf_handles_metadata_errors_and_missing_candidates(
