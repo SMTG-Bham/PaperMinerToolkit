@@ -10,6 +10,7 @@ search
 gather
 download
 figures
+digitize
 enrichment
 entities
 imports

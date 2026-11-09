@@ -2264,6 +2264,83 @@ def set_figure_extraction_status(
     ValueError
         If ``figure_id`` or ``status`` is empty.
     """
+    return _set_figure_stage_status(conn, paper_id, figure_id, 'extraction', status, error)
+
+
+def set_figure_digitization_status(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    figure_id: str,
+    status: str,
+    *,
+    error: str = '',
+) -> bool:
+    """Record whether one figure's plotted data has been recovered.
+
+    Kept apart from the extraction status, so recovering a figure's curves
+    and sending it to a vision model resume independently of each other.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str
+        Parsed figure identifier assigned by a layout parser.
+    status : str
+        Outcome, such as ``"succeeded"`` or ``"failed"``.
+    error : str, optional
+        Failure detail stored alongside a non-successful status.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset was found and updated.
+
+    Raises
+    ------
+    ValueError
+        If ``figure_id`` or ``status`` is empty.
+    """
+    return _set_figure_stage_status(conn, paper_id, figure_id, 'digitization', status, error)
+
+
+def _set_figure_stage_status(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    figure_id: str,
+    stage: str,
+    status: str,
+    error: str,
+) -> bool:
+    """Store ``<stage>_status`` and ``<stage>_error`` in a figure asset's metadata.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str
+        Parsed figure identifier.
+    stage : str
+        Metadata key prefix, such as ``"extraction"``.
+    status : str
+        Outcome to store.
+    error : str
+        Failure detail to store.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset was found and updated.
+
+    Raises
+    ------
+    ValueError
+        If ``figure_id`` or ``status`` is empty.
+    """
     wanted_figure = figure_id.strip()
     normalized_status = status.strip()
     if not wanted_figure:
@@ -2279,8 +2356,8 @@ def set_figure_extraction_status(
         metadata = json.loads(row['metadata_json'])
         if metadata.get('figure_id') != wanted_figure:
             continue
-        metadata['extraction_status'] = normalized_status
-        metadata['extraction_error'] = error.strip()
+        metadata[f'{stage}_status'] = normalized_status
+        metadata[f'{stage}_error'] = error.strip()
         conn.execute(
             'UPDATE paper_assets SET metadata_json = ? WHERE rowid = ?',
             (json.dumps(metadata), row['rowid']),

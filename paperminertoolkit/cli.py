@@ -46,6 +46,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
 from paperminertoolkit.workflows.imports import import_pdfs
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.store import store_results
+from paperminertoolkit.workflows.digitize import digitize_figures
 from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
 from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
@@ -342,6 +343,72 @@ def download(
         raise click.ClickException(str(error)) from error
     if json_output:
         click.echo(json.dumps(summary, indent=2))
+
+
+@click.command('digitize')
+@click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('records_csv', type=click.Path(exists=True, dir_okay=False))
+@click.option('--figure-field', required=True,
+              help="Column naming the figure that plots each record's result, such as 'Mass loss figure'.")
+@click.option('--output', 'output_path', default='digitized_figures.csv', show_default=True,
+              type=click.Path(dir_okay=False), help='CSV to append the recovered points to, one row per point.')
+@click.option('--only-missing', 'missing_field', default=None,
+              help='Only follow records whose value in this column is missing, such as the curve the figure plots.')
+@click.option('--previews', 'preview_dir', default=None, type=click.Path(file_okay=False),
+              help='Directory for a preview of each recovered figure, its curves drawn over it.')
+@click.option('--detect/--no-detect', default=True, show_default=True,
+              help='Detect and store figures from the PDF of a paper whose corpus entry holds none.')
+@click.option('--limit', default=None, type=click.IntRange(min=1),
+              help='Stop after this many figures have been attempted.')
+@click.option('--force', is_flag=True, default=False,
+              help='Recover figures again even when already recovered.')
+@_json_option
+def digitize(
+        db_path: str,
+        records_csv: str,
+        figure_field: str,
+        output_path: str,
+        missing_field: str | None,
+        preview_dir: str | None,
+        detect: bool,
+        limit: int | None,
+        force: bool,
+        json_output: bool,
+) -> None:
+    """Recover the curves of the figures that extracted records name, with figrecover.
+
+    Reads each record's figure reference, such as "Figure 4a", finds that
+    figure in the corpus (detecting figures from the PDF when the paper has
+    none), reads its axes by OCR, and writes every curve's points. Curves
+    are named by colour and line style, as figrecover does not read legends.
+    Needs figrecover with its OCR extra, installed from GitHub.
+    """
+    try:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = digitize_figures(
+                db_path,
+                records_csv,
+                figure_field,
+                output_path,
+                missing_field=missing_field,
+                preview_dir=preview_dir,
+                detect=detect,
+                force=force,
+                limit=limit,
+            )
+    except (RuntimeError, KeyError, ValueError, OSError, sqlite3.Error) as error:
+        message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        raise click.ClickException(str(message)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
+        return
+    click.echo(
+        f'Figures requested: {summary["requests"]}; recovered {summary["digitized"]}, '
+        f'already recovered {summary["skipped"]}, failed {summary["failed"]}, '
+        f'not found {summary["not_found"]}, supplementary {summary["supplementary"]}.'
+    )
+    click.echo(f'{summary["series"]} curves in {summary["panels"]} panels, '
+               f'{summary["points"]} points written to {summary["output"]}.')
 
 
 @click.command('enrich')
@@ -1545,6 +1612,7 @@ main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
 main.add_command(store, 'store')
+main.add_command(digitize, 'digitize')
 main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
 

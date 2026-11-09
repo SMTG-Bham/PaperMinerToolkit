@@ -61,6 +61,8 @@ pmt store papers.db \
   --assume-yes
 ```
 
+To recover the curves of the figures that records name, such as a recipe's `Mass loss figure`, use `pmt digitize` with the optional [figrecover](https://github.com/SMTG-Bham/figrecover) package; see [recovering curves from figures](https://paperminertoolkit.readthedocs.io/en/latest/workflow/digitizing.html).
+
 Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
 
 Text and PDF acquisition also attempts supporting information (SI), and text/image scraping includes stored SI by default. Use `--no-supplements` on `gather`, `download`, or `scrape` to opt out. Abstract-only runs skip SI. To acquire SI for existing entries without redownloading the article or fetching abstracts:
