@@ -32,7 +32,7 @@ pmt filter regex --help
 | `pmt entities` | Annotate corpus or file text using fine-tuned BERT token classifiers. |
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
-| `pmt recipe` | Inspect recipes and render their LLM prompts. |
+| `pmt recipe` | Inspect recipes, render their LLM prompts, and optimise them against a validation set. |
 
 Exact arguments and options are generated from the installed commands on the pages below. For task-oriented instructions, use the {doc}`../../workflow/index` and the {doc}`../../examples/index`.
 

@@ -195,3 +195,9 @@ and calculated score report. The report records:
 
 An incomplete download is named as a draft. Treat provisional metrics as
 working feedback and use a complete scoring run for reported results.
+
+## Optimise the recipe
+
+The same validation CSV can drive automatic recipe refinement. See
+{doc}`optimisation` for `pmt recipe optimise`, which repeatedly scrapes,
+scores, and revises a recipe.

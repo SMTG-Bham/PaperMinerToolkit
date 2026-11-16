@@ -1,7 +1,7 @@
 Recipe commands
 ===============
 
-Commands for inspecting extraction recipes and the prompts generated from them.
+Commands for inspecting extraction recipes, the prompts generated from them, and optimising recipes against a validation set.
 
 .. click:: paperminertoolkit.cli:recipe_group
    :prog: pmt recipe
