@@ -366,6 +366,116 @@ def test_optimise_recipe_can_count_unreachable_values(tmp_path: Path, monkeypatc
     assert any('1 of 3 expected values' in message and 'excluded' in message for message in messages)
 
 
+def test_leaves_skip_empty_and_null_values() -> None:
+    """Drop blank and null-like parts so they never count as decisions."""
+    assert optimisation._leaves(['ZnO', '', 'None', ' null ', 'NaN', None]) == ['ZnO']
+
+
+def test_values_match_compares_text_when_numbers_agree_but_words_differ() -> None:
+    """Fall back to text similarity when equal numbers carry different words."""
+    assert optimisation.values_match('3.3 eV', '3.3 nm') is False
+    assert optimisation.values_match('3.3 eV direct', '3.3 eV direct.') is True
+
+
+@pytest.mark.parametrize(('proposed', 'message'), [
+    (['not', 'a', 'recipe'], 'recipe object'),
+    ({'search fields': ['Material']}, 'not an object'),
+])
+def test_merge_recipe_rejects_malformed_proposals(proposed: object, message: str) -> None:
+    """Refuse proposals that are not recipe-shaped."""
+    with pytest.raises(ValueError, match=message):
+        optimisation._merge_recipe(_recipe(), proposed)
+
+
+def test_merge_recipe_ignores_invalid_wording_changes() -> None:
+    """Keep the original wording where the proposal gives blank or malformed values."""
+    proposed = {
+        'record definition': {'subject': '  ', 'singular': 3, 'plural': 'compounds'},
+        'additional prompts': ['not', 'text'],
+        'search fields': {'Material': 'Material name', 'Band gap': {'example': '3 eV'}},
+    }
+
+    merged = optimisation._merge_recipe(_recipe(), proposed)
+
+    assert merged['record definition']['subject'] == 'oxides'
+    assert merged['record definition']['singular'] == 'material'
+    assert merged['record definition']['plural'] == 'compounds'
+    assert merged['additional prompts'] == ''
+    assert merged['search fields']['Material'] == _recipe()['search fields']['Material']
+    assert merged['search fields']['Band gap']['prompt'] == 'Band gap'
+    assert merged['search fields']['Band gap']['example'] == '3 eV'
+
+
+def test_parse_proposal_skips_json_that_is_not_a_recipe() -> None:
+    """Look past unrelated JSON values to the first recipe in the response."""
+    response = '[1, 2] {"note": "draft"} ' + json.dumps({'rationale': 'final', 'recipe': _recipe()})
+
+    assert optimisation._parse_proposal(response) == (_recipe(), 'final')
+
+
+def test_optimise_recipe_rejects_negative_iterations(tmp_path: Path) -> None:
+    """Validate the iteration and patience limits before reading inputs."""
+    with pytest.raises(ValueError, match='iterations'):
+        optimisation.optimise_recipe(tmp_path / 'db', 'sse', tmp_path / 'v.csv', iterations=-1)
+    with pytest.raises(ValueError, match='patience'):
+        optimisation.optimise_recipe(tmp_path / 'db', 'sse', tmp_path / 'v.csv', patience=0)
+
+
+def test_optimise_recipe_skips_papers_without_content(tmp_path: Path) -> None:
+    """Skip papers lacking the requested content and fail when none remain."""
+    messages: list[str] = []
+
+    with pytest.raises(ValueError, match='downloaded content'):
+        optimisation.optimise_recipe(_corpus(tmp_path), _write_recipe(tmp_path), _validation(tmp_path),
+                                     output_dir=tmp_path / 'out', mode='abstract', echo=messages.append)
+
+    assert sum('no downloaded abstract content' in message for message in messages) == 2
+
+
+def test_optimise_recipe_warns_when_some_papers_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Score failed papers as empty and warn, without stopping the run."""
+    def flaky_scrape(text: str, recipe: dict[str, Any], model_config: Any = None) -> list[dict[str, Any]]:
+        """Fail for one paper only."""
+        if text.startswith('TiO2'):
+            raise RuntimeError('timeout')
+        return [{'Material': 'ZnO', 'Band gap': '3.3 eV'}]
+
+    monkeypatch.setattr(optimisation, 'scrape_text', flaky_scrape)
+    messages: list[str] = []
+
+    summary = optimisation.optimise_recipe(_corpus(tmp_path), _write_recipe(tmp_path), _validation(tmp_path),
+                                           output_dir=tmp_path / 'out', iterations=0, echo=messages.append)
+
+    score = json.loads((tmp_path / 'out' / 'iteration_00' / 'score.json').read_text(encoding='utf-8'))
+    assert score['errors'] == {'demo:2': 'timeout'}
+    assert summary['baseline_score'] == pytest.approx(2 / 3)
+    assert any('1 of 2 papers failed to scrape' in message for message in messages)
+
+
+def test_optimise_recipe_records_rejected_proposals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log an invalid proposal as a failed attempt and stop after the patience limit."""
+    monkeypatch.setattr(optimisation, 'scrape_text', lambda text, recipe, model_config=None: [])
+
+    def renaming_query(*args: Any, **kwargs: Any) -> str:
+        """Propose a recipe that renames a field."""
+        proposal = _recipe()
+        proposal['search fields']['Gap'] = proposal['search fields'].pop('Band gap')
+        return json.dumps({'recipe': proposal})
+
+    monkeypatch.setattr(optimisation, 'query_text', renaming_query)
+    messages: list[str] = []
+
+    summary = optimisation.optimise_recipe(_corpus(tmp_path), _write_recipe(tmp_path), _validation(tmp_path),
+                                           output_dir=tmp_path / 'out', iterations=5, patience=2,
+                                           echo=messages.append)
+
+    history = json.loads((tmp_path / 'out' / 'history.json').read_text(encoding='utf-8'))
+    assert [attempt['accepted'] for attempt in history] == [True, False, False]
+    assert all("'Gap'" in attempt['error'] for attempt in history[1:])
+    assert summary['best_score'] == summary['baseline_score']
+    assert any('proposal rejected' in message for message in messages)
+
+
 @pytest.mark.parametrize(('text', 'reachable'), [
     ('a gap of 2·70 eV', True),
     ('a gap of 2,70 eV', True),
