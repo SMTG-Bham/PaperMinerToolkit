@@ -25,11 +25,14 @@ unattended workflow.
 | `pmt gather` | Search and retrieve content for matching papers in one run. |
 | `pmt search` | Find papers and add them to a corpus. |
 | `pmt enrich` | Supplement stored bibliographic metadata. |
-| `pmt download` | Retrieve abstracts, full text, and PDFs. |
+| `pmt download` | Retrieve abstracts, full text, PDFs, and supporting information. |
 | `pmt scrape` | Extract recipe-defined records with language or vision models. |
+| `pmt scrape-progress` | Report how far a scrape has got and what a rerun would still do. |
 | `pmt store` | Validate, convert, and store extracted records. |
+| `pmt digitize` | Recover curves from the figures that extracted records name. |
 | `pmt status` | Inspect pipeline progress. |
 | `pmt reset` | Reset pipeline statuses for deliberate reruns. |
+| `pmt mcp` | Serve the commands to an agent over the Model Context Protocol. |
 
 ## Command groups
 
@@ -42,6 +45,8 @@ unattended workflow.
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
 | `pmt recipe` | Inspect recipes and render their LLM prompts. |
+| `pmt validate` | Create validation sets, review extracted records, and score them. |
+| `pmt figures` | Download, detect, list, export, and render paper figures. |
 
 Exact arguments and options are generated from the installed commands on the pages below. For task-oriented instructions, use the {doc}`../../workflow/index` and the {doc}`../../examples/index`.
 
@@ -56,4 +61,5 @@ entities
 imports
 configuration
 recipes
+figures
 ```

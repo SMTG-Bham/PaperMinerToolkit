@@ -15,5 +15,8 @@ enrichment
 entities
 imports
 topics
+validation
+validation_scoring
+diagnostics
 utilities
 ```

@@ -149,7 +149,7 @@ is the single place a source is declared. To add one:
    covers exactly the sources carrying that capability.
 3. Add its dotted path to `PUBLIC_MODULES` in
    [tests/test_package_layout.py](tests/test_package_layout.py).
-4. Add a `tests/test_<source>.py` built on the shared doubles.
+4. Add a `tests/providers/test_<source>.py` built on the shared doubles.
 5. Add `docs/reference/modules/providers/<source>.rst` as an `automodule` stub
    and list it in that directory's `index.md` toctree.
 

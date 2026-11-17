@@ -18,7 +18,7 @@
 
 PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, PDFs, and supporting information; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
-The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
+The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation](https://paperminertoolkit.readthedocs.io/).
 
 ## Installation
 

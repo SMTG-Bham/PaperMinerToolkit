@@ -28,6 +28,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.extraction.store',
     'paperminertoolkit.extraction.tokenizer',
     'paperminertoolkit.mcp_server',
+    'paperminertoolkit.probe_cli',
     'paperminertoolkit.providers.supplements',
     'paperminertoolkit.providers.arxiv',
     'paperminertoolkit.providers.base',
@@ -43,15 +44,19 @@ PUBLIC_MODULES = (
     'paperminertoolkit.providers.rxiv',
     'paperminertoolkit.providers.unpaywall',
     'paperminertoolkit.workflows.supplements',
+    'paperminertoolkit.workflows.diagnostics',
     'paperminertoolkit.workflows.download',
     'paperminertoolkit.workflows.enrichment',
     'paperminertoolkit.workflows.entities',
     'paperminertoolkit.workflows.figures',
     'paperminertoolkit.workflows.digitize',
+    'paperminertoolkit.workflows.gather',
     'paperminertoolkit.workflows.imports',
     'paperminertoolkit.workflows.search',
     'paperminertoolkit.workflows.topics',
     'paperminertoolkit.workflows.utilities',
+    'paperminertoolkit.workflows.validation',
+    'paperminertoolkit.workflows.validation_scoring',
 )
 
 

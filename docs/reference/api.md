@@ -6,6 +6,7 @@ Each public PaperMinerToolkit module has its own API page. Private members begin
 :maxdepth: 2
 
 modules/cli
+modules/probe_cli
 modules/mcp_server
 modules/corpus/index
 modules/providers/index

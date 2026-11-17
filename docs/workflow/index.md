@@ -65,8 +65,8 @@ topics
 filtering
 recipes
 scraping
+validation
 digitizing
 entities
 hpc
-validation
 ```

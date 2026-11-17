@@ -20,7 +20,7 @@ pmt scrape --help
 
 ## Content is not downloaded
 
-Run `pmt corpus stats` and inspect configured credentials with the relevant key commands. Access is source- and publisher-dependent; metadata discovery does not imply PDF availability. Repeat `--source` to test individual PDF sources. Use `--force` only when refreshing an asset that is already stored.
+Run `pmt corpus stats`, and use `pmt probe` to see which providers are configured and answering. Access is source- and publisher-dependent; metadata discovery does not imply PDF availability. Repeat `--source` to test individual PDF sources. Use `--force` only when refreshing an asset that is already stored.
 
 ## A filter reports unavailable papers
 
