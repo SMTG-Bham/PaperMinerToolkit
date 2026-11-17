@@ -107,15 +107,24 @@ variables are `PAPERMINERTOOLKIT_VISION_MODEL_PROVIDER` and
 `PAPERMINERTOOLKIT_VISION_MODEL_NAME`. Local endpoints also use
 `PAPERMINERTOOLKIT_MODEL_BASE_URL` or its vision equivalent. Alternatively,
 `pmt config model text --provider openai --model YOUR_TEXT_MODEL` saves the
-profile locally without prompting. Keep secrets in the runner's environment,
-rather than command arguments, logs, or recipe files.
+profile locally without prompting. To save provider credentials persistently,
+read them from the environment rather than the command line:
+
+```bash
+pmt config openai-key --value-from-env OPENAI_API_KEY --json
+pmt config crossref-email --value-from-env CROSSREF_EMAIL --json
+printf '%s\n' "$CORE_KEY" | pmt config core-key --value-stdin --json
+```
+
+Keep secrets in the runner's environment, rather than command arguments,
+logs, or recipe files.
 
 The commands that need particular care in an unattended workflow are:
 
 | Command | How to avoid a prompt |
 | --- | --- |
-| `config model` | Supply both `--provider` and `--model`. |
-| Credential setters such as `config openai-key`, `config crossref-email`, and `config core-rate` | Use environment variables instead. These commands prompt for values. |
+| `config model` | Supply both `--provider` and `--model`; pass a key with `--api-key-from-env VAR`. Without a terminal, a missing option is a usage error rather than a prompt. |
+| Credential setters such as `config openai-key`, `config crossref-email`, and `config core-rate` | Pass `--value-from-env VAR` or `--value-stdin`. Without either and without a terminal, they fail with a usage error instead of waiting. Keys checked online (OpenAI, Elsevier, OpenAlex) are still checked. |
 | `store` | Supply `--assume-yes` after choosing the recipe and output file. This accepts conversions and skips unmatched columns. |
 
 Close subprocess stdin so an unexpected prompt fails instead of waiting for a
@@ -355,6 +364,8 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `entities corpus --json`, `entities text --json` | `entities` and `documents` counts and the JSONL `output` path; the corpus form also counts `papers`. |
 | `validate score --json` | The full score: `fingerprint`, `sources`, `recipe`, `run`, `papers_evaluated`, `pending_pairs`, `missing_metadata`, `complete`, and per-field `fields` with `tp`, `fp`, `fn`, `pending`, `precision`, `recall`, `f1` (null when undefined), `type`, and `parts`. |
 | `validate template --json` | `recipe`, the `outfile` path, and the header `columns` written. |
+| `config model --json` | `profile`, `provider`, `model`, `base_url`, `capabilities`, `temperature`, `top_p`, `input_token_limit`, and `api_key_set` (never the key). |
+| `config elsevier-key --json`, `config core-key --json`, `config core-rate --json`, `config unpaywall-email --json`, `config crossref-email --json`, `config openalex-key --json`, `config ncbi-key --json`, `config ncbi-email --json`, `config openai-key --json`, `config anthropic-key --json` | `setting` (the settings key), `secret`, and `source` (`env`, `stdin`, or `prompt`); non-secret settings also report the saved `value`. Keys are never printed. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |
 | `recipe show RECIPE` | The loaded recipe object; JSON by default. |

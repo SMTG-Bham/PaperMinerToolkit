@@ -87,6 +87,13 @@ FILTER_OVERVIEW = obj({'filters': array(OBJECT), 'expression': OPTIONAL_STRING,
                        'unavailable_reasons': OBJECT, 'stale_topic_filters': array(STRING)})
 
 MODEL_STATUS = obj({'text': OBJECT, 'vision': OBJECT})
+CONFIG_MODEL = obj({'profile': STRING, 'provider': STRING, 'model': STRING,
+                    'base_url': OPTIONAL_STRING, 'capabilities': array(STRING),
+                    'temperature': NUMBER, 'top_p': NUMBER, 'input_token_limit': INTEGER,
+                    'api_key_set': BOOLEAN})
+CONFIG_SETTING = obj({'setting': STRING, 'secret': BOOLEAN,
+                      'source': {'type': 'string', 'enum': ['env', 'stdin', 'prompt']}},
+                     {'value': {'type': ['string', 'number', 'null']}})
 RECIPE_LIST = array(STRING)
 RECIPE = obj({'record definition': OBJECT, 'search fields': OBJECT})
 

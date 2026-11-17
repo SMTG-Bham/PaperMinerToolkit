@@ -569,7 +569,7 @@ def test_display_helpers_and_ncbi_updates_cover_optional_values(
     assert email_settings['ncbi_email'] == 'person@example.org'
 
     loaded: dict[str, object] = {}
-    monkeypatch.setattr(settings, 'load_settings', lambda: loaded)
+    monkeypatch.setattr(settings, '_saved_settings', lambda: loaded)
     monkeypatch.setattr('builtins.input', lambda _: 'loaded-key')
     settings.update_ncbi_key()
     assert loaded['ncbi_api_key'] == 'loaded-key'
@@ -722,3 +722,23 @@ def test_invalid_stored_profile_is_rejected_before_environment_override(
 
     with pytest.raises(ValueError, match='invalid'):
         settings.load_settings()
+
+
+def test_setters_never_copy_environment_credentials_into_the_file(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Save only the edited setting, not keys that came from the environment."""
+    monkeypatch.setenv('ELSEVIER_API_KEY', 'env-only-elsevier-key')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'env-model')
+    isolated_settings_file.write_text(json.dumps({'core_api_key': 'kept'}), encoding='utf-8')
+
+    settings.update_crossref_email(value='me@example.org')
+    settings.set_model_profile('text', 'local', 'file-model', None, None, ['text'])
+
+    saved = json.loads(isolated_settings_file.read_text(encoding='utf-8'))
+    assert 'env-only-elsevier-key' not in isolated_settings_file.read_text(encoding='utf-8')
+    assert saved['core_api_key'] == 'kept'
+    assert saved['crossref_email'] == 'me@example.org'
+    assert saved['model_profiles']['text']['model'] == 'file-model'
+    assert 'elsevier_api_key' not in saved
+    assert settings.load_settings()['elsevier_api_key'] == 'env-only-elsevier-key'

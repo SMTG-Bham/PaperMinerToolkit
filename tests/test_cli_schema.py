@@ -88,9 +88,10 @@ def test_schema_reports_choices_defaults_repeatability_and_prompts() -> None:
     model = json.loads(model_result.stdout)['command']
     assert model['path'] == 'pmt config model'
     model_parameters = {parameter['name']: parameter for parameter in model['parameters']}
-    assert model_parameters['provider']['prompt']
-    assert model_parameters['provider']['prompt_required'] is True
-    assert model_parameters['provider']['hide_input'] is False
+    # Prompts happen only at a terminal, inside the command, so none is declared.
+    assert model_parameters['provider']['prompt'] is None
+    assert model_parameters['provider']['required'] is False
+    assert 'prompts' in model['effects']
 
 
 def _leaf_commands(command: click.Command, path: tuple[str, ...] = ('pmt',),

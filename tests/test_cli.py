@@ -12,6 +12,7 @@ from click.testing import CliRunner
 
 import paperminertoolkit.cli as cli
 import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.settings as settings
 
 
 def test_package_installs_only_the_nested_pmt_entry_point() -> None:
@@ -908,33 +909,26 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch: pytest.MonkeyPatc
     }
 
 
-def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Delegate API configuration entry points to their settings helpers."""
-    calls = []
-    monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
-    monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
-    monkeypatch.setattr(cli, 'update_core_rate', lambda: calls.append('core-rate'))
-    monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
-    monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
-    monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
-    monkeypatch.setattr(cli, 'update_ncbi_key', lambda: calls.append('ncbi-key'))
-    monkeypatch.setattr(cli, 'update_ncbi_email', lambda: calls.append('ncbi-email'))
-    monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
-    monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
-
-    cli.update_elsevier_api_key()
-    cli.update_core_api_key()
-    cli.update_core_request_rate()
-    cli.update_unpaywall_api_email()
-    cli.update_crossref_api_email()
-    cli.update_openalex_api_key()
-    cli.update_ncbi_api_key()
-    cli.update_ncbi_api_email()
-    cli.update_openai_api_key()
-    cli.update_anthropic_api_key()
-
-    assert calls == ['elsevier', 'core', 'core-rate', 'unpaywall', 'crossref',
-                     'openalex', 'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
+def test_every_setter_command_saves_its_setting_without_prompting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Register one non-interactive command per provider setting."""
+    for name in ['elsevier-key', 'openalex-key', 'openai-key']:
+        provider = name.split('-')[0]
+        monkeypatch.setattr(settings, f'_check_{provider}_api_key', lambda _: True)
+    runner = CliRunner()
+    for name, key, _, secret, _, _ in cli._SETTERS:
+        value = '2.5' if name == 'core-rate' else ('me@example.org' if 'email' in name
+                                                   else f'value-for-{name}')
+        result = runner.invoke(cli.main, ['config', name, '--value-stdin', '--json'],
+                               input=f'{value}\n')
+        assert result.exit_code == 0, (name, result.output)
+        payload = json.loads(result.stdout)
+        assert payload['setting'] == key and payload['source'] == 'stdin'
+        assert payload['secret'] is secret
+        assert value not in result.stdout if secret else payload['value'] in {value, 2.5}
+        stored = settings._saved_settings()[key]
+        assert stored == (2.5 if name == 'core-rate' else value)
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:

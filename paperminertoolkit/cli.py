@@ -10,6 +10,7 @@ import csv
 import hashlib
 import json
 import sqlite3
+import os
 import sys
 from contextlib import closing, nullcontext, redirect_stdout
 from functools import partial
@@ -66,6 +67,7 @@ from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  train_topic_model)
 from paperminertoolkit.settings import (get_model_profile,
                                    DEFAULT_INPUT_TOKEN_LIMIT,
+                                   _saved_settings,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -1802,63 +1804,97 @@ def validation_template(recipe: str, outfile: str, json_output: bool) -> None:
     click.echo(f'Validation template written to {outfile}.')
 
 
-def update_elsevier_api_key() -> None:
-    """Prompt for and save an Elsevier API key."""
-    update_elsevier_key()
+# Each setter: command name, settings key, label, secret, validated online, helper.
+_SETTERS = [
+    ('elsevier-key', 'elsevier_api_key', 'Elsevier API key', True, True, update_elsevier_key),
+    ('core-key', 'core_api_key', 'CORE API key', True, False, update_core_key),
+    ('core-rate', 'core_min_interval', 'seconds between CORE requests', False, False,
+     update_core_rate),
+    ('unpaywall-email', 'unpaywall_email', 'Unpaywall email', False, False, update_unpaywall_email),
+    ('crossref-email', 'crossref_email', 'Crossref contact email', False, False,
+     update_crossref_email),
+    ('openalex-key', 'openalex_api_key', 'OpenAlex API key', True, True, update_openalex_key),
+    ('ncbi-key', 'ncbi_api_key', 'NCBI E-utilities API key', True, False, update_ncbi_key),
+    ('ncbi-email', 'ncbi_email', 'NCBI E-utilities contact email', False, False, update_ncbi_email),
+    ('openai-key', 'openai_api_key', 'OpenAI API key', True, True, update_openai_key),
+    ('anthropic-key', 'anthropic_api_key', 'Anthropic API key', True, False, update_anthropic_key),
+]
 
 
-def update_core_api_key() -> None:
-    """Prompt for and save a CORE API key."""
-    update_core_key()
+def _value_without_prompt(env_var: str | None, from_stdin: bool) -> tuple[str | None, str]:
+    """Read a setting from --value-from-env or --value-stdin, or decide to prompt.
+
+    Returns the value and its source: ``env``, ``stdin``, or ``prompt`` (value
+    ``None``). Prompting is refused when stdin is not a terminal, so an
+    unattended caller gets a usage error instead of a hang.
+    """
+    if env_var and from_stdin:
+        raise click.UsageError('Use --value-from-env or --value-stdin, not both.')
+    if env_var:
+        if env_var not in os.environ:
+            raise click.BadParameter(f'Environment variable {env_var} is not set.',
+                                     param_hint='--value-from-env')
+        return os.environ[env_var], 'env'
+    if from_stdin:
+        line = sys.stdin.readline()
+        if not line:
+            raise click.BadParameter('Standard input was empty.', param_hint='--value-stdin')
+        return line.rstrip('\r\n'), 'stdin'
+    if not sys.stdin.isatty():
+        raise click.UsageError('No value given and stdin is not a terminal: pass '
+                               '--value-from-env VAR or --value-stdin.')
+    return None, 'prompt'
 
 
-def update_core_request_rate() -> None:
-    """Prompt for and save the seconds to leave between CORE requests."""
-    update_core_rate()
+def _setter_command(name: str, key: str, label: str, secret: bool, validated: bool,
+                    setter: Callable[..., None]) -> click.Command:
+    """Build the ``pmt config`` command that saves one provider setting."""
+    effects = {'prompts', 'writes_config', *({'network'} if validated else ())}
+    checked = ' The value is checked with the provider before it is saved.' if validated else ''
+
+    @agent_meta(effects=effects, output=out.CONFIG_SETTING)
+    @click.command(name, help=(
+        f'Save the {label}. Without --value-from-env or --value-stdin it prompts, '
+        f'which needs a terminal.{checked}'))
+    @click.option('--value-from-env', 'env_var', default=None, metavar='VAR',
+                  help='Read the value from this environment variable.')
+    @click.option('--value-stdin', 'from_stdin', is_flag=True,
+                  help='Read the value from the first line of standard input.')
+    @_json_option
+    def command(env_var: str | None, from_stdin: bool, json_output: bool) -> None:
+        """Save one setting from the environment, stdin, or a prompt."""
+        value, source = _value_without_prompt(env_var, from_stdin)
+        try:
+            with _quiet(json_output):
+                setter(value=value)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise click.ClickException(str(error)) from error
+        result: dict[str, Any] = {'setting': key, 'secret': secret, 'source': source}
+        if not secret:
+            try:
+                result['value'] = _saved_settings().get(key)
+            except (OSError, RuntimeError, ValueError):
+                result['value'] = None
+        if json_output:
+            emit_json(result)
+        else:
+            click.echo(f'Saved the {label}.')
+
+    return command
 
 
-def update_unpaywall_api_email() -> None:
-    """Prompt for and save an Unpaywall email address."""
-    update_unpaywall_email()
-
-
-def update_crossref_api_email() -> None:
-    """Prompt for and save a Crossref contact email address."""
-    update_crossref_email()
-
-
-def update_openalex_api_key() -> None:
-    """Prompt for and save an OpenAlex API key."""
-    update_openalex_key()
-
-
-def update_ncbi_api_key() -> None:
-    """Prompt for and save an NCBI E-utilities API key."""
-    update_ncbi_key()
-
-
-def update_ncbi_api_email() -> None:
-    """Prompt for and save an NCBI E-utilities contact email address."""
-    update_ncbi_email()
-
-
-def update_openai_api_key() -> None:
-    """Prompt for and save an OpenAI API key."""
-    update_openai_key()
-
-
-def update_anthropic_api_key() -> None:
-    """Prompt for and save an Anthropic API key."""
-    update_anthropic_key()
-
-
-@agent_meta(effects={'prompts', 'writes_config'})
+@agent_meta(effects={'prompts', 'writes_config'}, output=out.CONFIG_MODEL)
 @click.command('model')
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
-@click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
-@click.option('--model', prompt=True, help='Model name.')
+@click.option('--provider', default=None,
+              help='Provider: openai, anthropic, or local. Prompted for only at a terminal.')
+@click.option('--model', default=None, help='Model name. Prompted for only at a terminal.')
 @click.option('--base-url', default=None, help='Base URL for local providers.')
-@click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')
+@click.option('--api-key', default=None,
+              help='Provider API key. Prefer --api-key-from-env, which keeps the key out of '
+                   'the process list. Leave unset for env/provider defaults.')
+@click.option('--api-key-from-env', 'api_key_env', default=None, metavar='VAR',
+              help='Read the provider API key from this environment variable.')
 @click.option('--capability', 'capabilities',
               multiple=True,
               help='Optional override. By default capabilities are inferred from profile/model name.')
@@ -1877,21 +1913,50 @@ def update_anthropic_api_key() -> None:
               type=int,
               show_default=True,
               help='Maximum input tokens to send to the model before chunking.')
-def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
-                 capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int) -> None:
-    """Configure a text or vision model profile from CLI options."""
+@_json_option
+def model_config(profile: str, provider: str | None, model: str | None, base_url: str | None,
+                 api_key: str | None, api_key_env: str | None,
+                 capabilities: tuple[str, ...], temperature: float, top_p: float,
+                 input_token_limit: int, json_output: bool) -> None:
+    """Configure a text or vision model profile from CLI options.
+
+    --provider and --model are prompted for only when stdin is a terminal;
+    otherwise a missing one is a usage error.
+    """
+    missing = [option for option, value in [('--provider', provider), ('--model', model)]
+               if not value]
+    if missing and not sys.stdin.isatty():
+        raise click.UsageError(f'Missing {" and ".join(missing)}; stdin is not a terminal, so '
+                               'they cannot be prompted for.')
+    provider = provider or click.prompt('Provider')
+    model = model or click.prompt('Model')
+    if api_key and api_key_env:
+        raise click.UsageError('Use --api-key or --api-key-from-env, not both.')
+    if api_key_env:
+        if api_key_env not in os.environ:
+            raise click.BadParameter(f'Environment variable {api_key_env} is not set.',
+                                     param_hint='--api-key-from-env')
+        api_key = os.environ[api_key_env]
     caps = list(capabilities) or infer_model_capabilities(profile, model)
-    set_model_profile(
-        profile,
-        provider,
-        model,
-        base_url,
-        api_key,
-        caps,
-        temperature=temperature,
-        top_p=top_p,
-        input_token_limit=input_token_limit,
-    )
+    try:
+        set_model_profile(
+            profile,
+            provider,
+            model,
+            base_url,
+            api_key,
+            caps,
+            temperature=temperature,
+            top_p=top_p,
+            input_token_limit=input_token_limit,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({'profile': profile, 'provider': provider, 'model': model, 'base_url': base_url,
+                   'capabilities': caps, 'temperature': temperature, 'top_p': top_p,
+                   'input_token_limit': input_token_limit, 'api_key_set': bool(api_key)})
+        return
     click.echo(
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
@@ -2064,22 +2129,8 @@ main.add_command(import_group)
 config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
 config_group.add_command(provider_status_command, 'providers')
-# Credential setters validate some keys against their provider before saving.
-_SETTER_EFFECTS = {'prompts', 'writes_config'}
-_VALIDATED_SETTER_EFFECTS = _SETTER_EFFECTS | {'network'}
-for _name, _setter, _effects in [
-    ('elsevier-key', update_elsevier_api_key, _VALIDATED_SETTER_EFFECTS),
-    ('core-key', update_core_api_key, _SETTER_EFFECTS),
-    ('core-rate', update_core_request_rate, _SETTER_EFFECTS),
-    ('unpaywall-email', update_unpaywall_api_email, _SETTER_EFFECTS),
-    ('crossref-email', update_crossref_api_email, _SETTER_EFFECTS),
-    ('openalex-key', update_openalex_api_key, _VALIDATED_SETTER_EFFECTS),
-    ('ncbi-key', update_ncbi_api_key, _SETTER_EFFECTS),
-    ('ncbi-email', update_ncbi_api_email, _SETTER_EFFECTS),
-    ('openai-key', update_openai_api_key, _VALIDATED_SETTER_EFFECTS),
-    ('anthropic-key', update_anthropic_api_key, _SETTER_EFFECTS),
-]:
-    config_group.add_command(agent_meta(effects=_effects)(click.command(_name)(_setter)))
+for _name, _key, _label, _secret, _validated, _setter in _SETTERS:
+    config_group.add_command(_setter_command(_name, _key, _label, _secret, _validated, _setter))
 main.add_command(config_group)
 
 recipe_group.add_command(recipe_prompt, 'prompt')

@@ -27,17 +27,6 @@ JSON_BY_DEFAULT = {'schema', 'recipe show'}
 EXEMPT: dict[str, str] = {
     'validate gui': 'Starts an interactive local review server.',
     'recipe prompt': 'Renders a plain-text prompt by design.',
-    'config model': 'Pending #104.',
-    'config elsevier-key': 'Pending #104.',
-    'config core-key': 'Pending #104.',
-    'config core-rate': 'Pending #104.',
-    'config unpaywall-email': 'Pending #104.',
-    'config crossref-email': 'Pending #104.',
-    'config openalex-key': 'Pending #104.',
-    'config ncbi-key': 'Pending #104.',
-    'config ncbi-email': 'Pending #104.',
-    'config openai-key': 'Pending #104.',
-    'config anthropic-key': 'Pending #104.',
 }
 
 

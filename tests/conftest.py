@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from paperminertoolkit import settings
 from paperminertoolkit._agent import VALIDATE_OUTPUT_ENV
 from paperminertoolkit.providers import base as provider, chemrxiv, elsevier, openalex
 
@@ -46,3 +49,22 @@ def validate_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
         fails the command and the test that ran it.
     """
     monkeypatch.setenv(VALIDATE_OUTPUT_ENV, '1')
+
+
+@pytest.fixture(autouse=True)
+def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point the settings file at a temporary path so no test reads or writes real keys.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the settings path.
+    tmp_path : Path
+        Per-test directory that holds the stand-in settings file.
+
+    Returns
+    -------
+    None
+        ``settings.SETTINGS_FILE`` names a file that does not exist yet, as in CI.
+    """
+    monkeypatch.setattr(settings, 'SETTINGS_FILE', str(tmp_path / 'settings' / '.paperminertoolkitrc.json'))
