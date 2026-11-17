@@ -57,16 +57,95 @@ _TextDownloadResult: TypeAlias = tuple[bool, str, provider.FullTextDocument | No
 
 
 def _full_text_uri(paper: Mapping[str, Any]) -> str | None:
-    """Extract an Elsevier full-text URI or DOI retrieval URL from a paper row."""
-    link = paper.get('elsevier_link')
-    for value in _link_values(link):
-        uri = _full_text_uri_from_link_value(value)
-        if uri:
-            return uri
+    """Extract an Elsevier full-text URI or DOI retrieval URL from a paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    str or None
+        The row's linked Elsevier full-text endpoint, else an article URL built
+        from its DOI, or ``None`` when :func:`_elsevier_route` finds no
+        evidence that Elsevier holds the article.
+    """
+    if _elsevier_route(paper):
+        return None
+    uri = _linked_full_text_uri(paper)
+    if uri:
+        return uri
     doi = paper.get('doi')
     if _has_value(doi):
         return elsevier.article_url_from_doi(str(doi))
     return None
+
+
+def _linked_full_text_uri(paper: Mapping[str, Any]) -> str | None:
+    """Return the Elsevier full-text endpoint a row's ``elsevier_link`` names.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    str or None
+        The first full-text or article endpoint among the row's Elsevier
+        links. A bare Scopus record link (``content/abstract/scopus_id/...``)
+        is not one.
+    """
+    for value in _link_values(paper.get('elsevier_link')):
+        uri = _full_text_uri_from_link_value(value)
+        if uri:
+            return uri
+    return None
+
+
+def _elsevier_route(paper: Mapping[str, Any]) -> str:
+    """Explain why Elsevier cannot hold a row's article, or return ``''``.
+
+    A corpus built from a Scopus search carries an ``elsevier_link`` on almost
+    every row, because Scopus indexes every publisher, and the DOI article
+    endpoint answers ``404`` for anything Elsevier does not publish -- after
+    spending a request from the weekly quota. So a row only goes to Elsevier
+    on evidence that Elsevier publishes it, checked in this order:
+
+    1. a DOI with an Elsevier prefix (:func:`elsevier.is_elsevier_doi`);
+    2. a publisher name, from enrichment, that is Elsevier or an imprint;
+    3. any other known publisher rules Elsevier out, even when Scopus supplied
+       an article endpoint for the row, as it does for some Springer Nature,
+       RSC and IOP articles;
+    4. otherwise a full-text or article endpoint in ``elsevier_link`` counts,
+       so an Elsevier article under another DOI prefix still resolves.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    str
+        ``''`` when Elsevier may hold the article, otherwise the reason it
+        cannot, beginning ``no Elsevier route``.
+    """
+    doi = paper.get('doi')
+    publisher = paper.get('publisher')
+    if _has_value(doi) and elsevier.is_elsevier_doi(str(doi)):
+        return ''
+    if _has_value(publisher):
+        if elsevier.is_elsevier_publisher(str(publisher)):
+            return ''
+        return f'no Elsevier route: published by {str(publisher).strip()}'
+    if _linked_full_text_uri(paper):
+        return ''
+    if _has_value(doi):
+        prefix = str(doi).strip().split('/', 1)[0]
+        return f'no Elsevier route: DOI prefix {prefix} is not Elsevier\'s and no full-text link'
+    return 'no Elsevier route: no DOI or full-text link'
 
 
 def _link_values(link: object) -> list[Any]:
@@ -143,7 +222,22 @@ def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> b
 
 
 def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
-    """Build Elsevier PDF endpoint candidates for a normalized paper row."""
+    """Build Elsevier PDF endpoint candidates for a normalized paper row.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    list[str]
+        The DOI article URL and any linked full-text endpoint, without
+        repeats, or an empty list when :func:`_elsevier_route` finds no
+        evidence that Elsevier holds the article.
+    """
+    if _elsevier_route(paper):
+        return []
     urls = []
     doi = paper.get('doi')
     if _has_value(doi):
@@ -151,7 +245,7 @@ def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
     uri = _full_text_uri(paper)
     if uri:
         urls.append(uri)
-    return urls
+    return list(dict.fromkeys(urls))
 
 
 def _pdf_page_count(content: bytes) -> int | None:
@@ -1498,9 +1592,16 @@ def _download_elsevier_pdf(
     Returns
     -------
     tuple[bool, str]
-        Success flag, and the failure reason when unsuccessful.
+        Success flag, and the failure reason when unsuccessful. A row with no
+        evidence that Elsevier publishes it is not sent to Elsevier, and its
+        reason says so (``no Elsevier route: ...``) instead of reporting a
+        ``404``.
     """
-    return _download_pdf(paper, filepath), 'Elsevier PDF download failed'
+    reason = _elsevier_route(paper)
+    if reason:
+        return False, reason
+    ok = _download_pdf(paper, filepath)
+    return ok, '' if ok else 'Elsevier PDF download failed'
 
 
 def _pdf_downloader(source: str) -> Callable[..., tuple[bool, str]]:
@@ -1556,7 +1657,7 @@ def _download_elsevier_text(paper: Mapping[str, Any],
     """
     uri = _full_text_uri(paper)
     if not uri:
-        return False, 'missing Elsevier full-text URL', None
+        return False, _elsevier_route(paper) or 'missing Elsevier full-text URL', None
     document = elsevier.full_text_document(uri, elsevier.configured_api_key())
     if not document.text:
         return False, 'Elsevier text download failed', None
@@ -1612,7 +1713,19 @@ def _download_text_from_sources(
 
 
 def _should_try_elsevier_text(paper: Mapping[str, Any]) -> bool:
-    """Return whether a paper row advertises Elsevier full text."""
+    """Return whether Elsevier may hold a paper row's full text.
+
+    Parameters
+    ----------
+    paper : Mapping[str, Any]
+        Corpus paper row.
+
+    Returns
+    -------
+    bool
+        Whether the row has an Elsevier full-text route; see
+        :func:`_elsevier_route` for the evidence required.
+    """
     return _full_text_uri(paper) is not None
 
 

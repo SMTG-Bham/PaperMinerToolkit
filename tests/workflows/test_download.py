@@ -235,9 +235,10 @@ def test_full_text_uri_and_download_text_success_and_failure(
     assert download._full_text_uri({
         'elsevier_link': 'https://api.elsevier.com/content/abstract/scopus_id/105042507561',
     }) is None
-    assert download._full_text_uri({'doi': '10.1234/a b', 'elsevier_link': 'abstract-only'}) == (
-        'https://api.elsevier.com/content/article/doi/10.1234%2Fa+b'
+    assert download._full_text_uri({'doi': '10.1016/a b', 'elsevier_link': 'abstract-only'}) == (
+        'https://api.elsevier.com/content/article/doi/10.1016%2Fa+b'
     )
+    assert download._full_text_uri({'doi': '10.1234/a b', 'elsevier_link': 'abstract-only'}) is None
     assert download._full_text_uri({
         'elsevier_link': [
             {'@ref': 'self', '@href': 'self-link'},
@@ -284,7 +285,7 @@ def test_elsevier_text_entry_points_propagate_provider_errors(
     monkeypatch.setattr(download.elsevier, 'full_text_document', failed_document)
     destination = tmp_path / 'paper.txt'
     with pytest.raises(RuntimeError, match='service unavailable'):
-        downloader({'doi': '10.1234/example'}, destination)
+        downloader({'doi': '10.1016/example'}, destination)
     assert not destination.exists()
 
 
@@ -295,16 +296,16 @@ def test_download_elsevier_text_returns_native_document_and_clear_failures(
     """Return the XML-bearing provider result from the registered text handler."""
     filepath = tmp_path / 'paper.txt'
     assert download._download_elsevier_text({}, filepath) == (
-        False, 'missing Elsevier full-text URL', None)
+        False, 'no Elsevier route: no DOI or full-text link', None)
     monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
     monkeypatch.setattr(download.elsevier, 'full_text_document',
                         lambda *_, **__: download.provider.FullTextDocument(''))
-    paper = {'doi': '10.1/x'}
+    paper = {'doi': '10.1016/x'}
     assert download._download_elsevier_text(paper, filepath) == (
         False, 'Elsevier text download failed', None)
 
     document = download.provider.FullTextDocument(
-        'Derived text.', '<article/>', 'elsevier-xml', source_identifier='10.1/x',
+        'Derived text.', '<article/>', 'elsevier-xml', source_identifier='10.1016/x',
     )
     monkeypatch.setattr(download.elsevier, 'full_text_document',
                         lambda *_, **__: document)
@@ -814,9 +815,131 @@ def test_should_try_elsevier_text_detects_full_text_links() -> None:
     assert download._should_try_elsevier_text({
         'elsevier_link': 'https://api.elsevier.com/content/article/eid/1-s2.0-S1005030226004123',
     }) is True
-    assert download._should_try_elsevier_text({'doi': '10.1234/example', 'elsevier_link': 'abstract only'}) is True
+    assert download._should_try_elsevier_text({'doi': '10.1016/example', 'elsevier_link': 'abstract only'}) is True
+    assert download._should_try_elsevier_text({'doi': '10.1234/example', 'elsevier_link': 'abstract only'}) is False
     assert download._should_try_elsevier_text({'elsevier_link': 'abstract only'}) is False
     assert download._should_try_elsevier_text({'elsevier_link': None}) is False
+
+
+SCOPUS_RECORD_LINK = 'https://api.elsevier.com/content/abstract/scopus_id/69449108364'
+SCOPUS_ARTICLE_LINK = 'https://api.elsevier.com/content/article/eid/1-s2.0-S2041652023057218'
+
+
+@pytest.mark.parametrize(('paper', 'routed'), [
+    ({'doi': '10.1016/j.joule.2024.05.004', 'elsevier_link': SCOPUS_RECORD_LINK}, True),
+    ({'doi': 'https://doi.org/10.1006/jmbi.1999.3091'}, True),
+    ({'doi': '10.1103/PhysRevLett.103.096405', 'elsevier_link': SCOPUS_RECORD_LINK}, False),
+    ({'doi': '10.1039/b905028k', 'elsevier_link': SCOPUS_RECORD_LINK}, False),
+    ({'doi': '10.1021/jp9021085'}, False),
+    ({'doi': '10.9999/elsevier-imprint', 'elsevier_link': SCOPUS_ARTICLE_LINK}, True),
+    ({'doi': '10.9999/elsevier-imprint', 'publisher': 'Elsevier BV'}, True),
+    ({'doi': '10.1039/d3sc02171h', 'elsevier_link': SCOPUS_ARTICLE_LINK,
+      'publisher': 'Royal Society of Chemistry (RSC)'}, False),
+    ({'doi': '10.1016/j.jallcom.2025.180614', 'publisher': 'Some Aggregator'}, True),
+    ({'elsevier_link': SCOPUS_RECORD_LINK}, False),
+])
+def test_elsevier_route_needs_evidence_that_elsevier_publishes_the_article(
+    paper: dict[str, str],
+    routed: bool,
+) -> None:
+    """Only rows Elsevier can hold produce Elsevier PDF or text URLs (#84).
+
+    Parameters
+    ----------
+    paper : dict[str, str]
+        Paper row shaped like a Scopus search result.
+    routed : bool
+        Whether Elsevier should be asked for the article.
+    """
+    assert (download._elsevier_route(paper) == '') is routed
+    assert bool(download._pdf_urls(paper)) is routed
+    assert (download._full_text_uri(paper) is not None) is routed
+    assert download._should_try_elsevier_text(paper) is routed
+
+
+def test_elsevier_is_not_asked_for_another_publishers_article(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An APS row is skipped without a request, and the skip is what gets recorded (#84).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the destination files.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to make any Elsevier request fail the test.
+    """
+    def no_request(*_: object, **__: object) -> NoReturn:
+        """Fail the test if a request is made."""
+        raise AssertionError('Elsevier was asked for an article it does not publish')
+
+    monkeypatch.setattr(download.elsevier, 'get_content', no_request)
+    monkeypatch.setattr(download.elsevier, 'full_text_document', no_request)
+    paper = {'paper_id': 'SCOPUS_ID:69449108364', 'doi': '10.1103/PhysRevLett.103.096405',
+             'elsevier_link': SCOPUS_RECORD_LINK}
+
+    ok, error, _ = download._download_pdf_from_sources(paper, tmp_path / 'p.pdf', ['elsevier'])
+    assert ok is False
+    assert error == ("elsevier: no Elsevier route: DOI prefix 10.1103 is not Elsevier's "
+                     'and no full-text link')
+    assert '404' not in error
+    ok, detail, _ = download._download_text_from_sources(paper, tmp_path / 'p.txt', ['elsevier'])
+    assert (ok, detail) == (False, 'no full-text source available')
+    assert download._download_elsevier_text(paper, tmp_path / 'p.txt')[:2] == (
+        False, "no Elsevier route: DOI prefix 10.1103 is not Elsevier's and no full-text link",
+    )
+
+
+def test_elsevier_pdf_still_resolves_an_article_found_only_by_its_full_text_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A linked article endpoint is enough when the DOI prefix is not Elsevier's (#84).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the destination PDF.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the Elsevier response.
+    """
+    requested = []
+
+    def fake_get_content(api_key: str, url: str, **_: object) -> SimpleNamespace:
+        """Record the URL and answer with a two-page PDF."""
+        requested.append(url)
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.add_blank_page(width=72, height=72)
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return SimpleNamespace(headers={'Content-Type': 'application/pdf'}, content=buffer.getvalue())
+
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda *_: 'key')
+    monkeypatch.setattr(download.elsevier, 'get_content', fake_get_content)
+    paper = {'doi': '10.9999/imprint', 'elsevier_link': SCOPUS_ARTICLE_LINK}
+
+    doi_url = 'https://api.elsevier.com/content/article/doi/10.9999%2Fimprint'
+    assert download._pdf_urls(paper) == [doi_url, SCOPUS_ARTICLE_LINK]
+    assert download._download_elsevier_pdf(paper, tmp_path / 'p.pdf') == (True, '')
+    assert requested == [doi_url]
+
+
+def test_elsevier_abstracts_stay_publisher_agnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scopus abstracts cover every publisher, so the #84 gate leaves them alone.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to report a configured Elsevier key.
+    """
+    monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
+    paper = {'paper_id': 'SCOPUS_ID:69449108364', 'doi': '10.1103/PhysRevLett.103.096405',
+             'elsevier_link': SCOPUS_RECORD_LINK}
+
+    assert download._elsevier_abstract_reachable(paper) is True
+    assert download._elsevier_abstract_urls(paper)[0] == SCOPUS_RECORD_LINK
 
 
 def test_should_try_medrxiv_text_needs_the_doi_medrxiv_issued() -> None:
@@ -1032,7 +1155,7 @@ def test_download_papers_updates_text_and_pdf_statuses(
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:1',
-        'doi': '10.1234/example',
+        'doi': '10.1016/example',
         'elsevier_link': 'has full-text link',
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
@@ -1295,7 +1418,7 @@ def test_download_papers_force_redownloads_existing_content(
 ) -> None:
     """The force option refreshes every requested content role despite stored assets."""
     db_path = tmp_path / 'papers.db'
-    paper = {'paper_id': 'paper:refresh', 'doi': '10.1234/refresh'}
+    paper = {'paper_id': 'paper:refresh', 'doi': '10.1016/refresh'}
     with corpus.connect(db_path) as conn:
         corpus.add_asset(conn, paper, 'old abstract', role='abstract', kind='text',
                          mime_type='text/plain', source='old')
@@ -1576,7 +1699,7 @@ def test_download_papers_records_text_and_pdf_failures(
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:1',
-        'doi': '10.1234/example',
+        'doi': '10.1016/example',
         'elsevier_link': 'has full-text link',
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
@@ -1605,7 +1728,7 @@ def test_download_papers_records_initial_text_download_exception(
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:text-error',
-        'doi': '10.1234/text-error',
+        'doi': '10.1016/text-error',
         'elsevier_link': 'has full-text link',
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
@@ -1634,8 +1757,8 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     """Download papers records download exceptions and Elsevier text after OA PDF."""
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [
-        {'paper_id': 'paper:pdf-error', 'doi': '10.1234/pdf-error'},
-        {'paper_id': 'paper:oa-text', 'doi': '10.1234/oa-text', 'elsevier_link': 'has full-text link'},
+        {'paper_id': 'paper:pdf-error', 'doi': '10.1016/pdf-error'},
+        {'paper_id': 'paper:oa-text', 'doi': '10.1016/oa-text', 'elsevier_link': 'has full-text link'},
     ])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
@@ -1686,7 +1809,7 @@ def test_download_papers_stores_elsevier_text_and_xml_with_oa_pdf(
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:oa-text',
-        'doi': '10.1234/oa-text',
+        'doi': '10.1016/oa-text',
         'elsevier_link': 'has full-text link',
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
@@ -1705,7 +1828,7 @@ def test_download_papers_stores_elsevier_text_and_xml_with_oa_pdf(
 
     monkeypatch.setattr(download, '_download_pdf_from_sources', fake_download_pdf_from_sources)
     document = download.provider.FullTextDocument(
-        'elsevier text', '<article/>', 'elsevier-xml', source_identifier='10.1234/oa-text',
+        'elsevier text', '<article/>', 'elsevier-xml', source_identifier='10.1016/oa-text',
     )
 
     def fake_download_text(
@@ -1749,7 +1872,7 @@ def test_oa_pdf_followup_records_an_unavailable_elsevier_text(
     db_path = tmp_path / 'papers.db'
     paper = {
         'paper_id': 'doi:10.1/x',
-        'doi': '10.1/x',
+        'doi': '10.1016/x',
         'elsevier_link': 'has full-text link',
     }
     write_corpus(db_path, [paper])

@@ -501,6 +501,14 @@ open-access subset, which needs no credentials:
 pmt download papers.db --format text --source pubmed
 ```
 
+Elsevier is asked for full text or a PDF only when the paper looks like one it publishes: a DOI
+with an Elsevier prefix such as `10.1016`, an Elsevier publisher name from enrichment, or, when the
+publisher is unknown, a full-text article link in the Scopus record. Scopus indexes every
+publisher, so a corpus built from a Scopus search carries an Elsevier link on almost every row,
+and asking Elsevier for an ACS or RSC article only spends a request from the weekly quota to get a
+`404`. A skipped row records `elsevier: no Elsevier route: ...` among its PDF failures instead.
+Abstracts are not affected, because Scopus holds an abstract for every publisher.
+
 Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
 subset reports that no full text is offered rather than failing. An NCBI API key raises the PubMed
 request rate from three to ten per second, which matters most on large download runs; see

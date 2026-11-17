@@ -70,6 +70,21 @@ def test_get_content_is_paced_retried_and_never_returns_a_missing_document(
                              session=FakeSession([FakeResponse(text='', status_code=404)]))
 
 
+def test_elsevier_doi_and_publisher_checks_recognise_imprints() -> None:
+    """DOI prefixes and publisher names identify Elsevier and its imprints only (#84)."""
+    assert elsevier.is_elsevier_doi('10.1016/j.joule.2024.05.004')
+    assert elsevier.is_elsevier_doi('https://doi.org/10.1016/J.JALLCOM.2025.180614')
+    assert elsevier.is_elsevier_doi('10.1006/jmbi.1999.3091')
+    assert not elsevier.is_elsevier_doi('10.1039/b905028k')
+    assert not elsevier.is_elsevier_doi('10.10160/not-a-prefix-match')
+    assert not elsevier.is_elsevier_doi(None)
+    assert not elsevier.is_elsevier_doi('')
+    assert elsevier.is_elsevier_publisher('Elsevier BV')
+    assert elsevier.is_elsevier_publisher('Cell Press')
+    assert not elsevier.is_elsevier_publisher('American Physical Society (APS)')
+    assert not elsevier.is_elsevier_publisher(None)
+
+
 def test_elsevier_url_builders_quote_query_and_doi_values() -> None:
     """Elsevier URL builders quote query and DOI values."""
     scopus_url = elsevier.search_url('scopus', 'solid electrolyte', 10, 'TITLE-ABS-KEY')
