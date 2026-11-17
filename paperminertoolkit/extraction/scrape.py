@@ -833,6 +833,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
                   include_supplements: bool = True,
+                  paper_ids: Iterable[str] | None = None,
                   ) -> dict[str, Any]:
     """Scrape corpus papers and write extracted material records.
 
@@ -893,6 +894,10 @@ def scrape_papers(db_path: str = 'papers.db',
         Whether text and image modes also process downloaded supporting
         information. SI has independent checkpoints and per-file provenance;
         abstract-only scraping never includes SI.
+    paper_ids : Iterable[str] or None, optional
+        Only consider these canonical paper identifiers. Active corpus
+        filters do not apply to papers named this way; ``scrape_order`` and
+        ``scrape_count`` still do. ``None`` considers the whole corpus.
 
     Returns
     -------
@@ -980,7 +985,11 @@ def scrape_papers(db_path: str = 'papers.db',
     with connect(db_path) as conn:
         filters = active_filter_stack(conn)
         papers = paper_rows(conn)
-        if filters:
+        if paper_ids is not None:
+            selected_ids = set(paper_ids)
+            papers = [paper for paper in papers if paper['paper_id'] in selected_ids]
+            print(f'Scraping {len(papers)} named papers; active corpus filters do not apply to them.')
+        elif filters:
             overview = filter_overview(conn)
             counts = overview['counts']
             if ignore_filters:

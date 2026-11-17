@@ -228,6 +228,25 @@ before moving on: a failure with `missing_source` needs `pmt download`, while
 other failures are retried by a plain rerun. Keep the corpus, recipe, model
 configuration, and both CSVs together.
 
+### Work on named papers
+
+`scrape`, `download`, and `enrich` accept a repeatable `--paper-id` and a
+`--paper-ids-file` (one ID per line; blank lines and `#` comments are ignored).
+Use the `paper_ids` from `search`, `gather`, or `corpus list`, or the
+`failed_papers` of a `scrape --json` summary, to test a recipe on one paper or
+retry exactly the papers that failed:
+
+```bash
+pmt scrape run/papers.db sse --mode abstract --paper-id "PAPER_ID" --json
+pmt download run/papers.db --format pdf --paper-ids-file run/retry.txt --json
+```
+
+An unknown ID is a usage error (exit 2) that names it, and nothing runs.
+Active corpus filters do not apply to named papers. The usual skip rules still
+do: a paper whose stage already succeeded is skipped unless `--force` is given,
+and `enrich` also needs `--retry-failed` for failed papers. `scrape --order`
+and `--count` still apply after the selection.
+
 Inspect pipeline and filter status before scheduling more work. Active filters
 affect scraping and downloads within `gather`; standalone `download` considers
 the entire corpus. Completed download and scrape stages are

@@ -342,3 +342,91 @@ def test_scrape_and_store_report_errors_without_tracebacks(
         assert result.stdout == ''
         assert str(error.args[0]) in result.stderr
         assert 'Traceback' not in result.stderr
+
+
+def _corpus_with(tmp_path: Path, *paper_ids: str) -> Path:
+    """Create a real corpus holding the given paper IDs."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        for paper_id in paper_ids:
+            corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
+    return db_path
+
+
+@pytest.mark.parametrize(('command', 'target', 'extra'), [
+    ('download', 'download_papers', {'respect_filters': False}),
+    ('enrich', 'enrich_corpus', {}),
+    ('scrape', 'scrape_papers', {}),
+])
+def test_paper_id_options_restrict_workflows_to_named_papers(
+    command: str, target: str, extra: dict[str, Any],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Combine, de-duplicate, and forward named papers in the given order."""
+    db_path = _corpus_with(tmp_path, 'paper:1', 'paper:2', 'paper:3')
+    ids_file = tmp_path / 'ids.txt'
+    ids_file.write_text('# retry list\npaper:3\n\npaper:1\n', encoding='utf-8')
+    seen: dict[str, Any] = {}
+
+    def workflow(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record the selection the command forwarded."""
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(cli, target, workflow)
+    result = CliRunner().invoke(cli.main, [
+        command, str(db_path), '--paper-id', 'paper:1', '--paper-ids-file', str(ids_file),
+        '--json'])
+    assert result.exit_code == 0, result.output
+    assert seen['paper_ids'] == ['paper:1', 'paper:3']
+    for key, value in extra.items():
+        assert seen[key] == value
+
+
+@pytest.mark.parametrize('command', ['download', 'enrich', 'scrape'])
+def test_paper_id_options_are_omitted_when_not_given(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave the whole-corpus behaviour untouched without a selection."""
+    db_path = _corpus_with(tmp_path, 'paper:1')
+    seen: dict[str, Any] = {}
+    target = {'download': 'download_papers', 'enrich': 'enrich_corpus',
+              'scrape': 'scrape_papers'}[command]
+    monkeypatch.setattr(cli, target, lambda *args, **kwargs: seen.update(kwargs) or {})
+    result = CliRunner().invoke(cli.main, [command, str(db_path), '--json'])
+    assert result.exit_code == 0, result.output
+    assert 'paper_ids' not in seen and 'respect_filters' not in seen
+
+
+@pytest.mark.parametrize('command', ['download', 'enrich', 'scrape'])
+def test_unknown_paper_ids_are_usage_errors(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Name the unknown IDs and never start the workflow."""
+    db_path = _corpus_with(tmp_path, 'paper:1')
+    target = {'download': 'download_papers', 'enrich': 'enrich_corpus',
+              'scrape': 'scrape_papers'}[command]
+
+    def forbidden(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail if the workflow runs."""
+        raise AssertionError('workflow ran')
+
+    monkeypatch.setattr(cli, target, forbidden)
+    result = CliRunner().invoke(cli.main, [
+        command, str(db_path), '--paper-id', 'paper:1', '--paper-id', 'nope:9', '--json'])
+    assert result.exit_code == 2
+    assert result.stdout == ''
+    assert 'Unknown paper ID(s)' in result.stderr
+    assert 'nope:9' in result.stderr
+    assert 'paper:1,' not in result.stderr
+
+
+def test_an_empty_paper_ids_file_is_a_usage_error(tmp_path: Path) -> None:
+    """Refuse a selection file that names nothing rather than process everything."""
+    db_path = _corpus_with(tmp_path, 'paper:1')
+    ids_file = tmp_path / 'ids.txt'
+    ids_file.write_text('# nothing\n\n', encoding='utf-8')
+    result = CliRunner().invoke(cli.main, [
+        'download', str(db_path), '--paper-ids-file', str(ids_file), '--json'])
+    assert result.exit_code == 2
+    assert 'No paper IDs were given' in result.stderr

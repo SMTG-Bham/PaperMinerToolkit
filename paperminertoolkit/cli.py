@@ -84,6 +84,66 @@ def _quiet(json_output: bool) -> Any:
     """Route workflow chatter to stderr while a command produces JSON."""
     return redirect_stdout(sys.stderr) if json_output else nullcontext()
 
+
+def _paper_id_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """Add the shared ``--paper-id`` and ``--paper-ids-file`` selection options."""
+    command = click.option(
+        '--paper-ids-file', default=None, type=click.Path(exists=True, dir_okay=False),
+        help='File of corpus paper IDs, one per line (blank lines and # comments ignored); '
+             'combined with --paper-id.',
+    )(command)
+    return click.option(
+        '--paper-id', 'paper_ids', multiple=True,
+        help='Only process this corpus paper ID. Repeat for several. Active corpus filters '
+             'do not apply to named papers.',
+    )(command)
+
+
+# SQLite limits the number of bound parameters per statement.
+_ID_LOOKUP_BATCH = 500
+
+
+def _selected_paper_ids(db_path: str, paper_ids: tuple[str, ...],
+                        ids_file: str | None) -> list[str] | None:
+    """Resolve ``--paper-id`` and ``--paper-ids-file`` against the corpus.
+
+    Returns ``None`` when neither option was given. Unknown identifiers are a
+    usage error that names them; the corpus is opened read-only.
+    """
+    if not paper_ids and ids_file is None:
+        return None
+    requested = [paper_id.strip() for paper_id in paper_ids if paper_id.strip()]
+    if ids_file is not None:
+        try:
+            lines = Path(ids_file).read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            raise click.BadParameter(str(error), param_hint='--paper-ids-file') from error
+        requested.extend(line.strip() for line in lines
+                         if line.strip() and not line.lstrip().startswith('#'))
+    requested = list(dict.fromkeys(requested))
+    if not requested:
+        raise click.BadParameter('No paper IDs were given.', param_hint='--paper-id')
+    known: set[str] = set()
+    try:
+        uri = f'{Path(db_path).resolve().as_uri()}?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            for start in range(0, len(requested), _ID_LOOKUP_BATCH):
+                batch = requested[start:start + _ID_LOOKUP_BATCH]
+                rows = conn.execute(
+                    f'SELECT paper_id FROM papers WHERE paper_id IN ({", ".join("?" for _ in batch)})',
+                    batch,
+                ).fetchall()
+                known.update(row[0] for row in rows)
+    except sqlite3.Error as error:
+        raise click.ClickException(f'Cannot look up paper IDs in {db_path}: {error}') from error
+    missing = [paper_id for paper_id in requested if paper_id not in known]
+    if missing:
+        shown = ', '.join(missing[:20])
+        more = f' and {len(missing) - 20} more' if len(missing) > 20 else ''
+        raise click.BadParameter(f'Unknown paper ID(s) in {db_path}: {shown}{more}',
+                                 param_hint='--paper-id')
+    return requested
+
 # A download may fetch a PDF, full text, or an abstract, so its choices are
 # the union of the three, kept in PDF order because that is the one a caller
 # most often means.
@@ -337,6 +397,7 @@ def import_author(db_path: str,
               help='Supporting-information source to use. Repeat to choose more than one.')
 @click.option('--force', is_flag=True, default=False,
               help='Redownload requested assets even when that content type is already stored.')
+@_paper_id_options
 @_json_option
 def download(
         db_path: str,
@@ -346,12 +407,16 @@ def download(
         download_supplements: bool,
         supplement_sources: tuple[str, ...],
         force: bool,
+        paper_ids: tuple[str, ...],
+        paper_ids_file: str | None,
         json_output: bool,
 ) -> None:
     """Download abstracts, text, PDFs, and supporting information for corpus rows.
 
     Supplement-only runs skip abstracts. Abstract-only runs skip supplements.
     """
+    selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
+    selection = {} if selected is None else {'paper_ids': selected, 'respect_filters': False}
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
             summary = download_papers(
@@ -362,6 +427,7 @@ def download(
                 download_supplements=download_supplements,
                 supplement_sources=list(supplement_sources),
                 force=force,
+                **selection,
             )
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
@@ -472,6 +538,7 @@ def digitize(
 @click.option('--email',
               default=None,
               help='Contact email for Crossref. Defaults to the stored crossref_email setting.')
+@_paper_id_options
 @_json_option
 def enrich(db_path: str,
            sources: tuple[str, ...],
@@ -482,8 +549,15 @@ def enrich(db_path: str,
            refresh_after: int,
            references: bool,
            resolve_references: bool,
-           email: str | None, json_output: bool) -> None:
-    """Supplement corpus metadata with the selected provider records."""
+           email: str | None, paper_ids: tuple[str, ...], paper_ids_file: str | None,
+           json_output: bool) -> None:
+    """Supplement corpus metadata with the selected provider records.
+
+    Named papers (--paper-id) are still subject to the status rules: use
+    --force or --retry-failed to redo succeeded or failed ones.
+    """
+    selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
+    selection = {} if selected is None else {'paper_ids': selected}
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
             summary = enrich_corpus(
@@ -497,6 +571,7 @@ def enrich(db_path: str,
                 references=references,
                 resolve_references=resolve_references,
                 email=email,
+                **selection,
             )
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
@@ -1340,6 +1415,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               default=True,
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
+@_paper_id_options
 @_json_option
 def scrape(
         db_path: str,
@@ -1367,6 +1443,8 @@ def scrape(
         compression_mode: str,
         compression_ratio: str,
         compression_content_detection: bool,
+        paper_ids: tuple[str, ...],
+        paper_ids_file: str | None,
         json_output: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers.
@@ -1374,6 +1452,8 @@ def scrape(
     Exits 0 when the run completes, even if some papers failed: inspect the
     failed counts and failed_papers in the --json summary, or pmt status.
     """
+    selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
+    selection = {} if selected is None else {'paper_ids': selected}
     try:
         with _quiet(json_output):
             summary = scrape_papers(
@@ -1402,6 +1482,7 @@ def scrape(
                 compression_mode=compression_mode,
                 compression_ratio=compression_ratio,
                 compression_content_detection=compression_content_detection,
+                **selection,
             )
     except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
         message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)

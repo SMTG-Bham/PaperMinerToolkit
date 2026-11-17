@@ -739,6 +739,19 @@ def test_enrichment_candidates_ignore_succeeded_rows_by_default(tmp_path: Path) 
     assert [row['paper_id'] for row in stale] == ['demo:1']
 
 
+def test_enrichment_candidates_can_be_restricted_to_named_papers(tmp_path: Path) -> None:
+    """Select only the named pending papers, and none for an empty selection."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        for index in range(3):
+            corpus.upsert_paper(conn, sample_paper(f'demo:{index}'))
+
+        named = corpus.enrichment_candidates(conn, paper_ids=['demo:2', 'demo:0', 'demo:2'])
+        empty = corpus.enrichment_candidates(conn, paper_ids=[])
+
+    assert [row['paper_id'] for row in named] == ['demo:0', 'demo:2']
+    assert empty == []
+
+
 def test_write_enrichment_fills_only_empty_core_columns(tmp_path: Path) -> None:
     """Fill empty core columns while leaving populated ones untouched."""
     with open_corpus(tmp_path / 'corpus.db') as conn:

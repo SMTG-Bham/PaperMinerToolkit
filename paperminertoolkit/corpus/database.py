@@ -1172,7 +1172,8 @@ def enrichment_candidates(conn: sqlite3.Connection,
                           statuses: Iterable[str] = ('pending',),
                           after_rowid: int = 0,
                           limit: int = 100,
-                          refreshed_before: str = '') -> list[_Paper]:
+                          refreshed_before: str = '',
+                          paper_ids: Iterable[str] | None = None) -> list[_Paper]:
     """Return the next page of papers needing enrichment.
 
     Results are keyset-paginated by ``rowid`` so an interrupted run resumes
@@ -1191,6 +1192,10 @@ def enrichment_candidates(conn: sqlite3.Connection,
         Maximum number of rows to return.
     refreshed_before : str, default=''
         Also select succeeded rows enriched before this ISO-8601 timestamp.
+    paper_ids : Iterable[str] or None, optional
+        Restrict candidates to these canonical identifiers. The status rules
+        still apply, so an already enriched paper needs ``statuses`` to
+        include ``succeeded``. ``None`` considers every row.
 
     Returns
     -------
@@ -1199,6 +1204,11 @@ def enrichment_candidates(conn: sqlite3.Connection,
     """
     statuses = list(statuses)
     placeholders = ', '.join('?' for _ in statuses) or "''"
+    id_clause, id_values = '', []
+    if paper_ids is not None:
+        id_values = list(dict.fromkeys(paper_ids))
+        id_placeholders = ', '.join('?' for _ in id_values) or "''"
+        id_clause = f'AND paper_id IN ({id_placeholders})'
     rows = conn.execute(
         f"""
         SELECT rowid AS rowid, paper_id, doi, title, journal, publication_date, authors,
@@ -1213,10 +1223,11 @@ def enrichment_candidates(conn: sqlite3.Connection,
                    AND enriched_at IS NOT NULL
                    AND enriched_at <> ''
                    AND enriched_at < ?))
+          {id_clause}
         ORDER BY rowid
         LIMIT ?
         """,
-        [after_rowid, *statuses, refreshed_before, refreshed_before, limit],
+        [after_rowid, *statuses, refreshed_before, refreshed_before, *id_values, limit],
     ).fetchall()
     return [dict(row) for row in rows]
 

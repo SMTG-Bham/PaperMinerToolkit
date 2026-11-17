@@ -249,6 +249,13 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
         assert corpus.get_asset(conn, 'unselected', 'pdf') is None
         assert corpus.get_asset(conn, 'unevaluated', 'pdf') is None
 
+    named = download.download_papers(
+        db_path, download_format='pdf', sources=['core'], download_abstract=False,
+        download_supplements=False, paper_ids=['excluded'], respect_filters=False,
+    )
+    assert named['pdfs'] == 1
+    assert calls == ['included', 'excluded']
+
 
 @pytest.mark.parametrize('format_name,want_abstract', [('supplement', False), ('both', True)])
 def test_gather_forwards_supplement_controls_and_suppresses_si_only_abstracts(

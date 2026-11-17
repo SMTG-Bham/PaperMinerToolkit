@@ -1790,7 +1790,8 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                   arxiv_session: provider.HTTPClient | None = None,
                   medrxiv_session: provider.HTTPClient | None = None,
                   biorxiv_session: provider.HTTPClient | None = None,
-                  chemrxiv_session: provider.HTTPClient | None = None) -> dict[str, int]:
+                  chemrxiv_session: provider.HTTPClient | None = None,
+                  paper_ids: Iterable[str] | None = None) -> dict[str, int]:
     """Supplement every candidate paper in a corpus with provider metadata.
 
     Progress is committed after each batch, so an interrupted or budget-limited
@@ -1840,6 +1841,10 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
         HTTP client used for bioRxiv requests.
     chemrxiv_session : provider.HTTPClient or None, optional
         HTTP client used for chemRxiv requests.
+    paper_ids : Iterable[str] or None, optional
+        Only enrich these canonical paper identifiers. The status rules
+        (``force``, ``retry_failed``, ``refresh_after``) still decide whether
+        each named paper is due. ``None`` considers the whole corpus.
 
     Returns
     -------
@@ -1878,7 +1883,8 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                 page = batch_size if remaining is None else min(batch_size, remaining)
                 candidates = enrichment_candidates(conn, statuses=statuses,
                                                    after_rowid=after_rowid, limit=page,
-                                                   refreshed_before=refreshed_before)
+                                                   refreshed_before=refreshed_before,
+                                                   paper_ids=paper_ids)
                 if not candidates:
                     break
                 after_rowid = int(candidates[-1]['rowid'])

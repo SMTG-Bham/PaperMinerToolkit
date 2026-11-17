@@ -547,6 +547,30 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(
     assert 'No new scraped material rows were written' in output
 
 
+def test_scrape_papers_limits_a_run_to_named_papers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Process only named papers, even when an active filter would exclude them."""
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'first'}, {'paper_id': 'second'}])
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'active_filter_stack', lambda conn: [{'name': 'exclude-all'}])
+    monkeypatch.setattr(scrape, 'current_filter_statuses', lambda conn: {})
+
+    summary = scrape.scrape_papers(str(db_path), output_path=str(tmp_path / 'out.csv'),
+                                   paper_ids=['second'])
+
+    assert summary['papers_selected'] == 1
+    assert [failure['paper_id'] for failure in summary['failed_papers']] == ['second']
+    assert 'Scraping 1 named papers' in capsys.readouterr().out
+    statuses = read_corpus(db_path).set_index('paper_id')['text_scrape_status']
+    assert statuses['first'] != 'failed'
+
+
 def test_scrape_papers_records_abstract_failures_when_source_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

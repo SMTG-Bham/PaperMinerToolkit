@@ -1742,7 +1742,8 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     force: bool = False,
                     paper_ids: Iterable[str] | None = None,
                     download_supplements: bool = True,
-                    supplement_sources: Iterable[str] | None = None) -> dict[str, int]:
+                    supplement_sources: Iterable[str] | None = None,
+                    respect_filters: bool = True) -> dict[str, int]:
     """Download paper assets and update a corpus in place.
 
     Parameters
@@ -1771,6 +1772,10 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     supplement_sources : Iterable[str] or None, optional
         Independently selected SI discovery sources. Defaults to all supported
         sources, including stored article XML, PMC, Figshare, and publisher pages.
+    respect_filters : bool, default=True
+        Whether an explicit ``paper_ids`` selection is narrowed to papers that
+        active corpus filters include. ``gather`` relies on this; the CLI's
+        ``--paper-id`` turns it off so that named papers are always processed.
 
     Returns
     -------
@@ -1818,7 +1823,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         papers = paper_rows(conn)
         if selected_ids is not None:
             papers = [paper for paper in papers if paper['paper_id'] in selected_ids]
-            if papers and active_filter_stack(conn):
+            if respect_filters and papers and active_filter_stack(conn):
                 statuses = current_filter_statuses(conn)
                 papers = [paper for paper in papers
                           if statuses.get(paper['paper_id']) == 'included']
