@@ -27,6 +27,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.extraction.scrape_progress',
     'paperminertoolkit.extraction.store',
     'paperminertoolkit.extraction.tokenizer',
+    'paperminertoolkit.mcp_server',
     'paperminertoolkit.providers.supplements',
     'paperminertoolkit.providers.arxiv',
     'paperminertoolkit.providers.base',

@@ -21,6 +21,10 @@ import click
 from paperminertoolkit import _output_schemas as out
 from paperminertoolkit._agent import AgentGroup, agent_meta, emit_json
 from paperminertoolkit._progress import PROGRESS_MODES, progress_mode
+from paperminertoolkit.mcp_server import ALLOWABLE_EFFECTS as ALLOWABLE_MCP_EFFECTS
+from paperminertoolkit.mcp_server import Server as McpServer
+from paperminertoolkit.mcp_server import client_config as mcp_client_config
+from paperminertoolkit.mcp_server import serve as serve_mcp
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
@@ -2132,6 +2136,34 @@ def miner_status(db_path: str, json_output: bool) -> None:
         raise click.ClickException(str(error)) from error
 
 
+@agent_meta(effects={'starts_server'})
+@click.command('mcp')
+@click.option('--allow', 'allow', multiple=True, type=click.Choice(ALLOWABLE_MCP_EFFECTS),
+              help='Also expose commands with this effect. Repeat for several. By default only '
+                   'read-only commands are tools.')
+@click.option('--timeout', default=3600.0, type=click.FloatRange(min=1), show_default=True,
+              help='Seconds a tool call may run before it is stopped.')
+@click.option('--print-config', is_flag=True,
+              help='Print an mcpServers entry that starts this server, and exit.')
+def mcp_command(allow: tuple[str, ...], timeout: float, print_config: bool) -> None:
+    """Serve pmt commands as Model Context Protocol tools over stdio.
+
+    Each JSON-capable command becomes a tool (pmt corpus list is corpus_list)
+    that runs as a subprocess and returns the command's JSON. Read-only
+    commands are exposed by default; --allow network, writes_corpus,
+    writes_files, or paid_model admits more. Commands that change settings,
+    prompt, or start a server are never exposed. Messages are JSON-RPC 2.0,
+    one per line; stdout carries nothing else.
+    """
+    if print_config:
+        click.echo(json.dumps(mcp_client_config(allow), indent=2))
+        return
+    server = McpServer(main, allow, timeout)
+    click.echo(f'pmt MCP server: {len(server.tools)} tools; waiting for JSON-RPC on stdin.',
+               err=True)
+    serve_mcp(server, sys.stdin, sys.stdout)
+
+
 @click.group('pmt', cls=AgentGroup)
 @click.version_option(__version__, prog_name='pmt')
 def main() -> None:
@@ -2188,6 +2220,7 @@ main.add_command(scrape, 'scrape')
 main.add_command(scrape_progress_command, 'scrape-progress')
 main.add_command(store, 'store')
 main.add_command(digitize, 'digitize')
+main.add_command(mcp_command, 'mcp')
 main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
 

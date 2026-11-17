@@ -338,6 +338,37 @@ bound each retry. Repeating `search` or `gather` adds a new history entry even
 when records merge. `reset` changes pipeline state across the corpus and should
 be reserved for deliberate reruns.
 
+## Connect an MCP client
+
+`pmt mcp` serves the CLI as Model Context Protocol tools over stdio, for
+clients that call tools rather than run commands. Each JSON-capable command
+becomes a tool: `pmt corpus list` is `corpus_list`, and `pmt scrape-progress`
+is `scrape-progress`. Input schemas come from the command's parameters, output
+schemas from `pmt schema`, and the declared effects become tool annotations
+(`readOnlyHint`, `destructiveHint`, `openWorldHint`).
+
+By default only read-only commands are tools. Admit more with `--allow`:
+
+```bash
+pmt mcp                                      # read-only tools
+pmt mcp --allow network --allow writes_corpus --allow writes_files   # acquisition too
+pmt mcp --allow paid_model ...               # scrape as well
+pmt mcp --print-config                       # an mcpServers entry for this interpreter
+```
+
+Commands that change settings, prompt, or start a server (`config` setters,
+`config model`, `store`, `validate gui`, `mcp`) are never exposed. Each tool
+call runs `python -m paperminertoolkit <command> --json` as a subprocess with
+stdin closed. The tool result is the command's JSON, or its error object with
+`isError: true`. `--timeout` (default 3600 s) bounds each call.
+
+The server implements the tool subset of MCP itself, with no extra dependency:
+JSON-RPC 2.0 messages, one per line, with `initialize`, `ping`, `tools/list`,
+`tools/call`, and `notifications/initialized`. It answers protocol versions
+`2025-06-18`, `2025-03-26`, and `2024-11-05`, and sends output schemas and
+`structuredContent` from `2025-06-18`. It has been tested against its own
+offline session tests, not yet against every client.
+
 ## JSON and exit-code contract
 
 JSON is **command-local**: write `pmt search ... --json`, not `pmt --json search`.

@@ -27,6 +27,7 @@ JSON_BY_DEFAULT = {'schema', 'recipe show'}
 EXEMPT: dict[str, str] = {
     'validate gui': 'Starts an interactive local review server.',
     'recipe prompt': 'Renders a plain-text prompt by design.',
+    'mcp': 'Runs a JSON-RPC protocol server on stdio.',
 }
 
 
