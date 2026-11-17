@@ -12,6 +12,7 @@ from typing import Any
 
 import click
 
+from paperminertoolkit._agent import agent_meta
 from paperminertoolkit.corpus.database import (
     ENRICHMENT_COLUMNS,
     PAPER_FIELDS,
@@ -101,6 +102,7 @@ def _paper(conn: sqlite3.Connection, paper_id: str) -> dict[str, Any]:
     return paper
 
 
+@agent_meta(effects={'read_only'})
 @click.command('list')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.option('--limit', default=20, type=click.IntRange(1, 1000), show_default=True,
@@ -147,6 +149,7 @@ def corpus_list(db_path: str, limit: int, offset: int,
         click.echo('No papers in this page.')
 
 
+@agent_meta(effects={'read_only'})
 @click.command('show')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('paper_id')
@@ -199,6 +202,7 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
     click.echo(f'Contributing searches: {len(result["searches"])}')
 
 
+@agent_meta(effects={'writes_files'})
 @click.command('export')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('paper_id')

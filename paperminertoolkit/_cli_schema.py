@@ -7,6 +7,7 @@ from typing import Any
 
 import click
 
+from paperminertoolkit._agent import EFFECTS, agent_meta, command_effects
 from paperminertoolkit._version import __version__
 
 
@@ -57,11 +58,13 @@ def _command_schema(command: click.Command, context: click.Context,
         'name': path[-1],
         'path': ' '.join(path),
         'help': command.help,
+        'effects': command_effects(command),
         'parameters': parameters,
         'commands': children,
     }
 
 
+@agent_meta(effects={'read_only'})
 @click.command('schema')
 @click.argument('command_path', nargs=-1)
 @click.pass_context
@@ -91,6 +94,7 @@ def schema_command(context: click.Context, command_path: tuple[str, ...]) -> Non
     result = {
         'schema_version': 1,
         'package_version': __version__,
+        'effects': EFFECTS,
         'command': _command_schema(selected_command, selected_context, path),
     }
     click.echo(json.dumps(result, indent=2, default=_json_default))

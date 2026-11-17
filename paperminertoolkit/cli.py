@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import click
+from paperminertoolkit._agent import agent_meta
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
@@ -98,6 +99,7 @@ def _format_bytes(size: int) -> str:
         value /= 1024
 
 
+@agent_meta(effects={'network', 'writes_corpus'})
 @click.command('search')
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
@@ -157,6 +159,7 @@ def _check_search_status(summary: Mapping[str, Any]) -> None:
         )
 
 
+@agent_meta(effects={'network', 'writes_corpus'})
 @click.command('gather')
 @click.argument('query')
 @click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
@@ -227,6 +230,7 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
     _check_search_status(summary['search'])
 
 
+@agent_meta(effects={'network', 'writes_corpus'})
 @click.command('pdfs')
 @click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path())
@@ -239,6 +243,7 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
     import_pdfs(dir, db_path, use_crossref=not no_crossref)
 
 
+@agent_meta(effects={'network', 'writes_corpus', 'writes_files'})
 @click.command('author')
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--email', default=None,
@@ -287,6 +292,7 @@ def import_author(db_path: str,
     click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
+@agent_meta(effects={'network', 'writes_corpus'})
 @click.command('download')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
@@ -345,6 +351,7 @@ def download(
         click.echo(json.dumps(summary, indent=2))
 
 
+@agent_meta(effects={'writes_corpus', 'writes_files'})
 @click.command('digitize')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('records_csv', type=click.Path(exists=True, dir_okay=False))
@@ -411,6 +418,7 @@ def digitize(
                f'{summary["points"]} points written to {summary["output"]}.')
 
 
+@agent_meta(effects={'network', 'writes_corpus'})
 @click.command('enrich')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
@@ -494,6 +502,7 @@ def enrich(db_path: str,
         )
 
 
+@agent_meta(effects={'migrates_corpus'})
 @click.command('stats')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -534,6 +543,7 @@ def corpus_status(db_path: str, json_output: bool) -> None:
     click.echo(f'Reference records: {enrichment["reference_records"]}')
 
 
+@agent_meta(effects={'migrates_corpus', 'writes_files'})
 @click.command('searches')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.option('--limit', default=20, type=click.IntRange(min=1), show_default=True,
@@ -638,6 +648,7 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
         )
 
 
+@agent_meta(effects={'writes_corpus'})
 @click.command('regex')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
@@ -667,6 +678,7 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
     _echo_filter_overview(db_path, overview)
 
 
+@agent_meta(effects={'writes_corpus'})
 @click.command('topic')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
@@ -686,6 +698,7 @@ def filter_topic(db_path: str, rules_path: str,
     _echo_filter_overview(db_path, overview)
 
 
+@agent_meta(effects={'migrates_corpus'})
 @click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -702,6 +715,7 @@ def filter_status(db_path: str, json_output: bool) -> None:
     _echo_filter_overview(db_path, overview)
 
 
+@agent_meta(effects={'writes_corpus'})
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--name', default=None, help='Remove one active filter by name.')
@@ -765,6 +779,7 @@ _topic_evaluation_sample_size_option = click.option(
 )
 
 
+@agent_meta(effects={'migrates_corpus', 'writes_files'})
 @click.command('train')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('model_dir', default='topic_model', type=click.Path())
@@ -842,6 +857,7 @@ def topics_train(db_path: str,
     click.echo(f'Manual topic review: {summary["model_dir"]}/topics.csv')
 
 
+@agent_meta(effects={'migrates_corpus', 'writes_files'})
 @click.command('compare')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_dir', default='topic_comparison', type=click.Path())
@@ -923,6 +939,7 @@ def topics_compare(db_path: str,
     click.echo('Inspect each model with pmt topics show before choosing one.')
 
 
+@agent_meta(effects={'read_only'})
 @click.command('show')
 @click.argument('model_dir', default='topic_model', type=click.Path(exists=True, file_okay=False))
 @click.option('--representatives', default=3, type=click.IntRange(min=0), show_default=True,
@@ -941,6 +958,7 @@ def topics_show(model_dir: str, representatives: int) -> None:
             click.echo(f'  - {paper["title"]} ({float(paper["probability"]):.3f})')
 
 
+@agent_meta(effects={'writes_files'})
 @click.command('name')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('topic_id', type=click.IntRange(min=0))
@@ -954,6 +972,7 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
     click.echo(f'Named topic {topic_id}: {topic_name.strip()}')
 
 
+@agent_meta(effects={'migrates_corpus', 'writes_files'})
 @click.command('predict')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
@@ -974,6 +993,7 @@ def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: i
     click.echo(f'Topic scores: {summary["output_path"]}')
 
 
+@agent_meta(effects={'writes_files'})
 @click.command('trends')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('output_dir', default='topic_trends', type=click.Path())
@@ -1022,6 +1042,7 @@ def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
         )
 
 
+@agent_meta(effects={'writes_corpus'})
 @click.command('store')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
@@ -1043,6 +1064,7 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
     )
 
 
+@agent_meta(effects={'migrates_corpus'})
 @click.command('models')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
@@ -1094,6 +1116,7 @@ def _entity_options(command: Callable[..., Any]) -> Callable[..., Any]:
     return command
 
 
+@agent_meta(effects={'migrates_corpus', 'network', 'writes_files'})
 @click.command('corpus')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('output_path', type=click.Path(dir_okay=False))
@@ -1126,6 +1149,7 @@ def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...]
     click.echo(f'Entity annotations: {summary["output"]}')
 
 
+@agent_meta(effects={'network', 'writes_files'})
 @click.command('text')
 @click.argument('input_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('output_path', type=click.Path(dir_okay=False))
@@ -1151,6 +1175,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
     click.echo(f'Entity annotations: {summary["output"]}')
 
 
+@agent_meta(effects={'network', 'paid_model', 'writes_corpus', 'writes_files'})
 @click.command('scrape')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
@@ -1280,6 +1305,7 @@ def scrape(
     )
 
 
+@agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'})
 @click.command('store')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path())
@@ -1292,6 +1318,7 @@ def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bo
     store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
 
 
+@agent_meta(effects={'starts_server', 'writes_files'})
 @click.command('gui')
 @click.option('--validation', 'validation_path', type=click.Path(exists=True, dir_okay=False),
               help='Validation CSV to open immediately.')
@@ -1322,6 +1349,7 @@ def validation_gui(validation_path: str | None, scraped_path: str | None,
     serve_validation(app, open_browser=not no_browser)
 
 
+@agent_meta(effects={'read_only'})
 @click.command('list')
 @_json_option
 def recipe_list(json_output: bool) -> None:
@@ -1336,6 +1364,7 @@ def recipe_list(json_output: bool) -> None:
         click.echo('\n'.join(names))
 
 
+@agent_meta(effects={'read_only'})
 @click.command('show')
 @click.argument('recipe', default='sse')
 def recipe_show(recipe: str) -> None:
@@ -1347,6 +1376,7 @@ def recipe_show(recipe: str) -> None:
     click.echo(json.dumps(loaded, indent=2))
 
 
+@agent_meta(effects={'writes_files'})
 @click.command('prompt')
 @click.argument('recipe', default='sse', type=str)
 @click.option(
@@ -1384,6 +1414,7 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
     click.echo(f'Prompt written to {outfile}.')
 
 
+@agent_meta(effects={'writes_files'})
 @click.command('template')
 @click.argument('recipe', type=str)
 @click.argument('outfile', type=click.Path(dir_okay=False))
@@ -1454,6 +1485,7 @@ def update_anthropic_api_key() -> None:
     update_anthropic_key()
 
 
+@agent_meta(effects={'prompts', 'writes_config'})
 @click.command('model')
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
 @click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
@@ -1497,6 +1529,7 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
 
+@agent_meta(effects={'read_only'})
 @click.command('status')
 @_json_option
 def model_status(json_output: bool) -> None:
@@ -1518,6 +1551,7 @@ def model_status(json_output: bool) -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
+@agent_meta(effects={'network'})
 @click.command('providers')
 @click.option('--no-probe', is_flag=True,
               help='Report what is configured without making any requests.')
@@ -1537,6 +1571,7 @@ def provider_status_command(no_probe: bool, sources: tuple[str, ...],
     report_provider_status(no_probe, sources, json_output=json_output)
 
 
+@agent_meta(effects={'writes_corpus'})
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 def reset_miner(db_path: str) -> None:
@@ -1544,6 +1579,7 @@ def reset_miner(db_path: str) -> None:
     reset(db_path)
 
 
+@agent_meta(effects={'migrates_corpus'})
 @click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -1650,16 +1686,22 @@ main.add_command(import_group)
 config_group.add_command(model_config, 'model')
 config_group.add_command(model_status, 'status')
 config_group.add_command(provider_status_command, 'providers')
-config_group.add_command(click.command('elsevier-key')(update_elsevier_api_key))
-config_group.add_command(click.command('core-key')(update_core_api_key))
-config_group.add_command(click.command('core-rate')(update_core_request_rate))
-config_group.add_command(click.command('unpaywall-email')(update_unpaywall_api_email))
-config_group.add_command(click.command('crossref-email')(update_crossref_api_email))
-config_group.add_command(click.command('openalex-key')(update_openalex_api_key))
-config_group.add_command(click.command('ncbi-key')(update_ncbi_api_key))
-config_group.add_command(click.command('ncbi-email')(update_ncbi_api_email))
-config_group.add_command(click.command('openai-key')(update_openai_api_key))
-config_group.add_command(click.command('anthropic-key')(update_anthropic_api_key))
+# Credential setters validate some keys against their provider before saving.
+_SETTER_EFFECTS = {'prompts', 'writes_config'}
+_VALIDATED_SETTER_EFFECTS = _SETTER_EFFECTS | {'network'}
+for _name, _setter, _effects in [
+    ('elsevier-key', update_elsevier_api_key, _VALIDATED_SETTER_EFFECTS),
+    ('core-key', update_core_api_key, _SETTER_EFFECTS),
+    ('core-rate', update_core_request_rate, _SETTER_EFFECTS),
+    ('unpaywall-email', update_unpaywall_api_email, _SETTER_EFFECTS),
+    ('crossref-email', update_crossref_api_email, _SETTER_EFFECTS),
+    ('openalex-key', update_openalex_api_key, _VALIDATED_SETTER_EFFECTS),
+    ('ncbi-key', update_ncbi_api_key, _SETTER_EFFECTS),
+    ('ncbi-email', update_ncbi_api_email, _SETTER_EFFECTS),
+    ('openai-key', update_openai_api_key, _VALIDATED_SETTER_EFFECTS),
+    ('anthropic-key', update_anthropic_api_key, _SETTER_EFFECTS),
+]:
+    config_group.add_command(agent_meta(effects=_effects)(click.command(_name)(_setter)))
 main.add_command(config_group)
 
 recipe_group.add_command(recipe_prompt, 'prompt')

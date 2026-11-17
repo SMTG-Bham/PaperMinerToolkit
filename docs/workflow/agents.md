@@ -30,6 +30,30 @@ and type information, including choices where applicable. A command path such
 as `corpus export` selects that subtree. Discover options from the installed
 schema instead of assuming every command supports the same flags.
 
+### Side effects
+
+Every runnable command declares what it can do to the world in an `effects`
+list on its schema node, and the schema root carries the vocabulary as an
+`effects` object of name and description. Check a command's effects before
+running it. For example, select commands without `paid_model` while exploring,
+or require explicit approval for `writes_corpus`.
+
+| Effect | Meaning |
+| --- | --- |
+| `read_only` | Reads local files or the corpus without changing anything. |
+| `migrates_corpus` | Opens the corpus normally, which upgrades an older corpus schema in place but changes no paper data. |
+| `network` | Makes requests to external providers or model hubs. |
+| `paid_model` | Calls the configured language model; hosted providers bill these requests. |
+| `writes_corpus` | Changes papers, assets, statuses, or filters in the corpus database. |
+| `writes_files` | Writes files outside the corpus, such as CSV, JSON, images, or model artifacts. |
+| `writes_config` | Changes the saved PaperMinerToolkit settings file. |
+| `prompts` | Can wait for input on stdin unless the documented options are supplied. |
+| `starts_server` | Runs a local server until it is interrupted. |
+
+Effects describe the default options. Some flags remove an effect: for
+example, `--no-probe` avoids the network, and `--assume-yes` avoids the
+`store` prompt. Groups such as `pmt corpus` declare no effects of their own.
+
 Recipe listing, inspection, and prompt rendering do not call a model.
 `recipe show` accepts a bundled name or a JSON recipe path and emits the loaded
 recipe as JSON. `recipe prompt` emits plain text; `--outfile` saves that text.

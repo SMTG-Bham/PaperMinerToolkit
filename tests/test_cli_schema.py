@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 import paperminertoolkit.cli as cli
 import paperminertoolkit.settings as settings
+from paperminertoolkit._agent import EFFECTS, agent_meta, command_effects
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._version import __version__
 
@@ -28,6 +29,7 @@ def _assert_live_tree(command: click.Command, node: dict[str, Any],
     assert node['name'] == path[-1]
     assert node['path'] == ' '.join(path)
     assert node['help'] == command.help
+    assert node['effects'] == command_effects(command)
     # Click 8.5 renamed the implicit help option; the schema still calls it help.
     help_option = command.get_help_option(context)
     assert [parameter['name'] for parameter in node['parameters']] == [
@@ -85,6 +87,52 @@ def test_schema_reports_choices_defaults_repeatability_and_prompts() -> None:
     assert model_parameters['provider']['prompt']
     assert model_parameters['provider']['prompt_required'] is True
     assert model_parameters['provider']['hide_input'] is False
+
+
+def _leaf_commands(command: click.Command, path: tuple[str, ...] = ('pmt',),
+                   ) -> list[tuple[str, click.Command]]:
+    """Collect every runnable command of the live tree with its path."""
+    if not isinstance(command, click.Group):
+        return [(' '.join(path), command)]
+    context = click.Context(command)
+    leaves = []
+    for name in command.list_commands(context):
+        child = command.get_command(context, name)
+        assert child is not None
+        leaves.extend(_leaf_commands(child, (*path, name)))
+    return leaves
+
+
+@pytest.mark.parametrize(('path', 'command'), _leaf_commands(cli.main))
+def test_every_command_declares_known_effects(path: str, command: click.Command) -> None:
+    """Tell agents what each command can change before they run it."""
+    effects = command_effects(command)
+    assert effects, f'{path} declares no effects'
+    assert set(effects) <= EFFECTS.keys()
+
+
+def test_schema_reports_the_effect_vocabulary_and_command_effects() -> None:
+    """Describe the vocabulary once and each command's effects on its node."""
+    result = CliRunner().invoke(cli.main, ['schema', 'scrape'])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload['effects'] == EFFECTS
+    assert {'paid_model', 'writes_corpus'} <= set(payload['command']['effects'])
+
+    listing = json.loads(CliRunner().invoke(cli.main, ['schema', 'corpus', 'list']).stdout)
+    assert listing['command']['effects'] == ['read_only']
+    assert json.loads(CliRunner().invoke(cli.main, ['schema']).stdout)['command']['effects'] == []
+
+
+@pytest.mark.parametrize(('effects', 'message'), [
+    (set(), 'at least one effect'),
+    ({'read_only', 'writes_corpus'}, 'read_only cannot be combined'),
+    ({'teleports'}, 'Unknown command effects: teleports'),
+])
+def test_agent_meta_rejects_invalid_declarations(effects: set[str], message: str) -> None:
+    """Fail at import time rather than publish contradictory metadata."""
+    with pytest.raises(ValueError, match=message):
+        agent_meta(effects=effects)
 
 
 @pytest.mark.parametrize('command', ['download', 'gather', 'scrape'])

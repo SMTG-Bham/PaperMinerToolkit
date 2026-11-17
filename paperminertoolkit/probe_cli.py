@@ -12,6 +12,7 @@ from urllib.parse import quote, quote_plus
 
 import click
 
+from paperminertoolkit._agent import agent_meta
 from paperminertoolkit.providers import registry
 from paperminertoolkit.workflows import diagnostics
 
@@ -100,6 +101,7 @@ def report_provider_status(no_probe: bool, sources: tuple[str, ...],
         raise SystemExit(1)
 
 
+@agent_meta(effects={'network'})
 @click.command('probe')
 @click.option('--source', 'sources', multiple=True,
               type=click.Choice(['all', *registry.SOURCES], case_sensitive=False),
