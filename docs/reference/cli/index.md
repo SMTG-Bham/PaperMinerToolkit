@@ -44,7 +44,7 @@ unattended workflow.
 | `pmt entities` | Annotate corpus or file text using fine-tuned BERT token classifiers. |
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
-| `pmt recipe` | Inspect recipes and render their LLM prompts. |
+| `pmt recipe` | Inspect recipes, render their LLM prompts, and optimise them against a validation set. |
 | `pmt validate` | Create validation sets, review extracted records, and score them. |
 | `pmt figures` | Download, detect, list, export, and render paper figures. |
 

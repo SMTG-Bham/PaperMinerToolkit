@@ -472,6 +472,7 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |
 | `recipe show RECIPE` | The loaded recipe object; JSON by default. |
+| `recipe optimise --json` | `best_recipe` and `history` paths, `baseline_score` and `best_score` (the selection F1), `papers`, and `holdout_papers`. Round-by-round progress goes to standard error. |
 
 | Exit code | Meaning and next action |
 | --- | --- |

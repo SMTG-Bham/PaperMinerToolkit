@@ -133,6 +133,9 @@ TOPICS_MODELS = obj({'models': array(obj({'name': STRING, 'model_id': STRING}))}
 ENTITIES = obj({'entities': INTEGER, 'documents': INTEGER, 'output': STRING},
                {'papers': INTEGER})
 
+RECIPE_OPTIMISE = obj({'best_recipe': STRING, 'history': STRING, 'baseline_score': NUMBER,
+                       'best_score': NUMBER, 'papers': INTEGER, 'holdout_papers': INTEGER})
+
 VALIDATE_TEMPLATE = obj({'recipe': STRING, 'outfile': STRING, 'columns': array(STRING)})
 _METRIC = obj({'tp': INTEGER, 'fp': INTEGER, 'fn': INTEGER, 'pending': INTEGER,
                'complete': BOOLEAN, 'precision': OPTIONAL_NUMBER, 'recall': OPTIONAL_NUMBER,

@@ -14,6 +14,7 @@ digitize
 enrichment
 entities
 imports
+recipe_optimisation
 topics
 validation
 validation_scoring

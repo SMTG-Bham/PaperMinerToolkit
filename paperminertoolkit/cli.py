@@ -63,6 +63,7 @@ from paperminertoolkit.extraction.scrape_progress import report as scrape_progre
 from paperminertoolkit.extraction.scrape_progress import scrape_progress
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.digitize import digitize_figures
+from paperminertoolkit.workflows.recipe_optimisation import OPTIMISE_MODES, optimise_recipe
 from paperminertoolkit.workflows.validation import ReviewApp, review_session, saved_review
 from paperminertoolkit.workflows.validation import serve as serve_validation
 from paperminertoolkit.workflows.validation_scoring import score_review
@@ -1784,6 +1785,66 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
     click.echo(f'Prompt written to {outfile}.')
 
 
+@agent_meta(effects={'migrates_corpus', 'network', 'paid_model', 'writes_files'},
+            output=out.RECIPE_OPTIMISE)
+@click.command('optimise')
+@click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('recipe', type=str)
+@click.argument('validation_path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--output-dir', default='recipe_optimisation', type=click.Path(file_okay=False), show_default=True,
+              help='Directory for each round\'s recipe, scraped CSV, and score report.')
+@click.option('--mode', type=click.Choice(sorted(OPTIMISE_MODES)), default='text', show_default=True,
+              help='Paper content scraped in each round.')
+@click.option('--iterations', default=5, type=click.IntRange(min=0), show_default=True,
+              help='Maximum recipe revisions after the baseline scrape.')
+@click.option('--patience', default=2, type=click.IntRange(min=1), show_default=True,
+              help='Stop after this many consecutive revisions fail to improve.')
+@click.option('--holdout', default=0.0, type=click.FloatRange(0, 1, max_open=True), show_default=True,
+              help='Fraction of validation papers hidden from the optimiser and used to choose the best recipe.')
+@click.option('--seed', default=0, type=int, show_default=True, help='Random seed for the holdout split.')
+@click.option('--numeric-tolerance', default=0.02, type=click.FloatRange(min=0), show_default=True,
+              help='Relative tolerance when comparing numeric values.')
+@click.option('--text-threshold', default=0.9, type=click.FloatRange(0, 1), show_default=True,
+              help='Minimum normalized similarity when comparing text values.')
+@click.option('--max-examples', default=40, type=click.IntRange(min=1), show_default=True,
+              help='Maximum mismatch examples sent to the optimiser each round.')
+@click.option('--include-unreachable', is_flag=True, default=False,
+              help='Count expected values that never appear in the paper text as misses when choosing recipes.')
+@click.option('--model', default=None, help='Extraction model name override.')
+@click.option('--provider', default=None, help='Extraction provider override: openai, anthropic, or local.')
+@click.option('--base-url', default=None, help='Extraction model base URL override.')
+@click.option('--optimiser-model', default=None,
+              help='Model that rewrites the recipe; defaults to the extraction model.')
+@click.option('--optimiser-provider', default=None, help='Optimiser provider override.')
+@click.option('--optimiser-base-url', default=None, help='Optimiser model base URL override.')
+@_json_option
+def recipe_optimise(db_path: str, recipe: str, validation_path: str, output_dir: str, mode: str,
+                    iterations: int, patience: int, holdout: float, seed: int, numeric_tolerance: float,
+                    text_threshold: float, max_examples: int, include_unreachable: bool,
+                    model: str | None, provider: str | None,
+                    base_url: str | None, optimiser_model: str | None, optimiser_provider: str | None,
+                    optimiser_base_url: str | None, json_output: bool) -> None:
+    """Rewrite a recipe iteratively so scraped records match a validation CSV."""
+    def echo(message: str) -> None:
+        """Report progress, on standard error when JSON owns standard output."""
+        click.echo(message, err=json_output)
+
+    try:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = optimise_recipe(
+                db_path, recipe, validation_path, output_dir=output_dir, mode=mode,
+                iterations=iterations, patience=patience, holdout=holdout, seed=seed,
+                numeric_tolerance=numeric_tolerance, text_threshold=text_threshold,
+                max_examples=max_examples, include_unreachable=include_unreachable,
+                model=model, provider=provider, base_url=base_url,
+                optimiser_model=optimiser_model, optimiser_provider=optimiser_provider,
+                optimiser_base_url=optimiser_base_url, echo=echo)
+    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+
+
 @agent_meta(effects={'writes_files'}, output=out.VALIDATE_TEMPLATE)
 @click.command('template')
 @click.argument('recipe', type=str)
@@ -2176,6 +2237,7 @@ main.add_command(config_group)
 recipe_group.add_command(recipe_prompt, 'prompt')
 recipe_group.add_command(recipe_list)
 recipe_group.add_command(recipe_show)
+recipe_group.add_command(recipe_optimise, 'optimise')
 main.add_command(recipe_group)
 
 validate_group.add_command(validation_gui, 'gui')
