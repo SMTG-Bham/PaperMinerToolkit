@@ -97,6 +97,7 @@ unchanged. As with article scraping, use `--force` and a fresh output path when
 changing recipes. Paper-level SI text and image status fields summarize these
 separate stages.
 
+(choosing-which-images-the-model-sees)=
 ### Choosing which images the model sees
 
 `--image-extraction` selects where images come from:
