@@ -720,3 +720,84 @@ def test_serve_prints_its_address_and_closes_on_interrupt(
     assert re.search(r'^Validation review: http://127\.0\.0\.1:\d+/\?token=\S+$', output, re.MULTILINE)
     assert 'Press Ctrl+C to stop the review server.' in output
     assert closed == [True]
+
+
+def _complete_decisions(session: dict[str, Any]) -> dict[str, Any]:
+    """Accept every suggested pair and reject the unmatched scraped paper."""
+    pairs = [row for paper in session['validation'] for row in paper['material_suggestions']]
+    extra = next(paper for paper in session['scraped'] if paper['meta']['doi'] == '10.9999/extra')
+    return {
+        'fields': {row: {'Material system': {'status': 'correct'}} for row in pairs},
+        'parts': {row: {'Band gap': {'values': {'': {'status': 'correct'}}}} for row in pairs},
+        'extra': {row['id']: {'status': 'incorrect'} for row in extra['rows']},
+        'run': {key: 'recorded' for key in RUN_FIELDS},
+    }
+
+
+def test_review_session_builds_the_gui_session_without_writing(tmp_path: Path) -> None:
+    """Match the GUI's session and leave the review directory untouched."""
+    session = validation_workflow.review_session(_gold(), _scraped(), 'band_gap_validation')
+    assert not validation_workflow.REVIEW_DIR.exists()
+    loaded = ReviewApp(output=tmp_path / 'review.json').load(_gold(), _scraped(), 'band_gap_validation')
+    assert session['fingerprint'] == loaded['fingerprint']
+    assert session['validation'] == loaded['validation']
+    assert session['decisions'] == {} and session['review_path'] is None
+
+
+def test_validate_score_matches_the_gui_for_saved_and_direct_inputs(tmp_path: Path) -> None:
+    """Score a saved review, or its files plus decisions, exactly as the GUI does."""
+    gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'
+    gold.write_text(_gold(), encoding='utf-8')
+    scraped.write_text(_scraped(), encoding='utf-8')
+    app = ReviewApp(output=tmp_path / 'review.json')
+    app.load(_gold(), _scraped(), 'band_gap_validation')
+    app.save(_complete_decisions(app.session))
+    expected = score_review(app.session, app.decisions)
+    runner = CliRunner()
+
+    saved = runner.invoke(cli.main, ['validate', 'score', '--review', str(tmp_path / 'review.json'),
+                                     '--json'])
+    assert saved.exit_code == 0, saved.output
+    assert json.loads(saved.stdout)['fields'] == expected['fields']
+    assert json.loads(saved.stdout)['complete'] is True
+
+    outfile = tmp_path / 'score.json'
+    direct = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--decisions', str(tmp_path / 'review.json'),
+        '--outfile', str(outfile)])
+    assert direct.exit_code == 0, direct.output
+    assert 'complete: yes' in direct.stdout
+    assert 'Material system' in direct.stdout and '0.750' in direct.stdout
+    assert json.loads(outfile.read_text(encoding='utf-8'))['fields'] == expected['fields']
+
+    undecided = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--json'])
+    assert undecided.exit_code == 0, undecided.output
+    assert json.loads(undecided.stdout)['complete'] is False
+
+
+def test_validate_score_rejects_mismatched_decisions_and_bad_option_sets(tmp_path: Path) -> None:
+    """Refuse decisions made on other inputs, and incomplete or mixed options."""
+    gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'
+    gold.write_text(_gold(), encoding='utf-8')
+    scraped.write_text(_scraped(), encoding='utf-8')
+    other = tmp_path / 'other.json'
+    other.write_text(json.dumps({'fingerprint': '0' * 64, 'decisions': {}}), encoding='utf-8')
+    runner = CliRunner()
+    mismatch = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--decisions', str(other), '--json'])
+    assert mismatch.exit_code == 1
+    assert mismatch.stdout == ''
+    assert 'saved for different inputs' in mismatch.stderr
+
+    no_cache = runner.invoke(cli.main, ['validate', 'score', '--review', str(other)])
+    assert no_cache.exit_code == 1
+    assert 'no saved copy of its input CSVs' in no_cache.stderr
+
+    assert runner.invoke(cli.main, ['validate', 'score']).exit_code == 2
+    assert runner.invoke(cli.main, ['validate', 'score', '--validation', str(gold)]).exit_code == 2
+    assert runner.invoke(cli.main, ['validate', 'score', '--review', str(other),
+                                    '--scraped', str(scraped)]).exit_code == 2

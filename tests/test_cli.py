@@ -56,7 +56,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.corpus_group.commands) == {'stats', 'searches', 'list', 'show', 'export'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'list', 'show', 'prompt'}
-    assert set(cli.validate_group.commands) == {'gui', 'template'}
+    assert set(cli.validate_group.commands) == {'gui', 'template', 'score'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',

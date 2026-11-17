@@ -52,7 +52,9 @@ from paperminertoolkit.extraction.scrape_progress import report as scrape_progre
 from paperminertoolkit.extraction.scrape_progress import scrape_progress
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.digitize import digitize_figures
-from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
+from paperminertoolkit.workflows.validation import ReviewApp, review_session, saved_review
+from paperminertoolkit.workflows.validation import serve as serve_validation
+from paperminertoolkit.workflows.validation_scoring import score_review
 from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
@@ -1628,6 +1630,87 @@ def validation_gui(validation_path: str | None, scraped_path: str | None,
     serve_validation(app, open_browser=not no_browser)
 
 
+def _format_metric(value: float | None) -> str:
+    """Format a precision, recall, or F1 value, which is null when undefined."""
+    return '-' if value is None else f'{value:.3f}'
+
+
+@agent_meta(effects={'writes_files'})
+@click.command('score')
+@click.option('--review', 'review_path', default=None, type=click.Path(exists=True, dir_okay=False),
+              help='Review JSON saved by pmt validate gui; its inputs are restored from the '
+                   'local copy the GUI keeps.')
+@click.option('--validation', 'validation_path', default=None,
+              type=click.Path(exists=True, dir_okay=False), help='Validation CSV.')
+@click.option('--scraped', 'scraped_path', default=None,
+              type=click.Path(exists=True, dir_okay=False), help='Scraped CSV.')
+@click.option('--recipe', 'recipe_name', default=None, help='Bundled recipe name or recipe JSON path.')
+@click.option('--decisions', 'decisions_path', default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help='Review JSON whose decisions apply to these inputs. Without it only suggested '
+                   'pairs are scored, and every leaf stays pending.')
+@click.option('--outfile', default=None, type=click.Path(dir_okay=False),
+              help='Also write the full score JSON to this file.')
+@_json_option
+def validation_score(review_path: str | None, validation_path: str | None,
+                     scraped_path: str | None, recipe_name: str | None,
+                     decisions_path: str | None, outfile: str | None, json_output: bool) -> None:
+    """Score a validation review without the browser.
+
+    Give either --review (a review saved by the GUI), or --validation,
+    --scraped, and --recipe with an optional --decisions file. Decisions only
+    apply to the exact inputs they were made on: a changed CSV or recipe
+    changes the fingerprint and is rejected.
+    """
+    direct = [validation_path, scraped_path, recipe_name]
+    if review_path is not None:
+        if any(direct) or decisions_path:
+            raise click.UsageError('Use --review on its own, or --validation, --scraped, and '
+                                   '--recipe without it.')
+    elif not all(direct):
+        raise click.UsageError('Give --review, or all of --validation, --scraped, and --recipe.')
+    try:
+        if review_path is not None:
+            session, decisions = saved_review(review_path)
+        else:
+            validation_bytes = Path(validation_path).read_bytes()
+            scraped_bytes = Path(scraped_path).read_bytes()
+            session = review_session(
+                validation_bytes.decode('utf-8-sig'), scraped_bytes.decode('utf-8-sig'), recipe_name,
+                validation_name=validation_path, scraped_name=scraped_path,
+                validation_sha256=hashlib.sha256(validation_bytes).hexdigest(),
+                scraped_sha256=hashlib.sha256(scraped_bytes).hexdigest(),
+            )
+            decisions = {}
+            if decisions_path is not None:
+                saved = json.loads(Path(decisions_path).read_text(encoding='utf-8'))
+                if saved.get('fingerprint') != session['fingerprint']:
+                    raise ValueError(f'{decisions_path} was saved for different inputs; its '
+                                     'decisions cannot be applied to these files.')
+                decisions = saved.get('decisions', {})
+        score = score_review(session, decisions)
+        if outfile is not None:
+            Path(outfile).write_text(f'{json.dumps(score, indent=2)}\n', encoding='utf-8')
+    except (KeyError, OSError, UnicodeDecodeError, ValueError) as error:
+        message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        raise click.ClickException(str(message)) from error
+    if json_output:
+        emit_json(score)
+        return
+    click.echo(f'Recipe {score["recipe"]}: {score["papers_evaluated"]} validation papers, '
+               f'{score["pending_pairs"]} pending pairs; complete: {"yes" if score["complete"] else "no"}.')
+    if score['missing_metadata']:
+        click.echo(f'Missing run metadata: {", ".join(score["missing_metadata"])}.')
+    click.echo(f'{"Field":30} {"P":>6} {"R":>6} {"F1":>6} {"TP":>5} {"FP":>5} {"FN":>5} {"pend":>5}')
+    for field, metric in score['fields'].items():
+        click.echo(f'{field[:30]:30} {_format_metric(metric.get("precision")):>6} '
+                   f'{_format_metric(metric.get("recall")):>6} {_format_metric(metric.get("f1")):>6} '
+                   f'{metric.get("tp", 0):>5} {metric.get("fp", 0):>5} {metric.get("fn", 0):>5} '
+                   f'{metric.get("pending", 0):>5}')
+    if outfile is not None:
+        click.echo(f'Score written to {outfile}.')
+
+
 @agent_meta(effects={'read_only'})
 @click.command('list')
 @_json_option
@@ -2005,4 +2088,5 @@ main.add_command(recipe_group)
 
 validate_group.add_command(validation_gui, 'gui')
 validate_group.add_command(validation_template, 'template')
+validate_group.add_command(validation_score, 'score')
 main.add_command(validate_group)

@@ -181,6 +181,31 @@ A run is complete only when every paper and record is resolved, every
 assessable field or structured part has a decision, every extra is judged, and
 all run details are present.
 
+## Score without the browser
+
+`pmt validate score` computes the same score as the reviewer, for scripts, CI
+jobs, and agents. Score a review saved by the GUI, whose input CSVs are
+restored from the copy the GUI keeps:
+
+```bash
+pmt validate score --review review.json --json
+```
+
+Or pass the three inputs, with the decisions of a saved review:
+
+```bash
+pmt validate score --validation validation.csv --scraped scraped.csv \
+  --recipe band_gap_validation --decisions review.json --outfile score.json
+```
+
+Decisions only apply to the exact inputs they were made on. A changed CSV or
+recipe gives a different fingerprint, and the command refuses the decisions.
+Without `--decisions`, papers and materials are paired by the suggestions
+alone and every leaf stays pending. That shows how the pairing changed, but
+not precision or recall. The default output is a per-field table of precision,
+recall, F1, and counts; `--json` prints the full score object described
+below.
+
 ## Export the scoring run
 
 Choose **Download scoring run** to save a JSON archive containing the decisions

@@ -309,6 +309,7 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `topics store --json` | `model_id`, `name`, `papers_predicted`, `papers_without_vocabulary_terms`, and `prediction_corpus_fingerprint`. |
 | `topics models --json` | `models`, each with `name`, `model_id`, `is_current`, `num_topics`, `papers_predicted`, `papers_without_vocabulary_terms`, and `text_fields`. |
 | `entities corpus --json`, `entities text --json` | `entities` and `documents` counts and the JSONL `output` path; the corpus form also counts `papers`. |
+| `validate score --json` | The full score: `fingerprint`, `sources`, `recipe`, `run`, `papers_evaluated`, `pending_pairs`, `missing_metadata`, `complete`, and per-field `fields` with `tp`, `fp`, `fn`, `pending`, `precision`, `recall`, `f1` (null when undefined), `type`, and `parts`. |
 | `validate template --json` | `recipe`, the `outfile` path, and the header `columns` written. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |
