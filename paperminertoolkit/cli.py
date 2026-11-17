@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import click
-from paperminertoolkit._agent import agent_meta
+from paperminertoolkit._agent import agent_meta, emit_json
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
@@ -78,6 +78,11 @@ _json_option = click.option(
     '--json', 'json_output', is_flag=True,
     help='Write JSON to stdout and progress or errors to stderr.',
 )
+
+
+def _quiet(json_output: bool) -> Any:
+    """Route workflow chatter to stderr while a command produces JSON."""
+    return redirect_stdout(sys.stderr) if json_output else nullcontext()
 
 # A download may fetch a PDF, full text, or an abstract, so its choices are
 # the union of the three, kept in PDF order because that is the one a caller
@@ -259,6 +264,7 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
               is_flag=True,
               default=False,
               help='Supplement imported works with all enrichment providers.')
+@_json_option
 def import_author(db_path: str,
                   email: str | None,
                   orcid: str | None,
@@ -266,23 +272,28 @@ def import_author(db_path: str,
                   affiliation: str | None,
                   max_results: int,
                   review_csv: str,
-                  enrich_metadata: bool) -> None:
+                  enrich_metadata: bool,
+                  json_output: bool) -> None:
     """Import one author's DOI-bearing Crossref works into a corpus."""
     if bool(orcid) == bool(author_name):
         raise click.UsageError('Provide exactly one of --orcid or --author.')
     try:
-        summary = import_author_works(
-            db_path,
-            email=email,
-            orcid=orcid,
-            author_name=author_name,
-            affiliation=affiliation,
-            max_results=max_results,
-            review_csv=review_csv,
-            enrich=enrich_metadata,
-        )
+        with _quiet(json_output):
+            summary = import_author_works(
+                db_path,
+                email=email,
+                orcid=orcid,
+                author_name=author_name,
+                affiliation=affiliation,
+                max_results=max_results,
+                review_csv=review_csv,
+                enrich=enrich_metadata,
+            )
     except (RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({**summary, 'review_csv': review_csv})
+        return
     click.echo(
         f'Crossref found {summary["found"]} matching works: '
         f'{summary["added"]} added and {summary["updated"]} updated in {db_path}.'
@@ -648,6 +659,15 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
         )
 
 
+def _report_filter_overview(db_path: str, overview: Mapping[str, Any],
+                            json_output: bool) -> None:
+    """Write a filter overview as JSON or as the human-readable summary."""
+    if json_output:
+        emit_json(overview)
+    else:
+        _echo_filter_overview(db_path, overview)
+
+
 @agent_meta(effects={'writes_corpus'})
 @click.command('regex')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
@@ -661,21 +681,24 @@ def _echo_filter_overview(db_path: str, overview: Mapping[str, Any]) -> None:
               help='Replace and reevaluate an active filter with the same name.')
 @click.option('--timeout-ms', type=click.IntRange(min=1), default=None,
               help='Override the per-pattern match timeout from the JSON definition.')
+@_json_option
 def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
-                 join_operator: str | None, replace: bool, timeout_ms: int | None) -> None:
+                 join_operator: str | None, replace: bool, timeout_ms: int | None,
+                 json_output: bool) -> None:
     """Apply a named post-download regex filter to a paper corpus."""
     try:
-        overview = apply_regex_filter(
-            db_path,
-            rules_path,
-            fields=fields or None,
-            join_operator=join_operator,
-            replace=replace,
-            timeout_ms=timeout_ms,
-        )
+        with _quiet(json_output):
+            overview = apply_regex_filter(
+                db_path,
+                rules_path,
+                fields=fields or None,
+                join_operator=join_operator,
+                replace=replace,
+                timeout_ms=timeout_ms,
+            )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
-    _echo_filter_overview(db_path, overview)
+    _report_filter_overview(db_path, overview, json_output)
 
 
 @agent_meta(effects={'writes_corpus'})
@@ -686,16 +709,18 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
               help='Join this filter to the preceding active expression.')
 @click.option('--replace', is_flag=True, default=False,
               help='Replace and reevaluate an active filter with the same name.')
+@_json_option
 def filter_topic(db_path: str, rules_path: str,
-                 join_operator: str | None, replace: bool) -> None:
+                 join_operator: str | None, replace: bool, json_output: bool) -> None:
     """Apply a named stored-model topic filter to a paper corpus."""
     try:
-        overview = apply_topic_filter(
-            db_path, rules_path, join_operator=join_operator, replace=replace
-        )
+        with _quiet(json_output):
+            overview = apply_topic_filter(
+                db_path, rules_path, join_operator=join_operator, replace=replace
+            )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
-    _echo_filter_overview(db_path, overview)
+    _report_filter_overview(db_path, overview, json_output)
 
 
 @agent_meta(effects={'migrates_corpus'})
@@ -709,10 +734,7 @@ def filter_status(db_path: str, json_output: bool) -> None:
             overview = filter_overview(conn)
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
-    if json_output:
-        click.echo(json.dumps(overview, indent=2))
-        return
-    _echo_filter_overview(db_path, overview)
+    _report_filter_overview(db_path, overview, json_output)
 
 
 @agent_meta(effects={'writes_corpus'})
@@ -721,13 +743,15 @@ def filter_status(db_path: str, json_output: bool) -> None:
 @click.option('--name', default=None, help='Remove one active filter by name.')
 @click.option('--all', 'all_filters', is_flag=True, default=False,
               help='Remove every active filter.')
-def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
+@_json_option
+def filter_reset(db_path: str, name: str | None, all_filters: bool, json_output: bool) -> None:
     """Remove one or all active corpus filters."""
     try:
-        overview = reset_filters(db_path, name=name, all_filters=all_filters)
+        with _quiet(json_output):
+            overview = reset_filters(db_path, name=name, all_filters=all_filters)
     except ValueError as error:
         raise click.ClickException(str(error)) from error
-    _echo_filter_overview(db_path, overview)
+    _report_filter_overview(db_path, overview, json_output)
 
 
 # Reuse option definitions while retaining each command's ordering and help.
@@ -802,6 +826,7 @@ _topic_evaluation_sample_size_option = click.option(
 @_topic_batch_size_option
 @_topic_cache_dir_option
 @_topic_evaluation_sample_size_option
+@_json_option
 def topics_train(db_path: str,
                  model_dir: str,
                  num_topics: int,
@@ -820,35 +845,40 @@ def topics_train(db_path: str,
                  streaming: bool,
                  batch_size: int,
                  cache_dir: str | None,
-                 evaluation_sample_size: int) -> None:
+                 evaluation_sample_size: int,
+                 json_output: bool) -> None:
     """Train an LDA model and write inspectable, manually nameable artifacts."""
     try:
-        summary = train_topic_model(
-            db_path,
-            model_dir,
-            num_topics=num_topics,
-            text_fields=text_fields,
-            min_df=min_df,
-            max_df=max_df,
-            max_features=max_features,
-            learning_method=learning_method,
-            max_iter=max_iter,
-            random_state=random_state,
-            top_terms=top_terms,
-            representative_papers=representative_papers,
-            stopwords_file=stopwords_file,
-            ngram_max=ngram_max,
-            overwrite=overwrite,
-            emit_warnings=False,
-            streaming=streaming,
-            batch_size=batch_size,
-            cache_dir=cache_dir,
-            evaluation_sample_size=evaluation_sample_size,
-        )
+        with _quiet(json_output):
+            summary = train_topic_model(
+                db_path,
+                model_dir,
+                num_topics=num_topics,
+                text_fields=text_fields,
+                min_df=min_df,
+                max_df=max_df,
+                max_features=max_features,
+                learning_method=learning_method,
+                max_iter=max_iter,
+                random_state=random_state,
+                top_terms=top_terms,
+                representative_papers=representative_papers,
+                stopwords_file=stopwords_file,
+                ngram_max=ngram_max,
+                overwrite=overwrite,
+                emit_warnings=False,
+                streaming=streaming,
+                batch_size=batch_size,
+                cache_dir=cache_dir,
+                evaluation_sample_size=evaluation_sample_size,
+            )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     for message in summary['report']['warnings']:
         click.echo(f'Warning: {message}', err=True)
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(
         f'Trained {num_topics} topics from {summary["report"]["documents_used"]} papers '
         f'using {summary["report"]["vocabulary_size"]} terms.'
@@ -883,6 +913,7 @@ def topics_train(db_path: str,
 @_topic_batch_size_option
 @_topic_cache_dir_option
 @_topic_evaluation_sample_size_option
+@_json_option
 def topics_compare(db_path: str,
                    output_dir: str,
                    topic_counts: tuple[int, ...],
@@ -901,30 +932,32 @@ def topics_compare(db_path: str,
                    streaming: bool,
                    batch_size: int,
                    cache_dir: str | None,
-                   evaluation_sample_size: int) -> None:
+                   evaluation_sample_size: int,
+                   json_output: bool) -> None:
     """Train several LDA configurations and export comparable diagnostics."""
     try:
-        summary = compare_topic_models(
-            db_path,
-            output_dir,
-            topic_counts=topic_counts,
-            random_states=random_states,
-            text_fields=text_fields,
-            min_df=min_df,
-            max_df=max_df,
-            max_features=max_features,
-            learning_method=learning_method,
-            max_iter=max_iter,
-            top_terms=top_terms,
-            representative_papers=representative_papers,
-            stopwords_file=stopwords_file,
-            ngram_max=ngram_max,
-            overwrite=overwrite,
-            streaming=streaming,
-            batch_size=batch_size,
-            cache_dir=cache_dir,
-            evaluation_sample_size=evaluation_sample_size,
-        )
+        with _quiet(json_output):
+            summary = compare_topic_models(
+                db_path,
+                output_dir,
+                topic_counts=topic_counts,
+                random_states=random_states,
+                text_fields=text_fields,
+                min_df=min_df,
+                max_df=max_df,
+                max_features=max_features,
+                learning_method=learning_method,
+                max_iter=max_iter,
+                top_terms=top_terms,
+                representative_papers=representative_papers,
+                stopwords_file=stopwords_file,
+                ngram_max=ngram_max,
+                overwrite=overwrite,
+                streaming=streaming,
+                batch_size=batch_size,
+                cache_dir=cache_dir,
+                evaluation_sample_size=evaluation_sample_size,
+            )
     except (OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     warning_messages = dict.fromkeys(
@@ -934,6 +967,9 @@ def topics_compare(db_path: str,
     )
     for message in warning_messages:
         click.echo(f'Warning: {message}', err=True)
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(f'Trained {summary["models_trained"]} comparison models in {summary["output_dir"]}.')
     click.echo(f'Comparison metrics: {summary["comparison_csv"]}')
     click.echo('Inspect each model with pmt topics show before choosing one.')
@@ -944,12 +980,20 @@ def topics_compare(db_path: str,
 @click.argument('model_dir', default='topic_model', type=click.Path(exists=True, file_okay=False))
 @click.option('--representatives', default=3, type=click.IntRange(min=0), show_default=True,
               help='Representative paper titles to print for each topic.')
-def topics_show(model_dir: str, representatives: int) -> None:
+@_json_option
+def topics_show(model_dir: str, representatives: int, json_output: bool) -> None:
     """Print top terms and representative papers for manual topic naming."""
     try:
-        topics = topic_descriptions(model_dir)
+        with _quiet(json_output):
+            topics = topic_descriptions(model_dir)
     except (FileNotFoundError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({'model_dir': model_dir, 'topics': [
+            {**topic, 'representative_papers': list(topic['representative_papers'][:representatives])}
+            for topic in topics
+        ]})
+        return
     for topic in topics:
         name = topic['topic_name'] or '(unnamed)'
         click.echo(f'Topic {topic["topic_id"]}: {name}')
@@ -963,12 +1007,18 @@ def topics_show(model_dir: str, representatives: int) -> None:
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('topic_id', type=click.IntRange(min=0))
 @click.argument('topic_name', type=str)
-def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
+@_json_option
+def topics_name(model_dir: str, topic_id: int, topic_name: str, json_output: bool) -> None:
     """Assign a manual human-readable name to one fitted topic."""
     try:
-        set_topic_name(model_dir, topic_id, topic_name)
+        with _quiet(json_output):
+            set_topic_name(model_dir, topic_id, topic_name)
     except (FileNotFoundError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({'model_dir': model_dir, 'topic_id': topic_id,
+                   'topic_name': topic_name.strip()})
+        return
     click.echo(f'Named topic {topic_id}: {topic_name.strip()}')
 
 
@@ -978,14 +1028,20 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str) -> None:
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_path', default='paper_topics.csv', type=click.Path())
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: int) -> None:
+@_json_option
+def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: int,
+                   json_output: bool) -> None:
     """Apply a saved LDA model to a corpus and export topic probabilities."""
     try:
-        summary = predict_topic_model(
-            model_dir, db_path, output_path, batch_size=batch_size
-        )
+        with _quiet(json_output):
+            summary = predict_topic_model(
+                model_dir, db_path, output_path, batch_size=batch_size
+            )
     except (FileNotFoundError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(
         f'Predicted topics for {summary["papers_predicted"]} of {summary["papers_total"]} papers; '
         f'{summary["papers_without_vocabulary_terms"]} had no model vocabulary terms.'
@@ -1011,27 +1067,32 @@ def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: i
               help='Write a plot to this filename instead; its extension selects the format.')
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known trend artifacts in a non-empty output directory.')
+@_json_option
 def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
                   bin_size: int, step_size: int, start_year: int | None,
                   end_year: int | None, include_partial: bool, plot: bool,
                   plot_file: str | None,
-                  overwrite: bool) -> None:
+                  overwrite: bool, json_output: bool) -> None:
     """Aggregate fixed-model topic probabilities over publication-year windows."""
     try:
-        summary = aggregate_topic_trends(
-            model_dir,
-            output_dir,
-            predictions_path=predictions_path,
-            bin_size=bin_size,
-            step_size=step_size,
-            start_year=start_year,
-            end_year=end_year,
-            include_partial=include_partial,
-            overwrite=overwrite,
-            plot=plot_file or plot,
-        )
+        with _quiet(json_output):
+            summary = aggregate_topic_trends(
+                model_dir,
+                output_dir,
+                predictions_path=predictions_path,
+                bin_size=bin_size,
+                step_size=step_size,
+                start_year=start_year,
+                end_year=end_year,
+                include_partial=include_partial,
+                overwrite=overwrite,
+                plot=plot_file or plot,
+            )
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(f'Wrote {summary["windows"]} topic trend windows to {summary["trends_csv"]}.')
     if summary['plot_path']:
         click.echo(f'Topic trend plot: {summary["plot_path"]}')
@@ -1049,14 +1110,20 @@ def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
 @click.option('--name', default=None,
               help='Immutable corpus display name; defaults to the model directory name.')
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int) -> None:
+@_json_option
+def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int,
+                 json_output: bool) -> None:
     """Predict afresh and transactionally store a topic model in the corpus."""
     try:
-        summary = store_topic_model_scores(
-            model_dir, db_path, name=name, batch_size=batch_size
-        )
+        with _quiet(json_output):
+            summary = store_topic_model_scores(
+                model_dir, db_path, name=name, batch_size=batch_size
+            )
     except (FileNotFoundError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(
         f'Stored {summary["name"]} ({summary["model_id"]}): '
         f'{summary["papers_predicted"]} predicted, '
@@ -1068,9 +1135,17 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
 @click.command('models')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-def topics_models(db_path: str, batch_size: int) -> None:
+@_json_option
+def topics_models(db_path: str, batch_size: int, json_output: bool) -> None:
     """List topic models and prediction freshness recorded in a corpus."""
-    models = stored_topic_models(db_path, batch_size=batch_size)
+    try:
+        with _quiet(json_output):
+            models = stored_topic_models(db_path, batch_size=batch_size)
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({'models': models})
+        return
     if not models:
         click.echo('No topic models are stored in this corpus.')
         return
@@ -1110,6 +1185,7 @@ def _entity_options(command: Callable[..., Any]) -> Callable[..., Any]:
                      help='Include this checkpoint-specific entity label; repeat for several.'),
         click.option('--overwrite', is_flag=True,
                      help='Replace an existing JSONL output file.'),
+        _json_option,
     ]
     for option in reversed(options):
         command = option(command)
@@ -1128,7 +1204,7 @@ def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...]
                     model: str, device: str, batch_size: int, stride: int,
                     max_length: int | None, revision: str | None, cache_dir: str | None,
                     local_files_only: bool, min_score: float, labels: tuple[str, ...],
-                    overwrite: bool) -> None:
+                    overwrite: bool, json_output: bool) -> None:
     """Extract named entities from stored corpus text into a JSONL file."""
     try:
         config = EntityExtractionConfig(
@@ -1136,12 +1212,16 @@ def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...]
             max_length=max_length, revision=revision, cache_dir=cache_dir,
             local_files_only=local_files_only,
         )
-        summary = extract_corpus_entities(
-            db_path, output_path, config, text_fields=text_fields,
-            min_score=min_score, labels=labels or None, overwrite=overwrite,
-        )
+        with _quiet(json_output):
+            summary = extract_corpus_entities(
+                db_path, output_path, config, text_fields=text_fields,
+                min_score=min_score, labels=labels or None, overwrite=overwrite,
+            )
     except (ImportError, OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(
         f'Extracted {summary["entities"]} entities from {summary["documents"]} documents '
         f'across {summary["papers"]} papers.'
@@ -1157,7 +1237,8 @@ def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...]
 def entities_text(input_path: str, output_path: str, model: str, device: str,
                   batch_size: int, stride: int, max_length: int | None,
                   revision: str | None, cache_dir: str | None, local_files_only: bool,
-                  min_score: float, labels: tuple[str, ...], overwrite: bool) -> None:
+                  min_score: float, labels: tuple[str, ...], overwrite: bool,
+                  json_output: bool) -> None:
     """Extract named entities from one UTF-8 text file into a JSONL file."""
     try:
         config = EntityExtractionConfig(
@@ -1165,12 +1246,16 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
             max_length=max_length, revision=revision, cache_dir=cache_dir,
             local_files_only=local_files_only,
         )
-        summary = extract_file_entities(
-            input_path, output_path, config, min_score=min_score,
-            labels=labels or None, overwrite=overwrite,
-        )
+        with _quiet(json_output):
+            summary = extract_file_entities(
+                input_path, output_path, config, min_score=min_score,
+                labels=labels or None, overwrite=overwrite,
+            )
     except (ImportError, OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+        return
     click.echo(f'Extracted {summary["entities"]} entities from {summary["documents"]} documents.')
     click.echo(f'Entity annotations: {summary["output"]}')
 
@@ -1418,7 +1503,8 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
 @click.command('template')
 @click.argument('recipe', type=str)
 @click.argument('outfile', type=click.Path(dir_okay=False))
-def validation_template(recipe: str, outfile: str) -> None:
+@_json_option
+def validation_template(recipe: str, outfile: str, json_output: bool) -> None:
     """Create an empty validation CSV for a bundled or file-based recipe."""
     try:
         loaded = load_recipe(recipe)
@@ -1432,6 +1518,9 @@ def validation_template(recipe: str, outfile: str) -> None:
             csv.writer(handle).writerow(columns)
     except (FileNotFoundError, KeyError, OSError, ValueError) as error:
         raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json({'recipe': recipe, 'outfile': outfile, 'columns': columns})
+        return
     click.echo(f'Validation template written to {outfile}.')
 
 

@@ -8,7 +8,10 @@ them.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable
+from pathlib import PurePath
+from typing import Any
 
 import click
 
@@ -86,3 +89,37 @@ def command_effects(command: click.Command) -> list[str]:
         Sorted effect names.
     """
     return list(getattr(command, 'pmt_effects', ()))
+
+
+def _json_default(value: Any) -> Any:
+    """Convert values that workflow summaries hold but JSON cannot encode.
+
+    NumPy scalars become Python numbers, paths become strings, and sets
+    become sorted lists; anything else falls back to its string form.
+    """
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    item = getattr(value, 'item', None)
+    if callable(item):
+        try:
+            return item()
+        except (TypeError, ValueError):
+            pass
+    tolist = getattr(value, 'tolist', None)
+    if callable(tolist):
+        return tolist()
+    return str(value)
+
+
+def emit_json(payload: Any) -> None:
+    """Write one command result to stdout as a single JSON value.
+
+    Parameters
+    ----------
+    payload : Any
+        JSON-compatible result. NumPy scalars and arrays, paths, and sets
+        are converted rather than rejected.
+    """
+    click.echo(json.dumps(payload, indent=2, default=_json_default))

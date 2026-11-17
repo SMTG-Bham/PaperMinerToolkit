@@ -258,6 +258,18 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `digitize --json` | `requests`, `digitized`, `skipped`, `failed`, `not_found`, `supplementary`, `panels`, `series`, `points`, the `output` CSV path, and per-figure `errors`. |
 | `status --json` | `papers`, `papers_with_structured_documents`, `papers_with_supplements`, `supplements`, `pipeline`, `text_materials`, and `image_materials`. |
 | `filter status --json` | Active filter definitions and decision counts. |
+| `import author --json` | `found`, `added`, `updated`, and `enriched` work counts, and the `review_csv` path. |
+| `filter regex --json`, `filter topic --json`, `filter reset --json` | The resulting filter overview, in the same shape as `filter status --json`. |
+| `topics train --json` | `model_dir` and a `report` with `documents_used`, `vocabulary_size`, `warnings`, and the training settings. |
+| `topics compare --json` | `models_trained`, `output_dir`, `comparison_csv`, and per-model `models` diagnostics with their `warnings`. |
+| `topics show --json` | `model_dir` and `topics`, each with `topic_id`, `topic_name`, `top_terms`, and `representative_papers` limited by `--representatives`. |
+| `topics name --json` | `model_dir`, `topic_id`, and the stored `topic_name`. |
+| `topics predict --json` | `papers_total`, `papers_predicted`, `papers_without_vocabulary_terms`, and `output_path`. |
+| `topics trends --json` | `output_dir`, `trends_csv`, `report_json`, `windows`, `papers_missing_or_invalid_date`, and `plot_path` (or `null`). |
+| `topics store --json` | `model_id`, `name`, `papers_predicted`, `papers_without_vocabulary_terms`, and `prediction_corpus_fingerprint`. |
+| `topics models --json` | `models`, each with `name`, `model_id`, `is_current`, `num_topics`, `papers_predicted`, `papers_without_vocabulary_terms`, and `text_fields`. |
+| `entities corpus --json`, `entities text --json` | `entities` and `documents` counts and the JSONL `output` path; the corpus form also counts `papers`. |
+| `validate template --json` | `recipe`, the `outfile` path, and the header `columns` written. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |
 | `recipe show RECIPE` | The loaded recipe object; JSON by default. |

@@ -166,3 +166,121 @@ def test_recipe_discovery_outputs_validated_bundled_and_custom_recipes(tmp_path:
     missing = runner.invoke(cli.main, ['recipe', 'show', 'missing-recipe'])
     assert missing.exit_code == 1
     assert missing.stdout == ''
+
+
+_OVERVIEW = {'filters': [], 'expression': None, 'counts': {'included': 2, 'excluded': 1,
+                                                          'unavailable': 0},
+             'unavailable_reasons': {}, 'stale_topic_filters': []}
+
+
+def _topic_inputs(tmp_path: Path) -> dict[str, str]:
+    """Create the corpus, rules, model, and text paths the commands require."""
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    rules = tmp_path / 'rules.json'
+    rules.write_text('{}', encoding='utf-8')
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    text = tmp_path / 'input.txt'
+    text.write_text('LiPON', encoding='utf-8')
+    return {'db': str(db_path), 'rules': str(rules), 'model': str(model_dir),
+            'text': str(text), 'out': str(tmp_path / 'out')}
+
+
+@pytest.mark.parametrize(('arguments', 'target', 'returned', 'expected'), [
+    (['import', 'author', '{db}', '--orcid', '0000-0001', '--json'], 'import_author_works',
+     {'found': 2, 'added': 1, 'updated': 1, 'enriched': 0},
+     {'found': 2, 'added': 1, 'updated': 1, 'enriched': 0, 'review_csv': 'author_works.csv'}),
+    (['filter', 'regex', '{db}', '{rules}', '--json'], 'apply_regex_filter', _OVERVIEW, _OVERVIEW),
+    (['filter', 'topic', '{db}', '{rules}', '--json'], 'apply_topic_filter', _OVERVIEW, _OVERVIEW),
+    (['filter', 'reset', '{db}', '--all', '--json'], 'reset_filters', _OVERVIEW, _OVERVIEW),
+    (['topics', 'train', '{db}', '{out}', '--json'], 'train_topic_model',
+     {'model_dir': 'm', 'report': {'warnings': [], 'documents_used': 3, 'vocabulary_size': 9}},
+     None),
+    (['topics', 'compare', '{db}', '{out}', '--json'], 'compare_topic_models',
+     {'models_trained': 1, 'output_dir': 'c', 'comparison_csv': 'c.csv',
+      'models': [{'warnings': []}]}, None),
+    (['topics', 'show', '{model}', '--representatives', '1', '--json'], 'topic_descriptions',
+     [{'topic_id': 0, 'topic_name': '', 'top_terms': ['li'],
+       'representative_papers': [{'title': 'A', 'probability': 0.9},
+                                 {'title': 'B', 'probability': 0.8}]}],
+     {'model_dir': '{model}', 'topics': [{'topic_id': 0, 'topic_name': '', 'top_terms': ['li'],
+                                          'representative_papers': [{'title': 'A',
+                                                                     'probability': 0.9}]}]}),
+    (['topics', 'name', '{model}', '0', ' Solid electrolytes ', '--json'], 'set_topic_name', None,
+     {'model_dir': '{model}', 'topic_id': 0, 'topic_name': 'Solid electrolytes'}),
+    (['topics', 'predict', '{model}', '{db}', '{out}', '--json'], 'predict_topic_model',
+     {'papers_total': 3, 'papers_predicted': 2, 'papers_without_vocabulary_terms': 1,
+      'output_path': 'p.csv'}, None),
+    (['topics', 'trends', '{model}', '{out}', '--json'], 'aggregate_topic_trends',
+     {'output_dir': 't', 'trends_csv': 't.csv', 'report_json': 't.json', 'windows': 2,
+      'papers_missing_or_invalid_date': 0, 'plot_path': None}, None),
+    (['topics', 'store', '{model}', '{db}', '--json'], 'store_topic_model_scores',
+     {'model_id': 'id', 'name': 'model', 'papers_predicted': 2,
+      'papers_without_vocabulary_terms': 0, 'prediction_corpus_fingerprint': 'f'}, None),
+    (['topics', 'models', '{db}', '--json'], 'stored_topic_models',
+     [{'name': 'model', 'model_id': 'id', 'is_current': True}],
+     {'models': [{'name': 'model', 'model_id': 'id', 'is_current': True}]}),
+    (['entities', 'corpus', '{db}', '{out}', '--model', 'm', '--json'], 'extract_corpus_entities',
+     {'entities': 4, 'documents': 2, 'papers': 2, 'output': 'e.jsonl'}, None),
+    (['entities', 'text', '{text}', '{out}', '--model', 'm', '--json'], 'extract_file_entities',
+     {'entities': 1, 'documents': 1, 'output': 'e.jsonl'}, None),
+])
+def test_analysis_commands_emit_their_workflow_results_as_json(
+    arguments: list[str], target: str, returned: Any, expected: Any,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expose filter, topic, entity, and import summaries without parsing prose."""
+    paths = _topic_inputs(tmp_path)
+
+    def workflow(*args: Any, **kwargs: Any) -> Any:
+        """Print chatter, as real workflows do, and return the canned result."""
+        print('Workflow progress')
+        return returned
+
+    monkeypatch.setattr(cli, target, workflow)
+    result = CliRunner().invoke(cli.main, [argument.format(**paths) for argument in arguments])
+    assert result.exit_code == 0, result.output
+    wanted = returned if expected is None else json.loads(json.dumps(expected).replace(
+        '{model}', paths['model']))
+    assert json.loads(result.stdout) == wanted
+    assert result.stderr == 'Workflow progress\n'
+
+
+def test_validation_template_json_reports_the_written_columns(tmp_path: Path) -> None:
+    """Describe the created template so an agent can fill it without reopening it."""
+    outfile = tmp_path / 'validation.csv'
+    result = CliRunner().invoke(cli.main, ['validate', 'template', 'sse', str(outfile), '--json'])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload['outfile'] == str(outfile)
+    assert payload['columns'][:3] == ['Identifier', 'Title', 'DOI']
+    assert outfile.read_text(encoding='utf-8').strip().split(',') == payload['columns']
+
+
+def test_topics_models_reports_errors_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turn a broken corpus into a clean command error."""
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Raise the storage error a damaged corpus produces."""
+        raise sqlite3.DatabaseError('file is not a database')
+
+    monkeypatch.setattr(cli, 'stored_topic_models', fail)
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    result = CliRunner().invoke(cli.main, ['topics', 'models', str(db_path), '--json'])
+    assert result.exit_code == 1
+    assert result.stdout == ''
+    assert 'file is not a database' in result.stderr
+
+
+def test_emit_json_converts_numpy_paths_and_sets() -> None:
+    """Serialise the value types that topic summaries carry."""
+    import numpy as np
+    from paperminertoolkit._agent import _json_default
+
+    assert _json_default(np.float64(0.5)) == 0.5
+    assert _json_default(np.array([1, 2])) == [1, 2]
+    assert _json_default(Path('a/b')) == str(Path('a/b'))
+    assert _json_default({'b', 'a'}) == ['a', 'b']
