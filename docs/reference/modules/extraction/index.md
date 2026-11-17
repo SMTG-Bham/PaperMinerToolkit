@@ -14,5 +14,6 @@ extract
 entities
 scrape
 scrape_plan
+scrape_progress
 store
 ```

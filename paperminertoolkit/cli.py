@@ -47,6 +47,9 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
 from paperminertoolkit.workflows.imports import import_pdfs
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.scrape_plan import plan_scrape
+from paperminertoolkit.extraction.scrape_progress import STAGES as SCRAPE_PROGRESS_MODES
+from paperminertoolkit.extraction.scrape_progress import report as scrape_progress_report
+from paperminertoolkit.extraction.scrape_progress import scrape_progress
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.digitize import digitize_figures
 from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
@@ -1519,6 +1522,30 @@ def scrape(
         emit_json(summary)
 
 
+@agent_meta(effects={'migrates_corpus'})
+@click.command('scrape-progress')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
+@click.argument('mode', default='text', type=click.Choice(list(SCRAPE_PROGRESS_MODES)))
+@_json_option
+def scrape_progress_command(db_path: str, mode: str, json_output: bool) -> None:
+    """Report how far a scrape has got and what rerunning it would still do.
+
+    Counts only the papers pmt scrape would select (active filters apply),
+    separating papers with no downloaded document, which need pmt download,
+    from failures a rerun retries. The --json output lists their paper IDs
+    for --paper-id. No model is called.
+    """
+    try:
+        with _quiet(json_output):
+            progress = scrape_progress(db_path, mode)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(progress)
+    else:
+        click.echo(scrape_progress_report(progress))
+
+
 def _echo_scrape_plan(plan: Mapping[str, Any]) -> None:
     """Print the human-readable summary of a scrape dry run."""
     totals = plan['totals']
@@ -1913,6 +1940,7 @@ main.add_command(gather)
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
+main.add_command(scrape_progress_command, 'scrape-progress')
 main.add_command(store, 'store')
 main.add_command(digitize, 'digitize')
 main.add_command(miner_status, 'status')

@@ -322,7 +322,9 @@ to run this:
   and not yet attempted, then counts supporting-information files the same
   way. It prints the command to continue while a resubmission still has work
   to do, and `Corpus fully scraped` once it has none. Run it by hand with
-  `python scrape_progress.py papers.db text`.
+  `python scrape_progress.py papers.db text`, or use `pmt scrape-progress
+  papers.db text [--json]`, which reports the same counts plus the IDs of the
+  failed papers.
 
 ```bash
 sbatch scrape_gaudi.sbatch   # repeat until nothing remains

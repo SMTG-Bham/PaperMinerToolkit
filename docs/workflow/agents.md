@@ -255,7 +255,11 @@ do: a paper whose stage already succeeded is skipped unless `--force` is given,
 and `enrich` also needs `--retry-failed` for failed papers. `scrape --order`
 and `--count` still apply after the selection.
 
-Inspect pipeline and filter status before scheduling more work. Active filters
+Inspect pipeline and filter status before scheduling more work.
+`pmt scrape-progress run/papers.db text --json` answers what a rerun would
+still do. It counts only the papers `scrape` would select, and lists the IDs of
+failed papers (retried by a rerun) separately from those with no downloaded
+document (which need `pmt download` first). Active filters
 affect scraping and downloads within `gather`; standalone `download` considers
 the entire corpus. Completed download and scrape stages are
 skipped on a normal rerun; `--force` deliberately repeats completed work.
@@ -288,6 +292,7 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `digitize --json` | `requests`, `digitized`, `skipped`, `failed`, `not_found`, `supplementary`, `panels`, `series`, `points`, the `output` CSV path, and per-figure `errors`. |
 | `scrape --json` | `papers_selected`, `papers`, per-stage `abstract_*`, `text_*`, and `image_*` counts (`attempted`, `skipped`, `succeeded`, `failed`), `missing_source`, `failed_papers` (`paper_id`, `stage`, `error`), `materials`, chunking counts (`chunked_inputs`, `chunk_requests`), `supplement_*` counts, `output_path`, `mode`, and `elapsed_seconds`. Token usage is not reported. |
 | `scrape --dry-run --json` | `dry_run: true`, `model` (provider, name, `input_token_limit`, `usable_input_tokens`, `request_text_budget`), `tokenizer`, `tokenizer_fallbacks`, `prompt_tokens`, `papers_selected`, `papers_filtered_out`, `totals` (`papers_to_scrape`, `skipped_done`, `skipped_missing_source`, `requests`, `input_tokens`, `image_inputs`, `supplement_files_to_scrape`, `supplement_files_skipped`), `overflows`, and per-paper `papers` with stage and SI plans. No model is called and the corpus is not changed. |
+| `scrape-progress --json` | `mode`, `scope`, `out_of_scope`, `filtered`, per-stage `stages` counts (`succeeded`, `no_asset`, `failed`, `not_attempted`), `supplements` file counts by status, `remaining` work a rerun would attempt, and per-stage `failed_papers` (retried by a rerun) and `no_asset_papers` (need `pmt download`) IDs. |
 | `store --json` | `status` (`stored`, `nothing_to_store`, or `declined`), `rows_read`, `rows_written`, `rows_total`, `converted_columns` (one unit-conversion model request each), `unconverted_columns`, `skipped_columns`, `papers_marked_stored`, `input_path`, and `output_path`. |
 | `import pdfs --json` | `files`, `added`, `updated`, `doi_found`, `enriched`, `metadata_errors`, and the corpus `paper_ids` in file order. |
 | `reset --json` | `papers_reset`, `supplement_stages_reset`, and the pipeline `columns` returned to their defaults. |

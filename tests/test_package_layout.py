@@ -24,6 +24,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.extraction.recipes',
     'paperminertoolkit.extraction.scrape',
     'paperminertoolkit.extraction.scrape_plan',
+    'paperminertoolkit.extraction.scrape_progress',
     'paperminertoolkit.extraction.store',
     'paperminertoolkit.extraction.tokenizer',
     'paperminertoolkit.providers.supplements',
