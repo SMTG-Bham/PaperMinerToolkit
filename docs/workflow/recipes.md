@@ -484,6 +484,7 @@ A recipe can declare checks that remove or correct extracted items after the mod
   "values in source": true,
   "unit": "eV",
   "exclude terms": ["work function", "Fermi level", "PL peak"],
+  "exclude terms keys": ["value", "gap_type"],
   "unsupported terms": {"SOC": ["spin-orbit", "spin orbit"]},
   "drop empty": true
 }
@@ -496,6 +497,7 @@ A recipe can declare checks that remove or correct extracted items after the mod
 | `values in source` | Drop an item whose numbers are not printed in the paper's text or tables, within `tolerance` (relative, default `0.005`). |
 | `unit` | Drop a value whose first unit is another unit, such as `3.64 V` when the unit is `eV`. Values with no unit are kept. |
 | `exclude terms` | Drop an item whose parts mention any of these terms (whole words, case-insensitive). |
+| `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
 | `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
 | `drop empty` | Drop items without a value, and records left with no checked field reported. |
 

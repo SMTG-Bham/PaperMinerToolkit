@@ -19,6 +19,10 @@ Recipe keys
     Drop values written with any other unit (unitless values are kept).
 ``"exclude terms"``
     Drop items whose text mentions one of these terms.
+``"exclude terms keys"``
+    Item keys searched for excluded terms. Defaults to every key; limit it to
+    the parts that say what a value is, since a method description may name
+    an excluded quantity only as context.
 ``"unsupported terms"``
     Map a term to the phrases that justify it, e.g. ``{"SOC": ["spin-orbit"]}``.
     When the source contains none of the phrases, the term is removed from
@@ -47,6 +51,7 @@ _CHECK_TYPES: dict[str, type | tuple[type, ...]] = {
     'tolerance': (int, float),
     'unit': str,
     'exclude terms': list,
+    'exclude terms keys': list,
     'unsupported terms': dict,
     'drop empty': bool,
 }
@@ -81,7 +86,7 @@ def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any
         expected = _CHECK_TYPES[key]
         if not isinstance(value, expected) or (expected != bool and isinstance(value, bool)):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" has the wrong type.')
-    for key in ('fields', 'exclude terms'):
+    for key in ('fields', 'exclude terms', 'exclude terms keys'):
         if any(not isinstance(item, str) or not item.strip() for item in checks.get(key, [])):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" must be a list of strings.')
     unknown_fields = [field for field in checks.get('fields', []) if field not in search_fields]
@@ -159,7 +164,11 @@ class _Checker:
         value = self._value(item)
         if is_missing(value):
             return ('drop empty', 'no value') if self.checks.get('drop empty') else None
-        parts = item.values() if isinstance(item, Mapping) else [item]
+        keys = self.checks.get('exclude terms keys')
+        if isinstance(item, Mapping):
+            parts = [part for key, part in item.items() if keys is None or key in keys]
+        else:
+            parts = [item]
         text = ' '.join(_fold(part) for part in parts if not is_missing(part))
         for term in self.checks.get('exclude terms', []):
             if _mentions(text, term):

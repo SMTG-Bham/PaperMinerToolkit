@@ -1680,6 +1680,10 @@
                 "activation energy",
                 "formation energy"
             ],
+            "exclude terms keys": [
+                "value",
+                "gap_type"
+            ],
             "unsupported terms": {
                 "SOC": [
                     "spin-orbit",

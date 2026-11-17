@@ -133,6 +133,20 @@ def test_supported_terms_and_unchecked_fields_are_left_alone() -> None:
     assert kept[0]['Gaps'] == [gap('9.9 eV', 'PBE+SOC')] and dropped == []
 
 
+def test_exclude_terms_keys_limit_which_parts_are_searched() -> None:
+    """Keep a gap whose method mentions an excluded quantity only as context."""
+    records = [{'Material': 'X', 'Gaps': [
+        gap('2.04 eV', 'HSE06 with exciton binding energy correction', 'optical'),
+        gap('4.5 eV', 'UPS', 'work function'),
+    ]}]
+    checks = {'exclude terms': ['exciton binding energy', 'work function'], 'exclude terms keys': ['value', 'gap_type']}
+
+    kept, dropped = verify.verify_records(records, recipe(**checks), SOURCE)
+
+    assert kept[0]['Gaps'] == [gap('2.04 eV', 'HSE06 with exciton binding energy correction', 'optical')]
+    assert [row['Detail'] for row in dropped] == ['mentions "work function"']
+
+
 def test_remove_term_handles_separators_and_whole_strings() -> None:
     """Strip a term with its separator, leaving 'None' when nothing remains."""
     assert verify._remove_term('DFT; HSE06; SOC', 'SOC') == 'DFT; HSE06'
