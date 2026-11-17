@@ -112,6 +112,21 @@ Test files are held to the same docstring and annotation rules as the package.
 - Single quotes and four-space indentation, matching the surrounding code.
 - Comments explain why a decision was made, not what the line does.
 
+## Adding a command
+
+Agents drive `pmt` through `pmt schema` and `--json`, and
+[tests/test_cli_coverage.py](tests/test_cli_coverage.py) keeps every command
+usable that way. A new command needs:
+
+1. `@agent_meta(effects={...})` above `@click.command`, naming its side effects
+   from the vocabulary in
+   [paperminertoolkit/_agent.py](paperminertoolkit/_agent.py);
+2. a `--json` flag that prints one JSON value on stdout, with progress on
+   stderr, or an entry in the test's `EXEMPT` mapping with the reason it has
+   none;
+3. a row in the JSON table of
+   [docs/workflow/agents.md](docs/workflow/agents.md).
+
 ## Adding a data source
 
 The registry in

@@ -255,6 +255,7 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `corpus list --json` | `papers`, `total`, `limit`, and `offset`. |
 | `corpus show --json` | `paper`, `assets`, `searches`, `authors`, `subjects`, and `references`. |
 | `corpus export --json` | `paper_id`, `role`, `path`, and exported `bytes`; SI also includes `asset_id` and `original_filename`. |
+| `digitize --json` | `requests`, `digitized`, `skipped`, `failed`, `not_found`, `supplementary`, `panels`, `series`, `points`, the `output` CSV path, and per-figure `errors`. |
 | `status --json` | `papers`, `papers_with_structured_documents`, `papers_with_supplements`, `supplements`, `pipeline`, `text_materials`, and `image_materials`. |
 | `filter status --json` | Active filter definitions and decision counts. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
