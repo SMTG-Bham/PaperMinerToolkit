@@ -13,7 +13,8 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
@@ -165,6 +166,46 @@ def set_pipeline_status(paper: _Paper, column: str, status: str, error: str | No
         paper['last_error'] = error
     elif status in {'succeeded', 'stored'}:
         paper['last_error'] = ''
+
+
+@contextmanager
+def connect_read_only(db_path: str | PathLike[str]) -> Iterator[sqlite3.Connection]:
+    """Open an existing current-schema corpus without creating, migrating, or writing it.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Existing corpus database path.
+
+    Yields
+    ------
+    sqlite3.Connection
+        Read-only connection with dictionary-like rows. Any attempt to write
+        through it raises :class:`sqlite3.OperationalError`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the database file does not exist.
+    RuntimeError
+        If the corpus schema is older or newer than this package's.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f'No corpus database at {db_path}')
+    conn = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        if version != SCHEMA_VERSION:
+            raise RuntimeError(
+                f'Corpus schema version {version} does not match the supported version '
+                f'{SCHEMA_VERSION}. Open it once with a corpus-writing command, such as '
+                'pmt status, to migrate it.'
+            )
+        yield conn
+    finally:
+        conn.close()
 
 
 def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:

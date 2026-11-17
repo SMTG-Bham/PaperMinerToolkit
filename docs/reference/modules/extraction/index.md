@@ -13,5 +13,6 @@ compression
 extract
 entities
 scrape
+scrape_plan
 store
 ```

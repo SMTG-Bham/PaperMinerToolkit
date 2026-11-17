@@ -209,7 +209,15 @@ migrate an older corpus when opening it.
 
 ## Extract, inspect progress, and resume
 
-Once a text model is configured and the recipe has been reviewed:
+Once a text model is configured and the recipe has been reviewed, preview the
+cost first. `scrape --dry-run --json` reports the papers, model requests, and
+estimated input tokens without calling a model or changing the corpus:
+
+```bash
+pmt scrape run/papers.db sse --mode abstract --count 5 --dry-run --json
+```
+
+Then run it:
 
 ```bash
 pmt recipe show sse
@@ -279,6 +287,7 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `corpus export --json` | `paper_id`, `role`, `path`, and exported `bytes`; SI also includes `asset_id` and `original_filename`. |
 | `digitize --json` | `requests`, `digitized`, `skipped`, `failed`, `not_found`, `supplementary`, `panels`, `series`, `points`, the `output` CSV path, and per-figure `errors`. |
 | `scrape --json` | `papers_selected`, `papers`, per-stage `abstract_*`, `text_*`, and `image_*` counts (`attempted`, `skipped`, `succeeded`, `failed`), `missing_source`, `failed_papers` (`paper_id`, `stage`, `error`), `materials`, chunking counts (`chunked_inputs`, `chunk_requests`), `supplement_*` counts, `output_path`, `mode`, and `elapsed_seconds`. Token usage is not reported. |
+| `scrape --dry-run --json` | `dry_run: true`, `model` (provider, name, `input_token_limit`, `usable_input_tokens`, `request_text_budget`), `tokenizer`, `tokenizer_fallbacks`, `prompt_tokens`, `papers_selected`, `papers_filtered_out`, `totals` (`papers_to_scrape`, `skipped_done`, `skipped_missing_source`, `requests`, `input_tokens`, `image_inputs`, `supplement_files_to_scrape`, `supplement_files_skipped`), `overflows`, and per-paper `papers` with stage and SI plans. No model is called and the corpus is not changed. |
 | `store --json` | `status` (`stored`, `nothing_to_store`, or `declined`), `rows_read`, `rows_written`, `rows_total`, `converted_columns` (one unit-conversion model request each), `unconverted_columns`, `skipped_columns`, `papers_marked_stored`, `input_path`, and `output_path`. |
 | `import pdfs --json` | `files`, `added`, `updated`, `doi_found`, `enriched`, `metadata_errors`, and the corpus `paper_ids` in file order. |
 | `reset --json` | `papers_reset`, `supplement_stages_reset`, and the pipeline `columns` returned to their defaults. |

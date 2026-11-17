@@ -139,6 +139,34 @@ Records extracted from separate chunks are not reconciled automatically. A mater
 
 The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` means the input fit one request; larger values indicate splitting. Inspect aggregate counts with `pmt corpus stats`.
 
+## Preview a run with --dry-run
+
+`pmt scrape ... --dry-run` reports what the same command would do without
+calling a model or changing the corpus. It selects papers exactly as the real
+run would (filters, `--paper-id`, `--order`, `--count`, `--force`), reads their
+stored text, and splits it with the same chunker and token budget. It reports,
+for each paper and each supporting-information file:
+
+- whether the stage would run, be skipped as already done, or fail for lack of
+  a downloaded source;
+- the number of model requests and the estimated input tokens;
+- inputs that need more than one request, and SI files over the
+  20-request limit, which a real run skips as unsupported;
+- whether compression would apply. Token counts are taken before compression.
+
+```bash
+pmt scrape papers.db sse --mode text --dry-run
+pmt scrape papers.db sse --mode text --dry-run --json > plan.json
+```
+
+Token counting is offline. OpenAI models use `tiktoken`'s cached encoding, and
+local models use their Hugging Face tokenizer from local files only. Anthropic
+models fall back to the character estimate, because their exact count needs an
+API request. Any fallback is listed in `tokenizer_fallbacks`. Image inputs are
+counted but not extracted or measured. The corpus is opened read-only, so an
+older corpus must be migrated first by any corpus-writing command, such as
+`pmt status`.
+
 ## Reruns and temporary files
 
 Successful stages are skipped by default. Statuses belong to the corpus and stage, not to a recipe, so selecting another recipe does not rerun successful stages. Use `--force` when changing recipes or deliberately rescraping, and choose a fresh intermediate output path because scrape output appends to existing files:

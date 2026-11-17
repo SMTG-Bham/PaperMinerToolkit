@@ -11,7 +11,9 @@ from __future__ import annotations
 import importlib
 import math
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Protocol, TypeAlias
 
@@ -39,6 +41,68 @@ class _ModelConfigLike(Protocol):
 
 
 _ModelConfigSource: TypeAlias = _ModelConfigLike | Mapping[str, object]
+
+# Set while a dry run plans requests: token counting must not reach a provider.
+_OFFLINE: ContextVar[bool] = ContextVar('paperminertoolkit_offline_tokens', default=False)
+
+
+@contextmanager
+def offline_token_counting() -> Iterator[None]:
+    """Count tokens without provider requests or tokenizer downloads.
+
+    Inside the block, Anthropic counts use the character estimate instead of
+    the token-counting endpoint, and local models load their Hugging Face
+    tokenizer from local files only, falling back to the estimate when it is
+    not cached. ``tiktoken`` is unchanged: it reads its cached encoding.
+
+    Yields
+    ------
+    None
+        Control returns to the caller with offline counting active.
+    """
+    token = _OFFLINE.set(True)
+    try:
+        yield
+    finally:
+        _OFFLINE.reset(token)
+
+
+def token_count_method(model_config: _ModelConfigSource | None = None,
+                       offline: bool = False) -> str:
+    """Name the token counter used for a model configuration.
+
+    Parameters
+    ----------
+    model_config : _ModelConfigSource or None, optional
+        Model configuration whose provider selects the counter.
+    offline : bool, default=False
+        Describe the counter used under :func:`offline_token_counting`.
+
+    Returns
+    -------
+    str
+        ``tiktoken``, ``transformers``, ``anthropic``, or ``estimate``. A
+        counter that fails at run time still falls back to the estimate.
+    """
+    provider = _provider_name(model_config)
+    if provider in {'', 'openai'}:
+        return 'tiktoken'
+    if provider == 'local':
+        return 'transformers'
+    if provider == 'anthropic' and not offline:
+        return 'anthropic'
+    return 'estimate'
+
+
+def estimated_token_fallbacks() -> set[tuple[str, str]]:
+    """Return the provider and model pairs whose tokenizer fell back to an estimate.
+
+    Returns
+    -------
+    set[tuple[str, str]]
+        A copy of the pairs warned about so far in this process.
+    """
+    return set(_ESTIMATE_WARNINGS)
 
 
 def _config_value(
@@ -208,13 +272,15 @@ def _anthropic_token_count(
 
 
 @lru_cache(maxsize=16)
-def _auto_tokenizer(model: str) -> _TokenizerLike:
+def _auto_tokenizer(model: str, local_files_only: bool = False) -> _TokenizerLike:
     """Load and cache a Hugging Face tokenizer.
 
     Parameters
     ----------
     model : str
         Hugging Face model identifier or local model path.
+    local_files_only : bool, default=False
+        Load only files already on disk, never from the Hugging Face Hub.
 
     Returns
     -------
@@ -222,6 +288,8 @@ def _auto_tokenizer(model: str) -> _TokenizerLike:
         Loaded tokenizer instance.
     """
     transformers = importlib.import_module('transformers')
+    if local_files_only:
+        return transformers.AutoTokenizer.from_pretrained(model, local_files_only=True)
     return transformers.AutoTokenizer.from_pretrained(model)
 
 
@@ -240,7 +308,7 @@ def _transformers_token_count(text: str, model: str) -> int:
     int
         Number of encoded tokens, excluding special tokens.
     """
-    tokenizer = _auto_tokenizer(model)
+    tokenizer = _auto_tokenizer(model, True) if _OFFLINE.get() else _auto_tokenizer(model)
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
 
@@ -311,6 +379,8 @@ def count_text_tokens(
             _warn_estimated_tokens(provider_name or 'openai', model_name, error)
             return _conservative_token_estimate(text)
     if provider_name == 'anthropic':
+        if _OFFLINE.get():
+            return _conservative_token_estimate(text)
         try:
             return _anthropic_token_count(text, model_config, model_name)
         except Exception as error:

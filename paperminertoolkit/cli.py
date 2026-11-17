@@ -46,6 +46,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
                                     reset_filters)
 from paperminertoolkit.workflows.imports import import_pdfs
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
+from paperminertoolkit.extraction.scrape_plan import plan_scrape
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.digitize import digitize_figures
 from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
@@ -1416,6 +1417,9 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
 @_paper_id_options
+@click.option('--dry-run', is_flag=True, default=False,
+              help='Report the papers, model requests, and estimated input tokens a run would '
+                   'use, without calling a model or changing the corpus.')
 @_json_option
 def scrape(
         db_path: str,
@@ -1445,15 +1449,39 @@ def scrape(
         compression_content_detection: bool,
         paper_ids: tuple[str, ...],
         paper_ids_file: str | None,
+        dry_run: bool,
         json_output: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers.
 
     Exits 0 when the run completes, even if some papers failed: inspect the
     failed counts and failed_papers in the --json summary, or pmt status.
+    With --dry-run, nothing is scraped: the command reports what a run with
+    the same options would do and how many tokens it would send.
     """
     selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
     selection = {} if selected is None else {'paper_ids': selected}
+    if dry_run:
+        try:
+            with _quiet(json_output):
+                plan = plan_scrape(
+                    db_path, recipe, mode=mode, model=model, provider=provider,
+                    base_url=base_url, force=force, ignore_filters=ignore_filters,
+                    scrape_count=scrape_count, scrape_order=scrape_order,
+                    compression_scope=compression_scope, compression_mode=compression_mode,
+                    compression_ratio=compression_ratio,
+                    compression_content_detection=compression_content_detection,
+                    include_supplements=include_supplements,
+                    image_extraction=image_extraction, **selection,
+                )
+        except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
+            message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+            raise click.ClickException(str(message)) from error
+        if json_output:
+            emit_json(plan)
+        else:
+            _echo_scrape_plan(plan)
+        return
     try:
         with _quiet(json_output):
             summary = scrape_papers(
@@ -1489,6 +1517,34 @@ def scrape(
         raise click.ClickException(str(message)) from error
     if json_output:
         emit_json(summary)
+
+
+def _echo_scrape_plan(plan: Mapping[str, Any]) -> None:
+    """Print the human-readable summary of a scrape dry run."""
+    totals = plan['totals']
+    model = plan['model']
+    click.echo(f'Dry run: {plan["mode"]} scrape with recipe {plan["recipe"]}; nothing was scraped.')
+    click.echo(f'Model: {model["provider"]}/{model["name"]}, input limit {model["input_token_limit"]} '
+               f'tokens; token counts from {plan["tokenizer"]}, before any compression.')
+    click.echo(f'Papers selected: {plan["papers_selected"]} '
+               f'({plan["papers_filtered_out"]} excluded by filters); '
+               f'would scrape {totals["papers_to_scrape"]}, skip {totals["skipped_done"]} done, '
+               f'and fail {totals["skipped_missing_source"]} with no downloaded source.')
+    click.echo(f'Model requests: {totals["requests"]} text requests carrying about '
+               f'{totals["input_tokens"]} input tokens; {totals["image_inputs"]} image inputs '
+               'not estimated.')
+    click.echo(f'Supporting information: {totals["supplement_files_to_scrape"]} files to scrape, '
+               f'{totals["supplement_files_skipped"]} already done.')
+    for fallback in plan['tokenizer_fallbacks']:
+        click.echo(f'Warning: token counts for {fallback} are character estimates.', err=True)
+    if plan['overflows']:
+        click.echo(f'{len(plan["overflows"])} inputs need more than one request:')
+        for item in plan['overflows'][:10]:
+            outcome = '' if item['scraped'] else ' (over the limit; would be skipped)'
+            click.echo(f'  {item["paper_id"]} {item["item"]}: {item["requests"]} requests, '
+                       f'{item["text_tokens"]} tokens{outcome}')
+        if len(plan['overflows']) > 10:
+            click.echo(f'  ... {len(plan["overflows"]) - 10} more in --json output')
 
 
 @agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'})
