@@ -520,7 +520,7 @@ The reconciliation prompt uses:
 
 It merges complementary fields only when records refer to the same configured record unit. Conflicting identity fields keep records separate. An unresolved conflict in a non-identity value is retained as a list rather than silently discarded.
 
-Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are merged without a model call, by their identity fields (see [Scraping](scraping.md#context-limits-and-compression)), so use a suitable model context limit when a record split across chunks would be costly.
+Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are merged without a model call, by their identity fields (see [Scraping](scraping.md), under "Context limits and compression"), so use a suitable model context limit when a record split across chunks would be costly.
 
 ## Validation and common errors
 

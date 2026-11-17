@@ -103,7 +103,7 @@ The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` m
 
 ## Checking records against the paper
 
-A recipe can declare `checks` (see [Recipes](recipes.md#checks)). They run only when asked for:
+A recipe can declare `checks` (see [Recipes](recipes.md), under "Checks"). They run only when asked for:
 
 ```bash
 pmt scrape papers.db band_gap_validation --mode text --verify --output scraped.csv
