@@ -52,11 +52,17 @@ def validate_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def isolate_settings(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+                     tmp_path: Path) -> None:
     """Point the settings file at a temporary path so no test reads or writes real keys.
+
+    Tests marked ``network`` keep the real settings, because they check the
+    configured credentials against live services.
 
     Parameters
     ----------
+    request : pytest.FixtureRequest
+        The requesting test, checked for the ``network`` marker.
     monkeypatch : pytest.MonkeyPatch
         Fixture used to replace the settings path.
     tmp_path : Path
@@ -67,4 +73,6 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     None
         ``settings.SETTINGS_FILE`` names a file that does not exist yet, as in CI.
     """
+    if request.node.get_closest_marker('network'):
+        return
     monkeypatch.setattr(settings, 'SETTINGS_FILE', str(tmp_path / 'settings' / '.paperminertoolkitrc.json'))

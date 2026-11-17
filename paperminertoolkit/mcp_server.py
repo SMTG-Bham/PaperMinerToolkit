@@ -322,7 +322,10 @@ class Server:
             text = stdout or '\n'.join(stderr) or f'exit {completed.returncode} without output'
         else:
             text = json.dumps(payload, indent=2)
-            if isinstance(payload, dict) and self.protocol_version >= '2025-06-18':
+            # Structured content must match the tool's output schema, which
+            # describes a result; an error object stays in the text content.
+            if (isinstance(payload, dict) and not result['isError']
+                    and self.protocol_version >= '2025-06-18'):
                 result['structuredContent'] = payload
         result['content'] = [{'type': 'text', 'text': text}]
         return result

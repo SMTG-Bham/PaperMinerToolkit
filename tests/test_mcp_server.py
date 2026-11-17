@@ -111,7 +111,8 @@ def test_session_lists_and_calls_tools_through_subprocesses(db_path: Path) -> No
     assert json.loads(listed['content'][0]['text']) == listed['structuredContent']
     failed = responses[3]['result']
     assert failed['isError'] is True
-    assert failed['structuredContent']['error']['type'] == 'not_found'
+    assert 'structuredContent' not in failed
+    assert json.loads(failed['content'][0]['text'])['error']['type'] == 'not_found'
     assert responses[4]['result'] == {}
 
 

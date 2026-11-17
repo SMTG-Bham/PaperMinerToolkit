@@ -121,11 +121,19 @@ usable that way. A new command needs:
 1. `@agent_meta(effects={...})` above `@click.command`, naming its side effects
    from the vocabulary in
    [paperminertoolkit/_agent.py](paperminertoolkit/_agent.py);
-2. a `--json` flag that prints one JSON value on stdout, with progress on
-   stderr, or an entry in the test's `EXEMPT` mapping with the reason it has
-   none;
-3. a row in the JSON table of
+2. a `--json` flag whose result is printed with `emit_json`, as one JSON value
+   on stdout, with progress on stderr; or an entry in the test's `EXEMPT`
+   mapping with the reason it has none;
+3. for a JSON command, an output schema in
+   [paperminertoolkit/_output_schemas.py](paperminertoolkit/_output_schemas.py)
+   passed as `agent_meta(..., output=...)`. The test suite validates every
+   JSON result against it, and a command without JSON must not declare one;
+4. a row in the JSON table of
    [docs/workflow/agents.md](docs/workflow/agents.md).
+
+Errors raised as `click.ClickException(...) from error` become typed JSON error
+objects under `--json`. The wrapped exception decides the type, so keep the
+`from error`.
 
 ## Adding a data source
 
