@@ -156,8 +156,14 @@ def _fit_chunks(
     model_config: _ModelConfigSource,
     depth: int = 0,
 ) -> list[str]:
-    """Pack text into budget-sized chunks, re-splitting any that overflow."""
-    max_chars = max(int(token_budget * chars_per_token * _CHUNK_SAFETY * 0.75**depth), 1)
+    """Pack text into budget-sized chunks, re-splitting any that overflow.
+
+    Token density is not uniform: a table of numbers can need several times
+    the tokens of the same length of prose. A chunk that still overflows is
+    split again using its own measured density, with a tighter margin at
+    each level.
+    """
+    max_chars = max(int(token_budget * chars_per_token * _CHUNK_SAFETY ** (depth + 1)), 1)
     blocks: list[str] = []
     for block in (part.strip('\n') for part in re.split(r'\n\s*\n', text)):
         if not block.strip():
@@ -165,8 +171,9 @@ def _fit_chunks(
         blocks.extend(_split_block(block, max_chars) if len(block) > max_chars else [block])
     chunks = []
     for chunk in _pack_blocks(blocks, max_chars):
-        if depth < 3 and token_length(chunk, model_config=model_config) > token_budget:
-            chunks.extend(_fit_chunks(chunk, token_budget, chars_per_token, model_config, depth + 1))
+        tokens = token_length(chunk, model_config=model_config)
+        if depth < 3 and tokens > token_budget and len(chunk) > 1:
+            chunks.extend(_fit_chunks(chunk, token_budget, len(chunk) / tokens, model_config, depth + 1))
         else:
             chunks.append(chunk)
     return chunks

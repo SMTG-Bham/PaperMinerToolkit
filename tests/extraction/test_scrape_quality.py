@@ -61,6 +61,25 @@ def test_fit_chunks_skips_blank_blocks_and_resplits_overflowing_chunks(monkeypat
     assert ' '.join(chunks).split().count('alpha') >= 10
 
 
+def test_text_chunks_fit_dense_tables_by_remeasuring_overflowing_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every chunk within budget when numbers need far more tokens than prose."""
+    monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
+
+    def tokens(text: str, model_config: object = None) -> int:
+        """Count prose at four characters a token and every digit as a token."""
+        digits = sum(character.isdigit() for character in text)
+        return digits + (len(text) - digits) // 4
+
+    monkeypatch.setattr(scrape, 'token_length', tokens)
+    prose = ''.join(f'Paragraph {chr(97 + index % 26)} of the methods section.{NL}' for index in range(30))
+    table = ''.join(f'| {index:04d} | {index * 37 % 1000:03d} | {index * 91 % 1000:03d} |{NL}' for index in range(60))
+
+    chunks = scrape._text_chunks(prose + NL + table, None)
+
+    assert all(tokens(chunk) <= 100 for chunk in chunks)
+    assert sum(line.startswith('| 0') for chunk in chunks for line in chunk.splitlines()) == 60
+
+
 def test_write_dropped_appends_audit_rows_beside_the_output(tmp_path: Path) -> None:
     """Write nothing for no rows, and add a header only once."""
     output = tmp_path / 'scraped.csv'
