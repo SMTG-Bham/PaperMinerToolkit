@@ -13,6 +13,7 @@ import json
 import math
 import re
 import sqlite3
+import tempfile
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -206,6 +207,43 @@ def connect_read_only(db_path: str | PathLike[str]) -> Iterator[sqlite3.Connecti
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def corpus_copy(db_path: str | PathLike[str]) -> Iterator[Path]:
+    """Copy a corpus to a temporary file, for dry runs that must not touch the original.
+
+    The copy is made with SQLite's online backup, so it is consistent even
+    while another process has the corpus open, and it is deleted on exit.
+    It needs free space for one copy of the corpus in the temporary directory
+    (``TMPDIR``).
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Existing, current-schema corpus; it is opened read-only.
+
+    Yields
+    ------
+    pathlib.Path
+        Path of the temporary copy, which callers may modify freely.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the corpus does not exist.
+    RuntimeError
+        If its schema does not match this package's.
+    """
+    with connect_read_only(db_path) as source, \
+            tempfile.TemporaryDirectory(prefix='paperminertoolkit-dry-run-') as directory:
+        target = Path(directory) / Path(db_path).name
+        destination = sqlite3.connect(target)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+        yield target
 
 
 def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:

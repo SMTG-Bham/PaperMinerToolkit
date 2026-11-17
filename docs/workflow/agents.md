@@ -261,6 +261,23 @@ before moving on: a failure with `missing_source` needs `pmt download`, while
 other failures are retried by a plain rerun. Keep the corpus, recipe, model
 configuration, and both CSVs together.
 
+### Preview changes with --dry-run
+
+`reset`, `filter regex`, `filter topic`, `filter reset`, `store`, `download`,
+and `scrape` accept `--dry-run`. A dry run reports what the command would
+change and leaves the corpus and output files untouched, so an agent can check
+the effect of a command that has `writes_corpus` before running it:
+
+| Command | How the dry run works | What it reports |
+| --- | --- | --- |
+| `reset`, `filter regex`, `filter topic`, `filter reset` | Runs the real operation on a temporary copy of the corpus (made with SQLite's backup), then deletes the copy. | The same result as a real run, plus `dry_run: true`. Needs room for one corpus copy in `TMPDIR`. |
+| `store` | Matches columns but converts nothing, so there is no model call, no prompt, and no file write. | `status: "dry_run"`, the columns it would convert or skip, and the rows it would write. |
+| `download` | Applies the real skip rules to each selected paper without any request. | Which assets each paper would be asked for and which are already stored. Whether a provider would supply them is only known by asking. |
+| `scrape` | See "Extract, inspect progress, and resume". | Papers, model requests, and estimated input tokens. |
+
+The corpus must be at the current schema version. A dry run never migrates
+it; it reports the mismatch instead.
+
 ### Work on named papers
 
 `scrape`, `download`, and `enrich` accept a repeatable `--paper-id` and a
@@ -346,9 +363,10 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `scrape --json` | `papers_selected`, `papers`, per-stage `abstract_*`, `text_*`, and `image_*` counts (`attempted`, `skipped`, `succeeded`, `failed`), `missing_source`, `failed_papers` (`paper_id`, `stage`, `error`), `materials`, chunking counts (`chunked_inputs`, `chunk_requests`), `supplement_*` counts, `output_path`, `mode`, and `elapsed_seconds`. Token usage is not reported. |
 | `scrape --dry-run --json` | `dry_run: true`, `model` (provider, name, `input_token_limit`, `usable_input_tokens`, `request_text_budget`), `tokenizer`, `tokenizer_fallbacks`, `prompt_tokens`, `papers_selected`, `papers_filtered_out`, `totals` (`papers_to_scrape`, `skipped_done`, `skipped_missing_source`, `requests`, `input_tokens`, `image_inputs`, `supplement_files_to_scrape`, `supplement_files_skipped`), `overflows`, and per-paper `papers` with stage and SI plans. No model is called and the corpus is not changed. |
 | `scrape-progress --json` | `mode`, `scope`, `out_of_scope`, `filtered`, per-stage `stages` counts (`succeeded`, `no_asset`, `failed`, `not_attempted`), `supplements` file counts by status, `remaining` work a rerun would attempt, and per-stage `failed_papers` (retried by a rerun) and `no_asset_papers` (need `pmt download`) IDs. |
-| `store --json` | `status` (`stored`, `nothing_to_store`, or `declined`), `rows_read`, `rows_written`, `rows_total`, `converted_columns` (one unit-conversion model request each), `unconverted_columns`, `skipped_columns`, `papers_marked_stored`, `input_path`, and `output_path`. |
+| `download --dry-run --json` | `dry_run: true`, `format`, `sources`, `supplement_sources`, `papers_considered`, `would_attempt` (`texts`, `pdfs`, `abstracts`, `supplement_discovery`), `already_stored` (`texts`, `pdfs`, `abstracts`, `supplement_files`), `no_text_source`, and per-paper `papers` with `attempt` and `stored` roles. |
+| `store --json` | `status` (`stored`, `nothing_to_store`, `declined`, or `dry_run`), `dry_run`, `rows_read`, `rows_written`, `rows_total`, `converted_columns` (one unit-conversion model request each), `unconverted_columns`, `skipped_columns`, `papers_marked_stored`, `input_path`, and `output_path`. |
 | `import pdfs --json` | `files`, `added`, `updated`, `doi_found`, `enriched`, `metadata_errors`, and the corpus `paper_ids` in file order. |
-| `reset --json` | `papers_reset`, `supplement_stages_reset`, and the pipeline `columns` returned to their defaults. |
+| `reset --json` | `papers_reset`, `supplement_stages_reset`, and the pipeline `columns` returned to their defaults; with `--dry-run`, also `dry_run: true`. |
 | `status --json` | `papers`, `papers_with_structured_documents`, `papers_with_supplements`, `supplements`, `pipeline`, `text_materials`, and `image_materials`. |
 | `filter status --json` | Active filter definitions and decision counts. |
 | `import author --json` | `found`, `added`, `updated`, and `enriched` work counts, and the `review_csv` path. |

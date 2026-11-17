@@ -25,6 +25,7 @@ from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_sho
 from paperminertoolkit._version import __version__
 from paperminertoolkit.providers import registry as sources
 from paperminertoolkit.corpus.database import (connect,
+                                               corpus_copy,
                                                corpus_stats,
                                                enrichment_stats,
                                                search_history)
@@ -38,7 +39,7 @@ from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
                                                   build_reconciliation_prompt,
                                                   build_text_extraction_prompt)
 from paperminertoolkit.extraction.recipes import RECIPES_PATH, load_recipe
-from paperminertoolkit.workflows.download import DOWNLOAD_FORMATS, download_papers
+from paperminertoolkit.workflows.download import DOWNLOAD_FORMATS, download_papers, plan_downloads
 from paperminertoolkit.workflows.supplements import SUPPLEMENT_SOURCES
 from paperminertoolkit.workflows.enrichment import enrich_corpus
 from paperminertoolkit.workflows.entities import extract_corpus_entities, extract_file_entities
@@ -92,6 +93,18 @@ _json_option = click.option(
 def _quiet(json_output: bool) -> Any:
     """Route workflow chatter to stderr while a command produces JSON."""
     return redirect_stdout(sys.stderr) if json_output else nullcontext()
+
+
+_dry_run_option = click.option(
+    '--dry-run', is_flag=True, default=False,
+    help='Report what the command would change, without changing the corpus or any file.',
+)
+
+
+def _on_copy(db_path: str, operation: Callable[[str], Mapping[str, Any]]) -> dict[str, Any]:
+    """Run a corpus-changing operation on a temporary copy and report its result."""
+    with corpus_copy(db_path) as copy:
+        return {**operation(str(copy)), 'dry_run': True}
 
 
 def _paper_id_options(command: Callable[..., Any]) -> Callable[..., Any]:
@@ -379,7 +392,7 @@ def import_author(db_path: str,
     click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
-@agent_meta(effects={'network', 'writes_corpus'}, output=out.DOWNLOAD)
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.DOWNLOAD_OR_PLAN)
 @click.command('download')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
@@ -407,6 +420,7 @@ def import_author(db_path: str,
 @click.option('--force', is_flag=True, default=False,
               help='Redownload requested assets even when that content type is already stored.')
 @_paper_id_options
+@_dry_run_option
 @_json_option
 def download(
         db_path: str,
@@ -418,14 +432,38 @@ def download(
         force: bool,
         paper_ids: tuple[str, ...],
         paper_ids_file: str | None,
+        dry_run: bool,
         json_output: bool,
 ) -> None:
     """Download abstracts, text, PDFs, and supporting information for corpus rows.
 
     Supplement-only runs skip abstracts. Abstract-only runs skip supplements.
+    With --dry-run nothing is requested: the command lists the assets each
+    paper would be asked for, not which providers would supply them.
     """
     selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
     selection = {} if selected is None else {'paper_ids': selected, 'respect_filters': False}
+    if dry_run:
+        try:
+            with _quiet(json_output):
+                plan = plan_downloads(
+                    db_path, download_format=download_format, sources=list(sources),
+                    download_abstract=download_abstract,
+                    download_supplements=download_supplements,
+                    supplement_sources=list(supplement_sources), force=force, **selection)
+        except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+            raise click.ClickException(str(error)) from error
+        if json_output:
+            emit_json(plan)
+        else:
+            would, stored = plan['would_attempt'], plan['already_stored']
+            click.echo(f'Dry run: {plan["papers_considered"]} papers; would request '
+                       f'{would["texts"]} texts, {would["pdfs"]} PDFs, {would["abstracts"]} '
+                       f'abstracts, and SI discovery for {would["supplement_discovery"]} papers.')
+            click.echo(f'Already stored: {stored["texts"]} texts, {stored["pdfs"]} PDFs, '
+                       f'{stored["abstracts"]} abstracts, {stored["supplement_files"]} SI files; '
+                       f'{plan["no_text_source"]} papers have no reachable text source.')
+        return
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
             summary = download_papers(
@@ -755,8 +793,10 @@ def _report_filter_overview(db_path: str, overview: Mapping[str, Any],
     """Write a filter overview as JSON or as the human-readable summary."""
     if json_output:
         emit_json(overview)
-    else:
-        _echo_filter_overview(db_path, overview)
+        return
+    if overview.get('dry_run'):
+        click.echo('Dry run: the corpus was not changed. It would look like this:')
+    _echo_filter_overview(db_path, overview)
 
 
 @agent_meta(effects={'writes_corpus'}, output=out.FILTER_OVERVIEW)
@@ -772,22 +812,26 @@ def _report_filter_overview(db_path: str, overview: Mapping[str, Any],
               help='Replace and reevaluate an active filter with the same name.')
 @click.option('--timeout-ms', type=click.IntRange(min=1), default=None,
               help='Override the per-pattern match timeout from the JSON definition.')
+@_dry_run_option
 @_json_option
 def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
                  join_operator: str | None, replace: bool, timeout_ms: int | None,
-                 json_output: bool) -> None:
-    """Apply a named post-download regex filter to a paper corpus."""
+                 dry_run: bool, json_output: bool) -> None:
+    """Apply a named post-download regex filter to a paper corpus.
+
+    With --dry-run the filter is applied to a temporary copy of the corpus
+    and the resulting decisions are reported; the corpus is not changed.
+    """
+    def apply(path: str) -> Mapping[str, Any]:
+        """Apply the filter to the corpus at ``path``."""
+        return apply_regex_filter(path, rules_path, fields=fields or None,
+                                  join_operator=join_operator, replace=replace,
+                                  timeout_ms=timeout_ms)
+
     try:
         with _quiet(json_output):
-            overview = apply_regex_filter(
-                db_path,
-                rules_path,
-                fields=fields or None,
-                join_operator=join_operator,
-                replace=replace,
-                timeout_ms=timeout_ms,
-            )
-    except (OSError, ValueError) as error:
+            overview = _on_copy(db_path, apply) if dry_run else apply(db_path)
+    except (OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     _report_filter_overview(db_path, overview, json_output)
 
@@ -800,16 +844,24 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
               help='Join this filter to the preceding active expression.')
 @click.option('--replace', is_flag=True, default=False,
               help='Replace and reevaluate an active filter with the same name.')
+@_dry_run_option
 @_json_option
 def filter_topic(db_path: str, rules_path: str,
-                 join_operator: str | None, replace: bool, json_output: bool) -> None:
-    """Apply a named stored-model topic filter to a paper corpus."""
+                 join_operator: str | None, replace: bool, dry_run: bool,
+                 json_output: bool) -> None:
+    """Apply a named stored-model topic filter to a paper corpus.
+
+    With --dry-run the filter is applied to a temporary copy of the corpus
+    and the resulting decisions are reported; the corpus is not changed.
+    """
+    def apply(path: str) -> Mapping[str, Any]:
+        """Apply the filter to the corpus at ``path``."""
+        return apply_topic_filter(path, rules_path, join_operator=join_operator, replace=replace)
+
     try:
         with _quiet(json_output):
-            overview = apply_topic_filter(
-                db_path, rules_path, join_operator=join_operator, replace=replace
-            )
-    except (OSError, ValueError) as error:
+            overview = _on_copy(db_path, apply) if dry_run else apply(db_path)
+    except (OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     _report_filter_overview(db_path, overview, json_output)
 
@@ -834,13 +886,23 @@ def filter_status(db_path: str, json_output: bool) -> None:
 @click.option('--name', default=None, help='Remove one active filter by name.')
 @click.option('--all', 'all_filters', is_flag=True, default=False,
               help='Remove every active filter.')
+@_dry_run_option
 @_json_option
-def filter_reset(db_path: str, name: str | None, all_filters: bool, json_output: bool) -> None:
-    """Remove one or all active corpus filters."""
+def filter_reset(db_path: str, name: str | None, all_filters: bool, dry_run: bool,
+                 json_output: bool) -> None:
+    """Remove one or all active corpus filters.
+
+    With --dry-run the removal runs on a temporary copy of the corpus and the
+    remaining decisions are reported; the corpus is not changed.
+    """
+    def apply(path: str) -> Mapping[str, Any]:
+        """Remove the filters from the corpus at ``path``."""
+        return reset_filters(path, name=name, all_filters=all_filters)
+
     try:
         with _quiet(json_output):
-            overview = reset_filters(db_path, name=name, all_filters=all_filters)
-    except ValueError as error:
+            overview = _on_copy(db_path, apply) if dry_run else apply(db_path)
+    except (OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     _report_filter_overview(db_path, overview, json_output)
 
@@ -1587,19 +1649,30 @@ def _echo_scrape_plan(plan: Mapping[str, Any]) -> None:
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False,
               help='Store converted results without an interactive confirmation prompt.')
+@_dry_run_option
 @_json_option
 def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool,
-          json_output: bool) -> None:
-    """Store temporary scrape results in the final materials CSV."""
+          dry_run: bool, json_output: bool) -> None:
+    """Store temporary scrape results in the final materials CSV.
+
+    With --dry-run the columns are matched and reported, but no unit is
+    converted (no model call), nothing is written, and nothing prompts.
+    """
+    extra = {'dry_run': True} if dry_run else {}
     try:
         with _quiet(json_output):
             summary = store_results(db_path, in_file, out_file, True, recipe,
-                                    assume_yes=assume_yes)
+                                    assume_yes=assume_yes, **extra)
     except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
         message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
         raise click.ClickException(str(message)) from error
     if json_output:
         emit_json(summary)
+    elif dry_run:
+        click.echo(f'Dry run: would store {summary["rows_written"]} of {summary["rows_read"]} rows '
+                   f'in {summary["output_path"]} ({summary["rows_total"]} rows in total), '
+                   f'converting {len(summary["converted_columns"])} columns with the model and '
+                   f'skipping {len(summary["skipped_columns"])} unmatched columns.')
 
 
 @agent_meta(effects={'starts_server', 'writes_files'})
@@ -2006,18 +2079,24 @@ def provider_status_command(no_probe: bool, sources: tuple[str, ...],
 @agent_meta(effects={'writes_corpus'}, output=out.RESET)
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@_dry_run_option
 @_json_option
-def reset_miner(db_path: str, json_output: bool) -> None:
-    """Reset pipeline statuses in the paper corpus."""
+def reset_miner(db_path: str, dry_run: bool, json_output: bool) -> None:
+    """Reset pipeline statuses in the paper corpus.
+
+    With --dry-run the reset runs on a temporary copy of the corpus, which
+    is then deleted, and reports what it would change.
+    """
     try:
         with _quiet(json_output):
-            summary = reset(db_path)
+            summary = _on_copy(db_path, reset) if dry_run else reset(db_path)
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
         emit_json(summary)
     else:
-        click.echo(f'Reset {summary["papers_reset"]} papers and '
+        verb = 'Would reset' if dry_run else 'Reset'
+        click.echo(f'{verb} {summary["papers_reset"]} papers and '
                    f'{summary["supplement_stages_reset"]} supporting-information stages.')
 
 

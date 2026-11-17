@@ -41,7 +41,7 @@ SCRAPE_SUMMARY = {
 STORE_SUMMARY = {'status': 'stored', 'input_path': 'in.csv', 'output_path': 'out.csv',
                  'rows_read': 2, 'rows_written': 2, 'rows_total': 2,
                  'converted_columns': [], 'unconverted_columns': ['Name'], 'skipped_columns': [],
-                 'papers_marked_stored': 1}
+                 'papers_marked_stored': 1, 'dry_run': False}
 IMPORT_PDFS_SUMMARY = {'files': 1, 'added': 1, 'updated': 0, 'doi_found': 1, 'enriched': 0,
                        'metadata_errors': 0, 'paper_ids': ['external:a']}
 def _error(result: Any) -> dict[str, Any]:

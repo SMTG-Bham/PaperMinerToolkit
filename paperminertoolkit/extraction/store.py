@@ -155,6 +155,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
                   recipe: str = 'sse',
                   assume_yes: bool = False,
                   model_config: ModelConfig | None = None,
+                  dry_run: bool = False,
                   ) -> dict[str, Any]:
     """Convert and append temporary scrape results.
 
@@ -174,11 +175,17 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
         Whether to accept conversions and skip unmatched columns without a prompt.
     model_config : ModelConfig or None, optional
         Model configuration forwarded to unit conversion.
+    dry_run : bool, default=False
+        Match columns and report what would be stored without converting
+        units (no model calls), prompting, or writing any file or corpus row.
+        An unmatched column is reported in ``skipped_columns`` even when
+        ``assume_yes`` is false, where a real run would stop.
 
     Returns
     -------
     dict[str, Any]
-        ``status`` (``stored``, ``nothing_to_store``, or ``declined``),
+        ``status`` (``stored``, ``nothing_to_store``, ``declined``, or
+        ``dry_run``), ``dry_run``,
         ``rows_read``, ``rows_written`` (new rows after de-duplication is
         applied to the whole file), ``rows_total``, ``converted_columns``
         (one unit-conversion model request each), ``unconverted_columns``,
@@ -209,7 +216,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
         'status': 'nothing_to_store', 'input_path': str(input_path),
         'output_path': str(output_path), 'rows_read': 0, 'rows_written': 0, 'rows_total': 0,
         'converted_columns': [], 'unconverted_columns': [], 'skipped_columns': [],
-        'papers_marked_stored': 0,
+        'papers_marked_stored': 0, 'dry_run': dry_run,
     }
     if not input_path.is_file():
         print(f'No scraped materials file found at {in_filepath}. Nothing new to store.')
@@ -234,7 +241,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
     for series_name, series in in_file.items():
         match = canonical_match(series_name, columns, recipe)
         if match is None:
-            if assume_yes:
+            if assume_yes or dry_run:
                 print(f'Skipping unmatched column in noninteractive mode: {series_name}')
                 summary['skipped_columns'].append(str(series_name))
                 continue
@@ -244,7 +251,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
             print(f'{series_name} column was matched with {match} and will be converted.')
             summary['converted_columns'].append(match)
             split_field[1] = split_field[1].replace(']', '')
-            converted_series = convert_units(
+            converted_series = series if dry_run else convert_units(
                 series,
                 field=split_field[0],
                 unit=split_field[1],
@@ -257,6 +264,11 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
         out_data[match] = converted_series
 
     paper_ids = _stored_paper_ids(out_data)
+    if dry_run:
+        existing = 0 if out_file is None else len(out_file)
+        summary.update(status='dry_run', rows_written=len(out_data),
+                       rows_total=existing + len(out_data), papers_marked_stored=len(paper_ids))
+        return summary
     preview_path = _temporary_path(output_path.parent, '.paperminertoolkit-converted-', '.csv')
     try:
         out_data.to_csv(preview_path)

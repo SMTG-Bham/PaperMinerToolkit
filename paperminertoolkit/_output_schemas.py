@@ -60,6 +60,16 @@ DOWNLOAD = counts('texts', 'pdfs', 'abstracts', 'texts_skipped', 'pdfs_skipped',
                   'supplements_failed', 'supplements_unavailable',
                   'supplement_discovery_failed')
 
+DOWNLOAD_PLAN = obj({
+    'dry_run': {'type': 'boolean', 'enum': [True]}, 'format': STRING, 'sources': array(STRING),
+    'supplement_sources': array(STRING), 'papers_considered': INTEGER,
+    'would_attempt': counts('texts', 'pdfs', 'abstracts', 'supplement_discovery'),
+    'already_stored': counts('texts', 'pdfs', 'abstracts', 'supplement_files'),
+    'no_text_source': INTEGER,
+    'papers': array(obj({'paper_id': STRING, 'attempt': array(STRING), 'stored': array(STRING)})),
+})
+DOWNLOAD_OR_PLAN = {'anyOf': [DOWNLOAD, DOWNLOAD_PLAN]}
+
 GATHER = obj({'search': SEARCH, 'downloads': {'anyOf': [DOWNLOAD, {'type': 'null'}]}})
 
 DIGITIZE = obj({'requests': INTEGER, 'supplementary': INTEGER, 'not_found': INTEGER,
@@ -84,7 +94,8 @@ STATUS = obj({'papers': INTEGER, 'papers_with_structured_documents': INTEGER,
 
 FILTER_OVERVIEW = obj({'filters': array(OBJECT), 'expression': OPTIONAL_STRING,
                        'counts': counts('included', 'excluded', 'unavailable'),
-                       'unavailable_reasons': OBJECT, 'stale_topic_filters': array(STRING)})
+                       'unavailable_reasons': OBJECT, 'stale_topic_filters': array(STRING)},
+                      {'dry_run': BOOLEAN})
 
 MODEL_STATUS = obj({'text': OBJECT, 'vision': OBJECT})
 CONFIG_MODEL = obj({'profile': STRING, 'provider': STRING, 'model': STRING,
@@ -168,11 +179,13 @@ SCRAPE_PROGRESS = obj({'mode': STRING, 'scope': INTEGER, 'out_of_scope': INTEGER
                        'remaining': counts('papers', 'supplement_files'),
                        'failed_papers': OBJECT, 'no_asset_papers': OBJECT})
 
-STORE = obj({'status': {'type': 'string', 'enum': ['stored', 'nothing_to_store', 'declined']},
+STORE = obj({'status': {'type': 'string',
+                        'enum': ['stored', 'nothing_to_store', 'declined', 'dry_run']},
+             'dry_run': BOOLEAN,
              'input_path': STRING, 'output_path': STRING, 'rows_read': INTEGER,
              'rows_written': INTEGER, 'rows_total': INTEGER,
              'converted_columns': array(STRING), 'unconverted_columns': array(STRING),
              'skipped_columns': array(STRING), 'papers_marked_stored': INTEGER})
 
 RESET = obj({'papers_reset': INTEGER, 'supplement_stages_reset': INTEGER,
-             'columns': array(STRING)})
+             'columns': array(STRING)}, {'dry_run': BOOLEAN})

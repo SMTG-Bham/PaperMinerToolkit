@@ -32,13 +32,14 @@ from pypdf import PdfReader
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed, unpaywall)
 from paperminertoolkit.corpus.database import (add_asset,
-                                add_structured_document, connect,
+                                add_structured_document, connect, connect_read_only,
                                 get_asset_metadata, paper_rows,
                                 set_pipeline_status as _set_status, upsert_paper)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
 from paperminertoolkit.settings import load_settings
+from paperminertoolkit.corpus.supplements import get_supplements
 from paperminertoolkit.workflows.supplements import (
     download_paper_supplements, normalize_supplement_sources,
 )
@@ -1897,6 +1898,105 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
             f"{summary['supplements_unavailable']} papers without available SI."
         )
     return summary
+
+
+def plan_downloads(db_path: str | PathLike[str] = 'papers.db',
+                   download_format: str = 'text',
+                   sources: Iterable[str] | None = None,
+                   download_abstract: bool = True,
+                   force: bool = False,
+                   paper_ids: Iterable[str] | None = None,
+                   download_supplements: bool = True,
+                   supplement_sources: Iterable[str] | None = None,
+                   respect_filters: bool = True) -> dict[str, Any]:
+    """Report what :func:`download_papers` would attempt, without any request or write.
+
+    Papers are selected and each asset is judged by the same rules as a real
+    run: an asset already stored is skipped unless ``force``, and full text
+    is attempted only when a requested text source can serve the paper.
+    Whether a provider would actually return the asset is unknown until it
+    is asked, so the plan lists attempts, not expected successes. The corpus
+    is opened read-only.
+
+    Parameters
+    ----------
+    db_path, download_format, sources, download_abstract, force, paper_ids, download_supplements, supplement_sources, respect_filters
+        As for :func:`download_papers`.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``dry_run`` (true), ``format``, the resolved ``sources`` and
+        ``supplement_sources``, ``papers_considered``, ``would_attempt``
+        (``texts``, ``pdfs``, ``abstracts``, ``supplement_discovery``),
+        ``already_stored`` (``texts``, ``pdfs``, ``abstracts``,
+        ``supplement_files``), ``no_text_source`` (papers no requested text
+        source can serve), and per-paper ``papers`` with the ``attempt`` and
+        ``stored`` roles.
+
+    Raises
+    ------
+    ValueError
+        If the format or a source is invalid.
+    FileNotFoundError
+        If the corpus does not exist.
+    RuntimeError
+        If the corpus schema does not match this package's.
+    """
+    download_format = download_format.lower()
+    if download_format not in DOWNLOAD_FORMATS:
+        raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
+    sources = [] if download_format == 'supplement' else _configured_sources(sources or ['all'])
+    selected_supplement_sources = normalize_supplement_sources(supplement_sources)
+    want_supplements = download_format == 'supplement' or (
+        download_supplements and download_format != 'abstract'
+    )
+    if download_format == 'supplement':
+        download_abstract = False
+    text_requested = download_format in {'text', 'both'}
+    pdf_requested = download_format in {'pdf', 'both'}
+    would = {'texts': 0, 'pdfs': 0, 'abstracts': 0, 'supplement_discovery': 0}
+    stored = {'texts': 0, 'pdfs': 0, 'abstracts': 0, 'supplement_files': 0}
+    no_text_source = 0
+    planned = []
+    selected_ids = None if paper_ids is None else set(paper_ids)
+    with connect_read_only(db_path) as conn:
+        papers = [] if selected_ids == set() else paper_rows(conn)
+        if selected_ids:
+            papers = [paper for paper in papers if paper['paper_id'] in selected_ids]
+            if respect_filters and papers and active_filter_stack(conn):
+                statuses = current_filter_statuses(conn)
+                papers = [paper for paper in papers
+                          if statuses.get(paper['paper_id']) == 'included']
+        for paper in papers:
+            existing = {role: get_asset_metadata(conn, paper['paper_id'], role)
+                        for role in ('abstract', 'text', 'pdf')}
+            attempt, have = [], []
+            for role, wanted in (('abstract', download_abstract), ('text', text_requested),
+                                 ('pdf', pdf_requested)):
+                if not wanted:
+                    continue
+                if existing[role] is not None and not force:
+                    stored[f'{role}s'] += 1
+                    have.append(role)
+                    continue
+                if role == 'text' and not any(
+                        name in sources and _source_reachable(name, registry.TEXT, paper)
+                        for name in registry.names(registry.TEXT)):
+                    no_text_source += 1
+                    continue
+                would[f'{role}s'] += 1
+                attempt.append(role)
+            if want_supplements:
+                files = get_supplements(conn, paper['paper_id'], include_content=False)
+                stored['supplement_files'] += len(files)
+                would['supplement_discovery'] += 1
+                attempt.append('supplements')
+            planned.append({'paper_id': paper['paper_id'], 'attempt': attempt, 'stored': have})
+    return {'dry_run': True, 'format': download_format, 'sources': list(sources),
+            'supplement_sources': list(selected_supplement_sources) if want_supplements else [],
+            'papers_considered': len(planned), 'would_attempt': would,
+            'already_stored': stored, 'no_text_source': no_text_source, 'papers': planned}
 
 
 def _download_paper(
