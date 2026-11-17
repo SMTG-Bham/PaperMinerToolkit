@@ -2,10 +2,12 @@
 
 The {doc}`quickstart` scrapes five abstracts. This page follows a production run instead: a
 corpus of about 1,300 papers built from several queries, filtered on full text, scraped with a
-locally served model on a cluster, checked, rescraped where it failed, stored, and handed to
-figure digitising. The numbers come from a polymer-degradation campaign run with the bundled
-`polymer_degradation` recipe on Intel Gaudi nodes; the commands are the general ones, and the
-same sequence applies to any recipe.
+locally served model on a cluster, checked, and rescraped where it failed, then stored and handed
+to figure digitising. The numbers come from a polymer-degradation campaign run with the bundled
+`polymer_degradation` recipe on Intel Gaudi nodes. That campaign had been gathered, filtered,
+scraped, rescraped and reviewed when this page was written; the storing step shows the commands
+only, and the digitising step reports a five-figure trial. The commands are the general ones, and
+the same sequence applies to any recipe.
 
 Each stage is resumable and skips what is already stored, so every command below can be
 rerun after an interruption without repeating finished work.
@@ -110,8 +112,8 @@ skipped. Do not use `--count` to pace a long run, because it slices the ordered 
 
 Plan the wall time from a measured rate, not a guess. With Qwen3-30B-A3B serving four cards,
 this recipe took about 95 to 180 s per paper, because its replies run to many records and
-generation, not reading, dominates. 849 papers took four 12-hour allocations, one of which was
-lost to a node failure and picked up by the next.
+generation, not reading, dominates. 849 papers took three 12-hour allocations, the first cut
+short after 9 hours by a node failure; the next one resumed where it stopped.
 
 ## 5. Check progress and retry what failed
 
@@ -148,26 +150,30 @@ input file. Keep a copy first. Things worth checking, with what this campaign fo
 ## 7. Store
 
 ```bash
+cp scraped.csv scraped_raw.csv
 pmt store papers.db scraped.csv materials.csv polymer_degradation --dry-run --json
 pmt store papers.db scraped.csv materials.csv polymer_degradation --assume-yes
 ```
 
 The dry run lists which columns would be converted (one model request each) and which would be
-skipped, without changing anything.
+skipped, without changing anything. A real run consumes `scraped.csv`, which is why the copy is
+taken first.
 
 ## 8. Recover curves from the figures records cite
 
 The recipe's `Mass loss figure` field names the figure that plots each record's mass loss. 491
-records named a figure but gave no values, and {doc}`digitizing` recovers those curves:
+records named a figure but gave no values, and {doc}`digitizing` recovers those curves. Run it on
+the raw copy of the scraped CSV, whose column names are the recipe's field names; stored headings
+carry unit labels:
 
 ```bash
 pmt figures detect papers.db
-pmt digitize papers.db materials.csv \
+pmt digitize papers.db scraped_raw.csv \
   --figure-field "Mass loss figure" --only-missing "Mass loss curve" \
   --output mass_loss_curves.csv --previews previews --limit 5
 ```
 
-Try a handful first. In a five-figure trial on this corpus, four cited figures were bar charts of
+Try a handful first. A five-figure trial on this corpus recovered none: four cited figures were bar charts of
 mass loss per sample rather than curves, which figrecover does not read; they suit an image
 scrape with a vision model instead. `pmt figures list papers.db --json` shows which figures were
 detected and their digitising status.
