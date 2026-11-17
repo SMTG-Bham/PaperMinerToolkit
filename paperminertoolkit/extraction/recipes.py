@@ -12,6 +12,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TypeAlias
 
+from paperminertoolkit.extraction.verify import validate_checks
+
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 RECIPES_PATH = PACKAGE_DIR / 'resources' / 'recipes.json'
 METADATA_FIELDS = ['Paper id', 'doi', 'Publication date', 'Source', 'Source path']
@@ -71,6 +73,8 @@ def _validate_recipe(recipe: object, source: str) -> _Recipe:
             f'Recipe in {source} record definition references unknown identity field(s): '
             f'{", ".join(unknown_identity_fields)}.'
         )
+    if 'checks' in recipe:
+        validate_checks(recipe['checks'], source, recipe['search fields'])
     recipe.setdefault('additional prompts', '')
     return recipe
 

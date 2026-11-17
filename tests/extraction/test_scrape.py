@@ -134,9 +134,19 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: p
     assert scrape._text_chunks('short text', text_config, prompt='extract prompt') == ['short text']
     assert budget_calls == [('extract prompt', text_config)]
 
-    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 240001)
-    chunks = scrape._text_chunks('abcdef', text_config)
-    assert chunks == ['ab', 'cd', 'ef']
+    monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
+    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: len(text) // 2)
+    paragraphs = [f'Paragraph {index} ' + 'word ' * 30 for index in range(6)]
+    table = 'Table 1 Band gaps' + chr(10) + '| Material | Gap |' + chr(10) + '| --- | --- |' + chr(10) + '| A | 1.5 |'
+    text = (chr(10) * 2).join([*paragraphs[:3], table, *paragraphs[3:]])
+    chunks = scrape._text_chunks(text, text_config)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) // 2 <= 100 for chunk in chunks)
+    assert sum(table in chunk for chunk in chunks) == 1
+    assert all(paragraph.strip() in text for chunk in chunks for paragraph in chunk.split(chr(10) * 2))
+    # each chunk after the first starts with the tail of the previous chunk's last paragraph
+    assert chunks[1].split(chr(10) * 2)[0] in chunks[0]
 
 
 def test_material_file_and_image_helpers_handle_common_inputs(tmp_path: Path) -> None:
@@ -308,7 +318,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     }]
     assert 'Skipped already successful stages: abstracts=0, text=1, images=0' in output
     assert 'text for paper paper-1 was split into 2 independent model requests' in captured.err
-    assert 'Results from separate chunks are not automatically reconciled' in captured.err
+    assert 'Records from separate chunks are merged by their identity fields' in captured.err
     assert 'Chunking warning: 1 paper input was split into 2 independent model requests' in captured.err
 
 

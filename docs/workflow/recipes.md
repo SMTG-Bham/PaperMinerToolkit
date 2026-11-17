@@ -473,6 +473,38 @@ Missing inputs are removed before the request and restored as missing values aft
 
 </details>
 
+## Checks
+
+A recipe can declare checks that remove or correct extracted items after the model replies. They run only with `pmt scrape --verify` or `pmt postprocess`. Every change is written to an audit CSV. The `band_gap_validation` recipe uses all of them:
+
+```json
+"checks": {
+  "fields": ["Band gap", "All band gaps", "Cited literature band gaps"],
+  "value key": "value",
+  "values in source": true,
+  "unit": "eV",
+  "exclude terms": ["work function", "Fermi level", "PL peak"],
+  "exclude terms keys": ["value", "gap_type"],
+  "unsupported terms": {"SOC": ["spin-orbit", "spin orbit"]},
+  "drop empty": true
+}
+```
+
+| Key | Effect |
+|---|---|
+| `fields` | Fields to check. Defaults to every field that is not an identity field. |
+| `value key` | Key holding the value in list-of-object items. Defaults to `value`. |
+| `values in source` | Drop an item whose numbers are not printed in the paper's text or tables, within `tolerance` (relative, default `0.005`). |
+| `unit` | Drop a value whose first unit is another unit, such as `3.64 V` when the unit is `eV`. Values with no unit are kept. |
+| `exclude terms` | Drop an item whose parts mention any of these terms (whole words, case-insensitive). |
+| `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
+| `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
+| `drop empty` | Drop items without a value, and records left with no checked field reported. |
+
+Unknown keys, wrong value types and unknown field names are rejected when the recipe is loaded.
+
+Examples are shown to the model as the shape of a record, so write them as placeholders (`"<number> eV"`, `"<method as stated>"`) rather than realistic values, which models tend to copy into unrelated papers.
+
 Optional context compression does not construct another recipe-specific LLM prompt. It uses the selected extraction prompt to preserve relevant content before the normal request is made.
 
 ## Text and image reconciliation
@@ -488,7 +520,7 @@ The reconciliation prompt uses:
 
 It merges complementary fields only when records refer to the same configured record unit. Conflicting identity fields keep records separate. An unresolved conflict in a non-identity value is retained as a list rather than silently discarded.
 
-Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are not currently reconciled, so use a suitable model context limit when record duplication across chunks would be costly.
+Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are merged without a model call, by their identity fields (see [Scraping](scraping.md), under "Context limits and compression"), so use a suitable model context limit when a record split across chunks would be costly.
 
 ## Validation and common errors
 

@@ -86,7 +86,7 @@ def _example_record(recipe: Mapping[str, Any]) -> str:
     record = {}
     for field, config in recipe['search fields'].items():
         record[field] = config['example']
-    return json.dumps([record], indent=2)
+    return json.dumps([record], indent=2, ensure_ascii=False)
 
 
 def _base_extraction_prompt(recipe: Mapping[str, Any], source: str, source_rules: str) -> str:

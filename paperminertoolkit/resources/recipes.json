@@ -1581,11 +1581,11 @@
                 "Material system"
             ]
         },
-        "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Put all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, figures, captions, and supporting information.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- 'method_or_source': Report how the band gap was determined. For experimental values, include the measurement technique and extraction procedure where stated, e.g. 'UV–vis diffuse reflectance; Tauc plot' or 'absorption spectroscopy; absorption onset'. For computational values, include the calculation method, exchange–correlation functional, and explicitly reported corrections, e.g. 'DFT; HSE06; SOC'. For cited values, also include the reference identifier where available. Include only details explicitly reported in the paper.\n- 'gap_type': Describe only the nature of the gap: 'optical', 'direct', 'indirect', or 'fundamental', including combinations such as 'direct optical' or 'indirect fundamental' when explicitly supported. Do not include measurement techniques, computational methods, citation information, or conditions. Do not infer the gap type from the method.\n- 'conditions': Include only explicitly reported experimental measurement conditions, such as temperature, pressure, or atmosphere. Use 'None' for computational values or when experimental conditions are unreported. Do not include computational settings or sample synthesis conditions.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
+        "additional prompts": "Return one record per distinct material, sample, composition, phase, or structure that is a subject of this paper. Put all reported gap values for the same material into that material's record. Treat genuinely different compositions, phases, structures, or experimentally distinct samples as separate records when their reported gaps differ. Do not split one material into separate records merely because the paper reports several calculation models, experimental methods, gap types, or conditions; preserve those distinctions in the gap items within the same material record. Do not create standalone records for materials mentioned only as general background or only in the reference list.\n\nEvidence classification:\n- A value belongs in 'All band gaps' only when the authors report it as a result produced in this paper, whether experimental or computational. Include results in the main text, tables, captions, and supporting information. Ignore numbers that appear only inside figures.\n- A value belongs in 'Cited literature band gaps' when it is explicitly attributed to another publication, prior work, a literature survey, or a pre-existing external database and applies to the material represented by this record. Do not mix cited values into this-study fields.\n- Background claims without a numeric band-gap value are not gap records. Do not report activation energies, defect transition levels, formation energies, energy-level offsets, or spectral peak energies as band gaps unless the paper explicitly identifies them as a band gap, optical gap, fundamental gap, direct gap, or indirect gap.\n- Do not output work functions, ionisation potentials, electron affinities, band offsets, Fermi levels, defect levels, PL or emission peaks, or voltages as band gaps.\n- Never output a value that is not printed in the paper's text or tables. The examples in this prompt are placeholders; never copy their wording or values.\n- Never calculate a gap by subtracting band-edge energies, estimating a plot, or applying domain knowledge. Preserve reported precision, inequalities, approximations, ranges, and units.\n\nRecord formatting:\n- For every populated gap field, return a JSON list even when it contains only one item. Each list item must be an object with exactly these keys: 'value', 'method_or_source', 'gap_type', and 'conditions'. Set an unsupported item component to the general missing value 'None'; do not omit keys or invent context.\n- 'method_or_source': Report how the band gap was determined. For experimental values, include the measurement technique and extraction procedure where stated, e.g. 'UV–vis diffuse reflectance; Tauc plot' or 'absorption spectroscopy; absorption onset'. For computational values, include the calculation method, exchange–correlation functional, and explicitly reported corrections, e.g. 'DFT; HSE06'. Write 'SOC' or '+SOC' only when the paper states that spin-orbit coupling was included for that value. For cited values, also include the reference identifier where available. Include only details explicitly reported in the paper.\n- 'gap_type': Describe only the nature of the gap: 'optical', 'direct', 'indirect', or 'fundamental', including combinations such as 'direct optical' or 'indirect fundamental' when explicitly supported. Do not include measurement techniques, computational methods, citation information, or conditions. Do not infer the gap type from the method.\n- 'conditions': Include only explicitly reported experimental measurement conditions, such as temperature, pressure, or atmosphere. Use 'None' for computational values or when experimental conditions are unreported. Do not include computational settings or sample synthesis conditions.\n- A reported range is one item. Keep separate direct, indirect, optical, fundamental, phase-specific, method-specific, or experimental and computational values as separate list items. Deduplicate a value repeated without a changed context.\n- Follow the general missing-value rule for unsupported fields. Return [] for the whole response when the paper contains no relevant band-gap materials.\n- Use plain-text chemical formulae as printed. Do not add Markdown bullets, numbering, or newline-delimited pseudo-lists inside strings.",
         "search fields": {
             "Material system": {
                 "prompt": "Specific material, sample, composition, phase, or structure represented by this record, including a reported sample label where available",
-                "example": "Cs2SnI6 vacancy-ordered double perovskite",
+                "example": "<material, phase or sample label>",
                 "aliases": [
                     "Material systems",
                     "Material",
@@ -1598,9 +1598,9 @@
                 "prompt": "JSON list of the principal band-gap value or values produced in this paper for this material, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Select values explicitly presented as principal or representative; do not choose solely by magnitude.",
                 "example": [
                     {
-                        "value": "0.92 eV",
-                        "method_or_source": "HSE06+SOC",
-                        "gap_type": "indirect fundamental",
+                        "value": "<number> eV",
+                        "method_or_source": "<method, functional or technique as stated>",
+                        "gap_type": "<direct | indirect | optical | fundamental, only if stated>",
                         "conditions": "None"
                     }
                 ],
@@ -1615,22 +1615,16 @@
                 "prompt": "JSON list of every distinct experimental or computational band gap produced in this paper for this material, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Preserve separate values determined by different methods, gap types, or experimental conditions. Exclude values attributed to prior work.",
                 "example": [
                     {
-                        "value": "0.92 eV",
-                        "method_or_source": "HSE06+SOC",
-                        "gap_type": "indirect fundamental",
+                        "value": "<number> eV",
+                        "method_or_source": "<method, functional or technique as stated>",
+                        "gap_type": "<direct | indirect | optical | fundamental, only if stated>",
                         "conditions": "None"
                     },
                     {
-                        "value": "1.26 eV",
-                        "method_or_source": "HSE06+SOC",
-                        "gap_type": "optical",
-                        "conditions": "None"
-                    },
-                    {
-                        "value": "1.35 eV",
-                        "method_or_source": "UV–vis diffuse reflectance; Tauc plot",
-                        "gap_type": "optical",
-                        "conditions": "room temperature"
+                        "value": "<number> eV",
+                        "method_or_source": "<method, functional or technique as stated>",
+                        "gap_type": "<direct | indirect | optical | fundamental, only if stated>",
+                        "conditions": "<measurement conditions as stated, experimental values only>"
                     }
                 ],
                 "aliases": [
@@ -1641,15 +1635,9 @@
                 "prompt": "JSON list of every distinct numeric band gap for this material explicitly attributed to another publication, prior work, or an external database, including when only one value is reported. Each item must contain exactly 'value', 'method_or_source', 'gap_type', and 'conditions', following the shared rules in the additional prompts and using 'None' for unsupported components. Include the cited reference identifier in 'method_or_source' where available, alongside any reported measurement or computational method.",
                 "example": [
                     {
-                        "value": "1.30 eV",
-                        "method_or_source": "experiment, cited literature",
-                        "gap_type": "optical",
-                        "conditions": "None"
-                    },
-                    {
-                        "value": "0.88 eV",
-                        "method_or_source": "GW0, cited literature",
-                        "gap_type": "fundamental",
+                        "value": "<number> eV",
+                        "method_or_source": "<method or technique as stated>, cited <reference>",
+                        "gap_type": "<direct | indirect | optical | fundamental, only if stated>",
                         "conditions": "None"
                     }
                 ],
@@ -1660,6 +1648,50 @@
                     "External band gaps"
                 ]
             }
+        },
+        "checks": {
+            "fields": [
+                "Band gap",
+                "All band gaps",
+                "Cited literature band gaps"
+            ],
+            "value key": "value",
+            "values in source": true,
+            "unit": "eV",
+            "exclude terms": [
+                "work function",
+                "ionisation potential",
+                "ionization potential",
+                "ionisation energy",
+                "ionization energy",
+                "electron affinity",
+                "band offset",
+                "valence band offset",
+                "conduction band offset",
+                "Fermi level",
+                "defect level",
+                "transition level",
+                "vacuum level",
+                "PL peak",
+                "photoluminescence peak",
+                "emission peak",
+                "exciton binding energy",
+                "binding energy",
+                "activation energy",
+                "formation energy"
+            ],
+            "exclude terms keys": [
+                "value",
+                "gap_type"
+            ],
+            "unsupported terms": {
+                "SOC": [
+                    "spin-orbit",
+                    "spin orbit",
+                    "spin-orbital"
+                ]
+            },
+            "drop empty": true
         }
     }
 }
