@@ -834,6 +834,8 @@ SCOPUS_ARTICLE_LINK = 'https://api.elsevier.com/content/article/eid/1-s2.0-S2041
     ({'doi': '10.9999/elsevier-imprint', 'elsevier_link': SCOPUS_ARTICLE_LINK}, True),
     ({'doi': '10.9999/elsevier-imprint', 'publisher': 'Elsevier BV'}, True),
     ({'doi': '10.1039/d3sc02171h', 'elsevier_link': SCOPUS_ARTICLE_LINK,
+      'publisher': 'Royal Society of Chemistry (RSC)'}, True),
+    ({'doi': '10.1039/d3sc02171h', 'elsevier_link': SCOPUS_RECORD_LINK,
       'publisher': 'Royal Society of Chemistry (RSC)'}, False),
     ({'doi': '10.1016/j.jallcom.2025.180614', 'publisher': 'Some Aggregator'}, True),
     ({'elsevier_link': SCOPUS_RECORD_LINK}, False),
@@ -3111,7 +3113,7 @@ class BatchLookups:
         """Answer an OR-filtered OpenAlex lookup from the canned works."""
         self.batches.append(list(identifiers))
         if self.fail_batch:
-            raise RuntimeError('OpenAlex unavailable')
+            raise ValueError('malformed OpenAlex reply')
         return {doi: self.works[doi] for doi in identifiers if doi in self.works}
 
     def get_work(self, identifier: str, **_: object) -> dict[str, Any] | None:

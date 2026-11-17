@@ -117,11 +117,13 @@ def _elsevier_route(paper: Mapping[str, Any]) -> str:
 
     1. a DOI with an Elsevier prefix (:func:`elsevier.is_elsevier_doi`);
     2. a publisher name, from enrichment, that is Elsevier or an imprint;
-    3. any other known publisher rules Elsevier out, even when Scopus supplied
-       an article endpoint for the row, as it does for some Springer Nature,
-       RSC and IOP articles;
-    4. otherwise a full-text or article endpoint in ``elsevier_link`` counts,
-       so an Elsevier article under another DOI prefix still resolves.
+    3. a full-text or article endpoint in ``elsevier_link``, so an article
+       Elsevier hosts under another DOI prefix or publisher name still
+       resolves. Scopus also hands these ``1-s2.0-`` endpoints out for some
+       Springer Nature, RSC and IOP articles; whether ScienceDirect serves
+       them is unverified, so they are still asked;
+    4. otherwise any other known publisher, or a DOI prefix that is not
+       Elsevier's, rules Elsevier out.
 
     Parameters
     ----------
@@ -138,12 +140,12 @@ def _elsevier_route(paper: Mapping[str, Any]) -> str:
     publisher = paper.get('publisher')
     if _has_value(doi) and elsevier.is_elsevier_doi(str(doi)):
         return ''
-    if _has_value(publisher):
-        if elsevier.is_elsevier_publisher(str(publisher)):
-            return ''
-        return f'no Elsevier route: published by {str(publisher).strip()}'
+    if _has_value(publisher) and elsevier.is_elsevier_publisher(str(publisher)):
+        return ''
     if _linked_full_text_uri(paper):
         return ''
+    if _has_value(publisher):
+        return f'no Elsevier route: published by {str(publisher).strip()}'
     if _has_value(doi):
         prefix = str(doi).strip().split('/', 1)[0]
         return f'no Elsevier route: DOI prefix {prefix} is not Elsevier\'s and no full-text link'
@@ -1565,7 +1567,8 @@ def _prefetch_abstract_metadata(
     Only lookups that would certainly be made are batched, so a batch never
     asks about a paper the per-paper path would have left alone. A work the
     batch does not return, and every lookup when a batch request fails, falls
-    back to the single request the paper would have made anyway. Fewer than
+    back to the single request the paper would have made anyway, whatever the
+    batch raised. Fewer than
     two lookups are left to that path too, since a batch of one saves nothing,
     and so is a DOI containing ``,`` or ``|``, which would break the filter.
 
@@ -1607,7 +1610,8 @@ def _prefetch_abstract_metadata(
                                                  api_key=api_key)
                     prefetched.openalex.update(
                         {identifier: works[identifier] for identifier in by_id if identifier in works})
-            except RuntimeError as error:
+            except Exception as error:
+                # The batch is only a shortcut: any failure leaves the per-paper lookups to run.
                 print(f'OpenAlex batch lookup failed, looking papers up one at a time: {error}')
     if 'pubmed' in requested:
         pmids = []
@@ -1629,7 +1633,8 @@ def _prefetch_abstract_metadata(
                         pmid = pubmed.normalize_pmid(article.get('pmid'))
                         if pmid:
                             prefetched.pubmed[pmid] = article
-            except RuntimeError as error:
+            except Exception as error:
+                # The batch is only a shortcut: any failure leaves the per-paper lookups to run.
                 print(f'PubMed batch lookup failed, fetching records one at a time: {error}')
     return prefetched
 
