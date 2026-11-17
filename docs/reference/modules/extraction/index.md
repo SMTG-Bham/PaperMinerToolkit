@@ -12,5 +12,9 @@ compression
 extract
 entities
 scrape
+merge
+verify
+values
+postprocess
 store
 ```

@@ -9,6 +9,7 @@ database
 layout
 pdf_layout
 xml_layout
+tables
 documents
 metadata
 filtering

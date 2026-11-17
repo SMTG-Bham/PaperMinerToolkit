@@ -18,6 +18,7 @@ pmt filter regex --help
 | `pmt enrich` | Supplement stored bibliographic metadata. |
 | `pmt download` | Retrieve abstracts, full text, and PDFs. |
 | `pmt scrape` | Extract recipe-defined records with language or vision models. |
+| `pmt postprocess` | Merge and check the records of an existing scrape output. |
 | `pmt store` | Validate, convert, and store extracted records. |
 | `pmt status` | Inspect pipeline progress. |
 | `pmt reset` | Reset pipeline statuses for deliberate reruns. |

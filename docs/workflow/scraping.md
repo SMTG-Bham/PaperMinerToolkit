@@ -53,6 +53,10 @@ pmt scrape papers.db sse \
   --image-context paper-text
 ```
 
+### Tables
+
+Full-text scrapes append the paper's tables to the text, under a `=== TABLES ===` heading, as Markdown grids with each table's label, caption and footnotes. Plain-text assets are built without tables, so they are taken from the paper's stored structured document (JATS, Elsevier XML or TEI) when it has one; otherwise ruled tables are detected in the PDF with PyMuPDF. Row and column spans are expanded, so each value sits in its own row and column. Use `--no-tables` to send the text alone.
+
 When both modes produce records, the text model reconciles matching records into `text+image` rows. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
 
 ### Choosing which images the model sees
@@ -87,13 +91,33 @@ results into the corpus as figure assets, which is what layout mode calls. Use
 
 ## Context limits and compression
 
-PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.
+PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests. Chunks are cut between paragraphs and never inside a table (an oversized table is split between rows, repeating its header), and each chunk repeats the end of the previous paragraph. A chunk that still measures over the limit, such as one dense with numbers, is split again.
+
+The records from all chunks of a paper are then merged without another model call: records whose identity fields match (ignoring case, punctuation and word order) become one record, list items that state the same value are kept once, and other fields keep their first reported value.
 
 :::{warning}
-Records extracted from separate chunks are not reconciled automatically. A material spanning chunk boundaries may be duplicated or incomplete. Increase the configured input limit only when the serving model genuinely supports it.
+Merging is deterministic. A record whose identity is worded differently in two chunks, or whose details are split across chunks, can still be duplicated or incomplete. Increase the configured input limit when the serving model genuinely supports it.
 :::
 
 The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` means the input fit one request; larger values indicate splitting. Inspect aggregate counts with `pmt corpus stats`.
+
+## Checking records against the paper
+
+A recipe can declare `checks` (see [Recipes](recipes.md#checks)). They run only when asked for:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --output scraped.csv
+```
+
+With `--verify`, each paper's records are checked against its full text, including tables. Items whose numbers are not printed in the paper, or that break the recipe's other checks, are removed. Every removed or edited item is listed, with the check and the reason, in `<output stem>.dropped.csv` (here `scraped.dropped.csv`).
+
+To measure the effect on a scrape that has already run, apply the same merging and checks to its CSV:
+
+```bash
+pmt postprocess papers.db band_gap_validation scraped.csv
+```
+
+This writes `scraped.postprocessed.csv` and `scraped.postprocessed.dropped.csv`. The source text is read from the corpus as it would be for a scrape. Image records are kept unchecked. Use `--no-merge`, `--no-verify` or `--no-tables` to apply only part of it.
 
 ## Reruns and temporary files
 
