@@ -138,3 +138,23 @@ def test_example_reports_unusable_output_directory_before_running_commands(
     assert captured.out == ''
     assert captured.err
     assert parent.read_text() == 'keep this file'
+
+
+def test_example_reports_json_error_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Stop with the typed error message instead of treating the error as a result."""
+    error = {'error': {'type': 'provider', 'message': 'arxiv timed out', 'hint': None,
+                       'exit_code': 1}}
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        """Simulate a failed search that printed an error object."""
+        return subprocess.CompletedProcess(argv, 1, json.dumps(error), 'Error: arxiv timed out\n')
+
+    monkeypatch.setattr(agent_cli.subprocess, 'run', run)
+    code = agent_cli.main(['query', '--corpus', str(tmp_path / 'papers.db')])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ''
+    assert "failed (provider, exit 1): arxiv timed out" in captured.err

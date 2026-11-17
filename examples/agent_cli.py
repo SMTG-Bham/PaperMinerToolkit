@@ -20,6 +20,7 @@ def run_json(*arguments: str, timeout: float) -> tuple[Any, int]:
 
     Progress and errors are forwarded to stderr. A nonzero result with valid
     JSON is returned to the caller so a partial search can still be inspected.
+    A JSON error object (a lone ``error`` key) raises with its type and message.
     """
     result = subprocess.run(
         [sys.executable, "-m", "paperminertoolkit", *arguments],
@@ -44,6 +45,12 @@ def run_json(*arguments: str, timeout: float) -> tuple[Any, int]:
             f"Command {arguments[0]!r} did not return valid JSON "
             f"(exit {result.returncode})."
         ) from error
+    if isinstance(payload, dict) and set(payload) == {"error"}:
+        failure = payload["error"]
+        raise RuntimeError(
+            f"Command {arguments[0]!r} failed ({failure['type']}, exit {failure['exit_code']}): "
+            f"{failure['message']}"
+        )
     return payload, result.returncode
 
 

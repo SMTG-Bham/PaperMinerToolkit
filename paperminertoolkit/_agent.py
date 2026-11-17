@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping
+import sqlite3
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import PurePath
 from typing import Any
 
 import click
+import requests
 
 #: Side-effect vocabulary. Each command lists the effects it can have with its
 #: default options; flags such as ``--no-probe`` or ``--dry-run`` can remove some.
@@ -254,7 +256,6 @@ def emit_json(payload: Any) -> None:
     text = json.dumps(payload, indent=2, default=_json_default)
     context = click.get_current_context(silent=True)
     if context is not None:
-        context.find_root().meta['pmt_json_emitted'] = True
         schema = command_output_schema(context.command)
         if os.environ.get(VALIDATE_OUTPUT_ENV) and schema is not None:
             errors = validate_json(json.loads(text), schema)
@@ -262,3 +263,173 @@ def emit_json(payload: Any) -> None:
                 raise AssertionError(f'{context.command_path} JSON does not match its output '
                                      f'schema: {"; ".join(errors[:5])}')
     click.echo(text)
+    if context is not None:
+        # Marked only once printed: an error after this must not add a second value.
+        context.find_root().meta['pmt_json_emitted'] = True
+
+
+#: Error types reported in the ``--json`` error object.
+ERROR_TYPES: dict[str, str] = {
+    'usage': 'Invalid command, option, or argument; correct the invocation.',
+    'not_found': 'A named file, corpus, paper, asset, recipe, or model does not exist.',
+    'io': 'A file or the corpus database could not be read or written.',
+    'provider': 'An external provider or model service failed or could not be reached.',
+    'operational': 'The command ran but could not complete with these inputs or settings.',
+    'internal': 'An unexpected error; please report it with the traceback.',
+}
+
+_HINTS = {
+    'usage': 'Run {schema} for the accepted parameters.',
+    'provider': 'Check provider readiness with pmt probe --no-probe, then pmt probe.',
+}
+
+
+class AgentError(click.ClickException):
+    """A command error with an explicit ``--json`` error type.
+
+    Parameters
+    ----------
+    message : str
+        Error message shown to the user.
+    error_type : str, default='operational'
+        Key of :data:`ERROR_TYPES`.
+    """
+
+    def __init__(self, message: str, error_type: str = 'operational') -> None:
+        """Store the message and error type."""
+        super().__init__(message)
+        self.error_type = error_type
+
+
+def error_type(error: BaseException) -> str:
+    """Classify an error raised by a command for the ``--json`` error object.
+
+    Commands wrap library failures as ``click.ClickException(...) from
+    error``, so the wrapped cause decides the type, never the message text.
+
+    Parameters
+    ----------
+    error : BaseException
+        The exception that ended the command.
+
+    Returns
+    -------
+    str
+        A key of :data:`ERROR_TYPES`.
+    """
+    if isinstance(error, click.UsageError):
+        return 'usage'
+    if isinstance(error, AgentError):
+        return error.error_type
+    if not isinstance(error, click.ClickException):
+        return 'internal'
+    cause = error.__cause__
+    if isinstance(cause, (FileNotFoundError, NotADirectoryError, KeyError, LookupError)):
+        return 'not_found'
+    if isinstance(cause, requests.RequestException):
+        return 'provider'
+    if isinstance(cause, (sqlite3.Error, OSError, UnicodeError)):
+        return 'io'
+    return 'operational'
+
+
+def _redaction_values() -> list[str]:
+    """Collect configured credentials so error text never repeats them."""
+    try:
+        from paperminertoolkit.probe_cli import _credential_values
+        from paperminertoolkit.workflows import diagnostics
+
+        return _credential_values(diagnostics.load_settings())
+    except Exception:
+        # The original error matters more than a failed settings read.
+        return []
+
+
+def error_payload(error: BaseException, command_path: str = 'pmt') -> dict[str, Any]:
+    """Build the ``--json`` error object for an exception.
+
+    Parameters
+    ----------
+    error : BaseException
+        The exception that ended the command.
+    command_path : str, optional
+        Path of the command that failed, used in the hint.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"error": {"type", "message", "hint", "exit_code"}}`` with
+        configured credentials redacted from the message.
+    """
+    kind = error_type(error)
+    if isinstance(error, click.ClickException):
+        message, exit_code = error.format_message(), error.exit_code
+    else:
+        message, exit_code = f'{type(error).__name__}: {error}', 1
+    hint = _HINTS.get(kind)
+    if hint is not None:
+        hint = hint.format(schema=' '.join(['pmt', 'schema', *command_path.split()[1:]]))
+    for value in _redaction_values():
+        message = message.replace(value, '[redacted]')
+    return {'error': {'type': kind, 'message': message, 'hint': hint, 'exit_code': exit_code}}
+
+
+def _wants_json(arguments: Sequence[str]) -> bool:
+    """Whether the raw command line asks for JSON before any ``--`` separator."""
+    for argument in arguments:
+        if argument == '--':
+            return False
+        if argument == '--json':
+            return True
+    return False
+
+
+class AgentGroup(click.Group):
+    """Root ``pmt`` group that reports failures as JSON when ``--json`` is given.
+
+    The error object goes to stdout, where the result would have been, and
+    Click's usual message still goes to stderr with the usual exit code. It
+    is skipped when the command already printed its JSON result, such as a
+    partial search that exits 1.
+    """
+
+    def make_context(self, info_name: str | None, args: list[str],
+                     parent: click.Context | None = None, **extra: Any) -> click.Context:
+        """Remember the raw arguments, before parsing consumes them."""
+        raw = list(args)
+        context = super().make_context(info_name, args, parent=parent, **extra)
+        context.meta['pmt_raw_args'] = raw
+        return context
+
+    def _path_of(self, arguments: Sequence[str]) -> str:
+        """Return the command path that the leading arguments name, such as ``pmt corpus list``."""
+        command: click.Command = self
+        path = [self.name or 'pmt']
+        for argument in arguments:
+            if not isinstance(command, click.Group) or argument not in command.commands:
+                break
+            command = command.commands[argument]
+            path.append(argument)
+        return ' '.join(path)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Run the command and emit a JSON error object when it fails."""
+        try:
+            return super().invoke(ctx)
+        except (click.exceptions.Exit, click.Abort, SystemExit):
+            raise
+        except Exception as error:
+            if not _wants_json(ctx.meta.get('pmt_raw_args', ())) or ctx.meta.get('pmt_json_emitted'):
+                raise
+            if not isinstance(error, click.ClickException) and os.environ.get(VALIDATE_OUTPUT_ENV):
+                # In tests an unexpected error, such as a schema mismatch, must stay visible.
+                raise
+            payload = error_payload(error, self._path_of(ctx.meta.get('pmt_raw_args', ())))
+            if os.environ.get(VALIDATE_OUTPUT_ENV):
+                from paperminertoolkit._output_schemas import ERROR
+
+                problems = validate_json(payload, ERROR)
+                if problems:
+                    raise AssertionError(f'Error JSON does not match its schema: {problems}') from error
+            click.echo(json.dumps(payload, indent=2))
+            raise

@@ -44,6 +44,14 @@ STORE_SUMMARY = {'status': 'stored', 'input_path': 'in.csv', 'output_path': 'out
                  'papers_marked_stored': 1}
 IMPORT_PDFS_SUMMARY = {'files': 1, 'added': 1, 'updated': 0, 'doi_found': 1, 'enriched': 0,
                        'metadata_errors': 0, 'paper_ids': ['external:a']}
+def _error(result: Any) -> dict[str, Any]:
+    """Return the --json error object a failed command printed on stdout."""
+    payload = json.loads(result.stdout)
+    assert set(payload) == {'error'}
+    assert payload['error']['exit_code'] == result.exit_code
+    return payload['error']
+
+
 SUMMARIES = {'download_papers': DOWNLOAD_SUMMARY, 'enrich_corpus': ENRICH_SUMMARY,
              'scrape_papers': SCRAPE_SUMMARY}
 
@@ -94,10 +102,10 @@ def test_search_json_survives_partial_failure(
     ValueError('Invalid configuration'), RuntimeError('Unsupported schema'),
     OSError('Permission denied'), sqlite3.OperationalError('Database is locked'),
 ])
-def test_workflow_operational_errors_leave_stdout_empty(
+def test_workflow_operational_errors_print_one_error_object(
     command: str, error: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Report expected failures without corrupting the JSON output channel."""
+    """Report expected failures as a typed JSON error object, with the message on stderr."""
     def fail(*args: Any, **kwargs: Any) -> NoReturn:
         """Raise the selected storage or configuration failure."""
         raise error
@@ -107,7 +115,9 @@ def test_workflow_operational_errors_leave_stdout_empty(
     db_path.touch()
     result = CliRunner().invoke(cli.main, [command, str(db_path), '--json'])
     assert result.exit_code == 1
-    assert result.stdout == ''
+    assert _error(result)['type'] == ('io' if isinstance(error, (OSError, sqlite3.Error))
+                                      else 'operational')
+    assert _error(result)['message'] == str(error)
     assert f'Error: {error}' in result.stderr
 
 
@@ -157,7 +167,7 @@ def test_json_inspection_reports_invalid_databases_cleanly(
     db_path.write_text('not sqlite')
     result = CliRunner().invoke(cli.main, [*command, str(db_path), '--json'])
     assert result.exit_code == 1
-    assert result.stdout == ''
+    assert _error(result)['type'] == 'io'
     assert 'Error:' in result.stderr
 
 
@@ -303,7 +313,7 @@ def test_topics_models_reports_errors_without_a_traceback(
     db_path.touch()
     result = CliRunner().invoke(cli.main, ['topics', 'models', str(db_path), '--json'])
     assert result.exit_code == 1
-    assert result.stdout == ''
+    assert _error(result)['type'] == 'io'
     assert 'file is not a database' in result.stderr
 
 
@@ -368,7 +378,8 @@ def test_scrape_and_store_report_errors_without_tracebacks(
         monkeypatch.setattr(cli, target, fail)
         result = CliRunner().invoke(cli.main, command)
         assert result.exit_code == 1, result.output
-        assert result.stdout == ''
+        assert _error(result)['type'] == ('not_found' if isinstance(error, KeyError)
+                                          else 'operational')
         assert str(error.args[0]) in result.stderr
         assert 'Traceback' not in result.stderr
 
@@ -444,7 +455,8 @@ def test_unknown_paper_ids_are_usage_errors(
     result = CliRunner().invoke(cli.main, [
         command, str(db_path), '--paper-id', 'paper:1', '--paper-id', 'nope:9', '--json'])
     assert result.exit_code == 2
-    assert result.stdout == ''
+    assert _error(result)['type'] == 'usage'
+    assert _error(result)['hint'] == f'Run pmt schema {command} for the accepted parameters.'
     assert 'Unknown paper ID(s)' in result.stderr
     assert 'nope:9' in result.stderr
     assert 'paper:1,' not in result.stderr
@@ -459,3 +471,73 @@ def test_an_empty_paper_ids_file_is_a_usage_error(tmp_path: Path) -> None:
         'download', str(db_path), '--paper-ids-file', str(ids_file), '--json'])
     assert result.exit_code == 2
     assert 'No paper IDs were given' in result.stderr
+
+
+def test_json_errors_cover_usage_not_found_and_unknown_commands(tmp_path: Path) -> None:
+    """Type usage errors, unknown commands, and missing papers in the error object."""
+    db_path = _corpus_with(tmp_path, 'paper:1')
+    runner = CliRunner()
+    missing = runner.invoke(cli.main, ['corpus', 'show', str(db_path), 'paper:404', '--json'])
+    assert missing.exit_code == 1
+    assert _error(missing) == {'type': 'not_found', 'message': 'Paper not found: paper:404',
+                               'hint': None, 'exit_code': 1}
+    bad_option = runner.invoke(cli.main, ['corpus', 'list', str(db_path), '--limit', '0', '--json'])
+    assert bad_option.exit_code == 2
+    assert _error(bad_option)['type'] == 'usage'
+    assert _error(bad_option)['hint'] == 'Run pmt schema corpus list for the accepted parameters.'
+    unknown = runner.invoke(cli.main, ['nonsense', '--json'])
+    assert unknown.exit_code == 2
+    assert _error(unknown)['hint'] == 'Run pmt schema for the accepted parameters.'
+    plain = runner.invoke(cli.main, ['corpus', 'show', str(db_path), 'paper:404'])
+    assert plain.stdout == ''
+
+
+def test_json_errors_are_not_added_after_a_printed_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a partial search to exactly one JSON value even though it exits 1."""
+    monkeypatch.setattr(cli, 'search_for_papers',
+                        lambda *args, **kwargs: {**SEARCH_SUMMARY, 'status': 'partial',
+                                                 'source_results': {'arxiv': {'status': 'failed'}}})
+    result = CliRunner().invoke(cli.main, ['search', 'query', '--json'])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)['status'] == 'partial'
+
+
+def test_json_errors_redact_configured_credentials(monkeypatch: pytest.MonkeyPatch,
+                                                   tmp_path: Path) -> None:
+    """Never repeat a configured key that a provider error happens to include."""
+    import paperminertoolkit._agent as agent
+
+    monkeypatch.setattr(agent, '_redaction_values', lambda: ['sk-secret'])
+
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail with a message that contains the key."""
+        raise RuntimeError('GET https://api.example/?key=sk-secret failed')
+
+    monkeypatch.setattr(cli, 'download_papers', fail)
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    result = CliRunner().invoke(cli.main, ['download', str(db_path), '--json'])
+    assert 'sk-secret' not in result.stdout
+    assert '[redacted]' in _error(result)['message']
+
+
+def test_unexpected_errors_stay_visible_while_validating(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Let a bug surface as an exception in tests, and as an internal error otherwise."""
+    from paperminertoolkit._agent import VALIDATE_OUTPUT_ENV
+
+    def crash(*args: Any, **kwargs: Any) -> NoReturn:
+        """Fail with an exception the command does not handle."""
+        raise ZeroDivisionError('boom')
+
+    monkeypatch.setattr(cli, 'download_papers', crash)
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    validating = CliRunner().invoke(cli.main, ['download', str(db_path), '--json'])
+    assert isinstance(validating.exception, ZeroDivisionError)
+    assert validating.stdout == ''
+    monkeypatch.delenv(VALIDATE_OUTPUT_ENV)
+    shipped = CliRunner().invoke(cli.main, ['download', str(db_path), '--json'])
+    assert _error(shipped)['type'] == 'internal'
+    assert _error(shipped)['message'] == 'ZeroDivisionError: boom'

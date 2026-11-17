@@ -18,7 +18,7 @@ from typing import Any, Callable, Mapping
 
 import click
 from paperminertoolkit import _output_schemas as out
-from paperminertoolkit._agent import agent_meta, emit_json
+from paperminertoolkit._agent import AgentGroup, agent_meta, emit_json
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
@@ -1971,7 +1971,7 @@ def miner_status(db_path: str, json_output: bool) -> None:
         raise click.ClickException(str(error)) from error
 
 
-@click.group('pmt')
+@click.group('pmt', cls=AgentGroup)
 @click.version_option(__version__, prog_name='pmt')
 def main() -> None:
     """Build, analyse, and extract structured data from paper corpora."""

@@ -227,8 +227,13 @@ def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
         If the database schema is newer than this package supports.
     """
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    init_corpus(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        init_corpus(conn)
+    except BaseException:
+        # A corrupt or newer corpus must not leave an open handle behind.
+        conn.close()
+        raise
     return conn
 
 

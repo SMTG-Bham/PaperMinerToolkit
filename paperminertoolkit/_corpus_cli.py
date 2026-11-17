@@ -13,7 +13,7 @@ from typing import Any
 import click
 
 from paperminertoolkit import _output_schemas as out
-from paperminertoolkit._agent import agent_meta, emit_json
+from paperminertoolkit._agent import AgentError, agent_meta, emit_json
 from paperminertoolkit.corpus.database import (
     ENRICHMENT_COLUMNS,
     PAPER_FIELDS,
@@ -96,7 +96,7 @@ def _paper(conn: sqlite3.Connection, paper_id: str) -> dict[str, Any]:
     """Read one exact canonical identifier or report a missing paper."""
     row = conn.execute('SELECT * FROM papers WHERE paper_id = ?', (paper_id,)).fetchone()
     if row is None:
-        raise click.ClickException(f'Paper not found: {paper_id}')
+        raise AgentError(f'Paper not found: {paper_id}', 'not_found')
     paper = dict(row)
     for column, key in [('metadata_json', 'metadata'), ('enrichment_json', 'enrichment')]:
         paper[key] = json.loads(paper.pop(column) or '{}')
@@ -127,7 +127,7 @@ def corpus_list(db_path: str, limit: int, offset: int,
         if search_id is not None:
             if conn.execute('SELECT 1 FROM search_runs WHERE search_id = ?',
                             (search_id,)).fetchone() is None:
-                raise click.ClickException(f'Search not found: {search_id}')
+                raise AgentError(f'Search not found: {search_id}', 'not_found')
             where = (' WHERE EXISTS (SELECT 1 FROM paper_search_results AS results '
                      'WHERE results.paper_id = papers.paper_id AND results.search_id = ?)')
             parameters = (search_id,)
@@ -246,7 +246,7 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
                 selected = {item['blob_id']: item for item in candidates
                             if asset_id is None or item['blob_id'] == asset_id}
                 if asset_id is not None and not selected:
-                    raise click.ClickException(f'No stored supplement {asset_id} for paper: {paper_id}')
+                    raise AgentError(f'No stored supplement {asset_id} for paper: {paper_id}', 'not_found')
                 if len(selected) > 1:
                     raise click.ClickException(
                         'Several supplementary files exist. Choose --asset-id using a blob_id '
@@ -260,7 +260,7 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
             else:
                 asset = get_asset(conn, paper_id, role)
             if asset is None:
-                raise click.ClickException(f'No stored {role} asset for paper: {paper_id}')
+                raise AgentError(f'No stored {role} asset for paper: {paper_id}', 'not_found')
             content = asset['content']
         with destination.open('wb' if force else 'xb') as output:
             output.write(content)

@@ -790,7 +790,7 @@ def test_validate_score_rejects_mismatched_decisions_and_bad_option_sets(tmp_pat
         'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
         '--recipe', 'band_gap_validation', '--decisions', str(other), '--json'])
     assert mismatch.exit_code == 1
-    assert mismatch.stdout == ''
+    assert json.loads(mismatch.stdout)['error']['type'] == 'operational'
     assert 'saved for different inputs' in mismatch.stderr
 
     no_cache = runner.invoke(cli.main, ['validate', 'score', '--review', str(other)])

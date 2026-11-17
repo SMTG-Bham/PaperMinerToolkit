@@ -8,7 +8,7 @@ from typing import Any
 import click
 
 from paperminertoolkit import _output_schemas as out
-from paperminertoolkit._agent import EFFECTS, agent_meta, command_effects, command_output_schema
+from paperminertoolkit._agent import EFFECTS, ERROR_TYPES, agent_meta, command_effects, command_output_schema
 from paperminertoolkit._version import __version__
 
 
@@ -97,6 +97,8 @@ def schema_command(context: click.Context, command_path: tuple[str, ...]) -> Non
         'schema_version': 2,
         'package_version': __version__,
         'effects': EFFECTS,
+        'error_types': ERROR_TYPES,
+        'error_schema': out.ERROR,
         'command': _command_schema(selected_command, selected_context, path),
     }
     click.echo(json.dumps(result, indent=2, default=_json_default))

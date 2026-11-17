@@ -287,10 +287,38 @@ be reserved for deliberate reruns.
 ## JSON and exit-code contract
 
 JSON is **command-local**: write `pmt search ... --json`, not `pmt --json search`.
-When a supported command produces a result, stdout contains one JSON value;
-progress and errors go to stderr. Parse stdout independently from the exit code.
-An early failure can produce no JSON, so do not assume every error is a JSON
-object. `--help` remains human-readable even on commands that support JSON.
+With `--json`, stdout always holds exactly one JSON value: the result, or an
+error object when the command fails. Progress and the human-readable error
+message go to stderr. `--help` remains human-readable even on commands that
+support JSON.
+
+### Error objects
+
+A command run with `--json` that fails prints, on stdout:
+
+```json
+{"error": {"type": "not_found", "message": "Paper not found: arxiv:2401.0", "hint": null, "exit_code": 1}}
+```
+
+`exit_code` matches the process exit code. `hint`, when not null, suggests the
+next step, such as the `pmt schema` command for a usage error. Configured
+credentials are redacted from the message. `pmt schema` publishes the shape as
+`error_schema` and the types as `error_types`:
+
+| Type | Meaning |
+| --- | --- |
+| `usage` | Invalid command, option, or argument (exit 2); correct the invocation. |
+| `not_found` | A named file, corpus, paper, asset, recipe, or model does not exist. |
+| `io` | A file or the corpus database could not be read or written. |
+| `provider` | An external provider or model service failed or could not be reached. |
+| `operational` | The command ran but could not complete with these inputs or settings. |
+| `internal` | An unexpected error; report it with the traceback on stderr. |
+
+A command that has already printed its result does not add an error object.
+For example, a partial search prints its summary and exits 1. Tell the cases
+apart by the top-level `error` key. The error object follows any `--json` that
+appears before a `--` separator. `schema` and `recipe show`, which print JSON
+without the flag, report failures on stderr only unless `--json` is also given.
 
 | Command | JSON result |
 | --- | --- |
@@ -335,11 +363,11 @@ object. `--help` remains human-readable even on commands that support JSON.
 | --- | --- |
 | `0` | The command completed. Inspect result counts and per-paper state to determine whether the requested content or records are available. |
 | `1` | An operational failure, failed provider probe, or incomplete search. Preserve any JSON and successful corpus writes; inspect stderr and provider outcomes before retrying. |
-| `2` | A usage error such as an invalid option or argument. Correct the invocation; there is no result payload. |
+| `2` | A usage error such as an invalid option or argument. Correct the invocation; with `--json` the payload is a `usage` error object. |
 
 A multi-provider search can emit a useful result with `status: "partial"` and
 then exit with code 1. Successful papers remain in the corpus. A single-provider
-failure can exit before producing a summary. Download/enrichment summaries can
+failure exits before producing a summary, with an error object instead. Download/enrichment summaries can
 report incomplete per-paper work while the command exits 0; main-article counts
 do not include a total failure count, while SI has separate failed and
 unavailable counts. Consult `status` and `corpus show` for those
