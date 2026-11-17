@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 import click
 from paperminertoolkit import _output_schemas as out
 from paperminertoolkit._agent import AgentGroup, agent_meta, emit_json
+from paperminertoolkit._progress import PROGRESS_MODES, progress_mode
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
 from paperminertoolkit._version import __version__
@@ -94,6 +95,13 @@ def _quiet(json_output: bool) -> Any:
     """Route workflow chatter to stderr while a command produces JSON."""
     return redirect_stdout(sys.stderr) if json_output else nullcontext()
 
+
+_progress_option = click.option(
+    '--progress', 'progress_display', type=click.Choice(PROGRESS_MODES), default='auto',
+    show_default=True,
+    help='auto shows progress bars; none hides them; jsonl hides them and writes one JSON '
+         'event per line to stderr.',
+)
 
 _dry_run_option = click.option(
     '--dry-run', is_flag=True, default=False,
@@ -280,13 +288,14 @@ def _check_search_status(summary: Mapping[str, Any]) -> None:
               help='Maximum provider workers; also enables parallel search.')
 @click.option('--force', is_flag=True,
               help='Redownload requested assets even when already stored.')
+@_progress_option
 @click.option('--json', 'json_output', is_flag=True,
               help='Write a JSON summary to stdout and progress to stderr.')
 def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
            download_format: str, download_sources: tuple[str, ...],
            download_abstract: bool, download_supplements: bool,
            supplement_sources: tuple[str, ...], enrich_metadata: bool, parallel: bool,
-           workers: int | None, force: bool, json_output: bool) -> None:
+           workers: int | None, force: bool, progress_display: str, json_output: bool) -> None:
     """Search for papers, save metadata, and retrieve assets in one run.
 
     Only papers matched by this search are considered for download. Existing
@@ -296,7 +305,8 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
     if not query.strip():
         raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
     try:
-        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+        with redirect_stdout(sys.stderr) if json_output else nullcontext(), \
+                progress_mode(progress_display, 'gather'):
             summary = gather_papers(
                 query, db_path, source=source[0] if len(source) == 1 else source,
                 count=count, download_format=download_format,
@@ -421,6 +431,7 @@ def import_author(db_path: str,
               help='Redownload requested assets even when that content type is already stored.')
 @_paper_id_options
 @_dry_run_option
+@_progress_option
 @_json_option
 def download(
         db_path: str,
@@ -433,6 +444,7 @@ def download(
         paper_ids: tuple[str, ...],
         paper_ids_file: str | None,
         dry_run: bool,
+        progress_display: str,
         json_output: bool,
 ) -> None:
     """Download abstracts, text, PDFs, and supporting information for corpus rows.
@@ -465,7 +477,8 @@ def download(
                        f'{plan["no_text_source"]} papers have no reachable text source.')
         return
     try:
-        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+        with redirect_stdout(sys.stderr) if json_output else nullcontext(), \
+                progress_mode(progress_display, 'download'):
             summary = download_papers(
                 db_path,
                 download_format=download_format,
@@ -586,6 +599,7 @@ def digitize(
               default=None,
               help='Contact email for Crossref. Defaults to the stored crossref_email setting.')
 @_paper_id_options
+@_progress_option
 @_json_option
 def enrich(db_path: str,
            sources: tuple[str, ...],
@@ -597,7 +611,7 @@ def enrich(db_path: str,
            references: bool,
            resolve_references: bool,
            email: str | None, paper_ids: tuple[str, ...], paper_ids_file: str | None,
-           json_output: bool) -> None:
+           progress_display: str, json_output: bool) -> None:
     """Supplement corpus metadata with the selected provider records.
 
     Named papers (--paper-id) are still subject to the status rules: use
@@ -606,7 +620,8 @@ def enrich(db_path: str,
     selected = _selected_paper_ids(db_path, paper_ids, paper_ids_file)
     selection = {} if selected is None else {'paper_ids': selected}
     try:
-        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+        with redirect_stdout(sys.stderr) if json_output else nullcontext(), \
+                progress_mode(progress_display, 'enrich'):
             summary = enrich_corpus(
                 db_path,
                 sources=list(sources),
@@ -1490,6 +1505,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
 @click.option('--dry-run', is_flag=True, default=False,
               help='Report the papers, model requests, and estimated input tokens a run would '
                    'use, without calling a model or changing the corpus.')
+@_progress_option
 @_json_option
 def scrape(
         db_path: str,
@@ -1520,6 +1536,7 @@ def scrape(
         paper_ids: tuple[str, ...],
         paper_ids_file: str | None,
         dry_run: bool,
+        progress_display: str,
         json_output: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers.
@@ -1553,7 +1570,7 @@ def scrape(
             _echo_scrape_plan(plan)
         return
     try:
-        with _quiet(json_output):
+        with _quiet(json_output), progress_mode(progress_display, 'scrape'):
             summary = scrape_papers(
                 db_path,
                 recipe,

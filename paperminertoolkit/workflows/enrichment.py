@@ -42,6 +42,9 @@ from typing import Any, TypeAlias
 
 from tqdm import tqdm
 
+from paperminertoolkit import _progress as progress_events
+from paperminertoolkit._progress import bars_disabled
+
 from paperminertoolkit.providers import arxiv
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
@@ -1878,7 +1881,8 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
     with connect(db_path) as conn:
         remaining = limit
         after_rowid = 0
-        with tqdm(total=limit, desc='Enriching Papers', colour='#FFA500') as progress:
+        enriched = 0
+        with tqdm(total=limit, desc='Enriching Papers', colour='#FFA500', disable=bars_disabled()) as progress:
             while remaining is None or remaining > 0:
                 page = batch_size if remaining is None else min(batch_size, remaining)
                 candidates = enrichment_candidates(conn, statuses=statuses,
@@ -1896,10 +1900,14 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                     summary[key] += value
                 summary['batches'] += 1
                 progress.update(len(candidates))
+                enriched += len(candidates)
+                progress_events.emit('batch_done', papers=len(candidates),
+                                     done=enriched, total=limit, counts=dict(counts))
                 if remaining is not None:
                     remaining -= len(candidates)
         if resolve_references:
             _resolve_reference_targets(conn)
+    progress_events.emit('run_end', **summary)
     return summary
 
 

@@ -21,6 +21,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
+
+from paperminertoolkit import _progress as progress_events
+from paperminertoolkit._progress import bars_disabled
 from typing import Any, TypeAlias
 
 from paperminertoolkit.extraction.compression import CompressionConfig, compression_config, maybe_compress_text
@@ -737,6 +740,22 @@ def _scrape_supplements(
     return first_material
 
 
+_OUTCOME_KEYS = tuple(f'{stage}_{outcome}' for stage in ('abstract', 'text', 'image')
+                      for outcome in ('succeeded', 'failed')) + ('supplement_failed',)
+
+
+def _paper_outcome(summary: Mapping[str, Any], before: Mapping[str, int]) -> str:
+    """Name one paper's outcome from the summary counters it moved.
+
+    Returns ``failed`` if any of its stages or SI files failed, ``succeeded``
+    if a stage succeeded, and ``skipped`` when every stage was already done.
+    """
+    moved = {key for key in _OUTCOME_KEYS if summary[key] != before[key]}
+    if any(key.endswith('_failed') for key in moved):
+        return 'failed'
+    return 'succeeded' if moved else 'skipped'
+
+
 def _record_failure(summary: dict[str, Any], row: Mapping[str, Any], stage: str,
                     error: Exception) -> None:
     """Count a failed scrape stage and remember which paper it was.
@@ -1010,9 +1029,11 @@ def scrape_papers(db_path: str = 'papers.db',
             print('No active corpus filters; all otherwise eligible papers are available for scraping.')
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
         summary['papers_selected'] = len(papers)
+        progress_events.emit('run_start', total=len(papers), mode=mode)
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-scrape-') as temp_dir:
-            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
-                for row in papers:
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green', disable=bars_disabled()) as pbar:
+                for done, row in enumerate(papers, start=1):
+                    before = {key: summary[key] for key in _OUTCOME_KEYS}
                     paths = _paper_asset_paths(conn, row, temp_dir)
                     abstract_path = paths['abstract']
                     text_path = paths['text']
@@ -1213,6 +1234,9 @@ def scrape_papers(db_path: str = 'papers.db',
                         )
                     upsert_paper(conn, row)
                     pbar.update(1)
+                    progress_events.emit('paper_done', paper_id=row['paper_id'], done=done,
+                                         total=len(papers), status=_paper_outcome(summary, before),
+                                         materials=len(row_materials))
 
     print(
         f"Scrape complete: {summary['papers']} papers processed, "
@@ -1252,4 +1276,6 @@ def scrape_papers(db_path: str = 'papers.db',
             file=sys.stderr,
         )
     summary['elapsed_seconds'] = round(time.monotonic() - started, 3)
+    progress_events.emit('run_end', papers=summary['papers'], materials=summary['materials'],
+                         failed=len(summary['failed_papers']))
     return summary

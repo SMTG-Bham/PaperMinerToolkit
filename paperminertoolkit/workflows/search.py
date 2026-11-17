@@ -16,6 +16,9 @@ from typing import Any
 import pandas as pd
 from tqdm import tqdm
 
+from paperminertoolkit import _progress as progress_events
+from paperminertoolkit._progress import bars_disabled
+
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed)
 from paperminertoolkit.workflows.enrichment import enrich_papers
@@ -95,7 +98,7 @@ def _document_search(query: str,
         return pd.DataFrame()
     results = elsevier.parse_records(api_response)
     if get_all:
-        with tqdm(total=target_results, desc='Searching Scopus', colour='blue') as pbar:
+        with tqdm(total=target_results, desc='Searching Scopus', colour='blue', disable=bars_disabled()) as pbar:
             pbar.update(min(len(results), target_results))
             upper_limit_reached = False
             while (len(results) < target_results) and not upper_limit_reached:
@@ -238,7 +241,7 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
     api_key = core.configured_api_key()
     works: list[Mapping[str, Any]] = []
     offset = 0
-    with tqdm(total=count, desc='Searching CORE', colour='cyan') as pbar:
+    with tqdm(total=count, desc='Searching CORE', colour='cyan', disable=bars_disabled()) as pbar:
         while len(works) < count:
             payload = core.search_page(query, limit=min(core.PAGE_SIZE, count - len(works)),
                                        offset=offset, api_key=api_key)
@@ -285,7 +288,7 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     per_page = min(max(int(count), 1), 200)
     params = {'search': query, 'per-page': per_page, 'cursor': '*'}
     works = []
-    with tqdm(total=count, desc='Searching OpenAlex', colour='green') as pbar:
+    with tqdm(total=count, desc='Searching OpenAlex', colour='green', disable=bars_disabled()) as pbar:
         while len(works) < count:
             params['per-page'] = min(per_page, count - len(works))
             payload = openalex.request_json(openalex.WORKS_URL, params=params, api_key=api_key) or {}
@@ -341,7 +344,7 @@ def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
     if not target or not webenv or not query_key:
         return _pubmed_rows([])
     articles = []
-    with tqdm(total=target, desc='Searching PubMed', colour='magenta') as pbar:
+    with tqdm(total=target, desc='Searching PubMed', colour='magenta', disable=bars_disabled()) as pbar:
         while len(articles) < target:
             page = pubmed.parse_articles(pubmed.efetch_history(
                 webenv,
@@ -404,7 +407,7 @@ def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
     offset = 0
     reachable = 0
     reported = False
-    with tqdm(total=target, desc='Searching arXiv', colour='yellow') as pbar:
+    with tqdm(total=target, desc='Searching arXiv', colour='yellow', disable=bars_disabled()) as pbar:
         while len(entries) < target:
             root = arxiv.search_page(expression, start=offset,
                                      max_results=min(arxiv.PAGE_SIZE, target - len(entries)))
@@ -521,7 +524,7 @@ def _rxiv_search(provider: ModuleType,
     papers: list[Mapping[str, Any]] = []
     scanned = 0
     unread = 0
-    with tqdm(total=target, desc=f'Searching {label}', colour='yellow') as pbar:
+    with tqdm(total=target, desc=f'Searching {label}', colour='yellow', disable=bars_disabled()) as pbar:
         for cursor in provider.page_cursors(total, step):
             # The first page was already fetched to learn the record count, so
             # it is reused rather than requested again when the walk reaches it.
@@ -705,7 +708,7 @@ def chemrxiv_search(query: str, count: int = 200) -> pd.DataFrame:
     skip = 0
     reachable = 0
     reported = False
-    with tqdm(total=target, desc='Searching chemRxiv', colour='yellow') as pbar:
+    with tqdm(total=target, desc='Searching chemRxiv', colour='yellow', disable=bars_disabled()) as pbar:
         while len(papers) < target:
             payload = chemrxiv.search_page(term=term, skip=skip,
                                            limit=min(chemrxiv.PAGE_SIZE, target - len(papers)),
@@ -983,6 +986,8 @@ def search_for_papers(query: str,
         'papers_updated': updated,
         'abstracts_stored': abstract_count,
     }
+    progress_events.emit('search_done', search_id=search_id, status=final_status,
+                         result_count=result_count, papers_added=added, papers_updated=updated)
     if new_papers.empty:
         print('Document search found 0 new results.')
         return summary

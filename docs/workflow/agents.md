@@ -278,6 +278,34 @@ the effect of a command that has `writes_corpus` before running it:
 The corpus must be at the current schema version. A dry run never migrates
 it; it reports the mismatch instead.
 
+### Follow long runs with --progress jsonl
+
+`scrape`, `download`, `enrich`, and `gather` accept `--progress auto|none|jsonl`.
+`auto` (the default) shows tqdm progress bars, `none` hides them, and `jsonl`
+hides them and writes one JSON event per line to stderr while the final result
+stays on stdout:
+
+```json
+{"event": "run_start", "command": "scrape", "elapsed_s": 0.01, "total": 120, "mode": "text"}
+{"event": "paper_done", "command": "scrape", "elapsed_s": 41.2, "paper_id": "arxiv:2401.0", "done": 1, "total": 120, "status": "failed", "materials": 0}
+{"event": "run_end", "command": "scrape", "elapsed_s": 3600.5, "papers": 120, "materials": 311, "failed": 4}
+```
+
+Every event has `event`, `command`, and `elapsed_s`.
+
+| Event | Emitted by | Fields |
+| --- | --- | --- |
+| `run_start` | `scrape`, `download` | `total` papers selected; `mode` or `format` |
+| `paper_done` | `scrape` | `paper_id`, `done`, `total`, `status` (`succeeded`, `failed`, or `skipped`), `materials` |
+| `paper_done` | `download` | `paper_id`, `done`, `total`, `status` (`fetched` or `nothing_new`), and `fetched` counts |
+| `batch_done` | `enrich` | `papers` in the batch, `done`, `total` (the `--limit`, or null), and status `counts` |
+| `search_done` | `gather` (and `search` within it) | `search_id`, `status`, `result_count`, `papers_added`, `papers_updated` |
+| `run_end` | `scrape`, `download`, `enrich` | The run's summary counts |
+| `error` | any | `message` and `error_class` of the exception that ended the command |
+
+Workflow messages also go to stderr, so read only the lines that start with
+`{`: each is one complete event.
+
 ### Work on named papers
 
 `scrape`, `download`, and `enrich` accept a repeatable `--paper-id` and a

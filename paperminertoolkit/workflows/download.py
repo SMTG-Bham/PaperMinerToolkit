@@ -24,6 +24,9 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
+
+from paperminertoolkit import _progress as progress_events
+from paperminertoolkit._progress import bars_disabled
 from typing import Any, TypeAlias
 from urllib.parse import quote, urlparse
 
@@ -1853,9 +1856,10 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     'No PDF download sources are configured. Set an Unpaywall email, '
                     'CORE API key, or Elsevier API key.'
                 )
+        progress_events.emit('run_start', total=len(papers), format=download_format)
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-download-') as download_dir:
-            with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
-                for paper in papers:
+            with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0', disable=bars_disabled()) as pbar:
+                for done, paper in enumerate(papers, start=1):
                     paper_summary = _download_paper(conn,
                                                     paper,
                                                     download_dir,
@@ -1877,7 +1881,15 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                             supplemental = {'supplement_discovery_failed': 1}
                         for key, value in supplemental.items():
                             summary[key] += value
+                    else:
+                        supplemental = {}
                     pbar.update(1)
+                    fetched = {key: paper_summary.get(key, 0)
+                               for key in ('texts', 'pdfs', 'abstracts')}
+                    fetched['supplements'] = supplemental.get('supplements', 0)
+                    progress_events.emit('paper_done', paper_id=paper['paper_id'], done=done,
+                                         total=len(papers), fetched=fetched,
+                                         status='fetched' if any(fetched.values()) else 'nothing_new')
     print(
         f"Download complete: {summary['texts']} text files, "
         f"{summary['pdfs']} PDFs, {summary['abstracts']} abstracts downloaded."
@@ -1897,6 +1909,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
             f"{summary['supplement_discovery_failed']} papers with discovery errors; "
             f"{summary['supplements_unavailable']} papers without available SI."
         )
+    progress_events.emit('run_end', **summary)
     return summary
 
 
