@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,7 @@ def _forbid(name: str) -> Any:
 def planned_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Build a corpus covering every planning outcome and forbid side effects."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         rows = [
             {'paper_id': 'long', 'title': 'Keep long'},
             {'paper_id': 'short', 'title': 'Keep short'},

@@ -12,7 +12,8 @@ from typing import Any
 
 import click
 
-from paperminertoolkit._agent import agent_meta
+from paperminertoolkit import _output_schemas as out
+from paperminertoolkit._agent import agent_meta, emit_json
 from paperminertoolkit.corpus.database import (
     ENRICHMENT_COLUMNS,
     PAPER_FIELDS,
@@ -102,7 +103,7 @@ def _paper(conn: sqlite3.Connection, paper_id: str) -> dict[str, Any]:
     return paper
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.CORPUS_LIST)
 @click.command('list')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.option('--limit', default=20, type=click.IntRange(1, 1000), show_default=True,
@@ -138,8 +139,8 @@ def corpus_list(db_path: str, limit: int, offset: int,
         ).fetchall()
         papers = [dict(row) for row in rows]
     if json_output:
-        click.echo(json.dumps({'papers': papers, 'total': total,
-                               'limit': limit, 'offset': offset}, indent=2))
+        emit_json({'papers': papers, 'total': total,
+                   'limit': limit, 'offset': offset})
         return
     click.echo(f'Corpus: {db_path} | {total} papers | offset={offset} limit={limit}')
     for paper in papers:
@@ -149,7 +150,7 @@ def corpus_list(db_path: str, limit: int, offset: int,
         click.echo('No papers in this page.')
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.CORPUS_SHOW)
 @click.command('show')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('paper_id')
@@ -183,7 +184,7 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
             'references': paper_references(conn, paper_id),
         }
     if json_output:
-        click.echo(json.dumps(result, indent=2))
+        emit_json(result)
         return
     click.echo(f'Paper: {paper_id}')
     click.echo(f'Title: {paper["title"] or ""}')
@@ -202,7 +203,7 @@ def corpus_show(db_path: str, paper_id: str, json_output: bool) -> None:
     click.echo(f'Contributing searches: {len(result["searches"])}')
 
 
-@agent_meta(effects={'writes_files'})
+@agent_meta(effects={'writes_files'}, output=out.CORPUS_EXPORT)
 @click.command('export')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('paper_id')
@@ -270,6 +271,6 @@ def corpus_export(db_path: str, paper_id: str, outfile: str, role: str,
                   'path': str(destination), 'bytes': len(content)}
         if role == SUPPLEMENT_ROLE:
             result.update(asset_id=asset['blob_id'], original_filename=asset['original_filename'])
-        click.echo(json.dumps(result, indent=2))
+        emit_json(result)
     else:
         click.echo(f'Exported {role} for {paper_id} to {destination} ({len(content)} bytes).')

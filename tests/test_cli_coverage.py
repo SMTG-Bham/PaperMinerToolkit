@@ -16,7 +16,7 @@ import click
 import pytest
 
 from paperminertoolkit import cli
-from paperminertoolkit._agent import command_effects
+from paperminertoolkit._agent import command_effects, command_output_schema
 
 AGENT_GUIDE = Path(__file__).parents[1] / 'docs' / 'workflow' / 'agents.md'
 
@@ -80,6 +80,10 @@ def test_command_is_machine_readable_or_exempt(path: str, command: click.Command
     else:
         assert supports_json, f'{path} has no --json; add it or list it in EXEMPT with a reason'
     assert command_effects(command), f'{path} declares no effects'
+    if supports_json:
+        assert command_output_schema(command) is not None, f'{path} declares no output schema'
+    else:
+        assert command_output_schema(command) is None, f'{path} has no JSON but declares a schema'
 
 
 @pytest.mark.parametrize(('path', 'command'), LEAVES, ids=[path for path, _ in LEAVES])

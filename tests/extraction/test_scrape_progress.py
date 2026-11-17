@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ def scraped_corpus(tmp_path: Path) -> Path:
         {'paper_id': 'd', 'title': 'Keep d'},
         {'paper_id': 'e', 'title': 'Drop e'},
     ]
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for row in rows:
             corpus.upsert_paper(conn, row)
         for index, status in enumerate(['failed', 'succeeded', 'unsupported']):

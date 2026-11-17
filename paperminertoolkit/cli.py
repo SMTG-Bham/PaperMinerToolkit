@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import click
+from paperminertoolkit import _output_schemas as out
 from paperminertoolkit._agent import agent_meta, emit_json
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
@@ -170,7 +171,7 @@ def _format_bytes(size: int) -> str:
         value /= 1024
 
 
-@agent_meta(effects={'network', 'writes_corpus'})
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.SEARCH)
 @click.command('search')
 @click.argument('query', default='Lithium solid electrolyte', type=str)
 @click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
@@ -214,7 +215,7 @@ def paper_search(query: str, db_path: str, source: tuple[str, ...], count: int,
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(summary, indent=2))
+        emit_json(summary)
     if summary:
         _check_search_status(summary)
 
@@ -230,7 +231,7 @@ def _check_search_status(summary: Mapping[str, Any]) -> None:
         )
 
 
-@agent_meta(effects={'network', 'writes_corpus'})
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.GATHER)
 @click.command('gather')
 @click.argument('query')
 @click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
@@ -292,7 +293,7 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(summary, indent=2))
+        emit_json(summary)
     else:
         matched = len(summary['search']['paper_ids'])
         click.echo(f'Gathered metadata for {matched} matching papers in {db_path}.')
@@ -301,7 +302,7 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
     _check_search_status(summary['search'])
 
 
-@agent_meta(effects={'network', 'writes_corpus'})
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.IMPORT_PDFS)
 @click.command('pdfs')
 @click.argument('dir', default='papers', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path())
@@ -321,7 +322,7 @@ def import_pdf_folder(dir: str, db_path: str, no_crossref: bool, json_output: bo
         emit_json(summary)
 
 
-@agent_meta(effects={'network', 'writes_corpus', 'writes_files'})
+@agent_meta(effects={'network', 'writes_corpus', 'writes_files'}, output=out.IMPORT_AUTHOR)
 @click.command('author')
 @click.argument('db_path', default='papers.db', type=click.Path())
 @click.option('--email', default=None,
@@ -376,7 +377,7 @@ def import_author(db_path: str,
     click.echo(f'Review the imported metadata in {review_csv} before downloading papers.')
 
 
-@agent_meta(effects={'network', 'writes_corpus'})
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.DOWNLOAD)
 @click.command('download')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--format', 'download_format',
@@ -438,10 +439,10 @@ def download(
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(summary, indent=2))
+        emit_json(summary)
 
 
-@agent_meta(effects={'writes_corpus', 'writes_files'})
+@agent_meta(effects={'writes_corpus', 'writes_files'}, output=out.DIGITIZE)
 @click.command('digitize')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('records_csv', type=click.Path(exists=True, dir_okay=False))
@@ -497,7 +498,7 @@ def digitize(
         message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
         raise click.ClickException(str(message)) from error
     if json_output:
-        click.echo(json.dumps(summary, indent=2))
+        emit_json(summary)
         return
     click.echo(
         f'Figures requested: {summary["requests"]}; recovered {summary["digitized"]}, '
@@ -508,7 +509,7 @@ def digitize(
                f'{summary["points"]} points written to {summary["output"]}.')
 
 
-@agent_meta(effects={'network', 'writes_corpus'})
+@agent_meta(effects={'network', 'writes_corpus'}, output=out.ENRICH)
 @click.command('enrich')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--source', 'sources',
@@ -582,7 +583,7 @@ def enrich(db_path: str,
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(summary, indent=2))
+        emit_json(summary)
         return
     click.echo(
         f'Enrichment complete: {summary["succeeded"]} enriched, '
@@ -601,7 +602,7 @@ def enrich(db_path: str,
         )
 
 
-@agent_meta(effects={'migrates_corpus'})
+@agent_meta(effects={'migrates_corpus'}, output=out.CORPUS_STATS)
 @click.command('stats')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -614,7 +615,7 @@ def corpus_status(db_path: str, json_output: bool) -> None:
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps({'stats': stats, 'enrichment': enrichment}, indent=2))
+        emit_json({'stats': stats, 'enrichment': enrichment})
         return
     click.echo(f'Corpus: {db_path}')
     click.echo(f'Papers: {stats["papers"]}')
@@ -642,7 +643,7 @@ def corpus_status(db_path: str, json_output: bool) -> None:
     click.echo(f'Reference records: {enrichment["reference_records"]}')
 
 
-@agent_meta(effects={'migrates_corpus', 'writes_files'})
+@agent_meta(effects={'migrates_corpus', 'writes_files'}, output=out.CORPUS_SEARCHES)
 @click.command('searches')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.option('--limit', default=20, type=click.IntRange(min=1), show_default=True,
@@ -676,7 +677,7 @@ def corpus_searches(db_path: str, limit: int, outfile: str | None, json_output: 
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(searches, indent=2))
+        emit_json(searches)
         return
     if outfile is not None:
         return
@@ -756,7 +757,7 @@ def _report_filter_overview(db_path: str, overview: Mapping[str, Any],
         _echo_filter_overview(db_path, overview)
 
 
-@agent_meta(effects={'writes_corpus'})
+@agent_meta(effects={'writes_corpus'}, output=out.FILTER_OVERVIEW)
 @click.command('regex')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
@@ -789,7 +790,7 @@ def filter_regex(db_path: str, rules_path: str, fields: tuple[str, ...],
     _report_filter_overview(db_path, overview, json_output)
 
 
-@agent_meta(effects={'writes_corpus'})
+@agent_meta(effects={'writes_corpus'}, output=out.FILTER_OVERVIEW)
 @click.command('topic')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('rules_path', type=click.Path(exists=True, dir_okay=False))
@@ -811,7 +812,7 @@ def filter_topic(db_path: str, rules_path: str,
     _report_filter_overview(db_path, overview, json_output)
 
 
-@agent_meta(effects={'migrates_corpus'})
+@agent_meta(effects={'migrates_corpus'}, output=out.FILTER_OVERVIEW)
 @click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -825,7 +826,7 @@ def filter_status(db_path: str, json_output: bool) -> None:
     _report_filter_overview(db_path, overview, json_output)
 
 
-@agent_meta(effects={'writes_corpus'})
+@agent_meta(effects={'writes_corpus'}, output=out.FILTER_OVERVIEW)
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--name', default=None, help='Remove one active filter by name.')
@@ -891,7 +892,7 @@ _topic_evaluation_sample_size_option = click.option(
 )
 
 
-@agent_meta(effects={'migrates_corpus', 'writes_files'})
+@agent_meta(effects={'migrates_corpus', 'writes_files'}, output=out.TOPICS_TRAIN)
 @click.command('train')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('model_dir', default='topic_model', type=click.Path())
@@ -975,7 +976,7 @@ def topics_train(db_path: str,
     click.echo(f'Manual topic review: {summary["model_dir"]}/topics.csv')
 
 
-@agent_meta(effects={'migrates_corpus', 'writes_files'})
+@agent_meta(effects={'migrates_corpus', 'writes_files'}, output=out.TOPICS_COMPARE)
 @click.command('compare')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('output_dir', default='topic_comparison', type=click.Path())
@@ -1063,7 +1064,7 @@ def topics_compare(db_path: str,
     click.echo('Inspect each model with pmt topics show before choosing one.')
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.TOPICS_SHOW)
 @click.command('show')
 @click.argument('model_dir', default='topic_model', type=click.Path(exists=True, file_okay=False))
 @click.option('--representatives', default=3, type=click.IntRange(min=0), show_default=True,
@@ -1090,7 +1091,7 @@ def topics_show(model_dir: str, representatives: int, json_output: bool) -> None
             click.echo(f'  - {paper["title"]} ({float(paper["probability"]):.3f})')
 
 
-@agent_meta(effects={'writes_files'})
+@agent_meta(effects={'writes_files'}, output=out.TOPICS_NAME)
 @click.command('name')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('topic_id', type=click.IntRange(min=0))
@@ -1110,7 +1111,7 @@ def topics_name(model_dir: str, topic_id: int, topic_name: str, json_output: boo
     click.echo(f'Named topic {topic_id}: {topic_name.strip()}')
 
 
-@agent_meta(effects={'migrates_corpus', 'writes_files'})
+@agent_meta(effects={'migrates_corpus', 'writes_files'}, output=out.TOPICS_PREDICT)
 @click.command('predict')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
@@ -1137,7 +1138,7 @@ def topics_predict(model_dir: str, db_path: str, output_path: str, batch_size: i
     click.echo(f'Topic scores: {summary["output_path"]}')
 
 
-@agent_meta(effects={'writes_files'})
+@agent_meta(effects={'writes_files'}, output=out.TOPICS_TRENDS)
 @click.command('trends')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('output_dir', default='topic_trends', type=click.Path())
@@ -1191,7 +1192,7 @@ def topics_trends(model_dir: str, output_dir: str, predictions_path: str | None,
         )
 
 
-@agent_meta(effects={'writes_corpus'})
+@agent_meta(effects={'writes_corpus'}, output=out.TOPICS_STORE)
 @click.command('store')
 @click.argument('model_dir', type=click.Path(exists=True, file_okay=False))
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
@@ -1219,7 +1220,7 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
     )
 
 
-@agent_meta(effects={'migrates_corpus'})
+@agent_meta(effects={'migrates_corpus'}, output=out.TOPICS_MODELS)
 @click.command('models')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
@@ -1280,7 +1281,7 @@ def _entity_options(command: Callable[..., Any]) -> Callable[..., Any]:
     return command
 
 
-@agent_meta(effects={'migrates_corpus', 'network', 'writes_files'})
+@agent_meta(effects={'migrates_corpus', 'network', 'writes_files'}, output=out.ENTITIES)
 @click.command('corpus')
 @click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('output_path', type=click.Path(dir_okay=False))
@@ -1317,7 +1318,7 @@ def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...]
     click.echo(f'Entity annotations: {summary["output"]}')
 
 
-@agent_meta(effects={'network', 'writes_files'})
+@agent_meta(effects={'network', 'writes_files'}, output=out.ENTITIES)
 @click.command('text')
 @click.argument('input_path', type=click.Path(exists=True, dir_okay=False))
 @click.argument('output_path', type=click.Path(dir_okay=False))
@@ -1348,7 +1349,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
     click.echo(f'Entity annotations: {summary["output"]}')
 
 
-@agent_meta(effects={'network', 'paid_model', 'writes_corpus', 'writes_files'})
+@agent_meta(effects={'network', 'paid_model', 'writes_corpus', 'writes_files'}, output=out.SCRAPE)
 @click.command('scrape')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
@@ -1524,7 +1525,7 @@ def scrape(
         emit_json(summary)
 
 
-@agent_meta(effects={'migrates_corpus'})
+@agent_meta(effects={'migrates_corpus'}, output=out.SCRAPE_PROGRESS)
 @click.command('scrape-progress')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @click.argument('mode', default='text', type=click.Choice(list(SCRAPE_PROGRESS_MODES)))
@@ -1576,7 +1577,7 @@ def _echo_scrape_plan(plan: Mapping[str, Any]) -> None:
             click.echo(f'  ... {len(plan["overflows"]) - 10} more in --json output')
 
 
-@agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'})
+@agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'}, output=out.STORE)
 @click.command('store')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path())
@@ -1635,7 +1636,7 @@ def _format_metric(value: float | None) -> str:
     return '-' if value is None else f'{value:.3f}'
 
 
-@agent_meta(effects={'writes_files'})
+@agent_meta(effects={'writes_files'}, output=out.VALIDATE_SCORE)
 @click.command('score')
 @click.option('--review', 'review_path', default=None, type=click.Path(exists=True, dir_okay=False),
               help='Review JSON saved by pmt validate gui; its inputs are restored from the '
@@ -1711,7 +1712,7 @@ def validation_score(review_path: str | None, validation_path: str | None,
         click.echo(f'Score written to {outfile}.')
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.RECIPE_LIST)
 @click.command('list')
 @_json_option
 def recipe_list(json_output: bool) -> None:
@@ -1721,12 +1722,12 @@ def recipe_list(json_output: bool) -> None:
     except (ValueError, OSError) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(names, indent=2))
+        emit_json(names)
     else:
         click.echo('\n'.join(names))
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.RECIPE)
 @click.command('show')
 @click.argument('recipe', default='sse')
 def recipe_show(recipe: str) -> None:
@@ -1735,7 +1736,7 @@ def recipe_show(recipe: str) -> None:
         loaded = load_recipe(recipe)
     except (KeyError, ValueError, OSError) as error:
         raise click.ClickException(str(error)) from error
-    click.echo(json.dumps(loaded, indent=2))
+    emit_json(loaded)
 
 
 @agent_meta(effects={'writes_files'})
@@ -1776,7 +1777,7 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
     click.echo(f'Prompt written to {outfile}.')
 
 
-@agent_meta(effects={'writes_files'})
+@agent_meta(effects={'writes_files'}, output=out.VALIDATE_TEMPLATE)
 @click.command('template')
 @click.argument('recipe', type=str)
 @click.argument('outfile', type=click.Path(dir_okay=False))
@@ -1895,7 +1896,7 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
 
 
-@agent_meta(effects={'read_only'})
+@agent_meta(effects={'read_only'}, output=out.MODEL_STATUS)
 @click.command('status')
 @_json_option
 def model_status(json_output: bool) -> None:
@@ -1909,7 +1910,7 @@ def model_status(json_output: bool) -> None:
     except (RuntimeError, ValueError, OSError) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
-        click.echo(json.dumps(profiles, indent=2))
+        emit_json(profiles)
         return
     for profile, config in profiles.items():
         capabilities = ', '.join(config.get('capabilities', []))
@@ -1917,7 +1918,7 @@ def model_status(json_output: bool) -> None:
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
 
 
-@agent_meta(effects={'network'})
+@agent_meta(effects={'network'}, output=out.PROVIDERS)
 @click.command('providers')
 @click.option('--no-probe', is_flag=True,
               help='Report what is configured without making any requests.')
@@ -1937,7 +1938,7 @@ def provider_status_command(no_probe: bool, sources: tuple[str, ...],
     report_provider_status(no_probe, sources, json_output=json_output)
 
 
-@agent_meta(effects={'writes_corpus'})
+@agent_meta(effects={'writes_corpus'}, output=out.RESET)
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @_json_option
@@ -1955,7 +1956,7 @@ def reset_miner(db_path: str, json_output: bool) -> None:
                    f'{summary["supplement_stages_reset"]} supporting-information stages.')
 
 
-@agent_meta(effects={'migrates_corpus'})
+@agent_meta(effects={'migrates_corpus'}, output=out.STATUS)
 @click.command('status')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True, dir_okay=False))
 @_json_option
@@ -1963,7 +1964,7 @@ def miner_status(db_path: str, json_output: bool) -> None:
     """Print pipeline progress for the paper corpus."""
     try:
         if json_output:
-            click.echo(json.dumps(progress_summary(db_path), indent=2))
+            emit_json(progress_summary(db_path))
         else:
             status(db_path)
     except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:

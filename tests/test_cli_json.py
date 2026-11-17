@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 from pathlib import Path
@@ -13,13 +14,44 @@ from click.testing import CliRunner
 from paperminertoolkit import cli
 from paperminertoolkit.corpus import database as corpus
 
+# Complete workflow results: every JSON result is validated against its schema.
+SEARCH_SUMMARY = {
+    'search_id': 1, 'status': 'completed', 'sources': ['arxiv'], 'source_results': {},
+    'paper_ids': ['paper:1'], 'result_count': 1, 'papers_added': 1, 'papers_updated': 0,
+    'abstracts_stored': 0,
+}
+DOWNLOAD_SUMMARY = {
+    'texts': 0, 'pdfs': 1, 'abstracts': 0, 'texts_skipped': 0, 'pdfs_skipped': 0,
+    'abstracts_skipped': 0, 'supplements': 0, 'supplements_skipped': 0,
+    'supplements_failed': 0, 'supplements_unavailable': 0, 'supplement_discovery_failed': 0,
+}
+ENRICH_SUMMARY = {'succeeded': 1, 'partial': 0, 'not_found': 0, 'unresolved': 0, 'failed': 1,
+                  'authors': 2, 'subjects': 0, 'references': 3, 'batches': 1}
+SCRAPE_SUMMARY = {
+    'mode': 'text', 'output_path': 'scraped.csv', 'papers_selected': 2, 'papers': 2,
+    **{f'{stage}_{outcome}': 0 for stage in ('abstract', 'text', 'image')
+       for outcome in ('attempted', 'skipped', 'succeeded', 'failed')},
+    'text_attempted': 2, 'text_succeeded': 1, 'text_failed': 1, 'missing_source': 1,
+    'failed_papers': [{'paper_id': 'p:1', 'stage': 'text', 'error': 'No downloaded text'}],
+    'materials': 3, 'layout_figures': 0, 'chunked_inputs': 0, 'chunk_requests': 0,
+    'abstract_chunked': 0, 'text_chunked': 0, 'supplement_text_attempted': 0,
+    'supplement_image_attempted': 0, 'supplement_skipped': 0, 'supplement_failed': 0,
+    'supplement_unsupported': 0, 'supplement_materials': 0, 'elapsed_seconds': 1.5,
+}
+STORE_SUMMARY = {'status': 'stored', 'input_path': 'in.csv', 'output_path': 'out.csv',
+                 'rows_read': 2, 'rows_written': 2, 'rows_total': 2,
+                 'converted_columns': [], 'unconverted_columns': ['Name'], 'skipped_columns': [],
+                 'papers_marked_stored': 1}
+IMPORT_PDFS_SUMMARY = {'files': 1, 'added': 1, 'updated': 0, 'doi_found': 1, 'enriched': 0,
+                       'metadata_errors': 0, 'paper_ids': ['external:a']}
+SUMMARIES = {'download_papers': DOWNLOAD_SUMMARY, 'enrich_corpus': ENRICH_SUMMARY,
+             'scrape_papers': SCRAPE_SUMMARY}
+
 
 @pytest.mark.parametrize(('command', 'target', 'summary'), [
-    ('search', 'search_for_papers', {
-        'status': 'completed', 'paper_ids': ['paper:1'], 'source_results': {},
-    }),
-    ('download', 'download_papers', {'pdfs': 1, 'texts': 0, 'abstracts': 0}),
-    ('enrich', 'enrich_corpus', {'succeeded': 1, 'partial': 0, 'failed': 1}),
+    ('search', 'search_for_papers', SEARCH_SUMMARY),
+    ('download', 'download_papers', DOWNLOAD_SUMMARY),
+    ('enrich', 'enrich_corpus', ENRICH_SUMMARY),
 ])
 def test_workflow_json_is_separate_from_progress(
     command: str, target: str, summary: dict[str, Any],
@@ -47,7 +79,7 @@ def test_search_json_survives_partial_failure(
 ) -> None:
     """Let callers recover saved paper IDs even when a search provider fails."""
     summary = {
-        'status': search_status, 'paper_ids': ['saved:1'],
+        **SEARCH_SUMMARY, 'status': search_status, 'paper_ids': ['saved:1'],
         'source_results': {'arxiv': {'status': 'failed'}},
     }
     monkeypatch.setattr(cli, 'search_for_papers', lambda *args, **kwargs: summary)
@@ -82,7 +114,7 @@ def test_workflow_operational_errors_leave_stdout_empty(
 def test_json_inspection_reports_real_corpus_state(tmp_path: Path) -> None:
     """Expose storage, failures, search provenance, and filter decisions as data."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'paper:1', 'title': 'Example',
             'pdf_download_status': 'failed', 'num_text_materials': 3,
@@ -287,13 +319,10 @@ def test_emit_json_converts_numpy_paths_and_sets() -> None:
 
 
 @pytest.mark.parametrize(('arguments', 'target', 'returned'), [
-    (['scrape', '{db}', 'sse', '--json'], 'scrape_papers',
-     {'papers_selected': 2, 'text_failed': 1, 'failed_papers': [
-         {'paper_id': 'p:1', 'stage': 'text', 'error': 'No downloaded text'}]}),
+    (['scrape', '{db}', 'sse', '--json'], 'scrape_papers', SCRAPE_SUMMARY),
     (['store', '{db}', 'in.csv', 'out.csv', 'sse', '--assume-yes', '--json'], 'store_results',
-     {'status': 'stored', 'rows_read': 2, 'rows_written': 2}),
-    (['import', 'pdfs', '{dir}', '{db}', '--json'], 'import_pdfs',
-     {'files': 1, 'added': 1, 'updated': 0, 'paper_ids': ['external:a']}),
+     STORE_SUMMARY),
+    (['import', 'pdfs', '{dir}', '{db}', '--json'], 'import_pdfs', IMPORT_PDFS_SUMMARY),
     (['reset', '{db}', '--json'], 'reset',
      {'papers_reset': 3, 'supplement_stages_reset': 0, 'columns': ['text_scrape_status']}),
 ])
@@ -347,7 +376,7 @@ def test_scrape_and_store_report_errors_without_tracebacks(
 def _corpus_with(tmp_path: Path, *paper_ids: str) -> Path:
     """Create a real corpus holding the given paper IDs."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id in paper_ids:
             corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
     return db_path
@@ -371,7 +400,7 @@ def test_paper_id_options_restrict_workflows_to_named_papers(
     def workflow(*args: Any, **kwargs: Any) -> dict[str, Any]:
         """Record the selection the command forwarded."""
         seen.update(kwargs)
-        return {}
+        return SUMMARIES[target]
 
     monkeypatch.setattr(cli, target, workflow)
     result = CliRunner().invoke(cli.main, [
@@ -392,7 +421,7 @@ def test_paper_id_options_are_omitted_when_not_given(
     seen: dict[str, Any] = {}
     target = {'download': 'download_papers', 'enrich': 'enrich_corpus',
               'scrape': 'scrape_papers'}[command]
-    monkeypatch.setattr(cli, target, lambda *args, **kwargs: seen.update(kwargs) or {})
+    monkeypatch.setattr(cli, target, lambda *args, **kwargs: seen.update(kwargs) or SUMMARIES[target])
     result = CliRunner().invoke(cli.main, [command, str(db_path), '--json'])
     assert result.exit_code == 0, result.output
     assert 'paper_ids' not in seen and 'respect_filters' not in seen

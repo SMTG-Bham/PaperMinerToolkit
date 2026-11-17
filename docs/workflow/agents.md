@@ -22,13 +22,29 @@ when an agent must use a particular virtual environment: invoke that
 environment's Python with `-m paperminertoolkit`.
 
 `schema` emits JSON without requiring `--json`. Its root contains
-`schema_version` (currently `1`), `package_version`, and `command`. Each command
+`schema_version` (currently `2`), `package_version`, `effects`, and `command`. Each command
 describes its `name`, `path`, `help`, `parameters`, and nested `commands`.
 The path is a string such as `pmt corpus list`.
 Parameters include their names, argument/option type, required flag, defaults,
 and type information, including choices where applicable. A command path such
 as `corpus export` selects that subtree. Discover options from the installed
 schema instead of assuming every command supports the same flags.
+
+### Output schemas
+
+Every command that can print JSON carries an `output_schema` on its schema
+node: a JSON Schema of the result it prints. Commands without JSON output have
+`null`. The schemas list the keys a result always carries as `required` and
+allow additional keys, so new fields can appear without a schema version bump.
+Nested provider and database records are described as plain objects. They use
+only `type`, `properties`, `required`, `items`, `additionalProperties`, `enum`,
+and `anyOf`. `scrape` has two shapes, the run summary and the `--dry-run` plan,
+told apart by `dry_run`. The test suite checks every JSON result a command
+prints against its schema, so the schema and the output cannot drift apart.
+
+```bash
+pmt schema corpus list | python -c "import json,sys; print(json.load(sys.stdin)['command']['output_schema'])"
+```
 
 ### Side effects
 

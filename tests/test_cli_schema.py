@@ -15,7 +15,9 @@ from click.testing import CliRunner
 
 import paperminertoolkit.cli as cli
 import paperminertoolkit.settings as settings
-from paperminertoolkit._agent import EFFECTS, agent_meta, command_effects
+from paperminertoolkit._agent import (EFFECTS, agent_meta, check_schema, command_effects,
+                                      command_output_schema, validate_json)
+from paperminertoolkit import _output_schemas as out
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._version import __version__
 
@@ -30,6 +32,7 @@ def _assert_live_tree(command: click.Command, node: dict[str, Any],
     assert node['path'] == ' '.join(path)
     assert node['help'] == command.help
     assert node['effects'] == command_effects(command)
+    assert node['output_schema'] == command_output_schema(command)
     # Click 8.5 renamed the implicit help option; the schema still calls it help.
     help_option = command.get_help_option(context)
     assert [parameter['name'] for parameter in node['parameters']] == [
@@ -53,7 +56,8 @@ def test_schema_matches_the_complete_live_cli() -> None:
     assert result.exit_code == 0, result.output
     assert result.stderr == ''
     payload = json.loads(result.stdout)
-    assert payload['schema_version'] == 1
+    assert payload['schema_version'] == 2
+    assert validate_json(payload, out.SCHEMA) == []
     assert payload['package_version'] == __version__
     _assert_live_tree(cli.main, payload['command'], ('pmt',))
     assert {'help', 'version'} <= {
@@ -122,6 +126,50 @@ def test_schema_reports_the_effect_vocabulary_and_command_effects() -> None:
     listing = json.loads(CliRunner().invoke(cli.main, ['schema', 'corpus', 'list']).stdout)
     assert listing['command']['effects'] == ['read_only']
     assert json.loads(CliRunner().invoke(cli.main, ['schema']).stdout)['command']['effects'] == []
+
+
+def test_validator_reports_types_keys_enums_items_and_alternatives() -> None:
+    """Check each supported JSON Schema keyword, with a path in every message."""
+    schema = out.obj({'count': out.INTEGER, 'state': {'type': 'string', 'enum': ['a', 'b']},
+                      'items': out.array(out.obj({'id': out.STRING}))},
+                     {'maybe': {'anyOf': [out.INTEGER, {'type': 'null'}]}})
+    assert validate_json({'count': 1, 'state': 'a', 'items': [{'id': 'x'}], 'maybe': None},
+                         schema) == []
+    errors = validate_json({'count': True, 'state': 'c', 'items': [{}], 'maybe': 'no'}, schema)
+    assert '$.count: expected integer, got bool' in errors
+    assert "$.state: 'c' is not one of ['a', 'b']" in errors
+    assert "$.items[0]: missing required key 'id'" in errors
+    assert any(error.startswith('$.maybe: matches no allowed shape') for error in errors)
+    assert validate_json({}, {'type': 'object', 'additionalProperties': False}) == []
+    assert validate_json({'x': 1}, {'type': 'object', 'additionalProperties': False}) == [
+        "$: unexpected key 'x'"]
+    assert validate_json(2.5, out.NUMBER) == [] and validate_json(2, out.NUMBER) == []
+
+
+def test_schemas_only_use_keywords_the_validator_checks() -> None:
+    """Refuse a schema that would promise more than the validator enforces."""
+    with pytest.raises(ValueError, match='Unsupported JSON Schema keywords at #/properties/x: minimum'):
+        check_schema(out.obj({'x': {'type': 'integer', 'minimum': 0}}))
+    with pytest.raises(ValueError, match='Unsupported JSON type at #: decimal'):
+        check_schema({'type': 'decimal'})
+    with pytest.raises(ValueError, match='Unsupported JSON Schema keywords'):
+        agent_meta(effects={'read_only'}, output={'oneOf': []})
+
+
+def test_emit_json_rejects_a_result_that_breaks_its_schema() -> None:
+    """Fail loudly in tests when a command's JSON drifts from its schema."""
+    from paperminertoolkit._agent import emit_json
+
+    @agent_meta(effects={'read_only'}, output=out.obj({'n': out.INTEGER}))
+    @click.command('drift')
+    def drift() -> None:
+        """Print a result missing its required key."""
+        emit_json({'m': 1})
+
+    result = CliRunner().invoke(drift, [])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, AssertionError)
+    assert "missing required key 'n'" in str(result.exception)
 
 
 @pytest.mark.parametrize(('effects', 'message'), [

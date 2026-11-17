@@ -9,7 +9,8 @@ them.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+import os
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import PurePath
 from typing import Any
 
@@ -37,8 +38,9 @@ _WRITING_EFFECTS = frozenset({'migrates_corpus', 'writes_corpus', 'writes_files'
                               'writes_config'})
 
 
-def agent_meta(*, effects: Iterable[str]) -> Callable[[click.Command], click.Command]:
-    """Record a command's side effects for ``pmt schema``.
+def agent_meta(*, effects: Iterable[str],
+               output: Mapping[str, Any] | None = None) -> Callable[[click.Command], click.Command]:
+    """Record a command's side effects and JSON output shape for ``pmt schema``.
 
     Apply it above ``@click.command`` so that it receives the built command.
 
@@ -46,6 +48,9 @@ def agent_meta(*, effects: Iterable[str]) -> Callable[[click.Command], click.Com
     ----------
     effects : Iterable[str]
         Names from :data:`EFFECTS`. ``read_only`` excludes every writing effect.
+    output : Mapping[str, Any] or None, optional
+        JSON Schema of the command's JSON result, using only the keywords
+        :func:`validate_json` supports.
 
     Returns
     -------
@@ -55,8 +60,8 @@ def agent_meta(*, effects: Iterable[str]) -> Callable[[click.Command], click.Com
     Raises
     ------
     ValueError
-        If an effect is unknown, none is given, or ``read_only`` is combined with
-        a writing effect.
+        If an effect is unknown, none is given, ``read_only`` is combined with
+        a writing effect, or the output schema uses an unsupported keyword.
     """
     declared = frozenset(effects)
     unknown = declared - EFFECTS.keys()
@@ -66,10 +71,13 @@ def agent_meta(*, effects: Iterable[str]) -> Callable[[click.Command], click.Com
         raise ValueError('A command must declare at least one effect.')
     if 'read_only' in declared and declared & _WRITING_EFFECTS:
         raise ValueError('read_only cannot be combined with a writing effect.')
+    if output is not None:
+        check_schema(output)
 
     def decorate(command: click.Command) -> click.Command:
-        """Attach the validated effects to ``command``."""
+        """Attach the validated effects and output schema to ``command``."""
         command.pmt_effects = tuple(sorted(declared))  # type: ignore[attr-defined]
+        command.pmt_output = output  # type: ignore[attr-defined]
         return command
 
     return decorate
@@ -89,6 +97,121 @@ def command_effects(command: click.Command) -> list[str]:
         Sorted effect names.
     """
     return list(getattr(command, 'pmt_effects', ()))
+
+
+def command_output_schema(command: click.Command) -> Mapping[str, Any] | None:
+    """Return the JSON Schema declared for ``command``'s JSON result, if any.
+
+    Parameters
+    ----------
+    command : click.Command
+        Command to inspect.
+
+    Returns
+    -------
+    Mapping[str, Any] or None
+        The declared schema, or ``None`` for commands without JSON output.
+    """
+    return getattr(command, 'pmt_output', None)
+
+
+#: JSON Schema keywords :func:`validate_json` understands. Others are rejected
+#: when a schema is declared, so a schema can never promise more than is checked.
+SCHEMA_KEYWORDS = frozenset({'type', 'properties', 'required', 'items', 'additionalProperties',
+                             'enum', 'anyOf', 'description', 'title', '$schema'})
+_JSON_TYPES = {
+    'object': lambda value: isinstance(value, dict),
+    'array': lambda value: isinstance(value, list),
+    'string': lambda value: isinstance(value, str),
+    'boolean': lambda value: isinstance(value, bool),
+    'integer': lambda value: isinstance(value, int) and not isinstance(value, bool),
+    'number': lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+    'null': lambda value: value is None,
+}
+
+
+def check_schema(schema: Mapping[str, Any], path: str = '#') -> None:
+    """Reject schemas that use keywords :func:`validate_json` would ignore.
+
+    Parameters
+    ----------
+    schema : Mapping[str, Any]
+        JSON Schema to check, recursively.
+    path : str, optional
+        Location used in error messages.
+
+    Raises
+    ------
+    ValueError
+        If a keyword or type name is unsupported.
+    """
+    unknown = set(schema) - SCHEMA_KEYWORDS
+    if unknown:
+        raise ValueError(f'Unsupported JSON Schema keywords at {path}: {", ".join(sorted(unknown))}')
+    types = schema.get('type', [])
+    for name in [types] if isinstance(types, str) else types:
+        if name not in _JSON_TYPES:
+            raise ValueError(f'Unsupported JSON type at {path}: {name}')
+    for key, child in schema.get('properties', {}).items():
+        check_schema(child, f'{path}/properties/{key}')
+    for key in ('items', 'additionalProperties'):
+        if isinstance(schema.get(key), Mapping):
+            check_schema(schema[key], f'{path}/{key}')
+    for index, child in enumerate(schema.get('anyOf', [])):
+        check_schema(child, f'{path}/anyOf/{index}')
+
+
+def validate_json(instance: Any, schema: Mapping[str, Any], path: str = '$') -> list[str]:
+    """Check a decoded JSON value against a schema in the supported subset.
+
+    Parameters
+    ----------
+    instance : Any
+        Value decoded from JSON.
+    schema : Mapping[str, Any]
+        Schema using :data:`SCHEMA_KEYWORDS`.
+    path : str, optional
+        Location of ``instance``, used in messages.
+
+    Returns
+    -------
+    list[str]
+        One message per violation; empty when the value conforms.
+    """
+    if 'anyOf' in schema:
+        branches = [validate_json(instance, branch, path) for branch in schema['anyOf']]
+        if all(branches):
+            best = min(branches, key=len)
+            return [f'{path}: matches no allowed shape; closest: {best[0]}'] if best else []
+    types = schema.get('type')
+    if types is not None:
+        names = [types] if isinstance(types, str) else list(types)
+        if not any(_JSON_TYPES[name](instance) for name in names):
+            return [f'{path}: expected {" or ".join(names)}, got {type(instance).__name__}']
+    errors = []
+    if 'enum' in schema and instance not in schema['enum']:
+        errors.append(f'{path}: {instance!r} is not one of {schema["enum"]!r}')
+    if isinstance(instance, dict):
+        for key in schema.get('required', []):
+            if key not in instance:
+                errors.append(f'{path}: missing required key {key!r}')
+        properties = schema.get('properties', {})
+        extra = schema.get('additionalProperties', True)
+        for key, value in instance.items():
+            if key in properties:
+                errors.extend(validate_json(value, properties[key], f'{path}.{key}'))
+            elif extra is False:
+                errors.append(f'{path}: unexpected key {key!r}')
+            elif isinstance(extra, Mapping):
+                errors.extend(validate_json(value, extra, f'{path}.{key}'))
+    if isinstance(instance, list) and isinstance(schema.get('items'), Mapping):
+        for index, item in enumerate(instance):
+            errors.extend(validate_json(item, schema['items'], f'{path}[{index}]'))
+    return errors
+
+
+#: Set by the test suite: emit_json then checks every result against its schema.
+VALIDATE_OUTPUT_ENV = 'PAPERMINERTOOLKIT_VALIDATE_OUTPUT'
 
 
 def _json_default(value: Any) -> Any:
@@ -121,5 +244,21 @@ def emit_json(payload: Any) -> None:
     payload : Any
         JSON-compatible result. NumPy scalars and arrays, paths, and sets
         are converted rather than rejected.
+
+    Raises
+    ------
+    AssertionError
+        If :data:`VALIDATE_OUTPUT_ENV` is set and the result does not match
+        the running command's declared output schema.
     """
-    click.echo(json.dumps(payload, indent=2, default=_json_default))
+    text = json.dumps(payload, indent=2, default=_json_default)
+    context = click.get_current_context(silent=True)
+    if context is not None:
+        context.find_root().meta['pmt_json_emitted'] = True
+        schema = command_output_schema(context.command)
+        if os.environ.get(VALIDATE_OUTPUT_ENV) and schema is not None:
+            errors = validate_json(json.loads(text), schema)
+            if errors:
+                raise AssertionError(f'{context.command_path} JSON does not match its output '
+                                     f'schema: {"; ".join(errors[:5])}')
+    click.echo(text)
