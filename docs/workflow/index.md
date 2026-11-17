@@ -52,7 +52,7 @@ flowchart TB
     linkStyle 7,8,9,11 stroke:#a97065,stroke-width:3px
 ```
 
-For a first run, follow the quickstart. The remaining pages explain each production stage, model and credential configuration, and cluster execution in more detail.
+For a first run, follow the quickstart. The remaining pages explain each production stage, model and credential configuration, and cluster execution in more detail, and {doc}`campaign` follows one complete production run.
 
 ```{toctree}
 :maxdepth: 1
@@ -69,4 +69,5 @@ validation
 digitizing
 entities
 hpc
+campaign
 ```

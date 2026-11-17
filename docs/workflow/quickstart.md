@@ -66,4 +66,4 @@ pmt store \
 pmt status papers.db
 ```
 
-Use the same recipe for scraping and storage so fields and unit conversions agree. Continue with {doc}`corpus`, {doc}`filtering`, and {doc}`scraping` for production workflows.
+Use the same recipe for scraping and storage so fields and unit conversions agree. Continue with {doc}`corpus`, {doc}`filtering`, and {doc}`scraping` for production workflows, and see {doc}`campaign` for a complete run at the scale of a thousand papers.
