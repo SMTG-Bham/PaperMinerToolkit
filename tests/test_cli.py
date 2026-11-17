@@ -34,7 +34,8 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
-                    'config', 'recipe', 'entities', 'scrape', 'store', 'validate', 'status', 'reset']:
+                    'config', 'recipe', 'entities', 'scrape', 'store', 'validate', 'status', 'reset',
+                    'figures']:
         assert command in root_help.output
     assert filter_help.exit_code == 0
     assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}
@@ -58,6 +59,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
     assert set(cli.recipe_group.commands) == {'list', 'show', 'prompt'}
     assert set(cli.validate_group.commands) == {'gui', 'template', 'score'}
+    assert set(cli.figures_group.commands) == {'download', 'detect', 'list', 'export', 'render'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
@@ -65,7 +67,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
                   cli.import_group, cli.config_group, cli.recipe_group,
-                  cli.validate_group, cli.entities_group]:
+                  cli.validate_group, cli.entities_group, cli.figures_group]:
         for public_name, command in group.commands.items():
             assert command.name == public_name
 

@@ -128,6 +128,21 @@ source page. Panel detection is not performed.
 results into the corpus as figure assets, which is what layout mode calls. Use
 `render_pdf_figures` directly when image files on disk are wanted instead.
 
+The same steps are available as commands, so figures can be prepared and checked
+before a paid image scrape:
+
+| Command | What it does |
+| --- | --- |
+| `pmt figures download papers.db` | Downloads the figure images referenced by stored JATS, Elsevier XML, or GROBID TEI documents. They replace any PDF-detected figures of the same paper. |
+| `pmt figures detect papers.db` | Detects figures in stored PDFs and stores the crops, for papers without structured figures. `--force` replaces earlier detections; `--dpi`, `--padding`, and `--min-confidence` tune them. |
+| `pmt figures list papers.db` | Lists stored figures with source, caption, whether a region was found, and scrape and digitization status. |
+| `pmt figures export papers.db outdir` | Writes stored figures to `outdir/<paper>/<figure>.<ext>`. |
+| `pmt figures render paper.pdf outdir --strategy layout` | Runs `layout`, `embedded`, or `pages` extraction on any PDF, without a corpus. |
+
+Each paper keeps figures from one origin, so `layout` mode and `pmt digitize` never see a
+figure twice. All five commands accept `--json`; `download` and `detect` also take
+`--paper-id` and follow active filters.
+
 ## Context limits and compression
 
 PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.

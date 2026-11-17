@@ -306,6 +306,27 @@ Every event has `event`, `command`, and `elapsed_s`.
 Workflow messages also go to stderr, so read only the lines that start with
 `{`: each is one complete event.
 
+### Work with figures
+
+`pmt figures` gets, inspects, and exports the figure images that image scraping
+(`--image-extraction layout`) and `pmt digitize` use:
+
+```bash
+pmt figures download run/papers.db --json     # publisher figures named by stored XML
+pmt figures detect run/papers.db --json       # figures detected from stored PDFs
+pmt figures list run/papers.db --json         # what is stored, with scrape/digitize status
+pmt figures export run/papers.db run/figures --json
+pmt figures render paper.pdf run/render --strategy layout --json   # any PDF, no corpus
+```
+
+Each paper keeps figures from one origin, so a figure is never analysed twice.
+`download` removes a paper's PDF-detected figures once its structured figures
+arrive. `detect` skips papers that have structured figures, and papers already
+detected unless `--force`, which replaces them. Like `scrape`, `download` and
+`detect` follow active corpus filters unless `--ignore-filters` or `--paper-id`
+is given. `render --strategy` covers the three image sources of `scrape`:
+`layout`, `embedded`, and `pages`.
+
 ### Work on named papers
 
 `scrape`, `download`, and `enrich` accept a repeatable `--paper-id` and a
@@ -439,6 +460,11 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `topics store --json` | `model_id`, `name`, `papers_predicted`, `papers_without_vocabulary_terms`, and `prediction_corpus_fingerprint`. |
 | `topics models --json` | `models`, each with `name`, `model_id`, `is_current`, `num_topics`, `papers_predicted`, `papers_without_vocabulary_terms`, and `text_fields`. |
 | `entities corpus --json`, `entities text --json` | `entities` and `documents` counts and the JSONL `output` path; the corpus form also counts `papers`. |
+| `figures download --json` | `papers`, `papers_without_structured_documents` (named papers that have none, else null), `papers_filtered_out`, `downloaded`, `skipped`, `failed`, `pdf_layout_replaced`, and `failures` (`paper_id`, `message`). |
+| `figures detect --json` | `papers`, `papers_filtered_out`, `statuses` (`detected`, `none_found`, `skipped_structured`, `skipped_existing`, `no_pdf`, `failed`), `figures_stored`, `figures_replaced`, and `failures`. |
+| `figures list --json` | `figures`, each with `paper_id`, `figure_id`, `label`, `caption`, `source`, `source_url`, `mime_type`, `bytes`, `blob_id`, `page_numbers`, `region_detected` (null for structured figures), `extraction_status`, and `digitization_status`; plus `total`, `limit`, and `offset`. |
+| `figures export --json` | `outdir`, `count`, and `files` with `paper_id`, `figure_id`, `label`, `source`, `path`, and `bytes`. |
+| `figures render --json` | `pdf`, `strategy`, `outdir`, `count`, `images` (`path`; for `layout` also `figure_id`, `label`, `caption`, `page_numbers`, `region_detected`), and `tables_detected` (null except for `layout`). |
 | `validate score --json` | The full score: `fingerprint`, `sources`, `recipe`, `run`, `papers_evaluated`, `pending_pairs`, `missing_metadata`, `complete`, and per-field `fields` with `tp`, `fp`, `fn`, `pending`, `precision`, `recall`, `f1` (null when undefined), `type`, and `parts`. |
 | `validate template --json` | `recipe`, the `outfile` path, and the header `columns` written. |
 | `config model --json` | `profile`, `provider`, `model`, `base_url`, `capabilities`, `temperature`, `top_p`, `input_token_limit`, and `api_key_set` (never the key). |

@@ -30,6 +30,7 @@ from paperminertoolkit.mcp_server import client_config as mcp_client_config
 from paperminertoolkit.mcp_server import serve as serve_mcp
 from paperminertoolkit._cli_schema import schema_command
 from paperminertoolkit._corpus_cli import corpus_export, corpus_list, corpus_show
+from paperminertoolkit._figures_cli import figures_group
 from paperminertoolkit._version import __version__
 from paperminertoolkit.providers import registry as sources
 from paperminertoolkit.corpus.database import (connect,
@@ -2181,3 +2182,4 @@ validate_group.add_command(validation_gui, 'gui')
 validate_group.add_command(validation_template, 'template')
 validate_group.add_command(validation_score, 'score')
 main.add_command(validate_group)
+main.add_command(figures_group)

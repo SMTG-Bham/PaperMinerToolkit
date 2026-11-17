@@ -2322,6 +2322,83 @@ def has_figure_asset(
     return False
 
 
+def figure_sources(conn: sqlite3.Connection, paper_id: str) -> set[str]:
+    """Return the sources of the figure images stored for one paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+
+    Returns
+    -------
+    set[str]
+        Distinct asset sources, such as ``pdf-layout`` or a provider name.
+    """
+    rows = conn.execute(
+        'SELECT DISTINCT source FROM paper_assets WHERE paper_id = ? AND role = ?',
+        (paper_id, FIGURE_ASSET_ROLE),
+    ).fetchall()
+    return {str(row[0] or '') for row in rows}
+
+
+def remove_figure_assets(conn: sqlite3.Connection, paper_id: str, source: str) -> int:
+    """Unlink every figure image of one paper that came from one source.
+
+    The image blobs stay in the corpus; only the paper's links to them go,
+    so another paper sharing an image keeps it.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    source : str
+        Asset source whose figures are removed, such as ``pdf-layout``.
+
+    Returns
+    -------
+    int
+        Number of figure links removed.
+    """
+    cursor = conn.execute(
+        'DELETE FROM paper_assets WHERE paper_id = ? AND role = ? AND source = ?',
+        (paper_id, FIGURE_ASSET_ROLE, source),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def papers_with_role(conn: sqlite3.Connection, role: str) -> list[str]:
+    """Return the identifiers of papers that have at least one asset of a role.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    role : str
+        Asset role, such as ``structured``, ``pdf``, or ``figure``.
+
+    Returns
+    -------
+    list[str]
+        Paper identifiers in corpus order.
+    """
+    rows = conn.execute(
+        """
+        SELECT p.paper_id FROM papers AS p
+        WHERE EXISTS (SELECT 1 FROM paper_assets AS a
+                      WHERE a.paper_id = p.paper_id AND a.role = ?)
+        ORDER BY p.rowid
+        """,
+        (role,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def set_figure_extraction_status(
     conn: sqlite3.Connection,
     paper_id: str,

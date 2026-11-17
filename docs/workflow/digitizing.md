@@ -49,6 +49,8 @@ Each record's figure field is read for figure numbers and panels in the forms pa
 
 The figure image comes from the corpus as the [layout image mode](scraping.md#choosing-which-images-the-model-sees) uses it: a structured figure downloaded with the article is preferred; a paper with no stored figures has them detected from its PDF and stored, so later runs, and image scraping, reuse them. Figures are matched by the number in their label, such as `Figure 3`, or failing that in their identifier, such as `f003`.
 
+To prepare or inspect the figures first, run `pmt figures download` (publisher images from stored XML) or `pmt figures detect` (crops from stored PDFs), then `pmt figures list` or `pmt figures export` to check what was found; see the [figure commands](scraping.md#choosing-which-images-the-model-sees).
+
 Supplementary figures (`Figure S4`, `Supplementary Figure 2`) are counted but not recovered: supporting-information files are not split into figures.
 
 ## Output

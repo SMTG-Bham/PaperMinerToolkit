@@ -189,3 +189,30 @@ STORE = obj({'status': {'type': 'string',
 
 RESET = obj({'papers_reset': INTEGER, 'supplement_stages_reset': INTEGER,
              'columns': array(STRING)}, {'dry_run': BOOLEAN})
+
+_FAILURES = array(obj({'paper_id': STRING, 'message': STRING}))
+FIGURES_DOWNLOAD = obj({'papers': INTEGER, 'papers_without_structured_documents': {'type': ['integer', 'null']},
+                        'papers_filtered_out': INTEGER, 'downloaded': INTEGER, 'skipped': INTEGER,
+                        'failed': INTEGER, 'pdf_layout_replaced': INTEGER, 'failures': _FAILURES})
+FIGURES_DETECT = obj({'papers': INTEGER, 'papers_filtered_out': INTEGER,
+                      'statuses': counts('detected', 'none_found', 'skipped_structured',
+                                         'skipped_existing', 'no_pdf', 'failed'),
+                      'figures_stored': INTEGER, 'figures_replaced': INTEGER,
+                      'failures': _FAILURES})
+FIGURE = obj({'paper_id': STRING, 'figure_id': STRING, 'label': STRING, 'caption': STRING,
+              'source': STRING, 'source_url': STRING, 'mime_type': STRING, 'bytes': INTEGER,
+              'blob_id': STRING, 'page_numbers': ARRAY,
+              'region_detected': {'type': ['boolean', 'null']},
+              'extraction_status': OPTIONAL_STRING, 'digitization_status': OPTIONAL_STRING})
+FIGURES_LIST = obj({'figures': array(FIGURE), 'total': INTEGER, 'limit': INTEGER,
+                    'offset': INTEGER})
+FIGURES_EXPORT = obj({'outdir': STRING, 'count': INTEGER, 'files': array(obj(
+    {'paper_id': STRING, 'figure_id': STRING, 'label': STRING, 'source': STRING, 'path': STRING,
+     'bytes': INTEGER}))})
+FIGURES_RENDER = obj({'pdf': STRING, 'strategy': {'type': 'string',
+                                                  'enum': ['layout', 'embedded', 'pages']},
+                      'outdir': STRING, 'count': INTEGER,
+                      'images': array(obj({'path': STRING},
+                                          {'figure_id': STRING, 'label': STRING, 'caption': STRING,
+                                           'page_numbers': ARRAY, 'region_detected': BOOLEAN})),
+                      'tables_detected': {'type': ['integer', 'null']}})
