@@ -16,6 +16,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
@@ -736,6 +737,29 @@ def _scrape_supplements(
     return first_material
 
 
+def _record_failure(summary: dict[str, Any], row: Mapping[str, Any], stage: str,
+                    error: Exception) -> None:
+    """Count a failed scrape stage and remember which paper it was.
+
+    Parameters
+    ----------
+    summary : dict[str, Any]
+        Run summary to update.
+    row : Mapping[str, Any]
+        Paper row whose stage failed.
+    stage : str
+        ``abstract``, ``text``, or ``image``.
+    error : Exception
+        The failure, recorded as text.
+    """
+    summary[f'{stage}_failed'] += 1
+    if isinstance(error, FileNotFoundError):
+        summary['missing_source'] += 1
+    summary['failed_papers'].append({
+        'paper_id': str(row.get('paper_id') or ''), 'stage': stage, 'error': str(error),
+    })
+
+
 def _select_papers(
     papers: Iterable[_Paper],
     scrape_order: str = 'corpus',
@@ -809,7 +833,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
                   include_supplements: bool = True,
-                  ) -> None:
+                  ) -> dict[str, Any]:
     """Scrape corpus papers and write extracted material records.
 
     Parameters
@@ -870,11 +894,22 @@ def scrape_papers(db_path: str = 'papers.db',
         information. SI has independent checkpoints and per-file provenance;
         abstract-only scraping never includes SI.
 
+    Returns
+    -------
+    dict[str, Any]
+        Run summary. Besides the progress counters printed at the end, it
+        holds ``papers_selected``, per-stage ``*_attempted``, ``*_skipped``,
+        ``*_succeeded`` and ``*_failed`` counts, ``missing_source`` (failed
+        stages with no downloaded asset to read), ``failed_papers`` (one
+        ``paper_id``, ``stage`` and ``error`` entry per failed stage),
+        ``output_path`` and ``elapsed_seconds``.
+
     Raises
     ------
     ValueError
         If a scrape, image, ordering, count, or compression option is invalid.
     """
+    started = time.monotonic()
     mode = mode.lower()
     image_context = image_context.lower()
     image_extraction = image_extraction.lower()
@@ -910,14 +945,25 @@ def scrape_papers(db_path: str = 'papers.db',
         vision_config.require('vision')
 
     first_material = not os.path.isfile(output_path)
-    summary = {
+    summary: dict[str, Any] = {
+        'mode': mode,
+        'output_path': str(output_path),
+        'papers_selected': 0,
         'papers': 0,
         'abstract_attempted': 0,
         'abstract_skipped': 0,
+        'abstract_succeeded': 0,
+        'abstract_failed': 0,
         'text_attempted': 0,
         'text_skipped': 0,
+        'text_succeeded': 0,
+        'text_failed': 0,
         'image_attempted': 0,
         'image_skipped': 0,
+        'image_succeeded': 0,
+        'image_failed': 0,
+        'missing_source': 0,
+        'failed_papers': [],
         'layout_figures': 0,
         'materials': 0,
         'chunked_inputs': 0,
@@ -954,6 +1000,7 @@ def scrape_papers(db_path: str = 'papers.db',
         else:
             print('No active corpus filters; all otherwise eligible papers are available for scraping.')
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
+        summary['papers_selected'] = len(papers)
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-scrape-') as temp_dir:
             with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
                 for row in papers:
@@ -995,8 +1042,10 @@ def scrape_papers(db_path: str = 'papers.db',
                                     text_materials.extend(response)
                                 row[f'num_{stage}_materials'] = len(text_materials)
                                 _set_status(row, status_column, 'succeeded')
+                                summary[f'{stage}_succeeded'] += 1
                             except Exception as e:
                                 _set_status(row, status_column, 'failed', str(e))
+                                _record_failure(summary, row, stage, e)
 
                     if should_scrape_images:
                         image_paths = []
@@ -1103,11 +1152,13 @@ def scrape_papers(db_path: str = 'papers.db',
                                 row['num_images'] = previous_images + len(image_source_paths)
                                 row['num_image_materials'] = previous_materials + len(image_materials)
                                 _set_status(row, 'image_scrape_status', 'succeeded')
+                                summary['image_succeeded'] += 1
                                 if delete_images_after:
                                     for image_path in image_paths:
                                         _delete_file(image_path)
                             except Exception as e:
                                 _set_status(row, 'image_scrape_status', 'failed', str(e))
+                                _record_failure(summary, row, 'image', e)
 
                     if text_materials and image_materials:
                         text_source = text_source_path or ''
@@ -1191,3 +1242,5 @@ def scrape_papers(db_path: str = 'papers.db',
             f"(abstracts={summary['abstract_chunked']}, text={summary['text_chunked']}).",
             file=sys.stderr,
         )
+    summary['elapsed_seconds'] = round(time.monotonic() - started, 3)
+    return summary

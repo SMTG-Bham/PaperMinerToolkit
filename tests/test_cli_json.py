@@ -284,3 +284,61 @@ def test_emit_json_converts_numpy_paths_and_sets() -> None:
     assert _json_default(np.array([1, 2])) == [1, 2]
     assert _json_default(Path('a/b')) == str(Path('a/b'))
     assert _json_default({'b', 'a'}) == ['a', 'b']
+
+
+@pytest.mark.parametrize(('arguments', 'target', 'returned'), [
+    (['scrape', '{db}', 'sse', '--json'], 'scrape_papers',
+     {'papers_selected': 2, 'text_failed': 1, 'failed_papers': [
+         {'paper_id': 'p:1', 'stage': 'text', 'error': 'No downloaded text'}]}),
+    (['store', '{db}', 'in.csv', 'out.csv', 'sse', '--assume-yes', '--json'], 'store_results',
+     {'status': 'stored', 'rows_read': 2, 'rows_written': 2}),
+    (['import', 'pdfs', '{dir}', '{db}', '--json'], 'import_pdfs',
+     {'files': 1, 'added': 1, 'updated': 0, 'paper_ids': ['external:a']}),
+    (['reset', '{db}', '--json'], 'reset',
+     {'papers_reset': 3, 'supplement_stages_reset': 0, 'columns': ['text_scrape_status']}),
+])
+def test_pipeline_commands_emit_their_run_summaries(
+    arguments: list[str], target: str, returned: dict[str, Any],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report scrape, store, import, and reset outcomes as data."""
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    pdf_dir = tmp_path / 'pdfs'
+    pdf_dir.mkdir()
+
+    def workflow(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Print progress like the real workflow and return its summary."""
+        print('Workflow progress')
+        return returned
+
+    monkeypatch.setattr(cli, target, workflow)
+    result = CliRunner().invoke(cli.main, [
+        argument.format(db=db_path, dir=pdf_dir) for argument in arguments])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == returned
+    assert result.stderr == 'Workflow progress\n'
+
+
+@pytest.mark.parametrize('error', [
+    ValueError('mode must be one of: abstract'), KeyError('No recipe named nope'),
+    RuntimeError('Corpus schema 99 is newer'),
+])
+def test_scrape_and_store_report_errors_without_tracebacks(
+    error: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turn configuration and recipe failures into exit status 1 with a message."""
+    def fail(*args: Any, **kwargs: Any) -> NoReturn:
+        """Raise the selected failure."""
+        raise error
+
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    for command, target in [(['scrape', str(db_path), '--json'], 'scrape_papers'),
+                            (['store', str(db_path), '--json'], 'store_results')]:
+        monkeypatch.setattr(cli, target, fail)
+        result = CliRunner().invoke(cli.main, command)
+        assert result.exit_code == 1, result.output
+        assert result.stdout == ''
+        assert str(error.args[0]) in result.stderr
+        assert 'Traceback' not in result.stderr

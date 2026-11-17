@@ -329,7 +329,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
 
     monkeypatch.setattr(scrape, 'scrape_text', fake_analyze_text)
 
-    scrape.scrape_papers(
+    summary = scrape.scrape_papers(
         str(db_path),
         output_path=str(output_path),
         mode='text',
@@ -339,6 +339,13 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
         base_url='http://localhost:8000/v1',
     )
 
+    assert summary['papers_selected'] == 2
+    assert (summary['text_attempted'], summary['text_succeeded'], summary['text_failed']) == (1, 1, 0)
+    assert summary['text_skipped'] == 1
+    assert summary['materials'] == 2
+    assert summary['failed_papers'] == []
+    assert summary['output_path'] == str(output_path)
+    assert summary['elapsed_seconds'] >= 0
     materials = pd.read_csv(output_path, index_col=0)
     papers = read_corpus(db_path)
     captured = capsys.readouterr()
@@ -526,8 +533,12 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
 
-    scrape.scrape_papers(str(db_path), output_path=str(output_path))
+    summary = scrape.scrape_papers(str(db_path), output_path=str(output_path))
 
+    assert summary['text_failed'] == summary['missing_source'] == 1
+    assert summary['failed_papers'][0]['paper_id'] == 'missing-paper'
+    assert summary['failed_papers'][0]['stage'] == 'text'
+    assert 'No downloaded text or PDF asset found' in summary['failed_papers'][0]['error']
     papers = read_corpus(db_path)
     output = capsys.readouterr().out
     assert papers.loc[0, 'text_scrape_status'] == 'failed'

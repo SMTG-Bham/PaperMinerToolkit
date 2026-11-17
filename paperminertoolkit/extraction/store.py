@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Collection
+from typing import Any
 from os import PathLike
 from pathlib import Path
 
@@ -106,7 +107,7 @@ def _stored_paper_ids(data: pd.DataFrame) -> set[str]:
 def _mark_stored_papers(
     db_path: str | PathLike[str],
     paper_ids: Collection[str],
-) -> None:
+) -> int:
     """Mark successfully scraped papers as stored.
 
     Parameters
@@ -116,11 +117,17 @@ def _mark_stored_papers(
     paper_ids : Collection[str]
         Paper identifiers represented by the stored batch.
 
+    Returns
+    -------
+    int
+        Number of papers marked as stored.
+
     Raises
     ------
     RuntimeError
         If the corpus schema is newer than this package supports.
     """
+    marked = 0
     with connect(db_path) as conn:
         for paper in paper_rows(conn):
             if paper['paper_id'] not in paper_ids:
@@ -137,6 +144,8 @@ def _mark_stored_papers(
                 continue
             paper['store_status'] = 'stored'
             upsert_paper(conn, paper)
+            marked += 1
+    return marked
 
 
 def store_results(db_path: str | PathLike[str] = 'papers.db',
@@ -146,7 +155,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
                   recipe: str = 'sse',
                   assume_yes: bool = False,
                   model_config: ModelConfig | None = None,
-                  ) -> None:
+                  ) -> dict[str, Any]:
     """Convert and append temporary scrape results.
 
     Parameters
@@ -165,6 +174,16 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
         Whether to accept conversions and skip unmatched columns without a prompt.
     model_config : ModelConfig or None, optional
         Model configuration forwarded to unit conversion.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``status`` (``stored``, ``nothing_to_store``, or ``declined``),
+        ``rows_read``, ``rows_written`` (new rows after de-duplication is
+        applied to the whole file), ``rows_total``, ``converted_columns``
+        (one unit-conversion model request each), ``unconverted_columns``,
+        ``skipped_columns``, ``papers_marked_stored``, and the
+        ``input_path`` and ``output_path``.
 
     Raises
     ------
@@ -186,13 +205,20 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
     output_path = Path(out_filepath)
     if input_path.resolve() == output_path.resolve():
         raise ValueError('Input and output materials paths must be different.')
+    summary: dict[str, Any] = {
+        'status': 'nothing_to_store', 'input_path': str(input_path),
+        'output_path': str(output_path), 'rows_read': 0, 'rows_written': 0, 'rows_total': 0,
+        'converted_columns': [], 'unconverted_columns': [], 'skipped_columns': [],
+        'papers_marked_stored': 0,
+    }
     if not input_path.is_file():
         print(f'No scraped materials file found at {in_filepath}. Nothing new to store.')
-        return
+        return summary
     in_file = pd.read_csv(input_path, index_col=0)
     if in_file.empty:
         print(f'Scraped materials file {in_filepath} is empty. Nothing new to store.')
-        return
+        return summary
+    summary['rows_read'] = len(in_file)
     recipe = load_recipe(recipe)
     if output_path.is_file():
         out_file = pd.read_csv(output_path, index_col=0)
@@ -210,11 +236,13 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
         if match is None:
             if assume_yes:
                 print(f'Skipping unmatched column in noninteractive mode: {series_name}')
+                summary['skipped_columns'].append(str(series_name))
                 continue
             raise RuntimeError(f'{series_name} did not match with a field in the recipe or output file.')
         split_field = match.split(' [')
         if len(split_field) == 2 and unit_conversion:
             print(f'{series_name} column was matched with {match} and will be converted.')
+            summary['converted_columns'].append(match)
             split_field[1] = split_field[1].replace(']', '')
             converted_series = convert_units(
                 series,
@@ -224,6 +252,7 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
             )
         else:
             print(f'{series_name} column was matched with {match} and will not be converted.')
+            summary['unconverted_columns'].append(match)
             converted_series = series
         out_data[match] = converted_series
 
@@ -237,7 +266,8 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
             print(f'\nOutput data has been saved to {preview_path} temporarily. Are you happy with these conversions?')
             decision = input('Yes (Y) / No (N): ')
         if decision.lower() not in {'y', 'yes'}:
-            return
+            summary['status'] = 'declined'
+            return summary
 
         if out_file is not None:
             materials_df = pd.concat([out_file, out_data], ignore_index=True)
@@ -245,8 +275,12 @@ def store_results(db_path: str | PathLike[str] = 'papers.db',
             materials_df = out_data.reset_index(drop=True)
         materials_df.drop_duplicates(ignore_index=True, inplace=True)
         _write_csv_atomically(materials_df, output_path)
-        _mark_stored_papers(db_path, paper_ids)
+        summary['papers_marked_stored'] = _mark_stored_papers(db_path, paper_ids)
         input_path.unlink()
+        previous_rows = 0 if out_file is None else len(out_file)
+        summary.update(status='stored', rows_total=len(materials_df),
+                       rows_written=max(len(materials_df) - previous_rows, 0))
     finally:
         if os.path.exists(preview_path):
             os.remove(preview_path)
+    return summary

@@ -25,7 +25,7 @@ def import_pdfs(
     papers_dir: str | PathLike[str],
     db_path: str | PathLike[str] = 'papers.db',
     use_crossref: bool = True,
-) -> None:
+) -> dict[str, Any]:
     """Import local PDF files into a paper corpus.
 
     Parameters
@@ -36,6 +36,14 @@ def import_pdfs(
         Path to the destination corpus database.
     use_crossref : bool, optional
         Whether to enrich discovered DOI metadata with Crossref.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``files`` imported, ``added`` and ``updated`` corpus rows,
+        ``doi_found``, ``enriched`` via Crossref, ``metadata_errors`` (files
+        whose DOI or Crossref lookup reported an error), and the corpus
+        ``paper_ids`` the files were stored under, in file order.
 
     Raises
     ------
@@ -96,11 +104,13 @@ def import_pdfs(
         return {key: value for key, value in row.items() if not key.startswith('_')}
 
     paper_rows = [normalize_paper(paper_fields(row)) for row in rows]
+    paper_ids = []
     with connect(db_path) as conn:
         added, updated = upsert_papers(conn, paper_rows)
         for row in rows:
             paper = paper_fields(row)
             matched = find_paper(conn, paper) or paper
+            paper_ids.append(str(matched['paper_id']))
             add_asset(
                 conn,
                 matched,
@@ -119,3 +129,8 @@ def import_pdfs(
         f'Imported {len(paper_rows)} PDFs into {db_path} '
         f'({added} added, {updated} matched existing rows, {doi_found} DOI found, {enriched} enriched via Crossref).'
     )
+    return {
+        'files': len(paper_rows), 'added': added, 'updated': updated, 'doi_found': doi_found,
+        'enriched': enriched, 'metadata_errors': sum(1 for row in rows if row['last_error']),
+        'paper_ids': paper_ids,
+    }

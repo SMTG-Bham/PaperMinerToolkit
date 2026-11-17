@@ -222,8 +222,11 @@ pmt filter status run/papers.db --json
 
 `scrape` calls the configured model and writes an intermediate CSV. `store`
 can also call the model for unit conversion, writes the final CSV, and updates
-storage state. Both use human-readable output; neither currently accepts
-`--json`. Keep the corpus, recipe, model configuration, and both CSVs together.
+storage state. Both accept `--json`. `scrape` exits 0 when the run completes,
+even if some papers failed, so read its `*_failed` counts and `failed_papers`
+before moving on: a failure with `missing_source` needs `pmt download`, while
+other failures are retried by a plain rerun. Keep the corpus, recipe, model
+configuration, and both CSVs together.
 
 Inspect pipeline and filter status before scheduling more work. Active filters
 affect scraping and downloads within `gather`; standalone `download` considers
@@ -256,6 +259,10 @@ object. `--help` remains human-readable even on commands that support JSON.
 | `corpus show --json` | `paper`, `assets`, `searches`, `authors`, `subjects`, and `references`. |
 | `corpus export --json` | `paper_id`, `role`, `path`, and exported `bytes`; SI also includes `asset_id` and `original_filename`. |
 | `digitize --json` | `requests`, `digitized`, `skipped`, `failed`, `not_found`, `supplementary`, `panels`, `series`, `points`, the `output` CSV path, and per-figure `errors`. |
+| `scrape --json` | `papers_selected`, `papers`, per-stage `abstract_*`, `text_*`, and `image_*` counts (`attempted`, `skipped`, `succeeded`, `failed`), `missing_source`, `failed_papers` (`paper_id`, `stage`, `error`), `materials`, chunking counts (`chunked_inputs`, `chunk_requests`), `supplement_*` counts, `output_path`, `mode`, and `elapsed_seconds`. Token usage is not reported. |
+| `store --json` | `status` (`stored`, `nothing_to_store`, or `declined`), `rows_read`, `rows_written`, `rows_total`, `converted_columns` (one unit-conversion model request each), `unconverted_columns`, `skipped_columns`, `papers_marked_stored`, `input_path`, and `output_path`. |
+| `import pdfs --json` | `files`, `added`, `updated`, `doi_found`, `enriched`, `metadata_errors`, and the corpus `paper_ids` in file order. |
+| `reset --json` | `papers_reset`, `supplement_stages_reset`, and the pipeline `columns` returned to their defaults. |
 | `status --json` | `papers`, `papers_with_structured_documents`, `papers_with_supplements`, `supplements`, `pipeline`, `text_materials`, and `image_materials`. |
 | `filter status --json` | Active filter definitions and decision counts. |
 | `import author --json` | `found`, `added`, `updated`, and `enriched` work counts, and the `review_csv` path. |

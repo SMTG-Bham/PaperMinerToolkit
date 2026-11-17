@@ -243,9 +243,16 @@ def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
               is_flag=True,
               default=False,
               help='Only scrape DOI from PDFs; skip Crossref metadata lookup.')
-def import_pdf_folder(dir: str, db_path: str, no_crossref: bool) -> None:
+@_json_option
+def import_pdf_folder(dir: str, db_path: str, no_crossref: bool, json_output: bool) -> None:
     """Import local PDFs into the paper corpus, optionally skipping Crossref lookup."""
-    import_pdfs(dir, db_path, use_crossref=not no_crossref)
+    try:
+        with _quiet(json_output):
+            summary = import_pdfs(dir, db_path, use_crossref=not no_crossref)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
 
 
 @agent_meta(effects={'network', 'writes_corpus', 'writes_files'})
@@ -1333,6 +1340,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               default=True,
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
+@_json_option
 def scrape(
         db_path: str,
         recipe: str,
@@ -1359,35 +1367,47 @@ def scrape(
         compression_mode: str,
         compression_ratio: str,
         compression_content_detection: bool,
+        json_output: bool,
 ) -> None:
-    """Run text and/or image scraping over downloaded papers."""
-    scrape_papers(
-        db_path,
-        recipe,
-        mode=mode,
-        include_supplements=include_supplements,
-        image_dir=image_dir,
-        image_context=image_context,
-        image_extraction=image_extraction,
-        image_dpi=image_dpi,
-        image_batch_size=image_batch_size,
-        model=model,
-        provider=provider,
-        base_url=base_url,
-        vision_model=vision_model,
-        vision_provider=vision_provider,
-        vision_base_url=vision_base_url,
-        delete_images_after=delete_images_after,
-        output_path=output_path,
-        force=force,
-        ignore_filters=ignore_filters,
-        scrape_count=scrape_count,
-        scrape_order=scrape_order,
-        compression_scope=compression_scope,
-        compression_mode=compression_mode,
-        compression_ratio=compression_ratio,
-        compression_content_detection=compression_content_detection,
-    )
+    """Run text and/or image scraping over downloaded papers.
+
+    Exits 0 when the run completes, even if some papers failed: inspect the
+    failed counts and failed_papers in the --json summary, or pmt status.
+    """
+    try:
+        with _quiet(json_output):
+            summary = scrape_papers(
+                db_path,
+                recipe,
+                mode=mode,
+                include_supplements=include_supplements,
+                image_dir=image_dir,
+                image_context=image_context,
+                image_extraction=image_extraction,
+                image_dpi=image_dpi,
+                image_batch_size=image_batch_size,
+                model=model,
+                provider=provider,
+                base_url=base_url,
+                vision_model=vision_model,
+                vision_provider=vision_provider,
+                vision_base_url=vision_base_url,
+                delete_images_after=delete_images_after,
+                output_path=output_path,
+                force=force,
+                ignore_filters=ignore_filters,
+                scrape_count=scrape_count,
+                scrape_order=scrape_order,
+                compression_scope=compression_scope,
+                compression_mode=compression_mode,
+                compression_ratio=compression_ratio,
+                compression_content_detection=compression_content_detection,
+            )
+    except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
+        message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        raise click.ClickException(str(message)) from error
+    if json_output:
+        emit_json(summary)
 
 
 @agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'})
@@ -1398,9 +1418,19 @@ def scrape(
 @click.argument('recipe', default='sse', type=str)
 @click.option('--assume-yes', is_flag=True, default=False,
               help='Store converted results without an interactive confirmation prompt.')
-def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool) -> None:
+@_json_option
+def store(db_path: str, in_file: str, out_file: str, recipe: str, assume_yes: bool,
+          json_output: bool) -> None:
     """Store temporary scrape results in the final materials CSV."""
-    store_results(db_path, in_file, out_file, True, recipe, assume_yes=assume_yes)
+    try:
+        with _quiet(json_output):
+            summary = store_results(db_path, in_file, out_file, True, recipe,
+                                    assume_yes=assume_yes)
+    except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
+        message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        raise click.ClickException(str(message)) from error
+    if json_output:
+        emit_json(summary)
 
 
 @agent_meta(effects={'starts_server', 'writes_files'})
@@ -1663,9 +1693,19 @@ def provider_status_command(no_probe: bool, sources: tuple[str, ...],
 @agent_meta(effects={'writes_corpus'})
 @click.command('reset')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
-def reset_miner(db_path: str) -> None:
+@_json_option
+def reset_miner(db_path: str, json_output: bool) -> None:
     """Reset pipeline statuses in the paper corpus."""
-    reset(db_path)
+    try:
+        with _quiet(json_output):
+            summary = reset(db_path)
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        emit_json(summary)
+    else:
+        click.echo(f'Reset {summary["papers_reset"]} papers and '
+                   f'{summary["supplement_stages_reset"]} supporting-information stages.')
 
 
 @agent_meta(effects={'migrates_corpus'})

@@ -27,10 +27,6 @@ JSON_BY_DEFAULT = {'schema', 'recipe show'}
 EXEMPT: dict[str, str] = {
     'validate gui': 'Starts an interactive local review server.',
     'recipe prompt': 'Renders a plain-text prompt by design.',
-    'scrape': 'Pending #97.',
-    'store': 'Pending #97.',
-    'import pdfs': 'Pending #97.',
-    'reset': 'Pending #97.',
     'config model': 'Pending #104.',
     'config elsevier-key': 'Pending #104.',
     'config core-key': 'Pending #104.',

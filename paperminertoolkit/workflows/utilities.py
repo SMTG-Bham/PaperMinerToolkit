@@ -18,7 +18,7 @@ from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
 from paperminertoolkit.corpus.supplements import get_supplements, set_supplement_extraction_status
 
 
-def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
+def reset(db_path: str | PathLike[str] = 'papers.db') -> dict[str, Any]:
     """Reset all corpus pipeline columns.
 
     Parameters
@@ -26,22 +26,33 @@ def reset(db_path: str | PathLike[str] = 'papers.db') -> None:
     db_path : str or os.PathLike[str], optional
         Corpus database to reset.
 
+    Returns
+    -------
+    dict[str, Any]
+        ``papers_reset``, ``supplement_stages_reset``, and the pipeline
+        ``columns`` returned to their defaults.
+
     Raises
     ------
     RuntimeError
         If the corpus schema is newer than this package supports.
     """
+    papers = supplement_stages = 0
     with connect(db_path) as conn:
         for paper in paper_rows(conn):
             for column, default in PIPELINE_COLUMNS.items():
                 paper[column] = default
             paper['metadata_status'] = 'retrieved'
             upsert_paper(conn, paper)
+            papers += 1
             for asset in get_supplements(conn, paper['paper_id'], include_content=False):
                 for stage in ('text', 'image'):
                     set_supplement_extraction_status(
                         conn, paper['paper_id'], asset['blob_id'], stage, 'pending', members={},
                     )
+                    supplement_stages += 1
+    return {'papers_reset': papers, 'supplement_stages_reset': supplement_stages,
+            'columns': list(dict.fromkeys([*PIPELINE_COLUMNS, 'metadata_status']))}
 
 
 def progress_summary(db_path: str | PathLike[str] = 'papers.db') -> dict[str, Any]:

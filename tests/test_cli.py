@@ -1049,7 +1049,8 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     calls = []
-    monkeypatch.setattr(cli, 'reset', lambda path: calls.append(('reset', path)))
+    monkeypatch.setattr(cli, 'reset', lambda path: calls.append(('reset', path)) or {
+        'papers_reset': 0, 'supplement_stages_reset': 0, 'columns': []})
     monkeypatch.setattr(cli, 'status', lambda path: calls.append(('status', path)))
 
     runner = CliRunner()
