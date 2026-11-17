@@ -80,6 +80,16 @@ def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> No
     assert extract.build_scrape_prompt(recipe, source='image') == image_prompt
 
 
+def test_example_record_keeps_non_ascii_text() -> None:
+    """Test that recipe examples keep non-ASCII text unescaped."""
+    recipe = {**sample_recipe(), 'search fields': {'Method': {'prompt': 'Method.', 'example': 'UV–vis; <number> eV'}}}
+
+    prompt = extract.build_text_extraction_prompt(recipe)
+
+    assert '"UV–vis; <number> eV"' in prompt
+    assert 'u2013' not in prompt
+
+
 def test_non_material_recipe_controls_prompt_terminology_and_granularity() -> None:
     """Test that general prompts contain only recipe-supplied domain terminology."""
     recipe = {

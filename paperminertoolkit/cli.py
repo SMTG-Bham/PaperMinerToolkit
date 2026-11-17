@@ -40,6 +40,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
                                     filter_overview,
                                     reset_filters)
 from paperminertoolkit.workflows.imports import import_pdfs
+from paperminertoolkit.extraction.postprocess import postprocess_scrape
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.recipe_optimisation import OPTIMISE_MODES, optimise_recipe
@@ -1079,6 +1080,14 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               default=True,
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
+@click.option('--tables/--no-tables',
+              default=True,
+              show_default=True,
+              help="Append the paper's tables, as Markdown, to full text.")
+@click.option('--verify',
+              is_flag=True,
+              default=False,
+              help="Apply the recipe's checks and list removed items in <output>.dropped.csv.")
 def scrape(
         db_path: str,
         recipe: str,
@@ -1104,6 +1113,8 @@ def scrape(
         compression_mode: str,
         compression_ratio: str,
         compression_content_detection: bool,
+        tables: bool,
+        verify: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
@@ -1131,7 +1142,42 @@ def scrape(
         compression_mode=compression_mode,
         compression_ratio=compression_ratio,
         compression_content_detection=compression_content_detection,
+        tables=tables,
+        verify=verify,
     )
+
+
+@click.command('postprocess')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('recipe', default='sse', type=str)
+@click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path(exists=True, dir_okay=False))
+@click.option('--output', 'output_path', default=None, type=click.Path(dir_okay=False),
+              help='Output CSV. Defaults to <input>.postprocessed.csv.')
+@click.option('--merge/--no-merge', default=True, show_default=True,
+              help='Merge records with the same identity within each paper.')
+@click.option('--verify/--no-verify', default=True, show_default=True,
+              help="Apply the recipe's checks against each paper's text.")
+@click.option('--tables/--no-tables', default=True, show_default=True,
+              help="Include the paper's tables in the text the checks read.")
+def postprocess(
+        db_path: str,
+        recipe: str,
+        in_file: str,
+        output_path: str | None,
+        merge: bool,
+        verify: bool,
+        tables: bool,
+) -> None:
+    """Merge and check the records of an existing scrape output."""
+    summary = postprocess_scrape(db_path, recipe, in_file, output_path, merge=merge, verify=verify, tables=tables)
+    click.echo(f'Wrote {summary.records_out} of {summary.records_in} records to {summary.output_path}.')
+    if summary.audit_rows:
+        click.echo(f'Checks removed or edited {summary.audit_rows} items; see {summary.dropped_path}.')
+    if summary.unchecked_papers:
+        click.echo(
+            f'{len(summary.unchecked_papers)} papers had no readable source text and were not checked: '
+            f'{", ".join(summary.unchecked_papers)}'
+        )
 
 
 @click.command('store')
@@ -1469,6 +1515,7 @@ main.add_command(gather)
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
+main.add_command(postprocess, 'postprocess')
 main.add_command(store, 'store')
 main.add_command(miner_status, 'status')
 main.add_command(reset_miner, 'reset')
