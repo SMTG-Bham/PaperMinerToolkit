@@ -3086,3 +3086,178 @@ def test_openalex_cached_pdf_is_the_last_resort_and_needs_a_key(
     ok, detail = download._download_openalex_cached_pdf(paper, out)
     assert ok is False
     assert 'daily credit budget is exhausted' in detail
+
+
+class BatchLookups:
+    """Record OpenAlex and PubMed lookups made during a download run (#74).
+
+    Parameters
+    ----------
+    works : dict[str, dict[str, Any]]
+        OpenAlex works keyed by cleaned DOI, as ``works_batch`` returns them.
+    fail_batch : bool, default=False
+        Whether ``works_batch`` should raise as an unreachable OpenAlex would.
+    """
+
+    def __init__(self, works: dict[str, dict[str, Any]], fail_batch: bool = False) -> None:
+        """Store the canned works."""
+        self.works = works
+        self.fail_batch = fail_batch
+        self.batches: list[list[str]] = []
+        self.singles: list[str] = []
+        self.efetches: list[list[str]] = []
+
+    def works_batch(self, identifiers: list[str], **_: object) -> dict[str, dict[str, Any]]:
+        """Answer an OR-filtered OpenAlex lookup from the canned works."""
+        self.batches.append(list(identifiers))
+        if self.fail_batch:
+            raise RuntimeError('OpenAlex unavailable')
+        return {doi: self.works[doi] for doi in identifiers if doi in self.works}
+
+    def get_work(self, identifier: str, **_: object) -> dict[str, Any] | None:
+        """Answer a single OpenAlex lookup from the canned works."""
+        self.singles.append(identifier)
+        return self.works.get(identifier.split(':', 1)[1])
+
+    def efetch_ids(self, identifiers: list[str], **_: object) -> list[str]:
+        """Record one EFetch and pass its identifiers on for parsing."""
+        self.efetches.append(list(identifiers))
+        return list(identifiers)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Patch the provider calls that the download workflow makes."""
+        monkeypatch.setattr(download.openalex, 'works_batch', self.works_batch)
+        monkeypatch.setattr(download.openalex, 'get_work', self.get_work)
+        monkeypatch.setattr(download.pubmed, 'efetch_ids', self.efetch_ids)
+        monkeypatch.setattr(download.pubmed, 'parse_articles', lambda pmids: [
+            {'pmid': pmid, 'abstract': f'PubMed abstract {pmid}.'} for pmid in pmids or []])
+        monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex', 'pubmed'])
+        monkeypatch.setattr(download, 'tqdm', NullProgress)
+
+
+def openalex_abstract_work(doi: str, text: str | None) -> dict[str, Any]:
+    """Return an OpenAlex work whose inverted index spells ``text``.
+
+    Parameters
+    ----------
+    doi : str
+        DOI to record on the work.
+    text : str or None
+        Abstract words, or ``None`` for a work without an abstract.
+
+    Returns
+    -------
+    dict[str, Any]
+        Minimal OpenAlex work record.
+    """
+    index = None if text is None else {word: [i] for i, word in enumerate(text.split())}
+    return {'id': 'https://openalex.org/W1', 'doi': f'https://doi.org/{doi}',
+            'abstract_inverted_index': index}
+
+
+def abstract_corpus(db_path: Path) -> None:
+    """Write four papers that exercise each abstract lookup route.
+
+    Parameters
+    ----------
+    db_path : Path
+        Corpus to create.
+    """
+    write_corpus(db_path, [
+        {'paper_id': 'doi:10.1000/a', 'doi': '10.1000/a'},
+        {'paper_id': 'doi:10.1000/b', 'doi': '10.1000/b', 'pmid': '111'},
+        {'paper_id': 'pmid:222', 'doi': ''},
+        {'paper_id': 'doi:10.1000/d', 'doi': '10.1000/d', 'pmid': '333'},
+    ])
+
+
+def test_download_papers_batches_openalex_and_pubmed_abstract_lookups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Abstract lookups go out in batches; only batch misses are asked singly (#74).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the providers.
+    """
+    db_path = tmp_path / 'papers.db'
+    abstract_corpus(db_path)
+    lookups = BatchLookups({'10.1000/a': openalex_abstract_work('10.1000/a', 'OpenAlex abstract.'),
+                            '10.1000/b': openalex_abstract_work('10.1000/b', None)})
+    lookups.install(monkeypatch)
+
+    summary = download.download_papers(str(db_path), download_format='abstract')
+
+    assert summary['abstracts'] == 4
+    assert lookups.batches == [['10.1000/a', '10.1000/b', '10.1000/d']]
+    assert lookups.singles == ['doi:10.1000/d']
+    assert lookups.efetches == [['111', '222', '333']]
+    with corpus.connect(db_path) as conn:
+        stored = {paper_id: (corpus.get_asset(conn, paper_id, 'abstract') or {}).get('content')
+                  for paper_id in ['doi:10.1000/a', 'doi:10.1000/b', 'pmid:222', 'doi:10.1000/d']}
+    assert stored == {'doi:10.1000/a': b'OpenAlex abstract.', 'doi:10.1000/b': b'PubMed abstract 111.',
+                      'pmid:222': b'PubMed abstract 222.', 'doi:10.1000/d': b'PubMed abstract 333.'}
+    assert download._PREFETCHED.get() is None
+
+
+def test_download_papers_falls_back_to_single_lookups_when_a_batch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed OpenAlex batch costs nothing beyond the per-paper path (#74).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the providers.
+    """
+    db_path = tmp_path / 'papers.db'
+    abstract_corpus(db_path)
+    lookups = BatchLookups({'10.1000/a': openalex_abstract_work('10.1000/a', 'OpenAlex abstract.')},
+                           fail_batch=True)
+    lookups.install(monkeypatch)
+
+    summary = download.download_papers(str(db_path), download_format='abstract')
+
+    assert summary['abstracts'] == 4
+    assert lookups.singles == ['doi:10.1000/a', 'doi:10.1000/b', 'doi:10.1000/d']
+    assert lookups.efetches == [['111', '222', '333']]
+
+
+def test_abstract_prefetch_skips_stored_abstracts_and_lone_lookups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing is batched for stored abstracts, single lookups or unsafe DOIs (#74).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the providers.
+    """
+    db_path = tmp_path / 'papers.db'
+    papers = [{'paper_id': 'doi:10.1000/a', 'doi': '10.1000/a'},
+              {'paper_id': 'doi:10.1000/b', 'doi': '10.1000/b'},
+              {'paper_id': 'doi:10.1000/c,d', 'doi': '10.1000/c,d'}]
+    write_corpus(db_path, papers)
+    with corpus.connect(db_path) as conn:
+        corpus.add_asset(conn, papers[0], 'stored abstract', role='abstract', kind='text',
+                         mime_type='text/plain', source='old')
+        lookups = BatchLookups({})
+        lookups.install(monkeypatch)
+
+        prefetched = download._prefetch_abstract_metadata(conn, papers, ['openalex'])
+        assert lookups.batches == [['10.1000/b']]
+        assert prefetched.openalex == {}
+
+        lookups.batches.clear()
+        download._prefetch_abstract_metadata(conn, papers[:2], ['openalex'])
+        assert lookups.batches == []

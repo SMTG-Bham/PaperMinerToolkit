@@ -465,6 +465,11 @@ where PubMed sits in the order, whichever way round you type them.
 The orders differ deliberately:
 
 - **Abstracts** lead with the providers that serve one straight from metadata already in hand.
+  Their OpenAlex and PubMed lookups are batched: for each block of 100 papers, OpenAlex works are
+  fetched 100 to a request, and the PubMed records of papers OpenAlex has no abstract for are
+  fetched 200 to a request, so 200 abstracts cost about two OpenAlex requests rather than 200.
+  A paper a batch does not return is still looked up on its own, and the batched OpenAlex records
+  also serve that paper's later OpenAlex PDF or full-text lookups.
 - **Text** puts the native structured sources first and OpenAlex last, because OpenAlex's is GROBID
   TEI derived from a PDF rather than a publisher document, and it is the only metered full-text
   source. It is genuinely a last resort: nothing reaches it unless the other four could not supply

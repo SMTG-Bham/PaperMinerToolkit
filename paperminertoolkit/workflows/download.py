@@ -13,6 +13,7 @@ serves, so text from either needs no PDF scrape.
 from __future__ import annotations
 
 import ast
+import contextvars
 import io
 import json
 import os
@@ -39,6 +40,7 @@ from paperminertoolkit.corpus.database import (add_asset,
                                 get_asset_metadata, paper_rows,
                                 set_pipeline_status as _set_status, upsert_paper)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses
+from paperminertoolkit.corpus.metadata import clean_doi
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
 from paperminertoolkit.settings import load_settings
@@ -454,7 +456,7 @@ def _download_openalex_pdf(
     if identifier is None:
         return False, 'missing DOI'
     try:
-        work = openalex.get_work(identifier, api_key=openalex.configured_api_key())
+        work = _openalex_work(identifier, openalex.configured_api_key())
     except RuntimeError as e:
         return False, str(e)
     if not work:
@@ -497,7 +499,7 @@ def _download_openalex_cached_pdf(
                        'https://openalex.org/users: run pmt config openalex-key or set '
                        'OPENALEX_API_KEY')
     try:
-        work = openalex.get_work(identifier, api_key=api_key)
+        work = _openalex_work(identifier, api_key)
         if not work:
             return False, f'no OpenAlex work found for {identifier}'
         url = openalex.cached_pdf_url(work)
@@ -544,7 +546,7 @@ def _download_openalex_tei_text(
     if not api_key:
         return False, 'OpenAlex GROBID downloads require an API key', None
     try:
-        work = openalex.get_work(identifier, api_key=api_key)
+        work = _openalex_work(identifier, api_key)
         if not work:
             return False, f'no OpenAlex work found for {identifier}', None
         document = openalex.full_text_document(work, api_key)
@@ -717,9 +719,13 @@ def _download_pubmed_abstract(
         if not pmid:
             return False, 'missing PMID', ''
         paper['pmid'] = pmid
-        articles = pubmed.parse_articles(
-            pubmed.efetch_ids([pmid], api_key=api_key, email=email)
-        )
+        prefetched = _PREFETCHED.get()
+        if prefetched is not None and pmid in prefetched.pubmed:
+            articles = [prefetched.pubmed[pmid]]
+        else:
+            articles = pubmed.parse_articles(
+                pubmed.efetch_ids([pmid], api_key=api_key, email=email)
+            )
     except RuntimeError as e:
         return False, str(e), ''
     if not articles:
@@ -1293,7 +1299,7 @@ def _download_openalex_abstract(
     if identifier is None:
         return False, 'missing DOI or OpenAlex ID', ''
     try:
-        work = openalex.get_work(identifier, api_key=openalex.configured_api_key())
+        work = _openalex_work(identifier, openalex.configured_api_key())
     except RuntimeError as error:
         return False, str(error), ''
     if not work:
@@ -1471,6 +1477,161 @@ def _elsevier_abstract_reachable(paper: Mapping[str, Any]) -> bool:
         Whether an Elsevier API key is configured.
     """
     return _elsevier_configured()
+
+
+class _Prefetched:
+    """Metadata fetched in batches for one window of a download run (#74).
+
+    Attributes
+    ----------
+    openalex : dict[str, dict[str, Any]]
+        OpenAlex work records keyed by :func:`_openalex_identifier`'s value.
+    pubmed : dict[str, dict[str, Any]]
+        Parsed PubMed records keyed by bare PMID.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing prefetched."""
+        self.openalex: dict[str, dict[str, Any]] = {}
+        self.pubmed: dict[str, dict[str, Any]] = {}
+
+
+_PREFETCHED: contextvars.ContextVar[_Prefetched | None] = contextvars.ContextVar(
+    'paperminertoolkit_download_prefetched', default=None)
+PREFETCH_WINDOW = openalex.MAX_FILTER_VALUES
+"""Papers whose metadata is prefetched together, one OpenAlex filter's worth."""
+_BATCHABLE_OPENALEX_DOI = re.compile(r'^10\.\d{4,9}/[^\s,|]+$')
+"""DOIs safe inside an OpenAlex OR filter, where ``|`` joins values and ``,`` joins filters."""
+
+
+def _openalex_work(identifier: str, api_key: str | None) -> dict[str, Any] | None:
+    """Return an OpenAlex work, from this window's prefetch when it holds one.
+
+    Parameters
+    ----------
+    identifier : str
+        Identifier from :func:`_openalex_identifier`.
+    api_key : str or None
+        OpenAlex API key for a single lookup.
+
+    Returns
+    -------
+    dict[str, Any] or None
+        The work record, or ``None`` when OpenAlex does not know the work.
+
+    Raises
+    ------
+    RuntimeError
+        If a single lookup cannot be completed.
+    """
+    prefetched = _PREFETCHED.get()
+    if prefetched is not None and identifier in prefetched.openalex:
+        return prefetched.openalex[identifier]
+    return openalex.get_work(identifier, api_key=api_key)
+
+
+def _openalex_has_abstract(work: Mapping[str, Any] | None) -> bool:
+    """Return whether an OpenAlex work would yield an abstract.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any] or None
+        OpenAlex work record.
+
+    Returns
+    -------
+    bool
+        Whether :func:`_download_openalex_abstract` would succeed with it.
+    """
+    return bool(work) and bool(_clean_abstract(
+        openalex.reconstruct_abstract(work.get('abstract_inverted_index'))))
+
+
+def _prefetch_abstract_metadata(
+    conn: sqlite3.Connection,
+    papers: Iterable[Mapping[str, Any]],
+    sources: Iterable[str],
+    force: bool = False,
+) -> _Prefetched:
+    """Batch the OpenAlex and PubMed lookups a window's abstracts will make (#74).
+
+    Abstracts are tried in registry order, OpenAlex first, so every paper that
+    needs an abstract and has a DOI or OpenAlex ID is about to be looked up on
+    OpenAlex one request at a time. Those lookups are made here as OR-filtered
+    batches of up to 100 instead. PubMed comes next, so papers OpenAlex will
+    not give an abstract for and that already store a PMID have their records
+    fetched in one EFetch of up to 200.
+
+    Only lookups that would certainly be made are batched, so a batch never
+    asks about a paper the per-paper path would have left alone. A work the
+    batch does not return, and every lookup when a batch request fails, falls
+    back to the single request the paper would have made anyway. Fewer than
+    two lookups are left to that path too, since a batch of one saves nothing,
+    and so is a DOI containing ``,`` or ``|``, which would break the filter.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection, used to skip papers whose abstract is stored.
+    papers : Iterable[Mapping[str, Any]]
+        Paper rows in this window.
+    sources : Iterable[str]
+        Resolved provider names for this run.
+    force : bool, default=False
+        Whether stored abstracts are being replaced.
+
+    Returns
+    -------
+    _Prefetched
+        Records found, keyed for the per-paper handlers.
+    """
+    prefetched = _Prefetched()
+    requested = set(sources)
+    needing = [paper for paper in papers
+               if force or get_asset_metadata(conn, paper.get('paper_id'), 'abstract') is None]
+    if 'openalex' in requested:
+        identifiers = {identifier: paper for paper in needing
+                       if (identifier := _openalex_identifier(paper)) is not None}
+        by_doi = {identifier: doi for identifier in identifiers if identifier.startswith('doi:')
+                  if _BATCHABLE_OPENALEX_DOI.match(doi := clean_doi(identifier.split(':', 1)[1]))}
+        by_id = [identifier for identifier in identifiers if not identifier.startswith('doi:')]
+        if len(identifiers) > 1:
+            api_key = openalex.configured_api_key()
+            try:
+                if by_doi:
+                    works = openalex.works_batch(list(by_doi.values()), select=None, api_key=api_key)
+                    prefetched.openalex.update(
+                        {identifier: works[doi] for identifier, doi in by_doi.items() if doi in works})
+                if by_id:
+                    works = openalex.works_batch(by_id, filter_name='ids.openalex', select=None,
+                                                 api_key=api_key)
+                    prefetched.openalex.update(
+                        {identifier: works[identifier] for identifier in by_id if identifier in works})
+            except RuntimeError as error:
+                print(f'OpenAlex batch lookup failed, looking papers up one at a time: {error}')
+    if 'pubmed' in requested:
+        pmids = []
+        for paper in needing:
+            pmid = _pubmed_identifier(paper)
+            if pmid is None:
+                continue
+            identifier = _openalex_identifier(paper) if 'openalex' in requested else None
+            if identifier is not None and _openalex_has_abstract(prefetched.openalex.get(identifier)):
+                continue
+            pmids.append(pmid)
+        pmids = list(dict.fromkeys(pmids))
+        if len(pmids) > 1:
+            api_key, email = _pubmed_credentials()
+            try:
+                for chunk in provider.chunked(pmids, pubmed.EFETCH_BATCH_SIZE):
+                    articles = pubmed.parse_articles(pubmed.efetch_ids(chunk, api_key=api_key, email=email))
+                    for article in articles:
+                        pmid = pubmed.normalize_pmid(article.get('pmid'))
+                        if pmid:
+                            prefetched.pubmed[pmid] = article
+            except RuntimeError as error:
+                print(f'PubMed batch lookup failed, fetching records one at a time: {error}')
+    return prefetched
 
 
 def _download_abstract(paper: MutableMapping[str, Any],
@@ -1971,38 +2132,45 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                 )
         progress_events.emit('run_start', total=len(papers), format=download_format)
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-download-') as download_dir:
-            with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0', disable=bars_disabled()) as pbar:
-                for done, paper in enumerate(papers, start=1):
-                    paper_summary = _download_paper(conn,
-                                                    paper,
-                                                    download_dir,
-                                                    download_format,
-                                                    sources,
-                                                    download_abstract=download_abstract,
-                                                    force=force)
-                    for key, value in paper_summary.items():
-                        summary[key] += value
-                    if want_supplements:
-                        try:
-                            supplemental = download_paper_supplements(
-                                conn, paper, sources=selected_supplement_sources, force=force,
-                            )
-                        except Exception as error:
-                            # One failed SI provider must not abort the remaining corpus.
-                            _set_status(paper, 'supplement_download_status', 'failed', str(error))
-                            upsert_paper(conn, paper)
-                            supplemental = {'supplement_discovery_failed': 1}
-                        for key, value in supplemental.items():
+            prefetch_token = _PREFETCHED.set(None)
+            try:
+                with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0', disable=bars_disabled()) as pbar:
+                    for done, paper in enumerate(papers, start=1):
+                        if download_abstract and (done - 1) % PREFETCH_WINDOW == 0:
+                            window = papers[done - 1:done - 1 + PREFETCH_WINDOW]
+                            _PREFETCHED.set(_prefetch_abstract_metadata(conn, window, sources, force=force))
+                        paper_summary = _download_paper(conn,
+                                                        paper,
+                                                        download_dir,
+                                                        download_format,
+                                                        sources,
+                                                        download_abstract=download_abstract,
+                                                        force=force)
+                        for key, value in paper_summary.items():
                             summary[key] += value
-                    else:
-                        supplemental = {}
-                    pbar.update(1)
-                    fetched = {key: paper_summary.get(key, 0)
-                               for key in ('texts', 'pdfs', 'abstracts')}
-                    fetched['supplements'] = supplemental.get('supplements', 0)
-                    progress_events.emit('paper_done', paper_id=paper['paper_id'], done=done,
-                                         total=len(papers), fetched=fetched,
-                                         status='fetched' if any(fetched.values()) else 'nothing_new')
+                        if want_supplements:
+                            try:
+                                supplemental = download_paper_supplements(
+                                    conn, paper, sources=selected_supplement_sources, force=force,
+                                )
+                            except Exception as error:
+                                # One failed SI provider must not abort the remaining corpus.
+                                _set_status(paper, 'supplement_download_status', 'failed', str(error))
+                                upsert_paper(conn, paper)
+                                supplemental = {'supplement_discovery_failed': 1}
+                            for key, value in supplemental.items():
+                                summary[key] += value
+                        else:
+                            supplemental = {}
+                        pbar.update(1)
+                        fetched = {key: paper_summary.get(key, 0)
+                                   for key in ('texts', 'pdfs', 'abstracts')}
+                        fetched['supplements'] = supplemental.get('supplements', 0)
+                        progress_events.emit('paper_done', paper_id=paper['paper_id'], done=done,
+                                             total=len(papers), fetched=fetched,
+                                             status='fetched' if any(fetched.values()) else 'nothing_new')
+            finally:
+                _PREFETCHED.reset(prefetch_token)
     print(
         f"Download complete: {summary['texts']} text files, "
         f"{summary['pdfs']} PDFs, {summary['abstracts']} abstracts downloaded."
