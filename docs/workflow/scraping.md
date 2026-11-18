@@ -119,6 +119,16 @@ pmt postprocess papers.db band_gap_validation scraped.csv
 
 This writes `scraped.postprocessed.csv` and `scraped.postprocessed.dropped.csv`. The source text is read from the corpus as it would be for a scrape. Image records are kept unchecked. Use `--no-merge`, `--no-verify` or `--no-tables` to apply only part of it.
 
+## Text printed inside figures
+
+A PDF's text layer includes the labels and numbers printed inside its figures: axis ticks, legends, and values in heat maps or annotated plots. In text mode these reach the model as loose numbers that it can mistake for reported values. With `--no-figure-text`, figures are detected as in layout mode (art matched to a caption), and short text blocks inside them are redacted before the PDF is read:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --no-figure-text
+```
+
+Captions, tables and body prose are kept. A block with a line of 40 or more characters is treated as prose even inside a figure region, and figure regions that overlap a detected table are left alone. Papers read from a publisher text asset are unaffected. The option also applies to `pmt postprocess`, so values shown only in a figure fail the values-in-source check. To extract values from figures, use an image mode.
+
 ## Reruns and temporary files
 
 Successful stages are skipped by default. Statuses belong to the corpus and stage, not to a recipe, so selecting another recipe does not rerun successful stages. Use `--force` when changing recipes or deliberately rescraping, and choose a fresh intermediate output path because scrape output appends to existing files:
