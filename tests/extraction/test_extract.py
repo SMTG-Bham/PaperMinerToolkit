@@ -483,3 +483,20 @@ def test_convert_units_returns_missing_values_without_calling_model(monkeypatch:
     monkeypatch.setattr(extract, 'query_model', fail_query_model)
 
     assert extract.convert_units(['nan', "['None']"], 'Conductivity', 'S cm^-1') == [None, None]
+
+
+@pytest.mark.parametrize(('reply', 'expected'), [('YES', True), (' no.', False), ('**Yes**, it does.', True), ('Unclear', None)])
+def test_ask_paper_question_reads_a_yes_or_no_reply(
+    monkeypatch: pytest.MonkeyPatch, reply: str, expected: bool | None,
+) -> None:
+    """Send the paper and question, and read the reply's first word."""
+    sent: list[list[dict[str, Any]]] = []
+
+    def query(messages: list[dict[str, Any]], model_config: object = None) -> str:
+        """Record the messages and return the canned reply."""
+        sent.append(messages)
+        return reply
+
+    monkeypatch.setattr(extract, 'query_model', query)
+    assert extract.ask_paper_question('Paper body.', 'Own results?') is expected
+    assert 'Paper body.' in sent[0][1]['content'] and 'Question: Own results?' in sent[0][1]['content']

@@ -151,10 +151,58 @@ def test_scrape_papers_appends_tables_merges_chunks_and_verifies(
     assert materials[['Name', 'Conductivity']].values.tolist() == [['LLZO', '1.2 mS']]
     audit = pd.read_csv(scrape.dropped_path(output_path))
     assert audit[['Record', 'Check']].values.tolist() == [['Ghost', 'values in source'], ['Ghost', 'drop empty']]
-    assert 'Checks removed or edited 2 items' in capsys.readouterr().out
+    assert 'Checks removed, edited or moved 2 items' in capsys.readouterr().out
 
     sent.clear()
     output_path.unlink()
     scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='text', force=True, tables=False)
     assert '=== TABLES ===' not in sent[0]
     assert len(pd.read_csv(output_path, index_col=0)) == 2
+
+
+def test_scrape_papers_asks_the_paper_question_and_moves_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ask the recipe's paper question with --verify and move fields on a no."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    (papers_dir / 'paper-1.txt').write_text('LLZO conducts at 1.2 mS [3].', encoding='utf-8')
+    (papers_dir / 'paper-2.txt').write_text('No materials here.', encoding='utf-8')
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    write_corpus(db_path, [{'paper_id': 'paper-1', 'doi': '10.1/one'}, {'paper_id': 'paper-2', 'doi': '10.1/two'}])
+    recipe = sample_recipe()
+    recipe['search fields']['Cited'] = {'prompt': 'Cited conductivity.', 'example': '1e-3 S cm^-1'}
+    recipe['checks'] = {'paper question': {'question': 'Own results?', 'if no': {'move': {'Conductivity': 'Cited'}}}}
+    asked = []
+
+    def fake_scrape_text(text: str, recipe: Mapping[str, Any], model_config: object = None) -> list[dict[str, str]]:
+        """Return one record for the first paper only."""
+        return [{'Name': 'LLZO', 'Conductivity': '1.2 mS', 'Cited': 'None'}] if 'LLZO' in text else []
+
+    def fake_ask(text: str, question: str, model_config: object = None) -> bool:
+        """Answer no, recording what was asked."""
+        asked.append((text, question))
+        return False
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda name: recipe)
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
+    monkeypatch.setattr(scrape, 'ask_paper_question', fake_ask)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='text', verify=True)
+
+    assert asked == [('LLZO conducts at 1.2 mS [3].', 'Own results?')]
+    materials = pd.read_csv(output_path, index_col=0, keep_default_na=False)
+    assert materials[['Name', 'Conductivity', 'Cited']].values.tolist() == [['LLZO', 'None', "['1.2 mS']"]]
+    audit = pd.read_csv(scrape.dropped_path(output_path))
+    assert audit[['Field', 'Check', 'Action', 'Detail']].values.tolist() == [
+        ['Conductivity', 'paper question', 'moved', 'to Cited'],
+    ]
+
+    asked.clear()
+    output_path.unlink()
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='text', force=True)
+    assert asked == []

@@ -1700,7 +1700,16 @@
                     "spin-orbital"
                 ]
             },
-            "drop empty": true
+            "drop empty": true,
+            "paper question": {
+                "question": "Does this paper report any band-gap value that its own authors measured or calculated in this work? Values quoted from other publications, earlier work, or databases do not count, and neither do reviews of the literature.",
+                "if no": {
+                    "move": {
+                        "Band gap": "Cited literature band gaps",
+                        "All band gaps": "Cited literature band gaps"
+                    }
+                }
+            }
         }
     }
 }

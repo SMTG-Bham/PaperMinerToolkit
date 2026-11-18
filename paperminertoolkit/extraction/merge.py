@@ -133,7 +133,7 @@ def _merge_into(target: dict[str, Any], record: Mapping[str, Any]) -> None:
             target[field] = value
 
 
-def _items(value: object) -> list[object]:
+def field_items(value: object) -> list[object]:
     """Return a field's items as a list, without missing values."""
     items = value if isinstance(value, list) else [value]
     return [item for item in items if not is_missing(item)]
@@ -164,7 +164,7 @@ def same_content(first: Mapping[str, Any], second: Mapping[str, Any], fields: Se
     """
     reported = False
     for field in fields:
-        a, b = _items(first.get(field)), _items(second.get(field))
+        a, b = field_items(first.get(field)), field_items(second.get(field))
         if not a and not b:
             continue
         if (len(a) != len(b) or not all(any(same_item(x, y) for y in b) for x in a)

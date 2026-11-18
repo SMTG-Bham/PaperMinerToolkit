@@ -35,13 +35,14 @@ from paperminertoolkit.corpus.database import (connect,
                                     set_figure_extraction_status,
                                     set_pipeline_status as _set_status,
                                     upsert_paper)
-from paperminertoolkit.extraction.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
+from paperminertoolkit.extraction.extract import (ask_paper_question, build_scrape_prompt, combine_material_records,
+                                                  scrape_images, scrape_text, token_length)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
 from paperminertoolkit.extraction.merge import merge_chunk_records
 from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
-from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, verify_records
+from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
@@ -986,6 +987,14 @@ def scrape_papers(db_path: str = 'papers.db',
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
                                 text_materials = merge_chunk_records(text_materials, recipe_data)
+                                question = (recipe_data.get('checks') or {}).get('paper question')
+                                if verify and question and should_scrape_text and text_materials:
+                                    answer = ask_paper_question(text_chunks[0], question['question'],
+                                                                model_config=text_config)
+                                    text_materials, moved = apply_paper_answer(
+                                        text_materials, recipe_data, answer, str(row['paper_id']),
+                                    )
+                                    summary['dropped'] += _write_dropped(moved, output_path)
                                 if verify:
                                     text_materials, dropped = verify_records(
                                         text_materials, recipe_data, source_text, str(row['paper_id']),
@@ -1158,7 +1167,7 @@ def scrape_papers(db_path: str = 'papers.db',
             f"Analysed {summary['layout_figures']} layout-aware figures with their captions."
         )
     if summary['dropped']:
-        print(f"Checks removed or edited {summary['dropped']} items; see {dropped_path(output_path)}.")
+        print(f"Checks removed, edited or moved {summary['dropped']} items; see {dropped_path(output_path)}.")
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
     if summary['chunked_inputs']:
