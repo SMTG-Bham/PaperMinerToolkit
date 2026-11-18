@@ -30,6 +30,13 @@ Recipe keys
     the item's descriptive parts.
 ``"drop empty"``
     Drop items without a value and records left with no reported fields.
+``"local words"``
+    ``{"key": "gap_type", "words": [...], "fields": [...], "window": 300}``.
+    Remove each listed word from an item's ``key`` part unless the source
+    prints the word within ``window`` characters of the item's value (or in
+    the same table). Use it for descriptive words models add by habit, such
+    as a gap type the paper does not state for that value. ``fields``
+    defaults to every checked field.
 ``"paper question"``
     ``{"question": "...", "if no": {"move": {"<field>": "<target field>" | null}}}``.
     During ``pmt scrape --verify`` the model is asked this yes/no question
@@ -64,7 +71,9 @@ _CHECK_TYPES: dict[str, type | tuple[type, ...]] = {
     'unsupported terms': dict,
     'drop empty': bool,
     'paper question': dict,
+    'local words': dict,
 }
+DEFAULT_LOCAL_WINDOW = 300
 DROPPED_COLUMNS = ['Paper id', 'Record', 'Field', 'Item', 'Check', 'Action', 'Detail']
 _DASHES = dict.fromkeys([*range(0x2010, 0x2016), 0x2212], '-')
 # Words that join two numbers in a range, e.g. '3.9 to 4.66 eV', rather than units.
@@ -112,6 +121,22 @@ def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any
             )
     if 'paper question' in checks:
         _validate_paper_question(checks['paper question'], source, search_fields)
+    if 'local words' in checks:
+        _validate_local_words(checks['local words'], source, search_fields)
+
+
+def _validate_local_words(block: dict[str, Any], source: str, search_fields: Mapping[str, Any]) -> None:
+    """Validate a ``"local words"`` check: an item key, the words, and optional fields and window."""
+    where = f'Recipe in {source} "checks" "local words"'
+    key, words, fields = block.get('key'), block.get('words'), block.get('fields', [])
+    window = block.get('window', DEFAULT_LOCAL_WINDOW)
+    if (set(block) - {'key', 'words', 'fields', 'window'} or not isinstance(key, str) or not key.strip()
+            or not isinstance(words, list) or not words or any(not isinstance(w, str) or not w.strip() for w in words)):
+        raise ValueError(f'{where} must have a "key" and a non-empty list of "words".')
+    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+        raise ValueError(f'{where} "window" must be a positive number of characters.')
+    if not isinstance(fields, list) or any(field not in search_fields for field in fields):
+        raise ValueError(f'{where} "fields" must list known fields.')
 
 
 def _validate_paper_question(block: dict[str, Any], source: str, search_fields: Mapping[str, Any]) -> None:
@@ -234,6 +259,37 @@ class _Checker:
             term for term, phrases in checks.get('unsupported terms', {}).items()
             if not any(_mentions(self.source, phrase) for phrase in [term, *phrases])
         ]
+        self.local = checks.get('local words') or {}
+        self.blocks = re.split(r'\n\s*\n', self.source) if self.local else []
+
+    def _local_context(self, value: object) -> str | None:
+        """Return the source around each printed occurrence of a value's first number, or ``None``."""
+        match = re.search(r'\d+(?:\.\d+)?', str(value))
+        if not match:
+            return None
+        pattern = re.compile(rf'(?<![\d.]){re.escape(match.group())}(?!\d)')
+        window = int(self.local.get('window', DEFAULT_LOCAL_WINDOW))
+        parts = []
+        for block in self.blocks:
+            in_table = block.lstrip().startswith(('|', 'table'))
+            for found in pattern.finditer(block):
+                parts.append(block if in_table else block[max(0, found.start() - window):found.end() + window])
+        return ' '.join(parts) or None
+
+    def _edit_local_words(self, item: dict[str, Any], field: str) -> dict[str, Any]:
+        """Remove listed words the source does not print near the item's value."""
+        key = self.local['key']
+        fields = self.local.get('fields') or []
+        if (fields and field not in fields) or not isinstance(item.get(key), str):
+            return item
+        context = self._local_context(item.get(self.value_key))
+        if context is None:
+            return item  # the value is not printed; "values in source" decides about it
+        edited = dict(item)
+        for word in self.local['words']:
+            if _mentions(_fold(edited[key]), word) and not _mentions(context, word):
+                edited[key] = _remove_term(edited[key], word)
+        return edited
 
     def _value(self, item: object) -> object:
         """Return the value part of an item."""
@@ -263,8 +319,8 @@ class _Checker:
         return None
 
     def _edit(self, item: object, field: str, audit: _Audit) -> object:
-        """Remove unsupported terms from an item's descriptive parts."""
-        if not self.unsupported or not isinstance(item, Mapping):
+        """Remove unsupported terms and unlocated local words from an item's descriptive parts."""
+        if not isinstance(item, Mapping):
             return item
         edited = dict(item)
         for key, part in item.items():
@@ -275,6 +331,11 @@ class _Checker:
                     edited[key] = _remove_term(edited[key], term)
         if edited != item:
             audit.add(field, item, 'unsupported terms', 'edited', json.dumps(edited, ensure_ascii=False))
+        if self.local:
+            located = self._edit_local_words(edited, field)
+            if located != edited:
+                audit.add(field, edited, 'local words', 'edited', json.dumps(located, ensure_ascii=False))
+            edited = located
         return edited
 
     def check_field(self, field: str, value: Any, audit: _Audit) -> Any:
