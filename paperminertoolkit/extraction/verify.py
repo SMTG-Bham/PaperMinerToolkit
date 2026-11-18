@@ -16,7 +16,8 @@ Recipe keys
 ``"tolerance"``
     Relative tolerance for ``"values in source"``. Defaults to ``0.005``.
 ``"unit"``
-    Drop values written with any other unit (unitless values are kept).
+    Unit, or list of units, values may be written in; drop values written with
+    any other unit (unitless values are kept), e.g. ``["eV", "meV"]``.
 ``"exclude terms"``
     Drop items whose text mentions one of these terms.
 ``"exclude terms keys"``
@@ -49,7 +50,7 @@ _CHECK_TYPES: dict[str, type | tuple[type, ...]] = {
     'value key': str,
     'values in source': bool,
     'tolerance': (int, float),
-    'unit': str,
+    'unit': (str, list),
     'exclude terms': list,
     'exclude terms keys': list,
     'unsupported terms': dict,
@@ -86,8 +87,9 @@ def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any
         expected = _CHECK_TYPES[key]
         if not isinstance(value, expected) or (expected != bool and isinstance(value, bool)):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" has the wrong type.')
-    for key in ('fields', 'exclude terms', 'exclude terms keys'):
-        if any(not isinstance(item, str) or not item.strip() for item in checks.get(key, [])):
+    for key in ('fields', 'unit', 'exclude terms', 'exclude terms keys'):
+        values = checks.get(key, [])
+        if any(not isinstance(item, str) or not item.strip() for item in ([values] if isinstance(values, str) else values)):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" must be a list of strings.')
     unknown_fields = [field for field in checks.get('fields', []) if field not in search_fields]
     if unknown_fields:
@@ -149,7 +151,9 @@ class _Checker:
         self.tolerance = float(checks.get('tolerance', DEFAULT_SOURCE_TOLERANCE))
         self.source = _fold(source_text)
         self.source_numbers = numbers(source_text)
-        self.unit = _fold(checks['unit']) if checks.get('unit') else ''
+        units = checks.get('unit') or []
+        self.unit_names = [units] if isinstance(units, str) else list(units)
+        self.units = {_fold(unit) for unit in self.unit_names}
         self.unsupported = [
             term for term, phrases in checks.get('unsupported terms', {}).items()
             if not any(_mentions(self.source, phrase) for phrase in [term, *phrases])
@@ -173,10 +177,10 @@ class _Checker:
         for term in self.checks.get('exclude terms', []):
             if _mentions(text, term):
                 return 'exclude terms', f'mentions "{term}"'
-        if self.unit:
+        if self.units:
             units = re.findall(r'\d\s*([^\W\d_]+)', _fold(value))
-            if units and units[0] != self.unit:
-                return 'unit', f'not in {self.checks["unit"]}'
+            if units and units[0] not in self.units:
+                return 'unit', f'not in {" or ".join(self.unit_names)}'
         if self.checks.get('values in source') and numbers(value):
             if not printed_in(value, self.source_numbers, self.tolerance):
                 return 'values in source', 'number not printed in the source text'

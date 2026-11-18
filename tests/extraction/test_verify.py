@@ -147,6 +147,17 @@ def test_exclude_terms_keys_limit_which_parts_are_searched() -> None:
     assert [row['Detail'] for row in dropped] == ['mentions "work function"']
 
 
+def test_unit_accepts_a_list_of_units() -> None:
+    """Keep values in any listed unit and name the units when dropping."""
+    records = [{'Material': 'InSb', 'Gaps': [gap('231 meV'), gap('2.04 eV'), gap('185 K')]}]
+    source = 'InSb has a gap of 231 meV; 2.04 eV; Tc = 185 K.'
+
+    kept, dropped = verify.verify_records(records, recipe(unit=['eV', 'meV']), source)
+
+    assert kept[0]['Gaps'] == [gap('231 meV'), gap('2.04 eV')]
+    assert [row['Detail'] for row in dropped] == ['not in eV or meV']
+
+
 def test_remove_term_handles_separators_and_whole_strings() -> None:
     """Strip a term with its separator, leaving 'None' when nothing remains."""
     assert verify._remove_term('DFT; HSE06; SOC', 'SOC') == 'DFT; HSE06'
@@ -159,6 +170,7 @@ def test_remove_term_handles_separators_and_whole_strings() -> None:
     ([], 'must be a JSON object'),
     ({'bogus': True}, 'unknown key'),
     ({'unit': 3}, 'wrong type'),
+    ({'unit': ['eV', '']}, 'list of strings'),
     ({'tolerance': True}, 'wrong type'),
     ({'fields': ['']}, 'list of strings'),
     ({'fields': ['Nope']}, 'unknown field'),

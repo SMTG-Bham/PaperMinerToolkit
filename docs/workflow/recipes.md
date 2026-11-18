@@ -495,7 +495,7 @@ A recipe can declare checks that remove or correct extracted items after the mod
 | `fields` | Fields to check. Defaults to every field that is not an identity field. |
 | `value key` | Key holding the value in list-of-object items. Defaults to `value`. |
 | `values in source` | Drop an item whose numbers are not printed in the paper's text or tables, within `tolerance` (relative, default `0.005`). |
-| `unit` | Drop a value whose first unit is another unit, such as `3.64 V` when the unit is `eV`. Values with no unit are kept. |
+| `unit` | Drop a value whose first unit is not the given unit, or not one of a list of units, such as `3.64 V` when the unit is `eV`. Use a list such as `["eV", "meV"]` to accept several. Values with no unit are kept. |
 | `exclude terms` | Drop an item whose parts mention any of these terms (whole words, case-insensitive). |
 | `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
 | `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
