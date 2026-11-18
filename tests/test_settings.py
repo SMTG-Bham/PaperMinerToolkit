@@ -60,6 +60,7 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
             'temperature': '0.2',
             'top_p': '0.9',
             'input_token_limit': '64000',
+            'output_token_limit': '20000',
         },
     )
 
@@ -69,16 +70,18 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
     assert merged['temperature'] == 0.2
     assert merged['top_p'] == 0.9
     assert merged['input_token_limit'] == 64000
+    assert merged['output_token_limit'] == 20000
 
 
 def test_merge_profile_defaults_missing_input_token_limit() -> None:
     """Default an empty model input token limit."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
-        {'input_token_limit': ''},
+        {'input_token_limit': '', 'output_token_limit': ''},
     )
 
     assert merged['input_token_limit'] == settings.DEFAULT_INPUT_TOKEN_LIMIT
+    assert merged['output_token_limit'] == settings.DEFAULT_OUTPUT_TOKEN_LIMIT
 
 
 def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,6 +188,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE', '0.4')
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TOP_P', '0.7')
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_INPUT_TOKEN_LIMIT', '96000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_OUTPUT_TOKEN_LIMIT', '24000')
 
     profile = settings.load_settings()['model_profiles']['vision']
 
@@ -196,6 +200,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     assert profile['temperature'] == 0.4
     assert profile['top_p'] == 0.7
     assert profile['input_token_limit'] == 96000
+    assert profile['output_token_limit'] == 24000
 
 
 def test_save_settings_writes_json_to_config_file(isolated_settings_file: Path) -> None:
@@ -233,6 +238,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
         temperature=0.3,
         top_p=0.8,
         input_token_limit=120000,
+        output_token_limit=16000,
     )
 
     loaded = settings.load_settings()
@@ -246,6 +252,7 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
     assert profile['temperature'] == 0.3
     assert profile['top_p'] == 0.8
     assert profile['input_token_limit'] == 120000
+    assert profile['output_token_limit'] == 16000
 
 
 def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

@@ -282,7 +282,7 @@ def query_model(messages: list[dict[str, Any]], model_config: ModelConfig | None
         Model response text.
     """
     config = model_config or ModelConfig.from_profile('text')
-    return query_text(messages, config=config, max_output_tokens=10000)
+    return query_text(messages, config=config, max_output_tokens=config.output_token_limit)
 
 
 def _strip_fences(response: str) -> str:
@@ -481,7 +481,7 @@ def scrape_images(
                             image_paths,
                             config=config,
                             context=context,
-                            max_output_tokens=10000,
+                            max_output_tokens=config.output_token_limit,
                             compression_config=compression_config,
                             image_labels=image_labels)
     return _extract_json_objects(response)

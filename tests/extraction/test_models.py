@@ -61,6 +61,7 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
         'temperature': '0.1',
         'top_p': '0.8',
         'input_token_limit': '64000',
+        'output_token_limit': '24000',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -74,6 +75,8 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
     assert config.temperature == 0.3
     assert config.top_p == 0.8
     assert config.input_token_limit == 64000
+    assert config.output_token_limit == 24000
+    assert models.ModelConfig.from_profile('vision', output_token_limit='30000').output_token_limit == 30000
 
 
 def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch: pytest.MonkeyPatch) -> None:
