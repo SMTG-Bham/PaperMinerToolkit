@@ -127,7 +127,7 @@ A PDF's text layer includes the labels and numbers printed inside its figures: a
 pmt scrape papers.db band_gap_validation --mode text --verify --no-figure-text
 ```
 
-Captions, tables and body prose are kept. A block with a line of 40 or more characters is treated as prose even inside a figure region, and figure regions that overlap a detected table are left alone. Papers read from a publisher text asset are unaffected. The option also applies to `pmt postprocess`, so values shown only in a figure fail the values-in-source check. To extract values from figures, use an image mode.
+Captions, tables and body prose are kept. A block with a line of 40 or more characters is treated as prose even inside a figure region, and figure regions that overlap a captioned table are left alone. Papers read from a publisher text asset are unaffected. The option also applies to `pmt postprocess`, so values shown only in a figure fail the values-in-source check. To extract values from figures, use an image mode.
 
 ## Reruns and temporary files
 
