@@ -56,6 +56,7 @@ from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
 from paperminertoolkit.settings import (get_model_profile,
                                    DEFAULT_INPUT_TOKEN_LIMIT,
                                    DEFAULT_OUTPUT_TOKEN_LIMIT,
+                                   DEFAULT_REQUEST_TIMEOUT,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -1409,9 +1410,15 @@ def update_anthropic_api_key() -> None:
               show_default=True,
               help='Maximum tokens the model may generate per extraction request, including any reasoning '
                    'the server counts against it.')
+@click.option('--request-timeout',
+              default=DEFAULT_REQUEST_TIMEOUT,
+              type=click.FloatRange(min=1),
+              show_default=True,
+              help='Seconds to wait for one request to an OpenAI-compatible server. Raise it for reasoning '
+                   'models that think for longer than that on long inputs.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
                  capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int,
-                 output_token_limit: int) -> None:
+                 output_token_limit: int, request_timeout: float) -> None:
     """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
     set_model_profile(
@@ -1425,10 +1432,11 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         top_p=top_p,
         input_token_limit=input_token_limit,
         output_token_limit=output_token_limit,
+        request_timeout=request_timeout,
     )
     click.echo(
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit} '
-        f'output_token_limit={output_token_limit}')
+        f'output_token_limit={output_token_limit} request_timeout={request_timeout}')
 
 
 @click.command('status')
@@ -1439,7 +1447,8 @@ def model_status() -> None:
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} '
-            f'output_token_limit={config.get("output_token_limit")} base_url={config.get("base_url")}')
+            f'output_token_limit={config.get("output_token_limit")} request_timeout={config.get("request_timeout")} '
+            f'base_url={config.get("base_url")}')
 
 
 @click.command('providers')
