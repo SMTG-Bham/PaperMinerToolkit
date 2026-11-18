@@ -221,6 +221,7 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() 
     ]
     assert extract._extract_json_objects('bad {not json} then\n{"Name": "LLTO"}') == [{'Name': 'LLTO'}]
     assert extract._extract_json_objects('[]') == []
+    assert extract._extract_json_objects('[]\n```\n\nThe text reports no band gaps.') == []
 
     with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
         extract._extract_json_objects('No records were found.')

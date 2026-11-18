@@ -381,6 +381,8 @@ def _extract_json_objects(response: str) -> list[dict[str, Any]]:
             continue
     if data:
         return data
+    if response.startswith('[]'):
+        return []  # an empty list followed by an explanation, e.g. '[] The text reports no values.'
     preview = response[:500].replace('\n', ' ')
     raise ValueError(f'Model response did not contain valid JSON objects. Response preview: {preview}')
 
