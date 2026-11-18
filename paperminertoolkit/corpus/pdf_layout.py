@@ -409,14 +409,6 @@ def _overlaps(first: BoundingBox, bbox: Sequence[float]) -> bool:
     return first.x0 < x1 and x0 < first.x1 and first.y0 < y1 and y0 < first.y1
 
 
-def _table_bboxes(page: Any) -> list[Sequence[float]]:
-    """Return the boxes of tables PyMuPDF detects on a page, or none if detection fails."""
-    try:
-        return [table.bbox for table in page.find_tables().tables]
-    except Exception:
-        return []
-
-
 def _block_lines(block: Mapping[str, Any]) -> list[tuple[str, Sequence[float]]]:
     """Return a PyMuPDF text block's non-empty lines with their boxes."""
     lines = []
@@ -439,8 +431,10 @@ def pdf_without_figure_text(
 
     Figure regions come from :func:`detect_pdf_layout` (art matched to a
     caption). Inside them, only short text blocks are removed, so a region that
-    accidentally spans body prose leaves the prose alone, and regions that
-    overlap a detected table are skipped.
+    accidentally spans body prose leaves the prose alone, and figure regions
+    that overlap a captioned table's region are skipped. Uncaptioned grids such
+    as heat maps are not protected: PyMuPDF's table finder reports some of
+    them as tables, depending on its version.
 
     Parameters
     ----------
@@ -462,13 +456,15 @@ def pdf_without_figure_text(
     for figure in layout.figures:
         for box in figure.boxes:
             regions.setdefault(box.page, []).append(box)
+    tables = [box for table in layout.tables for box in table.boxes]
     removed: list[str] = []
     fitz = _load_fitz()
     with fitz.open(os.fspath(pdf_path)) as document:
         for page_number, boxes in sorted(regions.items()):
             page = document[page_number - 1]
-            tables = _table_bboxes(page)
-            boxes = [box for box in boxes if not any(_overlaps(box, table) for table in tables)]
+            boxes = [box for box in boxes
+                     if not any(table.page == page_number
+                                and _overlaps(box, (table.x0, table.y0, table.x1, table.y1)) for table in tables)]
             page_removed = []
             for block in page.get_text('dict').get('blocks', []):
                 if not isinstance(block, Mapping) or block.get('type', 0) != 0:
