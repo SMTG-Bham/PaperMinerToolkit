@@ -181,6 +181,7 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: p
         """Provide a minimal text model configuration."""
 
         name = 'fake-text-model'
+        output_token_limit = 12000
 
         @classmethod
         def from_profile(cls, profile: str) -> FakeConfig:
@@ -207,7 +208,7 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: p
     assert calls['profile'] == 'text'
     assert calls['messages'] == messages
     assert isinstance(calls['config'], FakeConfig)
-    assert calls['max_output_tokens'] == 10000
+    assert calls['max_output_tokens'] == 12000
 
 
 def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() -> None:
@@ -248,6 +249,11 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         calls['text_config'] = model_config
         return '[{"Name": "LLZO"}]'
 
+    class VisionConfig(dict):
+        """Vision profile values with the configured output limit."""
+
+        output_token_limit = 9000
+
     class FakeConfig:
         """Provide a minimal vision model configuration."""
 
@@ -255,7 +261,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         def from_profile(cls, profile: str) -> dict[str, str]:
             """Record and return the requested profile."""
             calls['vision_profile'] = profile
-            return {'profile': profile}
+            return VisionConfig(profile=profile)
 
     def fake_query_images(
         prompt: str,
@@ -290,7 +296,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_paths'] == ['figure.png']
     assert calls['image_config'] == {'profile': 'vision'}
     assert calls['image_context'] == 'nearby text'
-    assert calls['image_tokens'] == 10000
+    assert calls['image_tokens'] == 9000
     assert calls['image_compression'] is None
     assert calls['image_labels'] is None
     assert 'supplied paper text as context' in calls['image_prompt']

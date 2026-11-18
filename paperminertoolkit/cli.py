@@ -55,6 +55,7 @@ from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  train_topic_model)
 from paperminertoolkit.settings import (get_model_profile,
                                    DEFAULT_INPUT_TOKEN_LIMIT,
+                                   DEFAULT_OUTPUT_TOKEN_LIMIT,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -1402,8 +1403,15 @@ def update_anthropic_api_key() -> None:
               type=int,
               show_default=True,
               help='Maximum input tokens to send to the model before chunking.')
+@click.option('--output-token-limit',
+              default=DEFAULT_OUTPUT_TOKEN_LIMIT,
+              type=int,
+              show_default=True,
+              help='Maximum tokens the model may generate per extraction request, including any reasoning '
+                   'the server counts against it.')
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
-                 capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int) -> None:
+                 capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int,
+                 output_token_limit: int) -> None:
     """Configure a text or vision model profile from CLI options."""
     caps = list(capabilities) or infer_model_capabilities(profile, model)
     set_model_profile(
@@ -1416,9 +1424,11 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         temperature=temperature,
         top_p=top_p,
         input_token_limit=input_token_limit,
+        output_token_limit=output_token_limit,
     )
     click.echo(
-        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
+        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit} '
+        f'output_token_limit={output_token_limit}')
 
 
 @click.command('status')
@@ -1428,7 +1438,8 @@ def model_status() -> None:
         config = get_model_profile(profile)
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
-            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
+            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} '
+            f'output_token_limit={config.get("output_token_limit")} base_url={config.get("base_url")}')
 
 
 @click.command('providers')
