@@ -1709,6 +1709,19 @@
                         "All band gaps": "Cited literature band gaps"
                     }
                 }
+            },
+            "local words": {
+                "key": "gap_type",
+                "words": [
+                    "direct",
+                    "indirect",
+                    "optical",
+                    "fundamental"
+                ],
+                "fields": [
+                    "Cited literature band gaps"
+                ],
+                "window": 300
             }
         }
     }

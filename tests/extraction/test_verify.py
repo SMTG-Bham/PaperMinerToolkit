@@ -181,6 +181,13 @@ def test_remove_term_handles_separators_and_whole_strings() -> None:
     ({'paper question': {'question': 'Q?', 'if no': {'move': {}}}}, '"if no" must be'),
     ({'paper question': {'question': 'Q?', 'if no': {'move': {'Gaps': 'Gaps'}}}}, 'unknown or identical'),
     ({'paper question': {'question': 'Q?', 'if no': {'move': {'Nope': None}}}}, 'unknown or identical'),
+    ({'local words': {'key': 'gap_type', 'words': []}}, 'non-empty list of "words"'),
+    ({'local words': {'key': ' ', 'words': ['direct']}}, 'non-empty list of "words"'),
+    ({'local words': {'key': 'gap_type', 'words': ['direct'], 'bogus': 1}}, 'non-empty list of "words"'),
+    ({'local words': {'key': 'gap_type', 'words': ['direct'], 'window': 0}}, 'positive number'),
+    ({'local words': {'key': 'gap_type', 'words': ['direct'], 'window': True}}, 'positive number'),
+    ({'local words': {'key': 'gap_type', 'words': ['direct'], 'fields': ['Nope']}}, 'known fields'),
+    ({'local words': {'key': 'gap_type', 'words': ['direct'], 'fields': 'Gaps'}}, 'known fields'),
 ])
 def test_recipe_validation_rejects_malformed_checks(checks: object, message: str) -> None:
     """Report malformed check blocks when a recipe is loaded."""
@@ -193,7 +200,8 @@ def test_recipe_validation_rejects_malformed_checks(checks: object, message: str
 def test_recipe_validation_accepts_well_formed_checks() -> None:
     """Accept every supported check key."""
     data = recipe(**ALL_CHECKS, fields=['Gaps'], tolerance=0.01,
-                  **{'paper question': {'question': 'Q?', 'if no': {'move': {'Gaps': 'Summary', 'Summary': None}}}})
+                  **{'paper question': {'question': 'Q?', 'if no': {'move': {'Gaps': 'Summary', 'Summary': None}}},
+                     'local words': {'key': 'gap_type', 'words': ['direct'], 'fields': ['Gaps'], 'window': 50}})
     data['checks']['value key'] = 'value'
     assert _validate_recipe(data, 'test')['checks']['tolerance'] == 0.01
 
@@ -233,3 +241,38 @@ def test_apply_paper_answer_leaves_records_on_yes_unclear_or_no_question() -> No
         assert kept == records and audit == []
     kept, audit = verify.apply_paper_answer(records, paper_recipe(), False)
     assert audit[0]['Paper id'] == 'paper-2' and kept[0]['Cited'] == [gap('2.0 eV')]
+
+
+LOCAL_SOURCE = """The indirect gap of A is 1.10 eV.
+
+Much later, B was found to have a gap of 2.50 eV, far from any other word about its nature.
+
+Table 1 Gaps
+| Material | Direct gap (eV) |
+| --- | --- |
+| C | 3.30 |"""
+
+
+def test_local_words_are_kept_only_near_the_value() -> None:
+    """Remove a gap type the paper does not print near the value, in the listed fields only."""
+    checks = {'local words': {'key': 'gap_type', 'words': ['direct', 'indirect', 'optical'], 'fields': ['Gaps'], 'window': 40}}
+    records = [{
+        'Material': 'X',
+        'Gaps': [gap('1.10 eV', 'PBE', 'indirect optical'), gap('2.50 eV', 'PBE', 'direct'), gap('3.30 eV', 'PBE', 'direct'),
+                 gap('9.99 eV', 'PBE', 'direct'), gap('n/a', 'PBE', 'direct'), {'value': '2.50 eV', 'gap_type': 3}],
+        'Summary': '2.50 eV',
+    }]
+
+    kept, audit = verify.verify_records(records, recipe(**checks), LOCAL_SOURCE, 'paper-1')
+
+    assert [item['gap_type'] if isinstance(item, dict) else item for item in kept[0]['Gaps']] == [
+        'indirect', 'None', 'direct', 'direct', 'direct', 3,
+    ]
+    assert [(row['Check'], row['Action']) for row in audit] == [('local words', 'edited'), ('local words', 'edited')]
+    assert json.loads(audit[1]['Detail'])['gap_type'] == 'None'
+
+    kept, audit = verify.verify_records(
+        [{'Material': 'X', 'Gaps': [gap('2.50 eV', 'PBE', 'direct')]}],
+        recipe(**{'local words': {'key': 'gap_type', 'words': ['direct'], 'fields': ['Summary']}}), LOCAL_SOURCE,
+    )
+    assert kept[0]['Gaps'][0]['gap_type'] == 'direct' and audit == []

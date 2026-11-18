@@ -500,6 +500,7 @@ A recipe can declare checks that remove or correct extracted items after the mod
 | `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
 | `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
 | `drop empty` | Drop items without a value, and records left with no checked field reported. |
+| `local words` | `{"key": "gap_type", "words": [...], "fields": [...], "window": 300}`. Remove each listed word from an item's `key` part unless the paper prints the word within `window` characters of the item's value, or in the same table. Use it for descriptive words a model adds by habit, such as a gap type the paper does not state for that value. `fields` defaults to every checked field. |
 | `paper question` | `{"question": "...", "if no": {"move": {"<field>": "<target field>" or null}}}`. During `pmt scrape --verify`, each paper that produced records is put to the model as one yes/no question; on a no, the listed fields' items move to the target field (or are cleared for `null`) before the other checks run. This costs one extra request per paper. `pmt postprocess` skips it because it calls no model. |
 
 Unknown keys, wrong value types and unknown field names are rejected when the recipe is loaded.
