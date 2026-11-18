@@ -16,7 +16,9 @@ import sqlite3
 import sys
 import tempfile
 import textwrap
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
@@ -782,6 +784,187 @@ def _select_papers(
     return selected
 
 
+@dataclass(frozen=True, slots=True)
+class _TextInput:
+    """One paper's text prepared for extraction.
+
+    Parameters
+    ----------
+    source_text : str
+        Full source text, with tables, used by the checks.
+    text : str
+        Source text after any compression; image requests may use it as context.
+    chunks : list[str]
+        ``text`` split to fit the model's input budget.
+    """
+
+    source_text: str
+    text: str
+    chunks: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _TextResult:
+    """Records extracted from one paper's text.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        The prepared input the records came from.
+    materials : list[dict[str, Any]]
+        Merged and, when requested, checked records.
+    removed : list[dict[str, str]]
+        Audit rows for items the paper question or checks removed, edited or moved.
+    error : Exception or None
+        The failure that stopped extraction early, if any. ``materials`` then
+        holds the records gathered before it.
+    """
+
+    text_input: _TextInput
+    materials: list[dict[str, Any]]
+    removed: list[dict[str, str]]
+    error: Exception | None = None
+
+
+def _extract_text_records(
+    text_input: _TextInput,
+    recipe_data: Mapping[str, Any],
+    text_config: ModelConfig,
+    paper_id: str,
+    *,
+    verify: bool,
+    ask_question: bool,
+) -> _TextResult:
+    """Run the model requests for one paper's text and post-process the records.
+
+    This touches no database state, so it can run on a worker thread.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        Prepared text chunks and source text.
+    recipe_data : Mapping[str, Any]
+        Loaded recipe.
+    text_config : ModelConfig
+        Text model configuration.
+    paper_id : str
+        Paper identifier recorded in audit rows.
+    verify : bool
+        Whether to apply the recipe's checks.
+    ask_question : bool
+        Whether the recipe's paper question may be asked (full-text scrapes only).
+
+    Returns
+    -------
+    _TextResult
+        Records and audit rows for the paper. A failure part-way through is
+        returned in ``error`` with the records gathered before it.
+    """
+    materials: list[dict[str, Any]] = []
+    removed: list[dict[str, str]] = []
+    try:
+        for text_chunk in text_input.chunks:
+            materials.extend(scrape_text(text_chunk, recipe_data, model_config=text_config))
+        materials = merge_chunk_records(materials, recipe_data)
+        question = (recipe_data.get('checks') or {}).get('paper question')
+        if verify and question and ask_question and materials:
+            answer = ask_paper_question(text_input.chunks[0], question['question'], model_config=text_config)
+            materials, moved = apply_paper_answer(materials, recipe_data, answer, paper_id)
+            removed.extend(moved)
+        if verify:
+            materials, dropped = verify_records(materials, recipe_data, text_input.source_text, paper_id)
+            removed.extend(dropped)
+    except Exception as error:
+        return _TextResult(text_input, materials, removed, error)
+    return _TextResult(text_input, materials, removed)
+
+
+class _TextPipeline:
+    """Prepare papers in order and run their text requests on a thread pool.
+
+    Preparation (reading assets from the corpus) stays on the calling thread,
+    which owns the database connection, and runs a few papers ahead of the
+    paper being written so the model server always has requests queued.
+
+    Parameters
+    ----------
+    papers : Sequence[dict[str, Any]]
+        Papers in scrape order.
+    workers : int
+        Concurrent model requests.
+    asset_paths : Callable
+        ``row -> paths`` materializing a paper's assets.
+    needs_text : Callable
+        ``row -> bool`` deciding whether the paper's text stage runs.
+    prepare : Callable
+        ``(row, paths) -> _TextInput``.
+    extract : Callable
+        ``(row, _TextInput) -> _TextResult``, run on a worker thread.
+    """
+
+    def __init__(
+        self,
+        papers: Sequence[dict[str, Any]],
+        workers: int,
+        asset_paths: Callable[[dict[str, Any]], dict[str, str | None]],
+        needs_text: Callable[[dict[str, Any]], bool],
+        prepare: Callable[[dict[str, Any], dict[str, str | None]], _TextInput],
+        extract: Callable[[dict[str, Any], _TextInput], _TextResult],
+    ) -> None:
+        """Start the worker pool; nothing is prepared until :meth:`take`."""
+        self._papers = papers
+        self._ahead = 2 * workers
+        self._asset_paths = asset_paths
+        self._needs_text = needs_text
+        self._prepare = prepare
+        self._extract = extract
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='pmt-scrape')
+        self._jobs: dict[int, tuple[dict[str, str | None], Future[_TextResult] | None]] = {}
+        self._submitted = 0
+
+    def __enter__(self) -> _TextPipeline:
+        """Return the pipeline for use in a ``with`` block."""
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Cancel queued requests and wait for running ones to finish."""
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+    def take(self, index: int) -> tuple[dict[str, str | None], Future[_TextResult] | None]:
+        """Return a paper's asset paths and pending text result.
+
+        Parameters
+        ----------
+        index : int
+            Position of the paper in scrape order. Papers must be taken in order.
+
+        Returns
+        -------
+        tuple
+            Asset paths, and the future text result or ``None`` when the
+            paper's text stage is skipped.
+        """
+        while self._submitted < len(self._papers) and self._submitted <= index + self._ahead:
+            self._submit(self._submitted)
+            self._submitted += 1
+        return self._jobs.pop(index)
+
+    def _submit(self, index: int) -> None:
+        """Prepare one paper and queue its text requests, recording any preparation error."""
+        row = self._papers[index]
+        paths = self._asset_paths(row)
+        future: Future[_TextResult] | None = None
+        if self._needs_text(row):
+            try:
+                text_input = self._prepare(row, paths)
+            except Exception as error:
+                future = Future()
+                future.set_exception(error)
+            else:
+                future = self._executor.submit(self._extract, row, text_input)
+        self._jobs[index] = (paths, future)
+
+
 def scrape_papers(db_path: str = 'papers.db',
                   recipe: str = 'sse',
                   mode: str = 'text',
@@ -808,6 +991,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_content_detection: bool = True,
                   tables: bool = True,
                   verify: bool = False,
+                  workers: int = 1,
                   ) -> None:
     """Scrape corpus papers and write extracted material records.
 
@@ -870,6 +1054,11 @@ def scrape_papers(db_path: str = 'papers.db',
     verify : bool, optional
         Whether to apply the recipe's ``"checks"`` to each paper's records.
         Removed and edited items are listed in ``<output>.dropped.csv``.
+    workers : int, optional
+        Papers whose text requests run concurrently. A model server such as
+        vLLM batches concurrent requests, so values above 1 make abstract and
+        text scrapes several times faster. Output order is unchanged. Image
+        modes run one request at a time.
 
     Raises
     ------
@@ -894,6 +1083,10 @@ def scrape_papers(db_path: str = 'papers.db',
         raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
     if scrape_count is not None and scrape_count < 1:
         raise ValueError('scrape_count must be a positive integer')
+    if workers < 1:
+        raise ValueError('workers must be a positive integer')
+    if workers > 1 and mode in {'images', 'text-images'}:
+        raise ValueError('workers above 1 are only supported for abstract and text scrapes')
 
     should_scrape_abstract = mode == 'abstract'
     should_scrape_text = mode in {'text', 'text-images'}
@@ -950,10 +1143,37 @@ def scrape_papers(db_path: str = 'papers.db',
         else:
             print('No active corpus filters; all otherwise eligible papers are available for scraping.')
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
+        text_stage = 'abstract' if should_scrape_abstract else 'text'
+
+        def needs_text(paper: dict[str, Any]) -> bool:
+            """Return whether the paper's abstract or text stage should run."""
+            return (should_scrape_abstract or should_scrape_text) and (
+                force or paper.get(f'{text_stage}_scrape_status') != 'succeeded'
+            )
+
+        def prepare_text(paper: dict[str, Any], paper_paths: dict[str, str | None]) -> _TextInput:
+            """Read, compress and chunk one paper's text on the database thread."""
+            source = paper_source_text(conn, paper, paper_paths, abstract=should_scrape_abstract, tables=tables)
+            prompt = build_scrape_prompt(recipe_data, source='text')
+            compressed = maybe_compress_text(source, prompt, text_config, compression)
+            return _TextInput(source, compressed, _text_chunks(compressed, text_config, prompt=prompt))
+
+        def extract_text(paper: dict[str, Any], text_input: _TextInput) -> _TextResult:
+            """Run one paper's model requests and checks."""
+            return _extract_text_records(text_input, recipe_data, text_config, str(paper['paper_id']),
+                                         verify=verify, ask_question=should_scrape_text)
+
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-scrape-') as temp_dir:
-            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
-                for row in papers:
-                    paths = _paper_asset_paths(conn, row, temp_dir)
+            pipeline = _TextPipeline(
+                papers, workers, lambda paper: _paper_asset_paths(conn, paper, temp_dir),
+                needs_text, prepare_text, extract_text,
+            ) if workers > 1 else None
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar, pipeline or nullcontext():
+                for index, row in enumerate(papers):
+                    if pipeline:
+                        paths, text_job = pipeline.take(index)
+                    else:
+                        paths, text_job = _paper_asset_paths(conn, row, temp_dir), None
                     text_path = paths['text']
                     pdf_path = paths['pdf']
                     summary['papers'] += 1
@@ -966,40 +1186,25 @@ def scrape_papers(db_path: str = 'papers.db',
                     text = None
 
                     if should_scrape_abstract or should_scrape_text:
-                        stage = 'abstract' if should_scrape_abstract else 'text'
+                        stage = text_stage
                         status_column = f'{stage}_scrape_status'
-                        if not force and row.get(status_column) == 'succeeded':
+                        if not needs_text(row):
                             summary[f'{stage}_skipped'] += 1
                         else:
                             summary[f'{stage}_attempted'] += 1
                             try:
-                                text = paper_source_text(
-                                    conn, row, paths, abstract=should_scrape_abstract, tables=tables,
-                                )
+                                if text_job is not None:
+                                    result = text_job.result()
+                                else:
+                                    result = extract_text(row, prepare_text(row, paths))
                                 if should_scrape_text:
                                     text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
-                                source_text = text
-                                prompt = build_scrape_prompt(recipe_data, source='text')
-                                text = maybe_compress_text(text, prompt, text_config, compression)
-                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, stage, text_chunks, text_config, summary)
-                                for text_chunk in text_chunks:
-                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                                    text_materials.extend(response)
-                                text_materials = merge_chunk_records(text_materials, recipe_data)
-                                question = (recipe_data.get('checks') or {}).get('paper question')
-                                if verify and question and should_scrape_text and text_materials:
-                                    answer = ask_paper_question(text_chunks[0], question['question'],
-                                                                model_config=text_config)
-                                    text_materials, moved = apply_paper_answer(
-                                        text_materials, recipe_data, answer, str(row['paper_id']),
-                                    )
-                                    summary['dropped'] += _write_dropped(moved, output_path)
-                                if verify:
-                                    text_materials, dropped = verify_records(
-                                        text_materials, recipe_data, source_text, str(row['paper_id']),
-                                    )
-                                    summary['dropped'] += _write_dropped(dropped, output_path)
+                                text = result.text_input.text
+                                _record_chunk_plan(row, stage, result.text_input.chunks, text_config, summary)
+                                text_materials = result.materials
+                                summary['dropped'] += _write_dropped(result.removed, output_path)
+                                if result.error is not None:
+                                    raise result.error
                                 row[f'num_{stage}_materials'] = len(text_materials)
                                 _set_status(row, status_column, 'succeeded')
                             except Exception as e:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 import os
+import threading
 from pathlib import Path
 from typing import Any, Self
 
@@ -247,6 +248,10 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path: Path) -> None:
         scrape.scrape_papers(str(db_path), scrape_order='bad')
     with pytest.raises(ValueError, match='scrape_count must be a positive integer'):
         scrape.scrape_papers(str(db_path), scrape_count=0)
+    with pytest.raises(ValueError, match='workers must be a positive integer'):
+        scrape.scrape_papers(str(db_path), workers=0)
+    with pytest.raises(ValueError, match='only supported for abstract and text'):
+        scrape.scrape_papers(str(db_path), mode='images', workers=2)
 
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_import_source(
@@ -466,6 +471,70 @@ def test_scrape_papers_applies_count_and_order_before_scraping(
     assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[1, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[2, 'text_scrape_status'] == 'pending'
+
+
+def test_scrape_papers_runs_text_requests_concurrently_and_keeps_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlap papers' model requests while writing rows and statuses in scrape order."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    for paper_id in ['paper-1', 'paper-2', 'paper-4', 'paper-5', 'paper-6']:
+        (papers_dir / f'{paper_id}.txt').write_text(paper_id)
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    write_corpus(db_path, [
+        {'paper_id': 'paper-1'},
+        {'paper_id': 'paper-2'},
+        {'paper_id': 'paper-3'},
+        {'paper_id': 'paper-4', 'text_scrape_status': 'succeeded'},
+        {'paper_id': 'paper-5'},
+        {'paper_id': 'paper-6'},
+    ])
+    active = {'now': 0, 'peak': 0}
+    lock = threading.Lock()
+    both_started = threading.Barrier(2, timeout=5)
+
+    def fake_scrape_text(text: str, recipe: Mapping[str, Any], model_config: object = None) -> list[dict[str, str]]:
+        """Hold two requests open together, and fail one paper."""
+        with lock:
+            active['now'] += 1
+            active['peak'] = max(active['peak'], active['now'])
+        try:
+            if text in {'paper-1', 'paper-2'}:
+                both_started.wait()
+            if text == 'paper-5':
+                raise RuntimeError('model failed')
+            return [{'Name': f'material from {text}'}]
+        finally:
+            with lock:
+                active['now'] -= 1
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path: os.path.basename(os.path.dirname(path)))
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='text',
+                         scrape_order='paper-id', workers=3)
+
+    materials = pd.read_csv(output_path, index_col=0)
+    papers = read_corpus(db_path).set_index('paper_id')
+    assert active['peak'] >= 2
+    assert materials['Name'].tolist() == [
+        'material from paper-1', 'material from paper-2', 'material from paper-6',
+    ]
+    assert papers.loc['paper-1', 'text_scrape_status'] == 'succeeded'
+    assert papers.loc['paper-3', 'text_scrape_status'] == 'failed'
+    assert 'No downloaded text or PDF asset found' in papers.loc['paper-3', 'last_error']
+    assert papers.loc['paper-4', 'text_scrape_status'] == 'succeeded'
+    assert papers.loc['paper-5', 'text_scrape_status'] == 'failed'
+    assert 'model failed' in papers.loc['paper-5', 'last_error']
+    assert papers.loc['paper-6', 'num_text_materials'] == 1
 
 
 def test_scrape_papers_records_text_failures_when_source_is_missing(
