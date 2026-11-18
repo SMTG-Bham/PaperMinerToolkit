@@ -682,6 +682,7 @@ def paper_source_text(
     *,
     abstract: bool = False,
     tables: bool = True,
+    figure_text: bool = True,
 ) -> str:
     """Read the text a paper is scraped from.
 
@@ -697,6 +698,8 @@ def paper_source_text(
         Read the abstract instead of the full text.
     tables : bool, optional
         Append the paper's tables to full text.
+    figure_text : bool, optional
+        Keep text printed inside a PDF's figures. Text assets are unaffected.
 
     Returns
     -------
@@ -713,7 +716,7 @@ def paper_source_text(
         if abstract:
             raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
         raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
-    text = read_document_text(source_path)
+    text = read_document_text(source_path, figure_text=figure_text)
     if not abstract and tables:
         text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf']))
     return text
@@ -808,6 +811,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_content_detection: bool = True,
                   tables: bool = True,
                   verify: bool = False,
+                  figure_text: bool = True,
                   ) -> None:
     """Scrape corpus papers and write extracted material records.
 
@@ -870,6 +874,10 @@ def scrape_papers(db_path: str = 'papers.db',
     verify : bool, optional
         Whether to apply the recipe's ``"checks"`` to each paper's records.
         Removed and edited items are listed in ``<output>.dropped.csv``.
+    figure_text : bool, optional
+        Whether full text read from a PDF keeps the labels and numbers printed
+        inside its figures. ``False`` redacts them, so values shown only in a
+        figure are neither read by the model nor accepted by the checks.
 
     Raises
     ------
@@ -975,6 +983,7 @@ def scrape_papers(db_path: str = 'papers.db',
                             try:
                                 text = paper_source_text(
                                     conn, row, paths, abstract=should_scrape_abstract, tables=tables,
+                                    figure_text=figure_text,
                                 )
                                 if should_scrape_text:
                                     text_source_path = 'corpus:text' if text_path else 'corpus:pdf'

@@ -271,7 +271,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk one', 'chunk two'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: f'read {os.path.basename(path)}')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: f'read {os.path.basename(path)}')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_analyze_text(
@@ -341,7 +341,7 @@ def test_force_rescrape_replaces_previous_chunk_count(
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'short paper text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'short paper text')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
     monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [])
@@ -374,7 +374,7 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'abstract text from corpus')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'abstract text from corpus')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_scrape_text(
@@ -448,7 +448,7 @@ def test_scrape_papers_applies_count_and_order_before_scraping(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: os.path.basename(os.path.dirname(path)))
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: os.path.basename(os.path.dirname(path)))
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
     monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [{'Name': text}])
 
@@ -529,7 +529,7 @@ def test_scrape_papers_compresses_text_before_chunking(
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'full paper text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'full paper text')
 
     def fake_compress(
         text: str,
@@ -610,7 +610,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['single chunk'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text context')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'text context')
 
     def fake_extract_pdf_images(
         pdf_path_arg: str,
@@ -733,7 +733,7 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'text')
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
     monkeypatch.setattr(scrape, 'scrape_text', lambda *_, **__: [{'Name': 'text material'}])
     monkeypatch.setattr(scrape, 'scrape_images', lambda *_, **__: [{'Name': 'image material'}])

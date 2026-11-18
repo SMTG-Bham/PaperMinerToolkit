@@ -105,6 +105,7 @@ def postprocess_scrape(
     merge: bool = True,
     verify: bool = True,
     tables: bool = True,
+    figure_text: bool = True,
 ) -> PostprocessSummary:
     """Merge and check an existing scrape output against the corpus.
 
@@ -124,6 +125,8 @@ def postprocess_scrape(
         Apply the recipe's ``"checks"`` to text and abstract records.
     tables : bool, optional
         Include the paper's tables in the source text used by the checks.
+    figure_text : bool, optional
+        Keep text printed inside PDF figures in the source text used by the checks.
 
     Returns
     -------
@@ -157,6 +160,7 @@ def postprocess_scrape(
                         paths = _paper_asset_paths(conn, papers[paper_id], temp_dir)
                         texts[paper_id, abstract] = paper_source_text(
                             conn, papers[paper_id], paths, abstract=abstract, tables=tables,
+                            figure_text=figure_text,
                         )
                     except (FileNotFoundError, OSError, ValueError):
                         texts[paper_id, abstract] = None

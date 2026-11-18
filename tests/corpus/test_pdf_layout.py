@@ -259,3 +259,83 @@ def test_pdf_layout_validates_options_and_page_provenance(tmp_path: Path) -> Non
         pdf_layout.render_pdf_figures(pdf_path, layout, tmp_path, dpi=0)
     with pytest.raises(ValueError, match='no page provenance'):
         pdf_layout.render_pdf_figures(pdf_path, layout, tmp_path)
+
+
+def _write_figure_text_pdf(path: Path, *, include_drawing: bool = True) -> None:
+    """Create a PDF whose captioned figure contains labels, a value and a long line."""
+    fitz = pytest.importorskip('fitz')
+    document = fitz.open()
+    page = document.new_page(width=600, height=800)
+    if include_drawing:
+        page.draw_rect(fitz.Rect(40, 80, 270, 250), color=(0, 0, 0), fill=(0.9, 0.9, 0.9))
+    page.insert_textbox(fitz.Rect(60, 100, 150, 115), '1.71', fontsize=8)
+    page.insert_textbox(fitz.Rect(60, 200, 200, 215), 'Energy (eV)', fontsize=8)
+    page.insert_textbox(fitz.Rect(45, 150, 268, 170), 'An inside line long enough to be kept as prose', fontsize=7)
+    page.insert_textbox(fitz.Rect(40, 260, 270, 282), 'Figure 1. Gap map for the series.', fontsize=9)
+    page.insert_textbox(fitz.Rect(330, 80, 560, 120), 'The measured band gap is 2.10 eV.', fontsize=9)
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), False)
+    pixmap.clear_with(200)
+    page.insert_image(fitz.Rect(500, 700, 510, 710), pixmap=pixmap)
+    document.save(path)
+    document.close()
+
+
+def test_pdf_without_figure_text_redacts_short_text_inside_figures(tmp_path: Path) -> None:
+    """Remove labels and values printed inside a figure, keeping captions, prose and body text."""
+    from paperminertoolkit.corpus.documents import read_document_text, read_pdf_bytes
+
+    pdf_path = tmp_path / 'figure.pdf'
+    _write_figure_text_pdf(pdf_path)
+
+    content, removed = pdf_layout.pdf_without_figure_text(pdf_path)
+
+    assert removed == ['1.71', 'Energy (eV)']
+    text = read_pdf_bytes(content)
+    assert '1.71' not in text and 'Energy' not in text
+    assert 'An inside line long enough to be kept as prose' in text
+    assert 'Gap map for the series' in text and '2.10 eV' in text
+    assert '1.71' in read_document_text(str(pdf_path))
+    stripped = read_document_text(str(pdf_path), figure_text=False)
+    assert '1.71' not in stripped and '2.10 eV' in stripped
+
+
+def test_pdf_without_figure_text_leaves_pdfs_without_figures_and_table_regions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return nothing to redact without figure art or when the figure overlaps a table."""
+    from paperminertoolkit.corpus.documents import read_document_text
+
+    plain = tmp_path / 'plain.pdf'
+    _write_figure_text_pdf(plain, include_drawing=False)
+    assert pdf_layout.pdf_without_figure_text(plain) == (None, [])
+    assert '1.71' in read_document_text(str(plain), figure_text=False)
+
+    figure = tmp_path / 'figure.pdf'
+    _write_figure_text_pdf(figure)
+    monkeypatch.setattr(pdf_layout, '_table_bboxes', lambda page: [(50, 90, 100, 120)])
+    assert pdf_layout.pdf_without_figure_text(figure) == (None, [])
+
+
+def test_figure_text_helpers_tolerate_malformed_geometry() -> None:
+    """Skip malformed lines and spans, and treat table-detection failures as no tables."""
+    class BrokenPage:
+        """Page whose table detection fails."""
+
+        def find_tables(self) -> None:
+            """Raise as PyMuPDF can on unusual pages."""
+            raise RuntimeError('no tables')
+
+    region = BoundingBox(1, 10, 10, 100, 100)
+    assert pdf_layout._contains(region, (11, 11, 101, 99), tolerance=2.0)
+    assert not pdf_layout._contains(region, (5, 11, 50, 50), tolerance=2.0)
+    assert pdf_layout._overlaps(region, (90, 90, 120, 120))
+    assert not pdf_layout._overlaps(region, (100, 0, 120, 20))
+    assert pdf_layout._table_bboxes(BrokenPage()) == []
+    block = {'lines': [
+        'not a line',
+        {'spans': ['bad', {'text': ' 1.2 '}], 'bbox': (1, 2, 3, 4)},
+        {'spans': [{'text': '   '}], 'bbox': (1, 2, 3, 4)},
+        {'spans': [{'text': 'no box'}]},
+    ]}
+    assert pdf_layout._block_lines(block) == [('1.2', (1, 2, 3, 4))]

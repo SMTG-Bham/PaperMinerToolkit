@@ -394,3 +394,97 @@ def render_pdf_figures(
             pixmap.save(filepath)
             saved.append(filepath)
     return saved
+
+
+def _contains(region: BoundingBox, bbox: Sequence[float], tolerance: float) -> bool:
+    """Return whether a PyMuPDF bbox lies inside a region, within a tolerance."""
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    return (x0 >= region.x0 - tolerance and y0 >= region.y0 - tolerance
+            and x1 <= region.x1 + tolerance and y1 <= region.y1 + tolerance)
+
+
+def _overlaps(first: BoundingBox, bbox: Sequence[float]) -> bool:
+    """Return whether a region and a PyMuPDF bbox intersect."""
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    return first.x0 < x1 and x0 < first.x1 and first.y0 < y1 and y0 < first.y1
+
+
+def _table_bboxes(page: Any) -> list[Sequence[float]]:
+    """Return the boxes of tables PyMuPDF detects on a page, or none if detection fails."""
+    try:
+        return [table.bbox for table in page.find_tables().tables]
+    except Exception:
+        return []
+
+
+def _block_lines(block: Mapping[str, Any]) -> list[tuple[str, Sequence[float]]]:
+    """Return a PyMuPDF text block's non-empty lines with their boxes."""
+    lines = []
+    for line in block.get('lines', []):
+        if not isinstance(line, Mapping):
+            continue
+        text = ''.join(str(span.get('text', '')) for span in line.get('spans', []) if isinstance(span, Mapping))
+        if text.strip() and isinstance(line.get('bbox'), Sequence):
+            lines.append((text.strip(), line['bbox']))
+    return lines
+
+
+def pdf_without_figure_text(
+    pdf_path: str | PathLike[str],
+    *,
+    max_line_chars: int = 40,
+    tolerance: float = 2.0,
+) -> tuple[bytes | None, list[str]]:
+    """Redact the labels, tick values and numbers printed inside a PDF's figures.
+
+    Figure regions come from :func:`detect_pdf_layout` (art matched to a
+    caption). Inside them, only short text blocks are removed, so a region that
+    accidentally spans body prose leaves the prose alone, and regions that
+    overlap a detected table are skipped.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Source PDF.
+    max_line_chars : int, default=40
+        Blocks with any line this long or longer are treated as prose and kept.
+    tolerance : float, default=2.0
+        PDF-point slack when testing whether a block lies inside a region.
+
+    Returns
+    -------
+    tuple[bytes or None, list[str]]
+        The redacted PDF, or ``None`` when nothing was removed, and the
+        removed lines in page order.
+    """
+    layout = detect_pdf_layout(pdf_path)
+    regions: dict[int, list[BoundingBox]] = {}
+    for figure in layout.figures:
+        for box in figure.boxes:
+            regions.setdefault(box.page, []).append(box)
+    removed: list[str] = []
+    fitz = _load_fitz()
+    with fitz.open(os.fspath(pdf_path)) as document:
+        for page_number, boxes in sorted(regions.items()):
+            page = document[page_number - 1]
+            tables = _table_bboxes(page)
+            boxes = [box for box in boxes if not any(_overlaps(box, table) for table in tables)]
+            page_removed = []
+            for block in page.get_text('dict').get('blocks', []):
+                if not isinstance(block, Mapping) or block.get('type', 0) != 0:
+                    continue
+                lines = _block_lines(block)
+                if not lines or max(len(text) for text, _ in lines) >= max_line_chars:
+                    continue
+                if not any(_contains(box, block['bbox'], tolerance) for box in boxes):
+                    continue
+                for text, bbox in lines:
+                    page.add_redact_annot(fitz.Rect(bbox))
+                    page_removed.append(text)
+            if page_removed:
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                                      graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+                removed.extend(page_removed)
+        if not removed:
+            return None, []
+        return document.tobytes(), removed
