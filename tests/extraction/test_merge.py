@@ -100,3 +100,32 @@ def test_merge_chunk_records_groups_by_identity_and_keeps_first_scalars() -> Non
         {'Material system': 'None', 'Band gap': [gap('3.0 eV')]},
     ]
     assert records[0]['Band gap'] == [gap('0.45 eV', 'HSE06')]
+
+
+def test_merge_chunk_records_drops_repeats_under_qualified_names() -> None:
+    """Drop a record that repeats an earlier one's values under a qualified name."""
+    records = [
+        {'Material system': 'Cs3Bi2I9 (powder)', 'Band gap': [gap('1.9-2.2 eV')], 'Notes': 'None'},
+        {'Material system': 'Cs3Bi2I9 (thin film)', 'Band gap': [gap('1.9-2.2 eV', 'UV-vis')], 'Notes': 'None'},
+        {'Material system': 'Cs3Bi2I9, Layered #2', 'Band gap': [gap('2.1 eV')]},
+        {'Material system': 'Cs3Sb2I9', 'Band gap': [gap('1.9-2.2 eV')]},
+        {'Material system': 'Cs3Sb2I9 (film)', 'Band gap': [gap('1.9-2.2 eV'), gap('2.4 eV')]},
+        {'Material system': 'Cs3Sb2I9 (crystal)', 'Band gap': 'None'},
+        {'Material system': 'Cs3Sb2I9 [nanocrystal]', 'Band gap': 'None'},
+    ]
+
+    merged = merge.merge_chunk_records(records, RECIPE)
+
+    assert [record['Material system'] for record in merged] == [
+        'Cs3Bi2I9 (powder)', 'Cs3Bi2I9, Layered #2', 'Cs3Sb2I9', 'Cs3Sb2I9 (film)',
+        'Cs3Sb2I9 (crystal)', 'Cs3Sb2I9 [nanocrystal]',
+    ]
+
+
+def test_same_content_compares_every_given_field() -> None:
+    """Require the same items in each field and at least one reported field."""
+    first = {'Band gap': [gap('2.0 eV'), gap('2.4 eV', 'PBE')], 'Notes': 'x'}
+    assert merge.same_content(first, {'Band gap': [gap('2.4 eV'), gap('2.00 eV')], 'Notes': 'X'}, ['Band gap', 'Notes'])
+    assert not merge.same_content(first, {'Band gap': [gap('2.0 eV'), gap('2.5 eV')]}, ['Band gap'])
+    assert not merge.same_content(first, {'Band gap': [gap('2.0 eV'), gap('2.0 eV')]}, ['Band gap'])
+    assert not merge.same_content({'Band gap': 'None'}, {}, ['Band gap'])

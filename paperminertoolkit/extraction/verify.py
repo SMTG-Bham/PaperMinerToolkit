@@ -16,7 +16,8 @@ Recipe keys
 ``"tolerance"``
     Relative tolerance for ``"values in source"``. Defaults to ``0.005``.
 ``"unit"``
-    Drop values written with any other unit (unitless values are kept).
+    Unit, or list of units, values may be written in; drop values written with
+    any other unit (unitless values are kept), e.g. ``["eV", "meV"]``.
 ``"exclude terms"``
     Drop items whose text mentions one of these terms.
 ``"exclude terms keys"``
@@ -29,6 +30,14 @@ Recipe keys
     the item's descriptive parts.
 ``"drop empty"``
     Drop items without a value and records left with no reported fields.
+``"paper question"``
+    ``{"question": "...", "if no": {"move": {"<field>": "<target field>" | null}}}``.
+    During ``pmt scrape --verify`` the model is asked this yes/no question
+    about each paper that produced records; when it answers no, items in each
+    listed field are moved to the target field, or cleared for ``null``.
+    Use it for distinctions a model handles better per paper than per value,
+    such as whether a paper reports any results of its own. Post-processing
+    does not call a model, so ``pmt postprocess`` skips it.
 """
 
 from __future__ import annotations
@@ -40,7 +49,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from paperminertoolkit.extraction.merge import identity_fields
+from paperminertoolkit.extraction.merge import field_items, identity_fields, merge_items
 from paperminertoolkit.extraction.values import is_missing, numbers, printed_in
 
 DEFAULT_SOURCE_TOLERANCE = 0.005
@@ -49,14 +58,17 @@ _CHECK_TYPES: dict[str, type | tuple[type, ...]] = {
     'value key': str,
     'values in source': bool,
     'tolerance': (int, float),
-    'unit': str,
+    'unit': (str, list),
     'exclude terms': list,
     'exclude terms keys': list,
     'unsupported terms': dict,
     'drop empty': bool,
+    'paper question': dict,
 }
 DROPPED_COLUMNS = ['Paper id', 'Record', 'Field', 'Item', 'Check', 'Action', 'Detail']
 _DASHES = dict.fromkeys([*range(0x2010, 0x2016), 0x2212], '-')
+# Words that join two numbers in a range, e.g. '3.9 to 4.66 eV', rather than units.
+_RANGE_WORDS = frozenset({'to', 'and', 'or'})
 
 
 def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any]) -> None:
@@ -86,8 +98,9 @@ def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any
         expected = _CHECK_TYPES[key]
         if not isinstance(value, expected) or (expected != bool and isinstance(value, bool)):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" has the wrong type.')
-    for key in ('fields', 'exclude terms', 'exclude terms keys'):
-        if any(not isinstance(item, str) or not item.strip() for item in checks.get(key, [])):
+    for key in ('fields', 'unit', 'exclude terms', 'exclude terms keys'):
+        values = checks.get(key, [])
+        if any(not isinstance(item, str) or not item.strip() for item in ([values] if isinstance(values, str) else values)):
             raise ValueError(f'Recipe in {source} "checks" key "{key}" must be a list of strings.')
     unknown_fields = [field for field in checks.get('fields', []) if field not in search_fields]
     if unknown_fields:
@@ -97,6 +110,71 @@ def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any
             raise ValueError(
                 f'Recipe in {source} "checks" "unsupported terms" must map terms to lists of phrases.'
             )
+    if 'paper question' in checks:
+        _validate_paper_question(checks['paper question'], source, search_fields)
+
+
+def _validate_paper_question(block: dict[str, Any], source: str, search_fields: Mapping[str, Any]) -> None:
+    """Validate a ``"paper question"`` check: a question and the fields to move on a no."""
+    where = f'Recipe in {source} "checks" "paper question"'
+    question = block.get('question')
+    move = block.get('if no', {}).get('move') if isinstance(block.get('if no'), dict) else None
+    if set(block) != {'question', 'if no'} or not isinstance(question, str) or not question.strip():
+        raise ValueError(f'{where} must have a non-empty "question" and an "if no" object.')
+    if not isinstance(block['if no'], dict) or set(block['if no']) != {'move'} or not isinstance(move, dict) or not move:
+        raise ValueError(f'{where} "if no" must be {{"move": {{field: target field or null}}}}.')
+    for field, target in move.items():
+        if field not in search_fields or (target is not None and (target not in search_fields or target == field)):
+            raise ValueError(f'{where} moves unknown or identical field(s): {field} -> {target}.')
+
+
+def apply_paper_answer(
+    records: Sequence[Mapping[str, Any]],
+    recipe: Mapping[str, Any],
+    answer: bool | None,
+    paper_id: str = '',
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Apply a recipe's ``"paper question"`` check given the model's answer.
+
+    Parameters
+    ----------
+    records : Sequence[Mapping[str, Any]]
+        Records extracted from one paper.
+    recipe : Mapping[str, Any]
+        Loaded recipe with a ``"checks"`` ``"paper question"`` block.
+    answer : bool or None
+        ``True`` for yes, ``False`` for no, ``None`` when the reply was
+        neither; only ``False`` changes the records.
+    paper_id : str, optional
+        Paper identifier written to the audit rows.
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], list[dict[str, str]]]
+        Records (copies) with the listed fields moved or cleared, and one
+        audit row per moved or cleared item.
+    """
+    kept = [copy.deepcopy(dict(record)) for record in records]
+    block = (recipe.get('checks') or {}).get('paper question')
+    if not block or answer is not False:
+        return kept, []
+    identities = identity_fields(recipe)
+    audit_rows: list[dict[str, str]] = []
+    for record in kept:
+        audit = _Audit(paper_id or str(record.get('Paper id', '')), ' | '.join(str(record.get(f, '')) for f in identities))
+        for field, target in block['if no']['move'].items():
+            items = field_items(record.get(field))
+            if not items:
+                continue
+            for item in items:
+                audit.add(field, item, 'paper question', 'moved' if target else 'cleared',
+                          f'to {target}' if target else 'answered no')
+            if target:
+                record[target] = merge_items([*field_items(record.get(target)), *items])
+            record[field] = [] if isinstance(record.get(field), list) else 'None'
+        audit_rows.extend(audit.rows)
+    return kept, audit_rows
+
 
 
 def _fold(text: object) -> str:
@@ -149,7 +227,9 @@ class _Checker:
         self.tolerance = float(checks.get('tolerance', DEFAULT_SOURCE_TOLERANCE))
         self.source = _fold(source_text)
         self.source_numbers = numbers(source_text)
-        self.unit = _fold(checks['unit']) if checks.get('unit') else ''
+        units = checks.get('unit') or []
+        self.unit_names = [units] if isinstance(units, str) else list(units)
+        self.units = {_fold(unit) for unit in self.unit_names}
         self.unsupported = [
             term for term, phrases in checks.get('unsupported terms', {}).items()
             if not any(_mentions(self.source, phrase) for phrase in [term, *phrases])
@@ -173,10 +253,10 @@ class _Checker:
         for term in self.checks.get('exclude terms', []):
             if _mentions(text, term):
                 return 'exclude terms', f'mentions "{term}"'
-        if self.unit:
-            units = re.findall(r'\d\s*([^\W\d_]+)', _fold(value))
-            if units and units[0] != self.unit:
-                return 'unit', f'not in {self.checks["unit"]}'
+        if self.units:
+            units = [word for word in re.findall(r'\d\s*([^\W\d_]+)', _fold(value)) if word not in _RANGE_WORDS]
+            if units and units[0] not in self.units:
+                return 'unit', f'not in {" or ".join(self.unit_names)}'
         if self.checks.get('values in source') and numbers(value):
             if not printed_in(value, self.source_numbers, self.tolerance):
                 return 'values in source', 'number not printed in the source text'

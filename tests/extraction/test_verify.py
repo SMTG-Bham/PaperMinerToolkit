@@ -147,6 +147,17 @@ def test_exclude_terms_keys_limit_which_parts_are_searched() -> None:
     assert [row['Detail'] for row in dropped] == ['mentions "work function"']
 
 
+def test_unit_accepts_a_list_of_units() -> None:
+    """Keep values in any listed unit and name the units when dropping."""
+    records = [{'Material': 'InSb', 'Gaps': [gap('231 meV'), gap('2.04 eV'), gap('185 K'), gap('2.04 to 2.3 eV')]}]
+    source = 'InSb has a gap of 231 meV; 2.04 eV; Tc = 185 K; 2.3 eV.'
+
+    kept, dropped = verify.verify_records(records, recipe(unit=['eV', 'meV']), source)
+
+    assert kept[0]['Gaps'] == [gap('231 meV'), gap('2.04 eV'), gap('2.04 to 2.3 eV')]
+    assert [row['Detail'] for row in dropped] == ['not in eV or meV']
+
+
 def test_remove_term_handles_separators_and_whole_strings() -> None:
     """Strip a term with its separator, leaving 'None' when nothing remains."""
     assert verify._remove_term('DFT; HSE06; SOC', 'SOC') == 'DFT; HSE06'
@@ -159,11 +170,17 @@ def test_remove_term_handles_separators_and_whole_strings() -> None:
     ([], 'must be a JSON object'),
     ({'bogus': True}, 'unknown key'),
     ({'unit': 3}, 'wrong type'),
+    ({'unit': ['eV', '']}, 'list of strings'),
     ({'tolerance': True}, 'wrong type'),
     ({'fields': ['']}, 'list of strings'),
     ({'fields': ['Nope']}, 'unknown field'),
     ({'unsupported terms': {'SOC': 'spin-orbit'}}, 'lists of phrases'),
     ({'unsupported terms': {' ': []}}, 'lists of phrases'),
+    ({'paper question': {'question': ' ', 'if no': {'move': {'Gaps': None}}}}, 'non-empty "question"'),
+    ({'paper question': {'question': 'Q?', 'if no': 'move'}}, '"if no" must be'),
+    ({'paper question': {'question': 'Q?', 'if no': {'move': {}}}}, '"if no" must be'),
+    ({'paper question': {'question': 'Q?', 'if no': {'move': {'Gaps': 'Gaps'}}}}, 'unknown or identical'),
+    ({'paper question': {'question': 'Q?', 'if no': {'move': {'Nope': None}}}}, 'unknown or identical'),
 ])
 def test_recipe_validation_rejects_malformed_checks(checks: object, message: str) -> None:
     """Report malformed check blocks when a recipe is loaded."""
@@ -175,6 +192,44 @@ def test_recipe_validation_rejects_malformed_checks(checks: object, message: str
 
 def test_recipe_validation_accepts_well_formed_checks() -> None:
     """Accept every supported check key."""
-    data = recipe(**ALL_CHECKS, fields=['Gaps'], tolerance=0.01)
+    data = recipe(**ALL_CHECKS, fields=['Gaps'], tolerance=0.01,
+                  **{'paper question': {'question': 'Q?', 'if no': {'move': {'Gaps': 'Summary', 'Summary': None}}}})
     data['checks']['value key'] = 'value'
     assert _validate_recipe(data, 'test')['checks']['tolerance'] == 0.01
+
+
+def paper_recipe() -> dict[str, Any]:
+    """Build a recipe whose paper question moves gaps to a cited field and clears the summary."""
+    data = recipe(**{'paper question': {'question': 'Own gaps?', 'if no': {'move': {'Gaps': 'Cited', 'Summary': None}}}})
+    data['search fields']['Cited'] = {'prompt': 'Cited gaps.', 'example': [{'value': '<number> eV'}]}
+    return data
+
+
+def test_apply_paper_answer_moves_and_clears_fields_on_no() -> None:
+    """Move listed items to their target field, merging duplicates, and audit each one."""
+    records = [
+        {'Material': 'X', 'Gaps': [gap('2.0 eV', 'PBE')], 'Summary': '2.0 eV', 'Cited': [gap('2.0 eV')]},
+        {'Material': 'Y', 'Gaps': 'None', 'Summary': 'None'},
+    ]
+
+    kept, audit = verify.apply_paper_answer(records, paper_recipe(), False, 'paper-1')
+
+    assert kept == [
+        {'Material': 'X', 'Gaps': [], 'Summary': 'None', 'Cited': [gap('2.0 eV', 'PBE')]},
+        {'Material': 'Y', 'Gaps': 'None', 'Summary': 'None'},
+    ]
+    assert [(row['Paper id'], row['Field'], row['Check'], row['Action'], row['Detail']) for row in audit] == [
+        ('paper-1', 'Gaps', 'paper question', 'moved', 'to Cited'),
+        ('paper-1', 'Summary', 'paper question', 'cleared', 'answered no'),
+    ]
+    assert records[0]['Gaps'] == [gap('2.0 eV', 'PBE')]
+
+
+def test_apply_paper_answer_leaves_records_on_yes_unclear_or_no_question() -> None:
+    """Change nothing unless the recipe asks a question and the answer is no."""
+    records = [{'Material': 'X', 'Gaps': [gap('2.0 eV')], 'Paper id': 'paper-2'}]
+    for data, answer in ((paper_recipe(), True), (paper_recipe(), None), (recipe(), False)):
+        kept, audit = verify.apply_paper_answer(records, data, answer)
+        assert kept == records and audit == []
+    kept, audit = verify.apply_paper_answer(records, paper_recipe(), False)
+    assert audit[0]['Paper id'] == 'paper-2' and kept[0]['Cited'] == [gap('2.0 eV')]

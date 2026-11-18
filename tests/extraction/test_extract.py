@@ -221,6 +221,7 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() 
     ]
     assert extract._extract_json_objects('bad {not json} then\n{"Name": "LLTO"}') == [{'Name': 'LLTO'}]
     assert extract._extract_json_objects('[]') == []
+    assert extract._extract_json_objects('[]\n```\n\nThe text reports no band gaps.') == []
 
     with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
         extract._extract_json_objects('No records were found.')
@@ -482,3 +483,20 @@ def test_convert_units_returns_missing_values_without_calling_model(monkeypatch:
     monkeypatch.setattr(extract, 'query_model', fail_query_model)
 
     assert extract.convert_units(['nan', "['None']"], 'Conductivity', 'S cm^-1') == [None, None]
+
+
+@pytest.mark.parametrize(('reply', 'expected'), [('YES', True), (' no.', False), ('**Yes**, it does.', True), ('Unclear', None)])
+def test_ask_paper_question_reads_a_yes_or_no_reply(
+    monkeypatch: pytest.MonkeyPatch, reply: str, expected: bool | None,
+) -> None:
+    """Send the paper and question, and read the reply's first word."""
+    sent: list[list[dict[str, Any]]] = []
+
+    def query(messages: list[dict[str, Any]], model_config: object = None) -> str:
+        """Record the messages and return the canned reply."""
+        sent.append(messages)
+        return reply
+
+    monkeypatch.setattr(extract, 'query_model', query)
+    assert extract.ask_paper_question('Paper body.', 'Own results?') is expected
+    assert 'Paper body.' in sent[0][1]['content'] and 'Question: Own results?' in sent[0][1]['content']

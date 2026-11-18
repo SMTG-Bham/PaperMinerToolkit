@@ -4,11 +4,14 @@ A long paper is sent to the model in several chunks, and each chunk returns
 its own records. The same material then appears once per chunk, often with
 the same values repeated. Merging is deterministic: records are grouped by
 their recipe identity fields, list items that state the same thing are kept
-once, and other fields keep their first reported value.
+once, and other fields keep their first reported value. A record that only
+repeats an earlier one under a qualified name, such as "Cs3Bi2I9 (thin film)"
+after "Cs3Bi2I9 (powder)" with the same values, is dropped.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -130,6 +133,47 @@ def _merge_into(target: dict[str, Any], record: Mapping[str, Any]) -> None:
             target[field] = value
 
 
+def field_items(value: object) -> list[object]:
+    """Return a field's items as a list, without missing values."""
+    items = value if isinstance(value, list) else [value]
+    return [item for item in items if not is_missing(item)]
+
+
+def _base_name(record: Mapping[str, Any], fields: Sequence[str]) -> str:
+    """Return the identity's first word, e.g. ``"cs3bi2i9"`` for ``"Cs3Bi2I9 (thin film)"``."""
+    text = ' '.join(str(record.get(field)) for field in fields if not is_missing(record.get(field)))
+    match = re.match(r'\s*([^\s(\[,;]+)', text)
+    return match.group(1).casefold() if match else ''
+
+
+def same_content(first: Mapping[str, Any], second: Mapping[str, Any], fields: Sequence[str]) -> bool:
+    """Return whether two records report the same items in every given field.
+
+    Parameters
+    ----------
+    first, second : Mapping[str, Any]
+        Records to compare.
+    fields : Sequence[str]
+        Fields to compare, normally the recipe's non-identity search fields.
+
+    Returns
+    -------
+    bool
+        ``True`` when at least one field is reported and every field holds
+        the same items (see :func:`same_item`) on both sides.
+    """
+    reported = False
+    for field in fields:
+        a, b = field_items(first.get(field)), field_items(second.get(field))
+        if not a and not b:
+            continue
+        if (len(a) != len(b) or not all(any(same_item(x, y) for y in b) for x in a)
+                or not all(any(same_item(y, x) for x in a) for y in b)):
+            return False
+        reported = True
+    return reported
+
+
 def merge_chunk_records(records: Sequence[Mapping[str, Any]], recipe: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Merge records that describe the same subject.
 
@@ -145,7 +189,9 @@ def merge_chunk_records(records: Sequence[Mapping[str, Any]], recipe: Mapping[st
     list[dict[str, Any]]
         One record per identity, in order of first appearance. Records with
         no reported identity are kept as they are, with duplicate list items
-        removed.
+        removed. A record whose identity starts with the same word as an
+        earlier record's and whose other fields hold the same items is
+        dropped as a repeat.
     """
     fields = identity_fields(recipe)
     merged: list[dict[str, Any]] = []
@@ -160,4 +206,12 @@ def merge_chunk_records(records: Sequence[Mapping[str, Any]], recipe: Mapping[st
         merged.append(copy)
         if key:
             by_key[key] = copy
-    return merged
+    content = [field for field in recipe['search fields'] if field not in fields]
+    kept: list[dict[str, Any]] = []
+    for record in merged:
+        base = _base_name(record, fields)
+        if base and any(_base_name(earlier, fields) == base and same_content(earlier, record, content)
+                        for earlier in kept):
+            continue
+        kept.append(record)
+    return kept
