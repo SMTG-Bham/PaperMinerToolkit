@@ -407,14 +407,23 @@ def scrape_text(
     -------
     list[dict[str, Any]]
         Extracted records.
+
+    Raises
+    ------
+    ValueError
+        If neither the response nor one retry contains JSON records. Sampled
+        and reasoning models occasionally return an empty or cut-off answer
+        that a second request does not repeat.
     """
     prompt = build_scrape_prompt(recipe, source='text')
     messages = [
         {'role': 'system', 'content': prompt},
         {'role': 'user', 'content': text},
     ]
-    response = query_model(messages, model_config=model_config)
-    return _extract_json_objects(response)
+    try:
+        return _extract_json_objects(query_model(messages, model_config=model_config))
+    except ValueError:
+        return _extract_json_objects(query_model(messages, model_config=model_config))
 
 
 def ask_paper_question(text: str, question: str, model_config: ModelConfig | None = None) -> bool | None:
