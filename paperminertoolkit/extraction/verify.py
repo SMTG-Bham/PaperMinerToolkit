@@ -58,6 +58,8 @@ _CHECK_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 DROPPED_COLUMNS = ['Paper id', 'Record', 'Field', 'Item', 'Check', 'Action', 'Detail']
 _DASHES = dict.fromkeys([*range(0x2010, 0x2016), 0x2212], '-')
+# Words that join two numbers in a range, e.g. '3.9 to 4.66 eV', rather than units.
+_RANGE_WORDS = frozenset({'to', 'and', 'or'})
 
 
 def validate_checks(checks: object, source: str, search_fields: Mapping[str, Any]) -> None:
@@ -178,7 +180,7 @@ class _Checker:
             if _mentions(text, term):
                 return 'exclude terms', f'mentions "{term}"'
         if self.units:
-            units = re.findall(r'\d\s*([^\W\d_]+)', _fold(value))
+            units = [word for word in re.findall(r'\d\s*([^\W\d_]+)', _fold(value)) if word not in _RANGE_WORDS]
             if units and units[0] not in self.units:
                 return 'unit', f'not in {" or ".join(self.unit_names)}'
         if self.checks.get('values in source') and numbers(value):
