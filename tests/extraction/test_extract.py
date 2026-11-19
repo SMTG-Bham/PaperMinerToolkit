@@ -11,6 +11,8 @@ import pytest
 
 from paperminertoolkit.extraction.compression import CompressionConfig
 import paperminertoolkit.extraction.extract as extract
+import paperminertoolkit.extraction.tokenizer as tokenizer
+from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
 
 
@@ -59,6 +61,24 @@ def test_token_length_handles_non_strings_model_encodings_and_fallbacks(monkeypa
     monkeypatch.setattr(extract, 'count_text_tokens', lambda prompt, model_config=None, model=None, provider=None: 3)
     assert extract.token_length('one two three', model='test-model') == 3
     assert extract.token_length('one two three', model_config={'provider': 'test'}) == 3
+
+
+def test_token_length_counts_with_the_configured_model_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count with the configured local model's tokenizer, not the package default model's."""
+    requested = []
+
+    def fake_count(text: str, model: str) -> int:
+        """Record which tokenizer was asked for; only the configured model has one."""
+        requested.append(model)
+        if model != 'Qwen/Qwen3.8-27B':
+            raise OSError(f'no tokenizer for {model}')
+        return 7
+
+    monkeypatch.setattr(tokenizer, '_transformers_token_count', fake_count)
+    config = ModelConfig(provider='local', name='Qwen/Qwen3.8-27B')
+
+    assert extract.token_length('x' * 300, model_config=config) == 7
+    assert requested == ['Qwen/Qwen3.8-27B']
 
 
 def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> None:
