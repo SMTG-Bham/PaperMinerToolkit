@@ -17,13 +17,12 @@ from typing import Any
 
 from paperminertoolkit.extraction.compression import CompressionConfig
 from paperminertoolkit.extraction.models import ModelConfig, query_images, query_text
-from paperminertoolkit.settings import DEFAULT_MODEL
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, request_token_budget
 
 
 def token_length(
     prompt: object,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     model_config: _ModelConfigSource | None = None,
     provider: str | None = None,
 ) -> int | list[object]:
@@ -34,8 +33,9 @@ def token_length(
     prompt : object
         Text to measure. Non-string values return an empty list for backward
         compatibility.
-    model : str, optional
-        Model name used for tokenizer selection.
+    model : str | None, optional
+        Model name used for tokenizer selection. Defaults to the name in
+        ``model_config``, then to the package default model.
     model_config : _ModelConfigSource or None, optional
         Model configuration used for provider-aware token counting.
     provider : str | None, optional
