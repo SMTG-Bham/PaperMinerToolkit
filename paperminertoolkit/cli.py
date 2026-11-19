@@ -28,6 +28,7 @@ from paperminertoolkit.workflows.gather import gather_papers
 from paperminertoolkit.probe_cli import probe, report_provider_status
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperminertoolkit.extraction.entities import EntityExtractionConfig
+from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
                                                   build_reconciliation_prompt,
                                                   build_text_extraction_prompt)
@@ -1434,10 +1435,25 @@ def update_anthropic_api_key() -> None:
               show_default=True,
               help='Seconds to wait for one request to an OpenAI-compatible server. Raise it for reasoning '
                    'models that think for longer than that on long inputs.')
+@click.option('--reasoning-effort',
+              default=None,
+              help="Reasoning effort sent with each request, e.g. low, medium or high. Levels differ by model "
+                   "(gpt-oss: low/medium/high; Qwen3.8: low/medium/xhigh; Mistral Small 4: none/high). "
+                   "Omit to use the model's default.")
+@click.option('--thinking/--no-thinking',
+              default=None,
+              help="Switch a hybrid model's thinking on or off through its chat template "
+                   "(OpenAI-compatible servers only). Omit to use the model's default.")
 def model_config(profile: str, provider: str, model: str, base_url: str | None, api_key: str | None,
                  capabilities: tuple[str, ...], temperature: float, top_p: float, input_token_limit: int,
-                 output_token_limit: int, request_timeout: float) -> None:
+                 output_token_limit: int, request_timeout: float, reasoning_effort: str | None,
+                 thinking: bool | None) -> None:
     """Configure a text or vision model profile from CLI options."""
+    try:
+        ModelConfig(provider=provider, name=model, reasoning_effort=reasoning_effort,
+                    thinking=thinking).reasoning_args()
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
     caps = list(capabilities) or infer_model_capabilities(profile, model)
     set_model_profile(
         profile,
@@ -1451,10 +1467,13 @@ def model_config(profile: str, provider: str, model: str, base_url: str | None, 
         input_token_limit=input_token_limit,
         output_token_limit=output_token_limit,
         request_timeout=request_timeout,
+        reasoning_effort=reasoning_effort,
+        thinking=thinking,
     )
     click.echo(
         f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit} '
-        f'output_token_limit={output_token_limit} request_timeout={request_timeout}')
+        f'output_token_limit={output_token_limit} request_timeout={request_timeout} '
+        f'reasoning_effort={reasoning_effort} thinking={thinking}')
 
 
 @click.command('status')
@@ -1466,6 +1485,7 @@ def model_status() -> None:
         click.echo(
             f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} '
             f'output_token_limit={config.get("output_token_limit")} request_timeout={config.get("request_timeout")} '
+            f'reasoning_effort={config.get("reasoning_effort")} thinking={config.get("thinking")} '
             f'base_url={config.get("base_url")}')
 
 

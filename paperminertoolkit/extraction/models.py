@@ -18,7 +18,8 @@ from typing import Any, Self, TypedDict, Unpack
 from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
 from paperminertoolkit.settings import (DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, DEFAULT_OUTPUT_TOKEN_LIMIT,
-                                        DEFAULT_REQUEST_TIMEOUT, get_model_profile, load_settings)
+                                        DEFAULT_REQUEST_TIMEOUT, get_model_profile, load_settings,
+                                        reasoning_effort_setting, thinking_setting)
 
 OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -37,6 +38,8 @@ class _ModelOverrides(TypedDict, total=False):
     input_token_limit: int | str
     output_token_limit: int | str
     request_timeout: float | int | str
+    reasoning_effort: str | None
+    thinking: bool | str | None
 
 
 class ModelCapabilityError(ValueError):
@@ -71,6 +74,12 @@ class ModelConfig:
         Maximum tokens generated per extraction request.
     request_timeout : float
         Seconds to wait for one request to an OpenAI-compatible server.
+    reasoning_effort : str | None
+        Reasoning effort sent with each request, or ``None`` for the model's
+        default.
+    thinking : bool | None
+        Whether a hybrid model thinks before answering (OpenAI-compatible
+        servers only), or ``None`` for the model's default.
     """
 
     provider: str = 'openai'
@@ -83,6 +92,8 @@ class ModelConfig:
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
     output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    reasoning_effort: str | None = None
+    thinking: bool | None = None
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides: Unpack[_ModelOverrides]) -> Self:
@@ -137,6 +148,10 @@ class ModelConfig:
             request_timeout=float(
                 overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
             ),
+            reasoning_effort=reasoning_effort_setting(
+                overrides.get('reasoning_effort', configured.get('reasoning_effort'))
+            ),
+            thinking=thinking_setting(overrides.get('thinking', configured.get('thinking'))),
         )
 
     def generation_args(self) -> dict[str, float]:
@@ -156,6 +171,40 @@ class ModelConfig:
         if provider == 'anthropic':
             args.pop('top_p')
         return args
+
+    def reasoning_args(self) -> dict[str, Any]:
+        """Build provider-specific reasoning parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            Request arguments that set the reasoning effort and thinking
+            switch, or an empty dict when both use the model's default.
+            OpenAI-compatible servers get ``reasoning_effort`` and, for
+            ``thinking``, ``chat_template_kwargs.enable_thinking``; OpenAI's
+            Responses API gets ``reasoning.effort``.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support a configured setting.
+        """
+        provider = self.provider.lower().replace('_', '-')
+        if self.reasoning_effort is None and self.thinking is None:
+            return {}
+        if provider == 'local':
+            args: dict[str, Any] = {}
+            if self.reasoning_effort is not None:
+                args['reasoning_effort'] = self.reasoning_effort
+            if self.thinking is not None:
+                args['extra_body'] = {'chat_template_kwargs': {'enable_thinking': self.thinking}}
+            return args
+        if provider == 'openai':
+            if self.thinking is not None:
+                raise ValueError('thinking is only supported for local OpenAI-compatible servers; '
+                                 'set reasoning_effort for OpenAI models.')
+            return {'reasoning': {'effort': self.reasoning_effort}}
+        raise ValueError(f'Reasoning settings are not supported for provider "{self.provider}".')
 
     def require(self, capability: str) -> None:
         """Require a model input capability.
@@ -226,8 +275,15 @@ class BaseModelClient:
         ----------
         config : ModelConfig
             Configuration used for provider requests.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support the configured reasoning
+            settings.
         """
         self.config = config
+        config.reasoning_args()
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         """Send a text-only request.
@@ -365,6 +421,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI request failed: {e}') from e
@@ -430,6 +487,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI vision request failed: {e}') from e
@@ -747,6 +805,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
                 messages=messages,
                 max_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'Local model request failed: {e}') from e
