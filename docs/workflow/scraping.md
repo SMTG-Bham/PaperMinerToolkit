@@ -119,6 +119,16 @@ pmt postprocess papers.db band_gap_validation scraped.csv
 
 This writes `scraped.postprocessed.csv` and `scraped.postprocessed.dropped.csv`. The source text is read from the corpus as it would be for a scrape. Image records are kept unchecked. Use `--no-merge`, `--no-verify` or `--no-tables` to apply only part of it.
 
+## Concurrent requests
+
+By default one paper is scraped at a time. A model server that batches requests, such as vLLM, sits mostly idle that way. With `--workers N`, abstract and text scrapes keep up to N papers' requests in flight:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --workers 8
+```
+
+Papers are still read from the corpus, and their rows, statuses and audit entries are still written, one at a time in scrape order, so the output is the same as a sequential run's. On one A100-80GB serving gpt-oss-120b, 8 workers cut a 113-paper scrape from 29 to 13 minutes. Choose N so the server's KV cache holds that many requests (vLLM logs its usage). Hosted APIs may rate-limit concurrent requests, and image modes always run one request at a time.
+
 ## Text printed inside figures
 
 A PDF's text layer includes the labels and numbers printed inside its figures: axis ticks, legends, and values in heat maps or annotated plots. In text mode these reach the model as loose numbers that it can mistake for reported values. With `--no-figure-text`, figures are detected as in layout mode (art matched to a caption), and short text blocks inside them are redacted before the PDF is read:

@@ -1089,6 +1089,12 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               is_flag=True,
               default=False,
               help="Apply the recipe's checks and list removed items in <output>.dropped.csv.")
+@click.option('--workers',
+              default=1,
+              type=click.IntRange(min=1),
+              show_default=True,
+              help='Papers whose text requests run concurrently (abstract and text modes). '
+                   'A local vLLM server batches them, so 8-16 makes scrapes several times faster.')
 @click.option('--figure-text/--no-figure-text',
               default=True,
               show_default=True,
@@ -1120,6 +1126,7 @@ def scrape(
         compression_content_detection: bool,
         tables: bool,
         verify: bool,
+        workers: int,
         figure_text: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers."""
@@ -1150,6 +1157,7 @@ def scrape(
         compression_content_detection=compression_content_detection,
         tables=tables,
         verify=verify,
+        workers=workers,
         figure_text=figure_text,
     )
 
