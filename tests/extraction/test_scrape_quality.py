@@ -97,7 +97,9 @@ def test_paper_tables_prefer_structured_documents_and_fall_back_to_the_pdf(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Use XML tables when stored, never mix in PDF tables, and fall back otherwise."""
-    monkeypatch.setattr(scrape, 'pdf_tables_text', lambda path: f'pdf tables from {path}')
+    monkeypatch.setattr(scrape, 'pdf_tables_text',
+                        lambda path, skip_regions=(): f'pdf tables from {path} skipping {list(skip_regions)}')
+    monkeypatch.setattr(scrape, 'figure_regions', lambda path: ['fig-1'])
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         papers = [{'paper_id': name} for name in ('xml', 'empty-xml', 'html', 'none')]
@@ -109,7 +111,10 @@ def test_paper_tables_prefer_structured_documents_and_fall_back_to_the_pdf(
 
         assert '| LLZO | 0.5 mS |' in scrape._paper_tables(conn, 'xml', 'paper.pdf')
         assert scrape._paper_tables(conn, 'empty-xml', 'paper.pdf') == ''
-        assert scrape._paper_tables(conn, 'html', 'paper.pdf') == 'pdf tables from paper.pdf'
+        assert scrape._paper_tables(conn, 'html', 'paper.pdf') == 'pdf tables from paper.pdf skipping []'
+        assert scrape._paper_tables(conn, 'html', 'paper.pdf', figure_text=False) == (
+            "pdf tables from paper.pdf skipping ['fig-1']"
+        )
         assert scrape._paper_tables(conn, 'none', None) == ''
 
 

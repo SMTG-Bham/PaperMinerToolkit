@@ -45,6 +45,7 @@ from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
 from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
+from paperminertoolkit.corpus.pdf_layout import figure_regions
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
@@ -638,6 +639,7 @@ def _paper_tables(
     conn: sqlite3.Connection,
     paper_id: str,
     pdf_path: str | None,
+    figure_text: bool = True,
 ) -> str:
     """Render one paper's tables as Markdown for the text prompt.
 
@@ -653,6 +655,9 @@ def _paper_tables(
         Paper whose tables are rendered.
     pdf_path : str or None
         Materialized PDF used when no structured document is stored.
+    figure_text : bool, optional
+        When ``False``, tables PyMuPDF detects inside a PDF's captioned
+        figures (gridded plots such as heat maps) are left out.
 
     Returns
     -------
@@ -674,7 +679,9 @@ def _paper_tables(
             if tables:
                 return tables
         return ''
-    return pdf_tables_text(pdf_path) if pdf_path else ''
+    if not pdf_path:
+        return ''
+    return pdf_tables_text(pdf_path, skip_regions=() if figure_text else figure_regions(pdf_path))
 
 
 def paper_source_text(
@@ -684,6 +691,7 @@ def paper_source_text(
     *,
     abstract: bool = False,
     tables: bool = True,
+    figure_text: bool = True,
 ) -> str:
     """Read the text a paper is scraped from.
 
@@ -699,6 +707,8 @@ def paper_source_text(
         Read the abstract instead of the full text.
     tables : bool, optional
         Append the paper's tables to full text.
+    figure_text : bool, optional
+        Keep text printed inside a PDF's figures. Text assets are unaffected.
 
     Returns
     -------
@@ -715,9 +725,9 @@ def paper_source_text(
         if abstract:
             raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
         raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
-    text = read_document_text(source_path)
+    text = read_document_text(source_path, figure_text=figure_text)
     if not abstract and tables:
-        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf']))
+        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf'], figure_text=figure_text))
     return text
 
 
@@ -992,6 +1002,7 @@ def scrape_papers(db_path: str = 'papers.db',
                   tables: bool = True,
                   verify: bool = False,
                   workers: int = 1,
+                  figure_text: bool = True,
                   ) -> None:
     """Scrape corpus papers and write extracted material records.
 
@@ -1059,6 +1070,10 @@ def scrape_papers(db_path: str = 'papers.db',
         vLLM batches concurrent requests, so values above 1 make abstract and
         text scrapes several times faster. Output order is unchanged. Image
         modes run one request at a time.
+    figure_text : bool, optional
+        Whether full text read from a PDF keeps the labels and numbers printed
+        inside its figures. ``False`` redacts them, so values shown only in a
+        figure are neither read by the model nor accepted by the checks.
 
     Raises
     ------
@@ -1153,7 +1168,8 @@ def scrape_papers(db_path: str = 'papers.db',
 
         def prepare_text(paper: dict[str, Any], paper_paths: dict[str, str | None]) -> _TextInput:
             """Read, compress and chunk one paper's text on the database thread."""
-            source = paper_source_text(conn, paper, paper_paths, abstract=should_scrape_abstract, tables=tables)
+            source = paper_source_text(conn, paper, paper_paths, abstract=should_scrape_abstract, tables=tables,
+                                        figure_text=figure_text)
             prompt = build_scrape_prompt(recipe_data, source='text')
             compressed = maybe_compress_text(source, prompt, text_config, compression)
             return _TextInput(source, compressed, _text_chunks(compressed, text_config, prompt=prompt))

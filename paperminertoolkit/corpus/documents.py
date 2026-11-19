@@ -139,7 +139,7 @@ def trim_reference_section(text: str) -> str:
     return text
 
 
-def read_document_text(path: str, trim_references: bool = True) -> str:
+def read_document_text(path: str, trim_references: bool = True, figure_text: bool = True) -> str:
     """Read text from a TXT or PDF document.
 
     Parameters
@@ -148,6 +148,10 @@ def read_document_text(path: str, trim_references: bool = True) -> str:
         Path to a ``.txt`` or ``.pdf`` document.
     trim_references : bool, default=True
         Whether to remove the trailing reference section from PDFs.
+    figure_text : bool, default=True
+        Whether to keep text printed inside a PDF's figures (axis labels,
+        legends, values in heat maps). When ``False`` it is redacted with
+        :func:`paperminertoolkit.corpus.pdf_layout.pdf_without_figure_text`.
 
     Returns
     -------
@@ -163,7 +167,11 @@ def read_document_text(path: str, trim_references: bool = True) -> str:
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
     if path.lower().endswith('.pdf'):
-        text = read_pdf_text(path)
+        redacted = None
+        if not figure_text:
+            from paperminertoolkit.corpus.pdf_layout import pdf_without_figure_text
+            redacted, _ = pdf_without_figure_text(path)
+        text = read_pdf_bytes(redacted) if redacted is not None else read_pdf_text(path)
         if trim_references:
             text = trim_reference_section(text)
         return text

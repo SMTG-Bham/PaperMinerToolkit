@@ -346,7 +346,7 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path: Path
     monkeypatch.setattr(scrape, 'load_recipe', lambda _: {'search fields': {}})
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: path)
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: path)
     monkeypatch.setattr(scrape, 'build_scrape_prompt', lambda *args, **kwargs: 'prompt')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, *args: text)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, *args, **kwargs: [text])
