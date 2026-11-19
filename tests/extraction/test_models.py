@@ -63,6 +63,8 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
         'input_token_limit': '64000',
         'output_token_limit': '24000',
         'request_timeout': '1800',
+        'reasoning_effort': 'high',
+        'thinking': 'off',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -80,6 +82,11 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
     assert models.ModelConfig.from_profile('vision', output_token_limit='30000').output_token_limit == 30000
     assert config.request_timeout == 1800.0
     assert models.ModelConfig.from_profile('vision', request_timeout='60').request_timeout == 60.0
+    assert config.reasoning_effort == 'high'
+    assert config.thinking is False
+    overridden = models.ModelConfig.from_profile('vision', reasoning_effort='low', thinking='on')
+    assert overridden.reasoning_effort == 'low'
+    assert overridden.thinking is True
 
 
 def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,6 +132,58 @@ def test_model_config_generation_args_and_require() -> None:
     config.require('text')
     with pytest.raises(models.ModelCapabilityError, match='cannot handle vision inputs'):
         config.require('vision')
+
+
+def test_model_config_reasoning_args_follow_each_provider() -> None:
+    """Send reasoning settings in each provider's own form, and reject unsupported ones."""
+    for provider in ['openai', 'anthropic', 'local']:
+        assert text_config(provider=provider).reasoning_args() == {}
+    assert text_config(provider='local', reasoning_effort='medium', thinking=False).reasoning_args() == {
+        'reasoning_effort': 'medium',
+        'extra_body': {'chat_template_kwargs': {'enable_thinking': False}},
+    }
+    assert text_config(provider='local', thinking=True).reasoning_args() == {
+        'extra_body': {'chat_template_kwargs': {'enable_thinking': True}},
+    }
+    assert text_config(provider='openai', reasoning_effort='high').reasoning_args() == {
+        'reasoning': {'effort': 'high'},
+    }
+    with pytest.raises(ValueError, match='thinking is only supported for local'):
+        text_config(provider='openai', thinking=True).reasoning_args()
+    with pytest.raises(ValueError, match='not supported for provider "anthropic"'):
+        models.AnthropicMessagesClient(text_config(provider='anthropic', reasoning_effort='high'))
+
+
+def test_clients_send_reasoning_settings_with_each_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Add the reasoning arguments to Responses and chat completion requests."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> types.SimpleNamespace:
+        """Record a request and return a response both APIs can read."""
+        calls.append(kwargs)
+        message = types.SimpleNamespace(content='chat text')
+        return types.SimpleNamespace(output_text='model text',
+                                     choices=[types.SimpleNamespace(message=message)])
+
+    class FakeOpenAI:
+        """Expose fake Responses and chat completions resources."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            """Attach the recording create function to both APIs."""
+            self.responses = types.SimpleNamespace(create=create)
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+
+    monkeypatch.setattr(models.openai, 'OpenAI', FakeOpenAI)
+    messages = [{'role': 'user', 'content': 'hello'}]
+
+    models.OpenAIResponsesClient(text_config(reasoning_effort='low')).query(messages)
+    local = text_config(provider='local', base_url='http://127.0.0.1:8000/v1', reasoning_effort='medium',
+                        thinking=True)
+    models.OpenAICompatibleChatClient(local).query(messages)
+
+    assert calls[0]['reasoning'] == {'effort': 'low'}
+    assert calls[1]['reasoning_effort'] == 'medium'
+    assert calls[1]['extra_body'] == {'chat_template_kwargs': {'enable_thinking': True}}
 
 
 def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path: Path) -> None:
