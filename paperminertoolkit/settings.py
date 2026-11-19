@@ -21,6 +21,7 @@ DEFAULT_TEMPERATURE = 0
 DEFAULT_TOP_P = 1
 DEFAULT_INPUT_TOKEN_LIMIT = 32000
 DEFAULT_OUTPUT_TOKEN_LIMIT = 10000
+DEFAULT_REQUEST_TIMEOUT = 600
 DEFAULT_MODEL_PROFILE = {
     'provider': 'openai',
     'model': DEFAULT_MODEL,
@@ -31,6 +32,7 @@ DEFAULT_MODEL_PROFILE = {
     'top_p': DEFAULT_TOP_P,
     'input_token_limit': DEFAULT_INPUT_TOKEN_LIMIT,
     'output_token_limit': DEFAULT_OUTPUT_TOKEN_LIMIT,
+    'request_timeout': DEFAULT_REQUEST_TIMEOUT,
 }
 DEFAULT_SETTINGS = {
     'model_profiles': {
@@ -70,6 +72,7 @@ MODEL_ENV_FIELDS = {
     'top_p': 'TOP_P',
     'input_token_limit': 'INPUT_TOKEN_LIMIT',
     'output_token_limit': 'OUTPUT_TOKEN_LIMIT',
+    'request_timeout': 'REQUEST_TIMEOUT',
 }
 
 
@@ -138,7 +141,7 @@ def _merge_profile(
     -------
     dict[str, Any]
         Merged profile with normalized capabilities, sampling values, and
-        input and output token limits.
+        input and output token limits and request timeout.
     """
     profile = default.copy()
     profile.update(configured or {})
@@ -153,6 +156,10 @@ def _merge_profile(
     if output_token_limit is None or output_token_limit == '':
         output_token_limit = DEFAULT_OUTPUT_TOKEN_LIMIT
     profile['output_token_limit'] = int(output_token_limit)
+    request_timeout = profile.get('request_timeout')
+    if request_timeout is None or request_timeout == '':
+        request_timeout = DEFAULT_REQUEST_TIMEOUT
+    profile['request_timeout'] = float(request_timeout)
     return profile
 
 
@@ -308,6 +315,7 @@ def set_model_profile(
     top_p: float = DEFAULT_TOP_P,
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT,
     output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
 ) -> None:
     """Store a model profile for extraction runs.
 
@@ -334,6 +342,8 @@ def set_model_profile(
     output_token_limit : int, default=DEFAULT_OUTPUT_TOKEN_LIMIT
         Maximum tokens the model may generate per extraction request,
         including any reasoning a server counts against it.
+    request_timeout : float, default=DEFAULT_REQUEST_TIMEOUT
+        Seconds to wait for one request to an OpenAI-compatible server.
     """
     settings = load_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
@@ -347,6 +357,7 @@ def set_model_profile(
         'top_p': float(top_p),
         'input_token_limit': int(input_token_limit),
         'output_token_limit': int(output_token_limit),
+        'request_timeout': float(request_timeout),
     }
     _save_settings(settings)
 

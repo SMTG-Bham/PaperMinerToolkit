@@ -942,7 +942,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         cli,
         'set_model_profile',
         lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit,
-               output_token_limit: calls.update({
+               output_token_limit, request_timeout: calls.update({
             'profile': profile,
             'provider': provider,
             'model': model,
@@ -953,6 +953,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
             'top_p': top_p,
             'input_token_limit': input_token_limit,
             'output_token_limit': output_token_limit,
+            'request_timeout': request_timeout,
         }),
     )
 
@@ -964,6 +965,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         '--top-p', '0.9',
         '--input-token-limit', '64000',
         '--output-token-limit', '20000',
+        '--request-timeout', '1800',
     ])
 
     assert result.exit_code == 0
@@ -978,8 +980,10 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         'top_p': 0.9,
         'input_token_limit': 64000,
         'output_token_limit': 20000,
+        'request_timeout': 1800.0,
     }
-    assert 'Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000 output_token_limit=20000' in result.output
+    assert ('Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000 '
+            'output_token_limit=20000 request_timeout=1800.0') in result.output
 
 
 def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -994,10 +998,11 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: 
         cli,
         'set_model_profile',
         lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit,
-               output_token_limit: calls.update({
+               output_token_limit, request_timeout: calls.update({
             'capabilities': capabilities,
             'input_token_limit': input_token_limit,
             'output_token_limit': output_token_limit,
+            'request_timeout': request_timeout,
         }),
     )
 
@@ -1015,6 +1020,7 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: 
     assert calls['capabilities'] == ['text', 'vision']
     assert calls['input_token_limit'] == cli.DEFAULT_INPUT_TOKEN_LIMIT
     assert calls['output_token_limit'] == cli.DEFAULT_OUTPUT_TOKEN_LIMIT
+    assert calls['request_timeout'] == cli.DEFAULT_REQUEST_TIMEOUT
 
 
 def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1028,6 +1034,7 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.Monkey
             'top_p': 1.0,
             'input_token_limit': 32000,
             'output_token_limit': 10000,
+            'request_timeout': 600.0,
             'base_url': None,
         },
         'vision': {
@@ -1038,6 +1045,7 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.Monkey
             'top_p': 0.8,
             'input_token_limit': 120000,
             'output_token_limit': 20000,
+            'request_timeout': 1800.0,
             'base_url': 'http://localhost:8000/v1',
         },
     }
@@ -1046,8 +1054,10 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.Monkey
     result = CliRunner().invoke(cli.model_status)
 
     assert result.exit_code == 0
-    assert 'text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 input_token_limit=32000 output_token_limit=10000 base_url=None' in result.output
-    assert 'vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000 output_token_limit=20000' in result.output
+    assert ('text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 input_token_limit=32000 output_token_limit=10000 '
+            'request_timeout=600.0 base_url=None') in result.output
+    assert ('vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000 output_token_limit=20000 '
+            'request_timeout=1800.0') in result.output
 
 
 def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
