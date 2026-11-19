@@ -56,6 +56,10 @@ pmt scrape papers.db sse \
   --image-context paper-text
 ```
 
+### Tables
+
+Full-text scrapes append the paper's tables to the text, under a `=== TABLES ===` heading, as Markdown grids with each table's label, caption and footnotes. Plain-text assets are built without tables, so they are taken from the paper's stored structured document (JATS, Elsevier XML or TEI) when it has one; otherwise ruled tables are detected in the PDF with PyMuPDF. Row and column spans are expanded, so each value sits in its own row and column. Use `--no-tables` to send the text alone.
+
 When both modes produce records, the text model reconciles matching records into `text+image` rows. Use `--image-batch-size N` or `--image-batch-size all` only when the vision model has enough context capacity.
 
 ### Supporting information
@@ -145,12 +149,14 @@ figure twice. All five commands accept `--json`; `download` and `detect` also ta
 
 ## Context limits and compression
 
-PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests.
+PaperMinerToolkit reserves space for prompts and output before sending source content. Optional compression can reduce oversized text or image inputs. If text still exceeds the usable model context, it is split into independent requests. Chunks are cut between paragraphs and never inside a table (an oversized table is split between rows, repeating its header), and each chunk repeats the end of the previous paragraph. A chunk that still measures over the limit, such as one dense with numbers, is split again.
+
+The records from all chunks of a paper are then merged without another model call: records whose identity fields match (ignoring case, punctuation and word order) become one record, list items that state the same value are kept once, and other fields keep their first reported value. A record that only repeats an earlier record's values under a qualified version of its name, such as `Cs3Bi2I9 (thin film)` after `Cs3Bi2I9 (powder)`, is dropped.
 
 Tokens are counted with the configured model's own tokenizer: tiktoken for OpenAI models, the token-counting endpoint for Anthropic, and the Hugging Face tokenizer named by the model setting for local servers. Text is cut at line breaks where possible, and every piece is measured again and split further until it fits, because token density is not uniform: a table of numbers can need three times the tokens of the same length of prose. When a tokenizer cannot be loaded, counts fall back to an estimate of one token per three characters and a warning names the tokenizer that failed. Treat that warning as a fault to fix (for a local server, the model name must be its exact Hugging Face repository ID): the estimate can undercount numeric text badly enough to overflow the context.
 
 :::{warning}
-Records extracted from separate chunks are not reconciled automatically. A material spanning chunk boundaries may be duplicated or incomplete. Increase the configured input limit only when the serving model genuinely supports it.
+Merging is deterministic. A record whose identity is worded differently in two chunks, or whose details are split across chunks, can still be duplicated or incomplete. Increase the configured input limit when the serving model genuinely supports it.
 :::
 
 The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` means the input fit one request; larger values indicate splitting. Inspect aggregate counts with `pmt corpus stats`.
@@ -160,7 +166,8 @@ The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` m
 `pmt scrape ... --dry-run` reports what the same command would do without
 calling a model or changing the corpus. It selects papers exactly as the real
 run would (filters, `--paper-id`, `--order`, `--count`, `--force`), reads their
-stored text, and splits it with the same chunker and token budget. It reports,
+stored text as the run would (with its `--tables` and `--figure-text` settings),
+and splits it with the same chunker and token budget. It reports,
 for each paper and each supporting-information file:
 
 - whether the stage would run, be skipped as already done, or fail for lack of
@@ -182,6 +189,44 @@ API request. Any fallback is listed in `tokenizer_fallbacks`. Image inputs are
 counted but not extracted or measured. The corpus is opened read-only, so an
 older corpus must be migrated first by any corpus-writing command, such as
 `pmt status`.
+
+## Checking records against the paper
+
+A recipe can declare `checks` (see [Recipes](recipes.md), under "Checks"). They run only when asked for:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --output scraped.csv
+```
+
+With `--verify`, each paper's records are checked against its full text, including tables. Items whose numbers are not printed in the paper, or that break the recipe's other checks, are removed. Every removed or edited item is listed, with the check and the reason, in `<output stem>.dropped.csv` (here `scraped.dropped.csv`).
+
+To measure the effect on a scrape that has already run, apply the same merging and checks to its CSV:
+
+```bash
+pmt postprocess papers.db band_gap_validation scraped.csv
+```
+
+This writes `scraped.postprocessed.csv` and `scraped.postprocessed.dropped.csv`. The source text is read from the corpus as it would be for a scrape. Image records are kept unchecked. Use `--no-merge`, `--no-verify` or `--no-tables` to apply only part of it.
+
+## Concurrent requests
+
+By default one paper is scraped at a time. A model server that batches requests, such as vLLM, sits mostly idle that way. With `--workers N`, abstract and text scrapes keep up to N papers' requests in flight:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --workers 8
+```
+
+Papers are still read from the corpus, and their rows, statuses and audit entries are still written, one at a time in scrape order, so the output is the same as a sequential run's. On one A100-80GB serving gpt-oss-120b, 8 workers cut a 113-paper scrape from 29 to 13 minutes. Choose N so the server's KV cache holds that many requests (vLLM logs its usage). Hosted APIs may rate-limit concurrent requests, and image modes always run one request at a time.
+
+## Text printed inside figures
+
+A PDF's text layer includes the labels and numbers printed inside its figures: axis ticks, legends, and values in heat maps or annotated plots. In text mode these reach the model as loose numbers that it can mistake for reported values. With `--no-figure-text`, figures are detected as in layout mode (art matched to a caption), and short text blocks inside them are redacted before the PDF is read:
+
+```bash
+pmt scrape papers.db band_gap_validation --mode text --verify --no-figure-text
+```
+
+Captions, tables and body prose are kept. A block with a line of 40 or more characters is treated as prose even inside a figure region, and figure regions that overlap a captioned table are left alone. Papers read from a publisher text asset are unaffected. The option also applies to `pmt postprocess`, so values shown only in a figure fail the values-in-source check. To extract values from figures, use an image mode.
 
 ## Reruns and temporary files
 

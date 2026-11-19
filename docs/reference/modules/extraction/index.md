@@ -15,5 +15,9 @@ entities
 scrape
 scrape_plan
 scrape_progress
+merge
+verify
+values
+postprocess
 store
 ```

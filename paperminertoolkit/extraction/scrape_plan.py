@@ -16,7 +16,6 @@ from os import PathLike
 from typing import Any
 
 from paperminertoolkit.corpus.database import connect_read_only, paper_rows
-from paperminertoolkit.corpus.documents import read_document_text
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses
 from paperminertoolkit.corpus.supplements import get_supplements
 from paperminertoolkit.extraction.compression import compression_config, should_compress_text
@@ -29,7 +28,8 @@ from paperminertoolkit.extraction.scrape import (IMAGE_EXTRACTION_MODES,
                                                  SCRAPE_ORDERS,
                                                  _paper_asset_paths,
                                                  _select_papers,
-                                                 _text_chunks)
+                                                 _text_chunks,
+                                                 paper_source_text)
 from paperminertoolkit.extraction.supplements import supplement_parts, supplement_text
 from paperminertoolkit.extraction.tokenizer import (count_text_tokens,
                                                     estimated_token_fallbacks,
@@ -156,6 +156,8 @@ def plan_scrape(db_path: str | PathLike[str] = 'papers.db',
                 include_supplements: bool = True,
                 image_extraction: str = 'auto',
                 paper_ids: Iterable[str] | None = None,
+                tables: bool = True,
+                figure_text: bool = True,
                 ) -> dict[str, Any]:
     """Report what :func:`scrape_papers` would do, without doing any of it.
 
@@ -197,6 +199,10 @@ def plan_scrape(db_path: str | PathLike[str] = 'papers.db',
         Image selection strategy, validated as for :func:`scrape_papers`.
     paper_ids : Iterable[str] or None, optional
         Only consider these papers; active filters do not apply to them.
+    tables : bool, optional
+        Whether full text includes the paper's tables, as in a real run.
+    figure_text : bool, optional
+        Whether PDF text keeps the text printed inside figures, as in a real run.
 
     Returns
     -------
@@ -273,7 +279,8 @@ def plan_scrape(db_path: str | PathLike[str] = 'papers.db',
                                 else 'no downloaded text or PDF; run pmt download')}
                             totals['skipped_missing_source'] += 1
                         else:
-                            text = read_document_text(source)
+                            text = paper_source_text(conn, row, paths, abstract=text_stage == 'abstract',
+                                                     tables=tables, figure_text=figure_text)
                             measured = _text_plan(text, prompt, text_config, compression, prompt_tokens)
                             stages[text_stage] = {'action': 'scrape', 'source': (
                                 'abstract' if text_stage == 'abstract'

@@ -28,6 +28,7 @@ unattended workflow.
 | `pmt download` | Retrieve abstracts, full text, PDFs, and supporting information. |
 | `pmt scrape` | Extract recipe-defined records with language or vision models. |
 | `pmt scrape-progress` | Report how far a scrape has got and what a rerun would still do. |
+| `pmt postprocess` | Merge and check the records of an existing scrape output. |
 | `pmt store` | Validate, convert, and store extracted records. |
 | `pmt digitize` | Recover curves from the figures that extracted records name. |
 | `pmt status` | Inspect pipeline progress. |

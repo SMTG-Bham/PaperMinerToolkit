@@ -17,7 +17,8 @@ from typing import Any, Literal, Self, TypedDict, Unpack
 
 from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
-from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
+from paperminertoolkit.settings import (DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, DEFAULT_OUTPUT_TOKEN_LIMIT,
+                                        DEFAULT_REQUEST_TIMEOUT, get_model_profile, load_settings)
 
 OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -34,6 +35,8 @@ class _ModelOverrides(TypedDict, total=False):
     temperature: float | int | str
     top_p: float | int | str
     input_token_limit: int | str
+    output_token_limit: int | str
+    request_timeout: float | int | str
 
 
 class ModelCapabilityError(ValueError):
@@ -64,6 +67,10 @@ class ModelConfig:
         Nucleus sampling probability.
     input_token_limit : int
         Maximum model input size in tokens.
+    output_token_limit : int
+        Maximum tokens generated per extraction request.
+    request_timeout : float
+        Seconds to wait for one request to an OpenAI-compatible server.
     """
 
     provider: str = 'openai'
@@ -74,6 +81,8 @@ class ModelConfig:
     temperature: float = 0
     top_p: float = 1
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
+    output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides: Unpack[_ModelOverrides]) -> Self:
@@ -121,6 +130,12 @@ class ModelConfig:
             top_p=float(overrides.get('top_p', configured.get('top_p', 1))),
             input_token_limit=int(
                 overrides.get('input_token_limit', configured.get('input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT))
+            ),
+            output_token_limit=int(
+                overrides.get('output_token_limit', configured.get('output_token_limit', DEFAULT_OUTPUT_TOKEN_LIMIT))
+            ),
+            request_timeout=float(
+                overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
             ),
         )
 
@@ -350,7 +365,7 @@ class OpenAIResponsesClient(BaseModelClient):
             OpenAI model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {}
+        kwargs: dict[str, Any] = {'timeout': config.request_timeout}
         if config.api_key:
             kwargs['api_key'] = config.api_key
         if config.base_url:
@@ -664,7 +679,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {'api_key': config.api_key or 'not-needed'}
+        kwargs: dict[str, Any] = {'api_key': config.api_key or 'not-needed', 'timeout': config.request_timeout}
         if config.base_url:
             kwargs['base_url'] = config.base_url
         self.client = openai.OpenAI(**kwargs)

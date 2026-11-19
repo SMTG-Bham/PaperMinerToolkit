@@ -95,7 +95,7 @@ def _example_record(recipe: Mapping[str, Any]) -> str:
     record = {}
     for field, config in recipe['search fields'].items():
         record[field] = config['example']
-    return json.dumps([record], indent=2)
+    return json.dumps([record], indent=2, ensure_ascii=False)
 
 
 _EXAMPLE_RULE = ('The example output only shows the shape of a record. Text in angle brackets stands for '
@@ -387,7 +387,7 @@ def query_model(messages: list[dict[str, Any]], model_config: ModelConfig | None
         Model response text.
     """
     config = model_config or ModelConfig.from_profile('text')
-    return query_text(messages, config=config, max_output_tokens=10000)
+    return query_text(messages, config=config, max_output_tokens=config.output_token_limit)
 
 
 def _strip_fences(response: str) -> str:
@@ -536,14 +536,51 @@ def scrape_text(
     -------
     list[dict[str, Any]]
         Extracted records.
+
+    Raises
+    ------
+    ValueError
+        If neither the response nor one retry contains JSON records. Sampled
+        and reasoning models occasionally return an empty or cut-off answer
+        that a second request does not repeat.
     """
     prompt = build_scrape_prompt(recipe, source='text')
     messages = [
         {'role': 'system', 'content': prompt},
         {'role': 'user', 'content': text},
     ]
-    response = query_model(messages, model_config=model_config)
-    return check_record_values(_extract_json_objects(response), recipe)
+    try:
+        records = _extract_json_objects(query_model(messages, model_config=model_config))
+    except ValueError:
+        records = _extract_json_objects(query_model(messages, model_config=model_config))
+    return check_record_values(records, recipe)
+
+
+def ask_paper_question(text: str, question: str, model_config: ModelConfig | None = None) -> bool | None:
+    """Ask the model a yes/no question about a paper.
+
+    Parameters
+    ----------
+    text : str
+        Paper text, within the model's input budget.
+    question : str
+        Yes/no question, such as a recipe's ``"paper question"`` check.
+    model_config : ModelConfig | None, optional
+        Text model configuration.
+
+    Returns
+    -------
+    bool or None
+        ``True`` for yes, ``False`` for no, ``None`` when the reply starts
+        with neither.
+    """
+    messages = [
+        {'role': 'system', 'content': 'You read scientific papers and answer questions about them precisely. '
+                                      'Answer with exactly one word: YES or NO.'},
+        {'role': 'user', 'content': f'Paper text:\n\n{text}\n\nQuestion: {question}\nAnswer with exactly one word: YES or NO.'},
+    ]
+    match = re.match(r'\W*(yes|no)\b', query_model(messages, model_config=model_config), flags=re.IGNORECASE)
+    return match.group(1).lower() == 'yes' if match else None
 
 
 def scrape_images(
@@ -583,7 +620,7 @@ def scrape_images(
                             image_paths,
                             config=config,
                             context=context,
-                            max_output_tokens=10000,
+                            max_output_tokens=config.output_token_limit,
                             compression_config=compression_config,
                             image_labels=image_labels)
     return check_record_values(_extract_json_objects(response), recipe)

@@ -182,6 +182,9 @@ SCRAPE_PROGRESS = obj({'mode': STRING, 'scope': INTEGER, 'out_of_scope': INTEGER
                        'remaining': counts('papers', 'supplement_files'),
                        'failed_papers': OBJECT, 'no_asset_papers': OBJECT})
 
+POSTPROCESS = obj({'records_in': INTEGER, 'records_out': INTEGER, 'audit_rows': INTEGER,
+                   'unchecked_papers': array(STRING), 'output_path': STRING, 'dropped_path': STRING})
+
 STORE = obj({'status': {'type': 'string',
                         'enum': ['stored', 'nothing_to_store', 'declined', 'dry_run']},
              'dry_run': BOOLEAN,

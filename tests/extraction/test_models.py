@@ -61,6 +61,8 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
         'temperature': '0.1',
         'top_p': '0.8',
         'input_token_limit': '64000',
+        'output_token_limit': '24000',
+        'request_timeout': '1800',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -74,6 +76,10 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
     assert config.temperature == 0.3
     assert config.top_p == 0.8
     assert config.input_token_limit == 64000
+    assert config.output_token_limit == 24000
+    assert models.ModelConfig.from_profile('vision', output_token_limit='30000').output_token_limit == 30000
+    assert config.request_timeout == 1800.0
+    assert models.ModelConfig.from_profile('vision', request_timeout='60').request_timeout == 60.0
 
 
 def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,7 +158,7 @@ def test_openai_responses_client_extracts_text_from_response_shapes(monkeypatch:
     monkeypatch.setattr(models.openai, 'OpenAI', FakeOpenAI)
     client = models.OpenAIResponsesClient(text_config(base_url='https://api.example'))
 
-    assert client.client.kwargs == {'api_key': 'test-key', 'base_url': 'https://api.example'}
+    assert client.client.kwargs == {'api_key': 'test-key', 'base_url': 'https://api.example', 'timeout': 600}
     assert client._response_text(types.SimpleNamespace(output_text='direct text')) == 'direct text'
     nested = types.SimpleNamespace(output=[
         types.SimpleNamespace(content=[types.SimpleNamespace(text='nested text')])
@@ -430,7 +436,7 @@ def test_openai_compatible_chat_client_queries_text_and_images(monkeypatch: pyte
     config = text_config(provider='local', base_url='http://127.0.0.1:8000/v1', api_key=None, capabilities={'text', 'vision'})
     client = models.OpenAICompatibleChatClient(config)
 
-    assert client.client.kwargs == {'api_key': 'not-needed', 'base_url': 'http://127.0.0.1:8000/v1'}
+    assert client.client.kwargs == {'api_key': 'not-needed', 'base_url': 'http://127.0.0.1:8000/v1', 'timeout': 600}
     assert client.query([{'role': 'user', 'content': 'hello'}], max_output_tokens=5) == 'chat text'
     assert FakeOpenAI.completions.calls[0]['max_tokens'] == 5
     assert FakeOpenAI.completions.calls[0]['temperature'] == 0.2

@@ -7,7 +7,7 @@ the main ``pmt scrape`` command.
 
 from __future__ import annotations
 
-import math
+import csv
 import hashlib
 import os
 import pandas as pd
@@ -16,8 +16,11 @@ import re
 import sqlite3
 import sys
 import tempfile
+import textwrap
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
@@ -27,23 +30,29 @@ from paperminertoolkit._progress import bars_disabled
 from typing import Any, TypeAlias
 
 from paperminertoolkit.extraction.compression import CompressionConfig, compression_config, maybe_compress_text
+from paperminertoolkit.corpus.tables import STRUCTURED_TABLE_FORMATS, append_tables, pdf_tables_text, structured_tables_text
 from paperminertoolkit.corpus.documents import (extract_pdf_images,
                                     read_document_text,
                                     read_pdf_text)
 from paperminertoolkit.corpus.database import (connect,
                                     get_asset,
                                     get_figure_assets,
+                                    get_structured_documents,
                                     paper_rows,
                                     set_figure_extraction_status,
                                     set_pipeline_status as _set_status,
                                     upsert_paper)
-from paperminertoolkit.extraction.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
+from paperminertoolkit.extraction.extract import (ask_paper_question, build_scrape_prompt, combine_material_records,
+                                                  scrape_images, scrape_text, token_length)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
+from paperminertoolkit.extraction.merge import merge_chunk_records
 from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.corpus.supplements import get_supplements, set_supplement_extraction_status
 from paperminertoolkit.extraction.supplements import supplement_images, supplement_parts, supplement_text
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
+from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
+from paperminertoolkit.corpus.pdf_layout import figure_regions
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
@@ -60,51 +69,78 @@ _Material: TypeAlias = dict[str, Any]
 MAX_SUPPLEMENT_TEXT_REQUESTS = 20
 
 
-def _split_text(text: str, parts: int) -> list[str]:
-    """Split text into about ``parts`` contiguous pieces at line breaks where possible.
+_CHUNK_SAFETY = 0.9
+_CHUNK_OVERLAP = 0.05
 
-    Each cut goes after the last line break, or failing that the last space,
-    in the quarter of a piece before the point that splits the remaining text
-    evenly, so table rows and words stay whole. With neither there, the cut is
-    made at that point itself. Targets are recomputed from what remains, so a
-    cut moved back does not leave a stub piece at the end.
 
-    Parameters
-    ----------
-    text : str
-        Text to split.
-    parts : int
-        Number of pieces wanted; two or more.
+def _is_table_block(block: str) -> bool:
+    """Return whether a text block contains Markdown table rows."""
+    return any(line.startswith('|') for line in block.splitlines())
 
-    Returns
-    -------
-    list[str]
-        Non-empty pieces whose concatenation is `text`.
+
+def _split_block(block: str, max_chars: int) -> list[str]:
+    """Split an oversized block on line, then word, boundaries.
+
+    A Markdown table is split between rows, and each continuation repeats
+    the table's title and header so its columns stay readable.
     """
-    pieces = []
-    start = 0
-    for remaining_parts in range(parts, 1, -1):
-        size = math.ceil((len(text) - start) / remaining_parts)
-        target = start + size
-        earliest = max(start + 1, target - size // 4)
-        cut = text.rfind('\n', earliest, target)
-        if cut < earliest:
-            cut = text.rfind(' ', earliest, target)
-        cut = cut + 1 if cut >= earliest else target
-        pieces.append(text[start:cut])
-        start = cut
-    pieces.append(text[start:])
-    return [piece for piece in pieces if piece]
+    lines = block.splitlines()
+    header: list[str] = []
+    if _is_table_block(block):
+        separator = next((index for index, line in enumerate(lines) if line.startswith('| ---')), None)
+        if separator is not None and len('\n'.join(lines[:separator + 1])) < max_chars // 2:
+            header = lines[:separator + 1]
+            lines = lines[separator + 1:]
+    pieces: list[str] = []
+    current: list[str] = list(header)
+    for line in lines:
+        parts = textwrap.wrap(line, max_chars, break_on_hyphens=False) if len(line) > max_chars else [line]
+        for part in parts:
+            if len(current) > len(header) and len('\n'.join([*current, part])) > max_chars:
+                pieces.append('\n'.join(current))
+                current = list(header)
+            current.append(part)
+    if len(current) > len(header):
+        pieces.append('\n'.join(current))
+    return pieces
 
 
+def _overlap(block: str, max_chars: int) -> str:
+    """Return the tail of a prose block to repeat at the start of the next chunk."""
+    if _is_table_block(block):
+        return ''
+    limit = max(int(max_chars * _CHUNK_OVERLAP), 1)
+    if len(block) <= limit:
+        return block
+    tail = block[-limit:]
+    sentence, word = tail.find('. '), tail.find(' ')
+    start = sentence + 2 if sentence >= 0 else word + 1
+    return tail[start:] if start < len(tail) else tail
+
+
+def _pack_blocks(blocks: Sequence[str], max_chars: int) -> list[str]:
+    """Greedily pack paragraph blocks into chunks with a short overlap."""
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for block in blocks:
+        if current and size + len(block) + 2 > max_chars:
+            chunks.append('\n\n'.join(current))
+            carry = _overlap(current[-1], max_chars)
+            current = [carry] if carry else []
+            size = len(carry)
+        current.append(block)
+        size += len(block) + 2
+    if current:
+        chunks.append('\n\n'.join(current))
+    return chunks
 def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
     """Split text into chunks that fit a model context window.
 
-    The text is split into as many pieces as its token count needs, and every
-    piece is measured again and split further until it fits. Token density
-    is not uniform: a table of numbers can need three times the tokens of the
-    same length of prose, so pieces of equal length may not fit even when
-    their total does.
+    Text is split between paragraphs (blank lines), never inside a Markdown
+    table, and each chunk repeats the end of the previous paragraph so a
+    statement cut at the boundary is still seen whole. Chunks that still
+    exceed the budget are split again.
 
     Parameters
     ----------
@@ -118,31 +154,44 @@ def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') 
     Returns
     -------
     list[str]
-        One or more character-contiguous text chunks, each measured within
-        the budget. A single character is kept even if it measures over.
+        One or more text chunks.
     """
     token_budget = request_token_budget(prompt, model_config)
+    tokens = token_length(text, model_config=model_config)
+    if tokens <= token_budget:
+        return [text]
+    chars_per_token = len(text) / tokens
+    return _fit_chunks(text, token_budget, chars_per_token, model_config)
 
-    def fit(piece: str) -> list[str]:
-        """Return `piece`, or its parts split until each fits the budget.
 
-        Parameters
-        ----------
-        piece : str
-            Text to fit.
+def _fit_chunks(
+    text: str,
+    token_budget: int,
+    chars_per_token: float,
+    model_config: _ModelConfigSource,
+    depth: int = 0,
+) -> list[str]:
+    """Pack text into budget-sized chunks, re-splitting any that overflow.
 
-        Returns
-        -------
-        list[str]
-            Contiguous parts of `piece`, in order.
-        """
-        tokens = token_length(piece, model_config=model_config)
-        if tokens <= token_budget or len(piece) < 2:
-            return [piece]
-        return [part for split in _split_text(piece, math.ceil(tokens / token_budget))
-                for part in fit(split)]
-
-    return fit(text)
+    Token density is not uniform: a table of numbers can need several times
+    the tokens of the same length of prose. A chunk that still overflows is
+    split again using its own measured density, with a tighter margin at
+    each level.
+    """
+    max_chars = max(int(token_budget * chars_per_token * _CHUNK_SAFETY ** (depth + 1)), 1)
+    blocks: list[str] = []
+    for block in (part.strip('\n') for part in re.split(r'\n\s*\n', text)):
+        if not block.strip():
+            continue
+        blocks.extend(_split_block(block, max_chars) if len(block) > max_chars else [block])
+    chunks = []
+    for chunk in _pack_blocks(blocks, max_chars):
+        tokens = token_length(chunk, model_config=model_config)
+        if depth < 3 and tokens > token_budget and len(chunk) > 1:
+            chunks.extend(_fit_chunks(chunk, token_budget, len(chunk) / tokens, model_config, depth + 1))
+        else:
+            chunks.append(chunk)
+    return chunks
 
 
 def _record_chunk_plan(
@@ -181,8 +230,8 @@ def _record_chunk_plan(
     limit_text = f' ({input_limit} tokens)' if input_limit is not None else ''
     print(
         f'Warning: {stage} for paper {paper_id} was split into {chunk_count} independent model requests '
-        f'to fit the configured input limit{limit_text} for {model_name}. Results from separate chunks are not '
-        'automatically reconciled and may contain duplicated or incomplete records.',
+        f'to fit the configured input limit{limit_text} for {model_name}. Records from separate chunks are merged by '
+        'their identity fields, but a record split across chunks may still be incomplete.',
         file=sys.stderr,
     )
 
@@ -231,6 +280,50 @@ def _append_materials(
             material['Figure source'] = figure_sources
         output.append(material)
     return output
+
+
+def dropped_path(output_path: str | PathLike[str]) -> str:
+    """Return the audit CSV path that accompanies a scrape output.
+
+    Parameters
+    ----------
+    output_path : str or os.PathLike[str]
+        Scrape output CSV.
+
+    Returns
+    -------
+    str
+        ``<output stem>.dropped.csv`` beside the output.
+    """
+    root, _ = os.path.splitext(os.fspath(output_path))
+    return f'{root}.dropped.csv'
+
+
+def _write_dropped(rows: Sequence[Mapping[str, str]], output_path: str | PathLike[str]) -> int:
+    """Append check audit rows beside a scrape output.
+
+    Parameters
+    ----------
+    rows : Sequence[Mapping[str, str]]
+        Audit rows from :func:`verify_records`.
+    output_path : str or os.PathLike[str]
+        Scrape output CSV.
+
+    Returns
+    -------
+    int
+        Number of rows written.
+    """
+    if not rows:
+        return 0
+    path = dropped_path(output_path)
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=DROPPED_COLUMNS)
+        if new_file:
+            writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
 
 
 def _write_materials(
@@ -553,6 +646,102 @@ def _paper_asset_paths(
     }
 
 
+def _paper_tables(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    pdf_path: str | None,
+    figure_text: bool = True,
+) -> str:
+    """Render one paper's tables as Markdown for the text prompt.
+
+    Tables come from the paper's structured XML when it has one in a
+    supported format, since plain-text assets are built without them.
+    Otherwise ruled tables are detected in the PDF.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus database connection.
+    paper_id : str
+        Paper whose tables are rendered.
+    pdf_path : str or None
+        Materialized PDF used when no structured document is stored.
+    figure_text : bool, optional
+        When ``False``, tables PyMuPDF detects inside a PDF's captioned
+        figures (gridded plots such as heat maps) are left out.
+
+    Returns
+    -------
+    str
+        Markdown tables, or an empty string when none are available.
+    """
+    documents = [
+        document
+        for document in get_structured_documents(conn, paper_id)
+        if str(document['metadata'].get('document_format', '')).lower() in STRUCTURED_TABLE_FORMATS
+    ]
+    if documents:
+        for document in documents:
+            tables = structured_tables_text(
+                document['content'],
+                str(document['metadata']['document_format']),
+                paper_id,
+            )
+            if tables:
+                return tables
+        return ''
+    if not pdf_path:
+        return ''
+    return pdf_tables_text(pdf_path, skip_regions=() if figure_text else figure_regions(pdf_path))
+
+
+def paper_source_text(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    paths: Mapping[str, str | None],
+    *,
+    abstract: bool = False,
+    tables: bool = True,
+    figure_text: bool = True,
+) -> str:
+    """Read the text a paper is scraped from.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus database connection.
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    paths : Mapping[str, str or None]
+        Materialized asset paths from :func:`_paper_asset_paths`.
+    abstract : bool, optional
+        Read the abstract instead of the full text.
+    tables : bool, optional
+        Append the paper's tables to full text.
+    figure_text : bool, optional
+        Keep text printed inside a PDF's figures. Text assets are unaffected.
+
+    Returns
+    -------
+    str
+        Abstract, or full text (text asset, else PDF) with any tables appended.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the paper has no asset of the requested kind.
+    """
+    source_path = paths['abstract'] if abstract else paths['text'] or paths['pdf']
+    if not source_path:
+        if abstract:
+            raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
+        raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
+    text = read_document_text(source_path, figure_text=figure_text)
+    if not abstract and tables:
+        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf'], figure_text=figure_text))
+    return text
+
+
 def _publication_key(paper: Mapping[str, Any]) -> str:
     """Build a stable publication-date sort key.
 
@@ -827,6 +1016,187 @@ def _select_papers(
     return selected
 
 
+@dataclass(frozen=True, slots=True)
+class _TextInput:
+    """One paper's text prepared for extraction.
+
+    Parameters
+    ----------
+    source_text : str
+        Full source text, with tables, used by the checks.
+    text : str
+        Source text after any compression; image requests may use it as context.
+    chunks : list[str]
+        ``text`` split to fit the model's input budget.
+    """
+
+    source_text: str
+    text: str
+    chunks: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _TextResult:
+    """Records extracted from one paper's text.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        The prepared input the records came from.
+    materials : list[dict[str, Any]]
+        Merged and, when requested, checked records.
+    removed : list[dict[str, str]]
+        Audit rows for items the paper question or checks removed, edited or moved.
+    error : Exception or None
+        The failure that stopped extraction early, if any. ``materials`` then
+        holds the records gathered before it.
+    """
+
+    text_input: _TextInput
+    materials: list[dict[str, Any]]
+    removed: list[dict[str, str]]
+    error: Exception | None = None
+
+
+def _extract_text_records(
+    text_input: _TextInput,
+    recipe_data: Mapping[str, Any],
+    text_config: ModelConfig,
+    paper_id: str,
+    *,
+    verify: bool,
+    ask_question: bool,
+) -> _TextResult:
+    """Run the model requests for one paper's text and post-process the records.
+
+    This touches no database state, so it can run on a worker thread.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        Prepared text chunks and source text.
+    recipe_data : Mapping[str, Any]
+        Loaded recipe.
+    text_config : ModelConfig
+        Text model configuration.
+    paper_id : str
+        Paper identifier recorded in audit rows.
+    verify : bool
+        Whether to apply the recipe's checks.
+    ask_question : bool
+        Whether the recipe's paper question may be asked (full-text scrapes only).
+
+    Returns
+    -------
+    _TextResult
+        Records and audit rows for the paper. A failure part-way through is
+        returned in ``error`` with the records gathered before it.
+    """
+    materials: list[dict[str, Any]] = []
+    removed: list[dict[str, str]] = []
+    try:
+        for text_chunk in text_input.chunks:
+            materials.extend(scrape_text(text_chunk, recipe_data, model_config=text_config))
+        materials = merge_chunk_records(materials, recipe_data)
+        question = (recipe_data.get('checks') or {}).get('paper question')
+        if verify and question and ask_question and materials:
+            answer = ask_paper_question(text_input.chunks[0], question['question'], model_config=text_config)
+            materials, moved = apply_paper_answer(materials, recipe_data, answer, paper_id)
+            removed.extend(moved)
+        if verify:
+            materials, dropped = verify_records(materials, recipe_data, text_input.source_text, paper_id)
+            removed.extend(dropped)
+    except Exception as error:
+        return _TextResult(text_input, materials, removed, error)
+    return _TextResult(text_input, materials, removed)
+
+
+class _TextPipeline:
+    """Prepare papers in order and run their text requests on a thread pool.
+
+    Preparation (reading assets from the corpus) stays on the calling thread,
+    which owns the database connection, and runs a few papers ahead of the
+    paper being written so the model server always has requests queued.
+
+    Parameters
+    ----------
+    papers : Sequence[dict[str, Any]]
+        Papers in scrape order.
+    workers : int
+        Concurrent model requests.
+    asset_paths : Callable
+        ``row -> paths`` materializing a paper's assets.
+    needs_text : Callable
+        ``row -> bool`` deciding whether the paper's text stage runs.
+    prepare : Callable
+        ``(row, paths) -> _TextInput``.
+    extract : Callable
+        ``(row, _TextInput) -> _TextResult``, run on a worker thread.
+    """
+
+    def __init__(
+        self,
+        papers: Sequence[dict[str, Any]],
+        workers: int,
+        asset_paths: Callable[[dict[str, Any]], dict[str, str | None]],
+        needs_text: Callable[[dict[str, Any]], bool],
+        prepare: Callable[[dict[str, Any], dict[str, str | None]], _TextInput],
+        extract: Callable[[dict[str, Any], _TextInput], _TextResult],
+    ) -> None:
+        """Start the worker pool; nothing is prepared until :meth:`take`."""
+        self._papers = papers
+        self._ahead = 2 * workers
+        self._asset_paths = asset_paths
+        self._needs_text = needs_text
+        self._prepare = prepare
+        self._extract = extract
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='pmt-scrape')
+        self._jobs: dict[int, tuple[dict[str, str | None], Future[_TextResult] | None]] = {}
+        self._submitted = 0
+
+    def __enter__(self) -> _TextPipeline:
+        """Return the pipeline for use in a ``with`` block."""
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Cancel queued requests and wait for running ones to finish."""
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+    def take(self, index: int) -> tuple[dict[str, str | None], Future[_TextResult] | None]:
+        """Return a paper's asset paths and pending text result.
+
+        Parameters
+        ----------
+        index : int
+            Position of the paper in scrape order. Papers must be taken in order.
+
+        Returns
+        -------
+        tuple
+            Asset paths, and the future text result or ``None`` when the
+            paper's text stage is skipped.
+        """
+        while self._submitted < len(self._papers) and self._submitted <= index + self._ahead:
+            self._submit(self._submitted)
+            self._submitted += 1
+        return self._jobs.pop(index)
+
+    def _submit(self, index: int) -> None:
+        """Prepare one paper and queue its text requests, recording any preparation error."""
+        row = self._papers[index]
+        paths = self._asset_paths(row)
+        future: Future[_TextResult] | None = None
+        if self._needs_text(row):
+            try:
+                text_input = self._prepare(row, paths)
+            except Exception as error:
+                future = Future()
+                future.set_exception(error)
+            else:
+                future = self._executor.submit(self._extract, row, text_input)
+        self._jobs[index] = (paths, future)
+
+
 def scrape_papers(db_path: str = 'papers.db',
                   recipe: str = 'sse',
                   mode: str = 'text',
@@ -853,6 +1223,10 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_content_detection: bool = True,
                   include_supplements: bool = True,
                   paper_ids: Iterable[str] | None = None,
+                  tables: bool = True,
+                  verify: bool = False,
+                  workers: int = 1,
+                  figure_text: bool = True,
                   ) -> dict[str, Any]:
     """Scrape corpus papers and write extracted material records.
 
@@ -917,6 +1291,21 @@ def scrape_papers(db_path: str = 'papers.db',
         Only consider these canonical paper identifiers. Active corpus
         filters do not apply to papers named this way; ``scrape_order`` and
         ``scrape_count`` still do. ``None`` considers the whole corpus.
+    tables : bool, optional
+        Whether full-text scrapes append the paper's tables, rendered as
+        Markdown from its structured XML or detected in its PDF.
+    verify : bool, optional
+        Whether to apply the recipe's ``"checks"`` to each paper's records.
+        Removed and edited items are listed in ``<output>.dropped.csv``.
+    workers : int, optional
+        Papers whose text requests run concurrently. A model server such as
+        vLLM batches concurrent requests, so values above 1 make abstract and
+        text scrapes several times faster. Output order is unchanged. Image
+        modes run one request at a time.
+    figure_text : bool, optional
+        Whether full text read from a PDF keeps the labels and numbers printed
+        inside its figures. ``False`` redacts them, so values shown only in a
+        figure are neither read by the model nor accepted by the checks.
 
     Returns
     -------
@@ -952,6 +1341,10 @@ def scrape_papers(db_path: str = 'papers.db',
         raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
     if scrape_count is not None and scrape_count < 1:
         raise ValueError('scrape_count must be a positive integer')
+    if workers < 1:
+        raise ValueError('workers must be a positive integer')
+    if workers > 1 and mode in {'images', 'text-images'}:
+        raise ValueError('workers above 1 are only supported for abstract and text scrapes')
 
     should_scrape_abstract = mode == 'abstract'
     should_scrape_text = mode in {'text', 'text-images'}
@@ -1000,6 +1393,7 @@ def scrape_papers(db_path: str = 'papers.db',
         'supplement_failed': 0,
         'supplement_unsupported': 0,
         'supplement_materials': 0,
+        'dropped': 0,
     }
     with connect(db_path) as conn:
         filters = active_filter_stack(conn)
@@ -1030,12 +1424,40 @@ def scrape_papers(db_path: str = 'papers.db',
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
         summary['papers_selected'] = len(papers)
         progress_events.emit('run_start', total=len(papers), mode=mode)
+        text_stage = 'abstract' if should_scrape_abstract else 'text'
+
+        def needs_text(paper: dict[str, Any]) -> bool:
+            """Return whether the paper's abstract or text stage should run."""
+            return (should_scrape_abstract or should_scrape_text) and (
+                force or paper.get(f'{text_stage}_scrape_status') != 'succeeded'
+            )
+
+        def prepare_text(paper: dict[str, Any], paper_paths: dict[str, str | None]) -> _TextInput:
+            """Read, compress and chunk one paper's text on the database thread."""
+            source = paper_source_text(conn, paper, paper_paths, abstract=should_scrape_abstract, tables=tables,
+                                        figure_text=figure_text)
+            prompt = build_scrape_prompt(recipe_data, source='text')
+            compressed = maybe_compress_text(source, prompt, text_config, compression)
+            return _TextInput(source, compressed, _text_chunks(compressed, text_config, prompt=prompt))
+
+        def extract_text(paper: dict[str, Any], text_input: _TextInput) -> _TextResult:
+            """Run one paper's model requests and checks."""
+            return _extract_text_records(text_input, recipe_data, text_config, str(paper['paper_id']),
+                                         verify=verify, ask_question=should_scrape_text)
+
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-scrape-') as temp_dir:
-            with tqdm(total=len(papers), desc='Scraping Papers', colour='green', disable=bars_disabled()) as pbar:
+            pipeline = _TextPipeline(
+                papers, workers, lambda paper: _paper_asset_paths(conn, paper, temp_dir),
+                needs_text, prepare_text, extract_text,
+            ) if workers > 1 else None
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green',
+                      disable=bars_disabled()) as pbar, pipeline or nullcontext():
                 for done, row in enumerate(papers, start=1):
                     before = {key: summary[key] for key in _OUTCOME_KEYS}
-                    paths = _paper_asset_paths(conn, row, temp_dir)
-                    abstract_path = paths['abstract']
+                    if pipeline:
+                        paths, text_job = pipeline.take(done - 1)
+                    else:
+                        paths, text_job = _paper_asset_paths(conn, row, temp_dir), None
                     text_path = paths['text']
                     pdf_path = paths['pdf']
                     summary['papers'] += 1
@@ -1048,28 +1470,25 @@ def scrape_papers(db_path: str = 'papers.db',
                     text = None
 
                     if should_scrape_abstract or should_scrape_text:
-                        stage = 'abstract' if should_scrape_abstract else 'text'
+                        stage = text_stage
                         status_column = f'{stage}_scrape_status'
-                        if not force and row.get(status_column) == 'succeeded':
+                        if not needs_text(row):
                             summary[f'{stage}_skipped'] += 1
                         else:
                             summary[f'{stage}_attempted'] += 1
                             try:
-                                source_path = abstract_path if should_scrape_abstract else text_path or pdf_path
-                                if not source_path:
-                                    if should_scrape_abstract:
-                                        raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
-                                    raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
-                                text = read_document_text(source_path)
+                                if text_job is not None:
+                                    result = text_job.result()
+                                else:
+                                    result = extract_text(row, prepare_text(row, paths))
                                 if should_scrape_text:
                                     text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
-                                prompt = build_scrape_prompt(recipe_data, source='text')
-                                text = maybe_compress_text(text, prompt, text_config, compression)
-                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, stage, text_chunks, text_config, summary)
-                                for text_chunk in text_chunks:
-                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                                    text_materials.extend(response)
+                                text = result.text_input.text
+                                _record_chunk_plan(row, stage, result.text_input.chunks, text_config, summary)
+                                text_materials = result.materials
+                                summary['dropped'] += _write_dropped(result.removed, output_path)
+                                if result.error is not None:
+                                    raise result.error
                                 row[f'num_{stage}_materials'] = len(text_materials)
                                 _set_status(row, status_column, 'succeeded')
                                 summary[f'{stage}_succeeded'] += 1
@@ -1252,6 +1671,8 @@ def scrape_papers(db_path: str = 'papers.db',
         print(
             f"Analysed {summary['layout_figures']} layout-aware figures with their captions."
         )
+    if summary['dropped']:
+        print(f"Checks removed, edited or moved {summary['dropped']} items; see {dropped_path(output_path)}.")
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
     if any(summary[key] for key in ('supplement_text_attempted', 'supplement_image_attempted', 'supplement_skipped')):

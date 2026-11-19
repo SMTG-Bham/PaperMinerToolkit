@@ -174,7 +174,8 @@ def test_every_model_reply_is_checked_against_the_recipe(monkeypatch: pytest.Mon
 
     assert extract.scrape_text('paper text', recipe)[0]['Pathway'] == 'biotic'
     assert extract.combine_material_records([], [], recipe)[0]['Pathway'] == 'biotic'
-    assert extract.scrape_images(['figure.png'], recipe, model_config=object())[0]['Pathway'] == 'abiotic'
+    vision_config = type('VisionConfig', (), {'output_token_limit': 4096})()
+    assert extract.scrape_images(['figure.png'], recipe, model_config=vision_config)[0]['Pathway'] == 'abiotic'
 
 
 def test_polymer_degradation_pathway_folds_the_variants_models_returned() -> None:
@@ -212,6 +213,16 @@ def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> No
     assert 'supplied paper text as context' in contextual_image_prompt
     assert extract.build_scrape_prompt(recipe, source='text') == text_prompt
     assert extract.build_scrape_prompt(recipe, source='image') == image_prompt
+
+
+def test_example_record_keeps_non_ascii_text() -> None:
+    """Test that recipe examples keep non-ASCII text unescaped."""
+    recipe = {**sample_recipe(), 'search fields': {'Method': {'prompt': 'Method.', 'example': 'UV–vis; <number> eV'}}}
+
+    prompt = extract.build_text_extraction_prompt(recipe)
+
+    assert '"UV–vis; <number> eV"' in prompt
+    assert 'u2013' not in prompt
 
 
 def test_non_material_recipe_controls_prompt_terminology_and_granularity() -> None:
@@ -352,6 +363,7 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: p
         """Provide a minimal text model configuration."""
 
         name = 'fake-text-model'
+        output_token_limit = 12000
 
         @classmethod
         def from_profile(cls, profile: str) -> FakeConfig:
@@ -378,7 +390,7 @@ def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: p
     assert calls['profile'] == 'text'
     assert calls['messages'] == messages
     assert isinstance(calls['config'], FakeConfig)
-    assert calls['max_output_tokens'] == 10000
+    assert calls['max_output_tokens'] == 12000
 
 
 def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() -> None:
@@ -392,6 +404,7 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() 
     ]
     assert extract._extract_json_objects('bad {not json} then\n{"Name": "LLTO"}') == [{'Name': 'LLTO'}]
     assert extract._extract_json_objects('[]') == []
+    assert extract._extract_json_objects('[]\n```\n\nThe text reports no band gaps.') == []
 
     with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
         extract._extract_json_objects('No records were found.')
@@ -437,6 +450,11 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         calls['text_config'] = model_config
         return '[{"Name": "LLZO"}]'
 
+    class VisionConfig(dict):
+        """Vision profile values with the configured output limit."""
+
+        output_token_limit = 9000
+
     class FakeConfig:
         """Provide a minimal vision model configuration."""
 
@@ -444,7 +462,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
         def from_profile(cls, profile: str) -> dict[str, str]:
             """Record and return the requested profile."""
             calls['vision_profile'] = profile
-            return {'profile': profile}
+            return VisionConfig(profile=profile)
 
     def fake_query_images(
         prompt: str,
@@ -479,7 +497,7 @@ def test_scrape_text_images_and_pdf_delegate_to_model_and_document_helpers(monke
     assert calls['image_paths'] == ['figure.png']
     assert calls['image_config'] == {'profile': 'vision'}
     assert calls['image_context'] == 'nearby text'
-    assert calls['image_tokens'] == 10000
+    assert calls['image_tokens'] == 9000
     assert calls['image_compression'] is None
     assert calls['image_labels'] is None
     assert 'supplied paper text as context' in calls['image_prompt']
@@ -672,3 +690,31 @@ def test_convert_units_returns_missing_values_without_calling_model(monkeypatch:
     monkeypatch.setattr(extract, 'query_model', fail_query_model)
 
     assert extract.convert_units(['nan', "['None']"], 'Conductivity', 'S cm^-1') == [None, None]
+
+
+@pytest.mark.parametrize(('reply', 'expected'), [('YES', True), (' no.', False), ('**Yes**, it does.', True), ('Unclear', None)])
+def test_ask_paper_question_reads_a_yes_or_no_reply(
+    monkeypatch: pytest.MonkeyPatch, reply: str, expected: bool | None,
+) -> None:
+    """Send the paper and question, and read the reply's first word."""
+    sent: list[list[dict[str, Any]]] = []
+
+    def query(messages: list[dict[str, Any]], model_config: object = None) -> str:
+        """Record the messages and return the canned reply."""
+        sent.append(messages)
+        return reply
+
+    monkeypatch.setattr(extract, 'query_model', query)
+    assert extract.ask_paper_question('Paper body.', 'Own results?') is expected
+    assert 'Paper body.' in sent[0][1]['content'] and 'Question: Own results?' in sent[0][1]['content']
+
+
+def test_scrape_text_retries_once_when_the_response_has_no_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ask again after an empty answer, and fail when the retry is also unusable."""
+    replies = iter(['', '[{"Name": "LLZO"}]', 'no json', 'still none'])
+    monkeypatch.setattr(extract, 'query_model', lambda messages, model_config=None: next(replies))
+    recipe = sample_recipe()
+
+    assert extract.scrape_text('paper body', recipe) == [{'Name': 'LLZO'}]
+    with pytest.raises(ValueError, match='did not contain valid JSON'):
+        extract.scrape_text('paper body', recipe)

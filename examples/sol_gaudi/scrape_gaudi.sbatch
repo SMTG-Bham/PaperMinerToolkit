@@ -126,6 +126,9 @@ PMT_IN_CSV="${PMT_IN_CSV:-scraped_${PMT_RECIPE}.csv}"
 PMT_OUT_CSV="${PMT_OUT_CSV:-materials_${PMT_RECIPE}.csv}"
 PMT_ENV="${PMT_ENV:-paperminertoolkit}"    # our env, created per examples/sol_gaudi/README.md
 PMT_VLLM_ENV="${PMT_VLLM_ENV:-gaudi-pytorch-vllm}"   # ASU's shared env - never install into it
+# Extra pmt scrape options, split on spaces, e.g. "--force --verify" (apply the
+# recipe's checks; removed items go to <PMT_IN_CSV stem>.dropped.csv) or "--no-tables".
+PMT_SCRAPE_ARGS="${PMT_SCRAPE_ARGS:-}"
 PMT_RUN_STORE="${PMT_RUN_STORE:-1}"   # pmt store also calls the model, so do it while the server is up
 PMT_STARTUP_TIMEOUT="${PMT_STARTUP_TIMEOUT:-3600}"
 
@@ -270,6 +273,8 @@ pmt config status
 
 scrape_args=(--mode "$PMT_MODE" --output "$PMT_IN_CSV")
 [[ -n "$PMT_COUNT" ]] && scrape_args+=(--count "$PMT_COUNT")
+# shellcheck disable=SC2206  # word splitting is intended
+[[ -n "$PMT_SCRAPE_ARGS" ]] && scrape_args+=($PMT_SCRAPE_ARGS)
 
 echo "=== Scraping ==="
 pmt scrape "$PMT_DB" "$PMT_RECIPE" "${scrape_args[@]}"

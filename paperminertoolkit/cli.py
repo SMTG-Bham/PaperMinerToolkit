@@ -56,6 +56,7 @@ from paperminertoolkit.corpus.filtering import (apply_regex_filter,
                                     filter_overview,
                                     reset_filters)
 from paperminertoolkit.workflows.imports import import_pdfs
+from paperminertoolkit.extraction.postprocess import postprocess_scrape
 from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.scrape_plan import plan_scrape
 from paperminertoolkit.extraction.scrape_progress import STAGES as SCRAPE_PROGRESS_MODES
@@ -78,6 +79,8 @@ from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
 from paperminertoolkit.settings import (get_model_profile,
                                    DEFAULT_INPUT_TOKEN_LIMIT,
                                    _saved_settings,
+                                   DEFAULT_OUTPUT_TOKEN_LIMIT,
+                                   DEFAULT_REQUEST_TIMEOUT,
                                    infer_model_capabilities,
                                    set_model_profile,
                                    update_anthropic_key,
@@ -1417,6 +1420,24 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               default=True,
               show_default=True,
               help='Use Headroom content detection when compressing inputs.')
+@click.option('--tables/--no-tables',
+              default=True,
+              show_default=True,
+              help="Append the paper's tables, as Markdown, to full text.")
+@click.option('--verify',
+              is_flag=True,
+              default=False,
+              help="Apply the recipe's checks and list removed items in <output>.dropped.csv.")
+@click.option('--workers',
+              default=1,
+              type=click.IntRange(min=1),
+              show_default=True,
+              help='Papers whose text requests run concurrently (abstract and text modes). '
+                   'A local vLLM server batches them, so 8-16 makes scrapes several times faster.')
+@click.option('--figure-text/--no-figure-text',
+              default=True,
+              show_default=True,
+              help='Keep labels and numbers printed inside PDF figures in the text sent to the model.')
 @_paper_id_options
 @click.option('--dry-run', is_flag=True, default=False,
               help='Report the papers, model requests, and estimated input tokens a run would '
@@ -1449,6 +1470,10 @@ def scrape(
         compression_mode: str,
         compression_ratio: str,
         compression_content_detection: bool,
+        tables: bool,
+        verify: bool,
+        workers: int,
+        figure_text: bool,
         paper_ids: tuple[str, ...],
         paper_ids_file: str | None,
         dry_run: bool,
@@ -1475,7 +1500,8 @@ def scrape(
                     compression_ratio=compression_ratio,
                     compression_content_detection=compression_content_detection,
                     include_supplements=include_supplements,
-                    image_extraction=image_extraction, **selection,
+                    image_extraction=image_extraction, tables=tables, figure_text=figure_text,
+                    **selection,
                 )
         except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
             message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
@@ -1513,6 +1539,10 @@ def scrape(
                 compression_mode=compression_mode,
                 compression_ratio=compression_ratio,
                 compression_content_detection=compression_content_detection,
+                tables=tables,
+                verify=verify,
+                workers=workers,
+                figure_text=figure_text,
                 **selection,
             )
     except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
@@ -1572,6 +1602,56 @@ def _echo_scrape_plan(plan: Mapping[str, Any]) -> None:
                        f'{item["text_tokens"]} tokens{outcome}')
         if len(plan['overflows']) > 10:
             click.echo(f'  ... {len(plan["overflows"]) - 10} more in --json output')
+
+
+@agent_meta(effects={'migrates_corpus', 'writes_files'}, output=out.POSTPROCESS)
+@click.command('postprocess')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('recipe', default='sse', type=str)
+@click.argument('in_file', default='temp_scraped_materials.csv', type=click.Path(exists=True, dir_okay=False))
+@click.option('--output', 'output_path', default=None, type=click.Path(dir_okay=False),
+              help='Output CSV. Defaults to <input>.postprocessed.csv.')
+@click.option('--merge/--no-merge', default=True, show_default=True,
+              help='Merge records with the same identity within each paper.')
+@click.option('--verify/--no-verify', default=True, show_default=True,
+              help="Apply the recipe's checks against each paper's text.")
+@click.option('--tables/--no-tables', default=True, show_default=True,
+              help="Include the paper's tables in the text the checks read.")
+@click.option('--figure-text/--no-figure-text', default=True, show_default=True,
+              help='Keep text printed inside PDF figures in the text the checks read.')
+@_json_option
+def postprocess(
+        db_path: str,
+        recipe: str,
+        in_file: str,
+        output_path: str | None,
+        merge: bool,
+        verify: bool,
+        tables: bool,
+        figure_text: bool,
+        json_output: bool,
+) -> None:
+    """Merge and check the records of an existing scrape output."""
+    try:
+        with _quiet(json_output):
+            summary = postprocess_scrape(db_path, recipe, in_file, output_path, merge=merge, verify=verify,
+                                         tables=tables, figure_text=figure_text)
+    except (RuntimeError, ValueError, KeyError, OSError, sqlite3.Error) as error:
+        message = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        raise click.ClickException(str(message)) from error
+    if json_output:
+        emit_json({'records_in': summary.records_in, 'records_out': summary.records_out,
+                   'audit_rows': summary.audit_rows, 'unchecked_papers': list(summary.unchecked_papers),
+                   'output_path': str(summary.output_path), 'dropped_path': str(summary.dropped_path)})
+        return
+    click.echo(f'Wrote {summary.records_out} of {summary.records_in} records to {summary.output_path}.')
+    if summary.audit_rows:
+        click.echo(f'Checks removed or edited {summary.audit_rows} items; see {summary.dropped_path}.')
+    if summary.unchecked_papers:
+        click.echo(
+            f'{len(summary.unchecked_papers)} papers had no readable source text and were not checked: '
+            f'{", ".join(summary.unchecked_papers)}'
+        )
 
 
 @agent_meta(effects={'paid_model', 'prompts', 'writes_corpus', 'writes_files'}, output=out.STORE)
@@ -1979,11 +2059,24 @@ def _setter_command(name: str, key: str, label: str, secret: bool, validated: bo
               type=int,
               show_default=True,
               help='Maximum input tokens to send to the model before chunking.')
+@click.option('--output-token-limit',
+              default=DEFAULT_OUTPUT_TOKEN_LIMIT,
+              type=int,
+              show_default=True,
+              help='Maximum tokens the model may generate per extraction request, including any reasoning '
+                   'the server counts against it.')
+@click.option('--request-timeout',
+              default=DEFAULT_REQUEST_TIMEOUT,
+              type=click.FloatRange(min=1),
+              show_default=True,
+              help='Seconds to wait for one request to an OpenAI-compatible server. Raise it for reasoning '
+                   'models that think for longer than that on long inputs.')
 @_json_option
 def model_config(profile: str, provider: str | None, model: str | None, base_url: str | None,
                  api_key: str | None, api_key_env: str | None,
                  capabilities: tuple[str, ...], temperature: float, top_p: float,
-                 input_token_limit: int, json_output: bool) -> None:
+                 input_token_limit: int, output_token_limit: int, request_timeout: float,
+                 json_output: bool) -> None:
     """Configure a text or vision model profile from CLI options.
 
     --provider and --model are prompted for only when stdin is a terminal;
@@ -2015,16 +2108,20 @@ def model_config(profile: str, provider: str | None, model: str | None, base_url
             temperature=temperature,
             top_p=top_p,
             input_token_limit=input_token_limit,
+            output_token_limit=output_token_limit,
+            request_timeout=request_timeout,
         )
     except (OSError, RuntimeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
     if json_output:
         emit_json({'profile': profile, 'provider': provider, 'model': model, 'base_url': base_url,
                    'capabilities': caps, 'temperature': temperature, 'top_p': top_p,
-                   'input_token_limit': input_token_limit, 'api_key_set': bool(api_key)})
+                   'input_token_limit': input_token_limit, 'output_token_limit': output_token_limit,
+                   'request_timeout': request_timeout, 'api_key_set': bool(api_key)})
         return
     click.echo(
-        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit}')
+        f'Updated {profile} model profile: {provider}/{model} [{", ".join(caps)}] temperature={temperature} top_p={top_p} input_token_limit={input_token_limit} '
+        f'output_token_limit={output_token_limit} request_timeout={request_timeout}')
 
 
 @agent_meta(effects={'read_only'}, output=out.MODEL_STATUS)
@@ -2046,7 +2143,9 @@ def model_status(json_output: bool) -> None:
     for profile, config in profiles.items():
         capabilities = ', '.join(config.get('capabilities', []))
         click.echo(
-            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} base_url={config.get("base_url")}')
+            f'{profile}: {config.get("provider")}/{config.get("model")} capabilities=[{capabilities}] temperature={config.get("temperature")} top_p={config.get("top_p")} input_token_limit={config.get("input_token_limit")} '
+            f'output_token_limit={config.get("output_token_limit")} request_timeout={config.get("request_timeout")} '
+            f'base_url={config.get("base_url")}')
 
 
 @agent_meta(effects={'network'}, output=out.PROVIDERS)
@@ -2190,6 +2289,7 @@ main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')
 main.add_command(scrape_progress_command, 'scrape-progress')
+main.add_command(postprocess, 'postprocess')
 main.add_command(store, 'store')
 main.add_command(digitize, 'digitize')
 main.add_command(mcp_command, 'mcp')

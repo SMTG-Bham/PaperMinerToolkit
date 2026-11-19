@@ -5,5 +5,5 @@ Commands for the principal corpus-building and extraction operations.
 
 .. click:: paperminertoolkit.cli:main
    :prog: pmt
-   :commands: schema, probe, gather, search, enrich, download, scrape, scrape-progress, store, digitize, validate, status, reset, mcp
+   :commands: schema, probe, gather, search, enrich, download, scrape, scrape-progress, postprocess, store, digitize, validate, status, reset, mcp
    :nested: full

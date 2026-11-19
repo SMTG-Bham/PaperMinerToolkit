@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Any, Self
 
@@ -135,13 +136,23 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: p
     assert scrape._text_chunks('short text', text_config, prompt='extract prompt') == ['short text']
     assert budget_calls == [('extract prompt', text_config)]
 
-    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 40000 * len(text))
-    assert scrape._text_chunks('abcdef', text_config) == ['abc', 'def']
-    assert scrape._text_chunks('abcdefg', text_config) == ['abc', 'de', 'fg']
+    monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
+    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: len(text) // 2)
+    paragraphs = [f'Paragraph {index} ' + 'word ' * 30 for index in range(6)]
+    table = 'Table 1 Band gaps' + chr(10) + '| Material | Gap |' + chr(10) + '| --- | --- |' + chr(10) + '| A | 1.5 |'
+    text = (chr(10) * 2).join([*paragraphs[:3], table, *paragraphs[3:]])
+    chunks = scrape._text_chunks(text, text_config)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) // 2 <= 100 for chunk in chunks)
+    assert sum(table in chunk for chunk in chunks) == 1
+    assert all(paragraph.strip() in text for chunk in chunks for paragraph in chunk.split(chr(10) * 2))
+    # each chunk after the first starts with the tail of the previous chunk's last paragraph
+    assert chunks[1].split(chr(10) * 2)[0] in chunks[0]
 
 
-def test_text_chunks_measure_every_piece_and_cut_at_line_breaks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Re-split dense pieces so no chunk overflows, and keep table rows and words whole."""
+def test_text_chunks_fit_dense_tables_within_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-split dense pieces so no chunk overflows, and keep table rows whole."""
     text_config = FakeModelConfig('text', name='model')
     monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
 
@@ -152,14 +163,13 @@ def test_text_chunks_measure_every_piece_and_cut_at_line_breaks(monkeypatch: pyt
 
     monkeypatch.setattr(scrape, 'token_length', tokens)
     prose = ''.join(f'Paragraph {chr(97 + index % 26)} of the methods section.\n' for index in range(30))
-    table = ''.join(f'{index:04d}\t{index * 37 % 1000:03d}\t{index * 91 % 1000:03d}\n' for index in range(60))
-    text = prose + table
+    rows = [f'{index:04d}\t{index * 37 % 1000:03d}\t{index * 91 % 1000:03d}' for index in range(60)]
+    text = prose + '\n'.join(rows) + '\n'
 
     chunks = scrape._text_chunks(text, text_config)
 
-    assert ''.join(chunks) == text
     assert all(tokens(chunk) <= 100 for chunk in chunks)
-    assert all(chunk[-1] in '\n ' for chunk in chunks)
+    assert all(any(row in chunk.splitlines() for chunk in chunks) for row in rows)
     # Equal-length pieces, as chunks used to be cut, overflow inside the table.
     count = math.ceil(tokens(text) / 100)
     size = math.ceil(len(text) / count)
@@ -290,6 +300,10 @@ def test_scrape_papers_rejects_invalid_modes(tmp_path: Path) -> None:
         scrape.scrape_papers(str(db_path), scrape_order='bad')
     with pytest.raises(ValueError, match='scrape_count must be a positive integer'):
         scrape.scrape_papers(str(db_path), scrape_count=0)
+    with pytest.raises(ValueError, match='workers must be a positive integer'):
+        scrape.scrape_papers(str(db_path), workers=0)
+    with pytest.raises(ValueError, match='only supported for abstract and text'):
+        scrape.scrape_papers(str(db_path), mode='images', workers=2)
 
 
 def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_import_source(
@@ -314,7 +328,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk one', 'chunk two'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: f'read {os.path.basename(path)}')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: f'read {os.path.basename(path)}')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_analyze_text(
@@ -368,7 +382,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
     }]
     assert 'Skipped already successful stages: abstracts=0, text=1, images=0' in output
     assert 'text for paper paper-1 was split into 2 independent model requests' in captured.err
-    assert 'Results from separate chunks are not automatically reconciled' in captured.err
+    assert 'Records from separate chunks are merged by their identity fields' in captured.err
     assert 'Chunking warning: 1 paper input was split into 2 independent model requests' in captured.err
 
 
@@ -391,7 +405,7 @@ def test_force_rescrape_replaces_previous_chunk_count(
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'short paper text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'short paper text')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
     monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [])
@@ -424,7 +438,7 @@ def test_scrape_papers_abstract_mode_writes_materials_and_updates_status(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'abstract text from corpus')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'abstract text from corpus')
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
 
     def fake_scrape_text(
@@ -498,7 +512,7 @@ def test_scrape_papers_applies_count_and_order_before_scraping(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: os.path.basename(os.path.dirname(path)))
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: os.path.basename(os.path.dirname(path)))
     monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
     monkeypatch.setattr(scrape, 'scrape_text', lambda text, recipe, model_config=None: [{'Name': text}])
 
@@ -516,6 +530,70 @@ def test_scrape_papers_applies_count_and_order_before_scraping(
     assert papers.loc[0, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[1, 'text_scrape_status'] == 'succeeded'
     assert papers.loc[2, 'text_scrape_status'] == 'pending'
+
+
+def test_scrape_papers_runs_text_requests_concurrently_and_keeps_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlap papers' model requests while writing rows and statuses in scrape order."""
+    papers_dir = tmp_path / 'papers'
+    papers_dir.mkdir()
+    for paper_id in ['paper-1', 'paper-2', 'paper-4', 'paper-5', 'paper-6']:
+        (papers_dir / f'{paper_id}.txt').write_text(paper_id)
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    write_corpus(db_path, [
+        {'paper_id': 'paper-1'},
+        {'paper_id': 'paper-2'},
+        {'paper_id': 'paper-3'},
+        {'paper_id': 'paper-4', 'text_scrape_status': 'succeeded'},
+        {'paper_id': 'paper-5'},
+        {'paper_id': 'paper-6'},
+    ])
+    active = {'now': 0, 'peak': 0}
+    lock = threading.Lock()
+    both_started = threading.Barrier(2, timeout=5)
+
+    def fake_scrape_text(text: str, recipe: Mapping[str, Any], model_config: object = None) -> list[dict[str, str]]:
+        """Hold two requests open together, and fail one paper."""
+        with lock:
+            active['now'] += 1
+            active['peak'] = max(active['peak'], active['now'])
+        try:
+            if text in {'paper-1', 'paper-2'}:
+                both_started.wait()
+            if text == 'paper-5':
+                raise RuntimeError('model failed')
+            return [{'Name': f'material from {text}'}]
+        finally:
+            with lock:
+                active['now'] -= 1
+
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text])
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: os.path.basename(os.path.dirname(path)))
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, prompt, model_config, config: text)
+    monkeypatch.setattr(scrape, 'scrape_text', fake_scrape_text)
+
+    scrape.scrape_papers(str(db_path), output_path=str(output_path), mode='text',
+                         scrape_order='paper-id', workers=3)
+
+    materials = pd.read_csv(output_path, index_col=0)
+    papers = read_corpus(db_path).set_index('paper_id')
+    assert active['peak'] >= 2
+    assert materials['Name'].tolist() == [
+        'material from paper-1', 'material from paper-2', 'material from paper-6',
+    ]
+    assert papers.loc['paper-1', 'text_scrape_status'] == 'succeeded'
+    assert papers.loc['paper-3', 'text_scrape_status'] == 'failed'
+    assert 'No downloaded text or PDF asset found' in papers.loc['paper-3', 'last_error']
+    assert papers.loc['paper-4', 'text_scrape_status'] == 'succeeded'
+    assert papers.loc['paper-5', 'text_scrape_status'] == 'failed'
+    assert 'model failed' in papers.loc['paper-5', 'last_error']
+    assert papers.loc['paper-6', 'num_text_materials'] == 1
 
 
 def test_scrape_papers_records_text_failures_when_source_is_missing(
@@ -607,7 +685,7 @@ def test_scrape_papers_compresses_text_before_chunking(
     monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'full paper text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'full paper text')
 
     def fake_compress(
         text: str,
@@ -688,7 +766,7 @@ def test_scrape_papers_text_images_combines_results_and_cleans_images(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['single chunk'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text context')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'text context')
 
     def fake_extract_pdf_images(
         pdf_path_arg: str,
@@ -811,7 +889,7 @@ def test_scrape_papers_falls_back_to_separate_rows_when_combining_returns_no_rec
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['chunk'])
-    monkeypatch.setattr(scrape, 'read_document_text', lambda path: 'text')
+    monkeypatch.setattr(scrape, 'read_document_text', lambda path, **kwargs: 'text')
     monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *_, **__: [str(image_path)])
     monkeypatch.setattr(scrape, 'scrape_text', lambda *_, **__: [{'Name': 'text material'}])
     monkeypatch.setattr(scrape, 'scrape_images', lambda *_, **__: [{'Name': 'image material'}])
