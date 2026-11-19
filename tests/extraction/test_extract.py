@@ -506,3 +506,14 @@ def test_ask_paper_question_reads_a_yes_or_no_reply(
     monkeypatch.setattr(extract, 'query_model', query)
     assert extract.ask_paper_question('Paper body.', 'Own results?') is expected
     assert 'Paper body.' in sent[0][1]['content'] and 'Question: Own results?' in sent[0][1]['content']
+
+
+def test_scrape_text_retries_once_when_the_response_has_no_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ask again after an empty answer, and fail when the retry is also unusable."""
+    replies = iter(['', '[{"Name": "LLZO"}]', 'no json', 'still none'])
+    monkeypatch.setattr(extract, 'query_model', lambda messages, model_config=None: next(replies))
+    recipe = sample_recipe()
+
+    assert extract.scrape_text('paper body', recipe) == [{'Name': 'LLZO'}]
+    with pytest.raises(ValueError, match='did not contain valid JSON'):
+        extract.scrape_text('paper body', recipe)

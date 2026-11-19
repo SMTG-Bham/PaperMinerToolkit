@@ -805,6 +805,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
         '--no-compression-content-detection',
         '--no-tables',
         '--verify',
+        '--workers', '4',
     ])
 
     assert result.exit_code == 0
@@ -834,6 +835,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
         'compression_content_detection': False,
         'tables': False,
         'verify': True,
+        'workers': 4,
     }
 
 
