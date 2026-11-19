@@ -805,6 +805,8 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
         '--no-compression-content-detection',
         '--no-tables',
         '--verify',
+        '--workers', '4',
+        '--no-figure-text',
     ])
 
     assert result.exit_code == 0
@@ -834,6 +836,8 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
         'compression_content_detection': False,
         'tables': False,
         'verify': True,
+        'workers': 4,
+        'figure_text': False,
     }
 
 
@@ -855,12 +859,12 @@ def test_postprocess_passes_options_and_reports_the_summary(monkeypatch: pytest.
 
     result = CliRunner().invoke(cli.main, [
         'postprocess', str(db_path), 'band_gap_validation', str(in_path),
-        '--output', 'out.csv', '--no-merge', '--no-tables',
+        '--output', 'out.csv', '--no-merge', '--no-tables', '--no-figure-text',
     ])
 
     assert result.exit_code == 0, result.output
     assert calls['args'] == (str(db_path), 'band_gap_validation', str(in_path), 'out.csv')
-    assert calls['kwargs'] == {'merge': False, 'verify': True, 'tables': False}
+    assert calls['kwargs'] == {'merge': False, 'verify': True, 'tables': False, 'figure_text': False}
     assert 'Wrote 3 of 5 records to out.csv.' in result.output
     assert 'Checks removed or edited 2 items; see out.dropped.csv.' in result.output
     assert '1 papers had no readable source text and were not checked: paper-9' in result.output

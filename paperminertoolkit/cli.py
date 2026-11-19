@@ -1090,6 +1090,16 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               is_flag=True,
               default=False,
               help="Apply the recipe's checks and list removed items in <output>.dropped.csv.")
+@click.option('--workers',
+              default=1,
+              type=click.IntRange(min=1),
+              show_default=True,
+              help='Papers whose text requests run concurrently (abstract and text modes). '
+                   'A local vLLM server batches them, so 8-16 makes scrapes several times faster.')
+@click.option('--figure-text/--no-figure-text',
+              default=True,
+              show_default=True,
+              help='Keep labels and numbers printed inside PDF figures in the text sent to the model.')
 def scrape(
         db_path: str,
         recipe: str,
@@ -1117,6 +1127,8 @@ def scrape(
         compression_content_detection: bool,
         tables: bool,
         verify: bool,
+        workers: int,
+        figure_text: bool,
 ) -> None:
     """Run text and/or image scraping over downloaded papers."""
     scrape_papers(
@@ -1146,6 +1158,8 @@ def scrape(
         compression_content_detection=compression_content_detection,
         tables=tables,
         verify=verify,
+        workers=workers,
+        figure_text=figure_text,
     )
 
 
@@ -1161,6 +1175,8 @@ def scrape(
               help="Apply the recipe's checks against each paper's text.")
 @click.option('--tables/--no-tables', default=True, show_default=True,
               help="Include the paper's tables in the text the checks read.")
+@click.option('--figure-text/--no-figure-text', default=True, show_default=True,
+              help='Keep text printed inside PDF figures in the text the checks read.')
 def postprocess(
         db_path: str,
         recipe: str,
@@ -1169,9 +1185,11 @@ def postprocess(
         merge: bool,
         verify: bool,
         tables: bool,
+        figure_text: bool,
 ) -> None:
     """Merge and check the records of an existing scrape output."""
-    summary = postprocess_scrape(db_path, recipe, in_file, output_path, merge=merge, verify=verify, tables=tables)
+    summary = postprocess_scrape(db_path, recipe, in_file, output_path, merge=merge, verify=verify, tables=tables,
+                                 figure_text=figure_text)
     click.echo(f'Wrote {summary.records_out} of {summary.records_in} records to {summary.output_path}.')
     if summary.audit_rows:
         click.echo(f'Checks removed or edited {summary.audit_rows} items; see {summary.dropped_path}.')

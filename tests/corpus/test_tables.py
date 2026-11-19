@@ -8,7 +8,7 @@ import pymupdf
 import pytest
 
 from paperminertoolkit.corpus import tables
-from paperminertoolkit.corpus.layout import Table
+from paperminertoolkit.corpus.layout import BoundingBox, Table
 
 JATS = """<article><body><sec id="s1"><p>See Table 1.</p>
 <table-wrap id="t1"><label>Table 1</label><caption><title>Computed gaps<xref rid="fa">a</xref></title></caption>
@@ -155,6 +155,9 @@ def test_pdf_tables_text_reads_ruled_tables_by_word_position(tmp_path: Path) -> 
     assert '| LaWN3 | 2.04 |' in text
     assert '| ZrTaN3 | 0.45 |' in text
     assert tables.pdf_tables_text(blank) == ''
+    whole_page = BoundingBox(1, 0, 0, 1000, 1000)
+    assert tables.pdf_tables_text(pdf, skip_regions=[BoundingBox(2, 0, 0, 1000, 1000)]) == text
+    assert tables.pdf_tables_text(pdf, skip_regions=[whole_page]) == ''
 
 
 def test_pdf_tables_text_returns_nothing_for_unreadable_files(tmp_path: Path) -> None:
