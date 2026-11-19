@@ -123,6 +123,12 @@ pmt search "Lithium solid electrolyte" papers.db \
   --source openalex --source arxiv --count 25
 ```
 
+A search matches each result against the stored papers through an in-memory index of their DOIs,
+identifiers, and titles with years, and writes the merged papers and their abstracts in one
+transaction. Storing time therefore grows linearly with the number of results, so a search of tens
+of thousands of records stays practical. If that write fails part-way, none of the search's papers
+or abstracts are kept and the search is recorded as failed.
+
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
 search matches more than that, PaperMinerToolkit prints the shortfall; split the query by date range to
 reach the rest. arXiv has the same limit at 30000 matches, and the same shortfall message.

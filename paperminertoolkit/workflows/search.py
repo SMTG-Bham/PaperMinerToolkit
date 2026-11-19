@@ -24,12 +24,13 @@ from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevie
                           openalex, pubmed)
 from paperminertoolkit.workflows.enrichment import enrich_papers
 from paperminertoolkit.corpus.database import (PAPER_FIELDS,
+                                               PaperIndex,
                                                add_asset,
-                                               add_search_result,
                                                begin_search_run,
                                                connect,
                                                find_paper,
                                                finish_search_run,
+                                               link_search_result,
                                                normalize_paper,
                                                upsert_paper,
                                                upsert_papers)
@@ -844,14 +845,31 @@ def _source_search(name: str) -> Callable[..., pd.DataFrame]:
 def _store_search_abstracts(
     conn: sqlite3.Connection,
     papers: Iterable[dict[str, Any]],
+    index: PaperIndex | None = None,
 ) -> int:
-    """Store search-result abstracts as corpus assets and return the stored count."""
+    """Store search-result abstracts as corpus assets without committing.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection; the caller commits.
+    papers : Iterable[dict[str, Any]]
+        Search records, each with an optional ``abstract``.
+    index : PaperIndex or None, optional
+        Current index of the corpus, kept up to date with every paper written.
+        Without one, every stored row is scanned for each record.
+
+    Returns
+    -------
+    int
+        Number of abstracts stored.
+    """
     stored = 0
     for paper in papers:
         abstract = _clean_search_abstract(paper.get('abstract'))
         if not abstract:
             continue
-        matched = find_paper(conn, paper) or paper
+        matched = find_paper(conn, paper, index) or paper
         source = paper.get('sources') or 'search'
         add_asset(conn,
                   matched,
@@ -860,10 +878,13 @@ def _store_search_abstracts(
                   kind='text',
                   mime_type='text/plain',
                   source=source,
-                  original_filename='abstract.txt')
+                  original_filename='abstract.txt',
+                  commit=False)
         matched['abstract_source'] = source
         matched['abstract_download_status'] = 'succeeded'
-        upsert_paper(conn, matched)
+        paper_id = upsert_paper(conn, matched, commit=False)
+        if index is not None:
+            index.refresh(paper_id)
         stored += 1
     return stored
 
@@ -1000,14 +1021,24 @@ def search_for_papers(query: str,
     try:
         with connect(db_path) as conn:
             if records:
-                added, updated = upsert_papers(conn, records)
-                abstract_count = _store_search_abstracts(conn, records) if store_abstract else 0
-                enrichment_summary = enrich_papers(conn, records) if enrich else {}
+                # Index the corpus once rather than scanning it for every record, and
+                # write the papers and abstracts in one transaction, not row by row.
+                index = PaperIndex(conn)
+                added, updated = upsert_papers(conn, records, index=index, commit=False)
+                abstract_count = (_store_search_abstracts(conn, records, index)
+                                  if store_abstract else 0)
+                # Commit the store before enrichment, which begins transactions of its own.
+                conn.commit()
+                if enrich:
+                    enrichment_summary = enrich_papers(conn, records)
+                    # Enrichment can fill DOIs, titles, and identifiers, so re-index.
+                    index = PaperIndex(conn)
                 for provider_name, frame in frames:
                     for result_rank, paper in enumerate(frame.to_dict('records')):
-                        add_search_result(conn, search_id, paper, provider_name, result_rank)
-                        matched = find_paper(conn, paper)
+                        matched = find_paper(conn, paper, index)
                         if matched is not None:
+                            link_search_result(conn, search_id, matched['paper_id'],
+                                               provider_name, result_rank)
                             paper_ids[matched['paper_id']] = None
             finish_search_run(
                 conn,
