@@ -421,6 +421,28 @@ def _block_lines(block: Mapping[str, Any]) -> list[tuple[str, Sequence[float]]]:
     return lines
 
 
+def figure_regions(pdf_path: str | PathLike[str]) -> list[BoundingBox]:
+    """Return the regions of a PDF's captioned figures, excluding any that overlap a captioned table.
+
+    Parameters
+    ----------
+    pdf_path : str or os.PathLike[str]
+        Source PDF.
+
+    Returns
+    -------
+    list[BoundingBox]
+        Figure regions from :func:`detect_pdf_layout`, in figure order.
+    """
+    layout = detect_pdf_layout(pdf_path)
+    tables = [box for table in layout.tables for box in table.boxes]
+    return [
+        box for figure in layout.figures for box in figure.boxes
+        if not any(table.page == box.page and _overlaps(box, (table.x0, table.y0, table.x1, table.y1))
+                   for table in tables)
+    ]
+
+
 def pdf_without_figure_text(
     pdf_path: str | PathLike[str],
     *,
@@ -451,20 +473,14 @@ def pdf_without_figure_text(
         The redacted PDF, or ``None`` when nothing was removed, and the
         removed lines in page order.
     """
-    layout = detect_pdf_layout(pdf_path)
     regions: dict[int, list[BoundingBox]] = {}
-    for figure in layout.figures:
-        for box in figure.boxes:
-            regions.setdefault(box.page, []).append(box)
-    tables = [box for table in layout.tables for box in table.boxes]
+    for box in figure_regions(pdf_path):
+        regions.setdefault(box.page, []).append(box)
     removed: list[str] = []
     fitz = _load_fitz()
     with fitz.open(os.fspath(pdf_path)) as document:
         for page_number, boxes in sorted(regions.items()):
             page = document[page_number - 1]
-            boxes = [box for box in boxes
-                     if not any(table.page == page_number
-                                and _overlaps(box, (table.x0, table.y0, table.x1, table.y1)) for table in tables)]
             page_removed = []
             for block in page.get_text('dict').get('blocks', []):
                 if not isinstance(block, Mapping) or block.get('type', 0) != 0:

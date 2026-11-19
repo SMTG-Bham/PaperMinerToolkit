@@ -43,6 +43,7 @@ from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
 from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
+from paperminertoolkit.corpus.pdf_layout import figure_regions
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
@@ -636,6 +637,7 @@ def _paper_tables(
     conn: sqlite3.Connection,
     paper_id: str,
     pdf_path: str | None,
+    figure_text: bool = True,
 ) -> str:
     """Render one paper's tables as Markdown for the text prompt.
 
@@ -651,6 +653,9 @@ def _paper_tables(
         Paper whose tables are rendered.
     pdf_path : str or None
         Materialized PDF used when no structured document is stored.
+    figure_text : bool, optional
+        When ``False``, tables PyMuPDF detects inside a PDF's captioned
+        figures (gridded plots such as heat maps) are left out.
 
     Returns
     -------
@@ -672,7 +677,9 @@ def _paper_tables(
             if tables:
                 return tables
         return ''
-    return pdf_tables_text(pdf_path) if pdf_path else ''
+    if not pdf_path:
+        return ''
+    return pdf_tables_text(pdf_path, skip_regions=() if figure_text else figure_regions(pdf_path))
 
 
 def paper_source_text(
@@ -718,7 +725,7 @@ def paper_source_text(
         raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
     text = read_document_text(source_path, figure_text=figure_text)
     if not abstract and tables:
-        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf']))
+        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf'], figure_text=figure_text))
     return text
 
 

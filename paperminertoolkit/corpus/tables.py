@@ -8,12 +8,12 @@ Markdown grid, so a model can read a value together with its row and column.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from os import PathLike
 from typing import Any
 
 from paperminertoolkit._xml import element_text, local_name
-from paperminertoolkit.corpus.layout import DocumentLayout, Table
+from paperminertoolkit.corpus.layout import BoundingBox, DocumentLayout, Table
 from paperminertoolkit.corpus.xml_layout import parse_elsevier_layout, parse_jats_layout, parse_tei_layout
 
 TABLES_HEADING = '=== TABLES ==='
@@ -237,13 +237,17 @@ def _words_in(words: list[tuple[Any, ...]], box: tuple[float, float, float, floa
     return ' '.join(inside)
 
 
-def pdf_tables_text(path: str | PathLike[str]) -> str:
+def pdf_tables_text(path: str | PathLike[str], skip_regions: Sequence[BoundingBox] = ()) -> str:
     """Detect ruled tables in a PDF and render them as Markdown.
 
     Parameters
     ----------
     path : str or os.PathLike[str]
         PDF file to scan.
+    skip_regions : Sequence[BoundingBox], optional
+        Regions, such as figures, whose detected tables are left out. A table
+        is skipped when its centre lies in a region on the same page; PyMuPDF
+        can report gridded figures such as heat maps as tables.
 
     Returns
     -------
@@ -262,6 +266,11 @@ def pdf_tables_text(path: str | PathLike[str]) -> str:
                     continue
                 words = page.get_text('words', sort=True)
                 for table in found.tables:
+                    x0, y0, x1, y1 = table.bbox
+                    centre_x, centre_y = (x0 + x1) / 2, (y0 + y1) / 2
+                    if any(region.page == page_number and region.x0 <= centre_x <= region.x1
+                           and region.y0 <= centre_y <= region.y1 for region in skip_regions):
+                        continue
                     rows = [[_words_in(words, cell) for cell in row.cells] for row in table.rows]
                     body = markdown_table(rows)
                     if body and len(rows) > 1:
