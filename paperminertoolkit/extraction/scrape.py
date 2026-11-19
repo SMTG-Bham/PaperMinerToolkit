@@ -875,6 +875,9 @@ def _scrape_supplements(
                             response_records.extend(scrape_text(
                                 f'{description}\n\n{chunk}', recipe, model_config=text_config,
                             ))
+                        if len(chunks) > 1:
+                            # Chunks overlap, so a record near a cut is reported twice.
+                            response_records = merge_chunk_records(response_records, recipe)
                     else:
                         member_key = hashlib.sha256(key.encode()).hexdigest()[:16]
                         directory = os.path.join(image_dir, _safe_path_part(row['paper_id']),

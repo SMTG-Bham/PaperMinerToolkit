@@ -254,6 +254,22 @@ def test_si_needing_too_many_text_requests_is_unsupported_without_model_calls(
     assert not output.exists()
 
 
+def test_si_split_into_overlapping_chunks_merges_repeated_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_models: None,
+) -> None:
+    """Report a record once when the chunk overlap shows it to the model twice."""
+    db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
+    paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
+    with corpus.connect(db_path) as conn:
+        add_supplement(conn, paper, b'LLZO conducts at 1 mS/cm.\n', original_filename='table.txt')
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['part one', 'part two'])
+    monkeypatch.setattr(scrape, 'scrape_text', lambda *_args, **_kwargs: [{'Name': 'LLZO'}])
+
+    scrape.scrape_papers(str(db_path), mode='text', output_path=str(output))
+
+    assert pd.read_csv(output)['Name'].tolist() == ['LLZO']
+
+
 def test_si_image_mode_supplies_labels_and_preserves_stable_asset_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_models: None,
 ) -> None:
