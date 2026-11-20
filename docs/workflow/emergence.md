@@ -23,7 +23,7 @@ OpenAlex matches the query against titles and abstracts unless `in:` says otherw
 
 Abstracts matter. Add `--store-abstract`, or fill gaps with `pmt download papers.db --format abstract`, and check coverage with `pmt corpus stats`. Papers without an abstract are left out unless `--include-title-only` is given; their title-only embeddings are noisier. In the sample above, 70% of the records carried one.
 
-Size matters too. A niche of forty papers spread over sixteen years has only a few papers a year, so plan on ten thousand or more abstracts; the backtest below used 13,642. Storing search results currently takes time that grows with the square of their number. 3,000 records took 20 minutes on one cluster core, and 20,000 would take about 15 hours, so run large searches as batch jobs.
+Size matters too. A niche of forty papers spread over sixteen years has only a few papers a year, so plan on ten thousand or more abstracts; the backtest below used 13,642.
 
 Search records carry no citation counts. Run `pmt enrich papers.db` to add them if you want the niche table's impact column.
 
