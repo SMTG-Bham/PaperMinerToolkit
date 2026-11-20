@@ -7,7 +7,7 @@ the main ``pmt scrape`` command.
 
 from __future__ import annotations
 
-import math
+import csv
 import os
 import pandas as pd
 import random
@@ -15,32 +15,121 @@ import re
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+import textwrap
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
+from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
 from typing import Any, TypeAlias
 
 from paperminertoolkit.extraction.compression import compression_config, maybe_compress_text
+from paperminertoolkit.corpus.tables import STRUCTURED_TABLE_FORMATS, append_tables, pdf_tables_text, structured_tables_text
 from paperminertoolkit.corpus.documents import (extract_pdf_images,
                                     read_document_text,
                                     read_pdf_text)
-from paperminertoolkit.corpus.database import PIPELINE_COLUMNS, connect, get_asset, paper_rows, upsert_paper
-from paperminertoolkit.extraction.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
+from paperminertoolkit.corpus.database import (connect,
+                                    get_asset,
+                                    get_figure_assets,
+                                    get_structured_documents,
+                                    paper_rows,
+                                    set_figure_extraction_status,
+                                    set_pipeline_status as _set_status,
+                                    upsert_paper)
+from paperminertoolkit.extraction.extract import (ask_paper_question, build_scrape_prompt, combine_material_records,
+                                                  scrape_images, scrape_text, token_length)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
+from paperminertoolkit.extraction.merge import merge_chunk_records
 from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
-from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, prompt_token_reserve, usable_input_token_limit
+from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
+from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
+from paperminertoolkit.corpus.pdf_layout import figure_regions
+from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
 IMAGE_CONTEXT_MODES = {'none', 'paper-text'}
-IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages'}
+IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages', 'layout'}
 SCRAPE_ORDERS = {'corpus', 'random', 'publication-asc', 'publication-desc', 'title', 'paper-id'}
 _Paper: TypeAlias = dict[str, Any]
 _Material: TypeAlias = dict[str, Any]
 
 
+_CHUNK_SAFETY = 0.9
+_CHUNK_OVERLAP = 0.05
+
+
+def _is_table_block(block: str) -> bool:
+    """Return whether a text block contains Markdown table rows."""
+    return any(line.startswith('|') for line in block.splitlines())
+
+
+def _split_block(block: str, max_chars: int) -> list[str]:
+    """Split an oversized block on line, then word, boundaries.
+
+    A Markdown table is split between rows, and each continuation repeats
+    the table's title and header so its columns stay readable.
+    """
+    lines = block.splitlines()
+    header: list[str] = []
+    if _is_table_block(block):
+        separator = next((index for index, line in enumerate(lines) if line.startswith('| ---')), None)
+        if separator is not None and len('\n'.join(lines[:separator + 1])) < max_chars // 2:
+            header = lines[:separator + 1]
+            lines = lines[separator + 1:]
+    pieces: list[str] = []
+    current: list[str] = list(header)
+    for line in lines:
+        parts = textwrap.wrap(line, max_chars, break_on_hyphens=False) if len(line) > max_chars else [line]
+        for part in parts:
+            if len(current) > len(header) and len('\n'.join([*current, part])) > max_chars:
+                pieces.append('\n'.join(current))
+                current = list(header)
+            current.append(part)
+    if len(current) > len(header):
+        pieces.append('\n'.join(current))
+    return pieces
+
+
+def _overlap(block: str, max_chars: int) -> str:
+    """Return the tail of a prose block to repeat at the start of the next chunk."""
+    if _is_table_block(block):
+        return ''
+    limit = max(int(max_chars * _CHUNK_OVERLAP), 1)
+    if len(block) <= limit:
+        return block
+    tail = block[-limit:]
+    sentence, word = tail.find('. '), tail.find(' ')
+    start = sentence + 2 if sentence >= 0 else word + 1
+    return tail[start:] if start < len(tail) else tail
+
+
+def _pack_blocks(blocks: Sequence[str], max_chars: int) -> list[str]:
+    """Greedily pack paragraph blocks into chunks with a short overlap."""
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for block in blocks:
+        if current and size + len(block) + 2 > max_chars:
+            chunks.append('\n\n'.join(current))
+            carry = _overlap(current[-1], max_chars)
+            current = [carry] if carry else []
+            size = len(carry)
+        current.append(block)
+        size += len(block) + 2
+    if current:
+        chunks.append('\n\n'.join(current))
+    return chunks
+
+
 def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
     """Split text into chunks that fit a model context window.
+
+    Text is split between paragraphs (blank lines), never inside a Markdown
+    table, and each chunk repeats the end of the previous paragraph so a
+    statement cut at the boundary is still seen whole. Chunks that still
+    exceed the budget are split again.
 
     Parameters
     ----------
@@ -54,21 +143,43 @@ def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') 
     Returns
     -------
     list[str]
-        One or more character-contiguous text chunks.
+        One or more text chunks.
     """
-    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
-    token_budget = usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
-    coeff = token_length(text, model_config=model_config) / token_budget
-    if coeff <= 1:
+    token_budget = request_token_budget(prompt, model_config)
+    tokens = token_length(text, model_config=model_config)
+    if tokens <= token_budget:
         return [text]
-    coeff = math.ceil(coeff)
-    char_per_split = math.ceil(len(text) / coeff)
+    chars_per_token = len(text) / tokens
+    return _fit_chunks(text, token_budget, chars_per_token, model_config)
+
+
+def _fit_chunks(
+    text: str,
+    token_budget: int,
+    chars_per_token: float,
+    model_config: _ModelConfigSource,
+    depth: int = 0,
+) -> list[str]:
+    """Pack text into budget-sized chunks, re-splitting any that overflow.
+
+    Token density is not uniform: a table of numbers can need several times
+    the tokens of the same length of prose. A chunk that still overflows is
+    split again using its own measured density, with a tighter margin at
+    each level.
+    """
+    max_chars = max(int(token_budget * chars_per_token * _CHUNK_SAFETY ** (depth + 1)), 1)
+    blocks: list[str] = []
+    for block in (part.strip('\n') for part in re.split(r'\n\s*\n', text)):
+        if not block.strip():
+            continue
+        blocks.extend(_split_block(block, max_chars) if len(block) > max_chars else [block])
     chunks = []
-    for split in range(coeff):
-        if (split + 1) * char_per_split >= len(text):
-            chunks.append(text[split * char_per_split:])
+    for chunk in _pack_blocks(blocks, max_chars):
+        tokens = token_length(chunk, model_config=model_config)
+        if depth < 3 and tokens > token_budget and len(chunk) > 1:
+            chunks.extend(_fit_chunks(chunk, token_budget, len(chunk) / tokens, model_config, depth + 1))
         else:
-            chunks.append(text[split * char_per_split:(split + 1) * char_per_split])
+            chunks.append(chunk)
     return chunks
 
 
@@ -108,8 +219,8 @@ def _record_chunk_plan(
     limit_text = f' ({input_limit} tokens)' if input_limit is not None else ''
     print(
         f'Warning: {stage} for paper {paper_id} was split into {chunk_count} independent model requests '
-        f'to fit the configured input limit{limit_text} for {model_name}. Results from separate chunks are not '
-        'automatically reconciled and may contain duplicated or incomplete records.',
+        f'to fit the configured input limit{limit_text} for {model_name}. Records from separate chunks are merged by '
+        'their identity fields, but a record split across chunks may still be incomplete.',
         file=sys.stderr,
     )
 
@@ -119,6 +230,7 @@ def _append_materials(
     row: Mapping[str, Any],
     source: str,
     source_path: str | None,
+    figures: Sequence[_FigurePackage] = (),
 ) -> list[_Material]:
     """Attach paper metadata and provenance to material records.
 
@@ -132,12 +244,18 @@ def _append_materials(
         Extraction source label.
     source_path : str or None
         Source path or corpus asset identifier.
+    figures : Sequence[_FigurePackage], optional
+        Figures that produced these records. Their identities and captions
+        are recorded so extracted evidence stays traceable to a figure.
 
     Returns
     -------
     list[_Material]
         Enriched material records.
     """
+    figure_ids = '; '.join(figure.figure_id for figure in figures)
+    figure_labels = '; '.join(figure.label or figure.figure_id for figure in figures)
+    figure_sources = '; '.join(dict.fromkeys(figure.source for figure in figures if figure.source))
     output = []
     for material in materials:
         material['Paper id'] = row['paper_id']
@@ -145,8 +263,56 @@ def _append_materials(
         material['Publication date'] = row.get('publication_date')
         material['Source'] = source
         material['Source path'] = source_path
+        if figures:
+            material['Figure id'] = figure_ids
+            material['Figure label'] = figure_labels
+            material['Figure source'] = figure_sources
         output.append(material)
     return output
+
+
+def dropped_path(output_path: str | PathLike[str]) -> str:
+    """Return the audit CSV path that accompanies a scrape output.
+
+    Parameters
+    ----------
+    output_path : str or os.PathLike[str]
+        Scrape output CSV.
+
+    Returns
+    -------
+    str
+        ``<output stem>.dropped.csv`` beside the output.
+    """
+    root, _ = os.path.splitext(os.fspath(output_path))
+    return f'{root}.dropped.csv'
+
+
+def _write_dropped(rows: Sequence[Mapping[str, str]], output_path: str | PathLike[str]) -> int:
+    """Append check audit rows beside a scrape output.
+
+    Parameters
+    ----------
+    rows : Sequence[Mapping[str, str]]
+        Audit rows from :func:`verify_records`.
+    output_path : str or os.PathLike[str]
+        Scrape output CSV.
+
+    Returns
+    -------
+    int
+        Number of rows written.
+    """
+    if not rows:
+        return 0
+    path = dropped_path(output_path)
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=DROPPED_COLUMNS)
+        if new_file:
+            writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
 
 
 def _write_materials(
@@ -192,34 +358,6 @@ def _delete_file(path: str | PathLike[str] | None) -> None:
     """
     if path and os.path.isfile(path):
         os.remove(path)
-
-
-def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
-    """Update a paper's pipeline status and error message.
-
-    Parameters
-    ----------
-    paper : _Paper
-        Corpus paper row to update.
-    column : str
-        Pipeline status column.
-    status : str
-        New stage status.
-    error : str, optional
-        Error text to store for a failed stage.
-
-    Raises
-    ------
-    KeyError
-        If ``column`` is not a recognized pipeline status column.
-    """
-    if column not in PIPELINE_COLUMNS:
-        raise KeyError(f'Unknown pipeline status column: {column}')
-    paper[column] = status
-    if error:
-        paper['last_error'] = error
-    elif status in {'succeeded', 'stored'}:
-        paper['last_error'] = ''
 
 
 def _safe_path_part(value: object) -> str:
@@ -295,6 +433,141 @@ def _image_batches(image_paths: list[str], batch_size: int | str) -> list[list[s
     return [image_paths[index:index + size] for index in range(0, len(image_paths), size)]
 
 
+@dataclass(frozen=True, slots=True)
+class _FigurePackage:
+    """One figure and the context sent with it to a vision model.
+
+    Parameters
+    ----------
+    path : str
+        Materialized local image path.
+    figure_id : str
+        Parsed figure identifier used for provenance and checkpointing.
+    label : str
+        Display label such as ``"Figure 3"``.
+    caption : str
+        Figure caption.
+    source : str
+        Provider or detector that supplied the figure.
+    """
+
+    path: str
+    figure_id: str
+    label: str
+    caption: str
+    source: str
+
+    @property
+    def model_label(self) -> str:
+        """Return the text describing this figure to the model."""
+        parts = [part for part in (self.label, self.caption) if part]
+        return ': '.join(parts) if parts else f'Figure {self.figure_id}'
+
+
+def _figure_packages(
+    assets: Iterable[Mapping[str, Any]],
+    temp_dir: str | PathLike[str],
+    *,
+    force: bool,
+) -> list[_FigurePackage]:
+    """Materialize stored figure assets as vision-request packages.
+
+    Parameters
+    ----------
+    assets : Iterable[Mapping[str, Any]]
+        Figure assets loaded from the corpus with their content.
+    temp_dir : str or os.PathLike[str]
+        Directory in which to write the figure images.
+    force : bool
+        Whether to include figures already marked as extracted.
+
+    Returns
+    -------
+    list[_FigurePackage]
+        Packages for figures still awaiting extraction, oldest first.
+    """
+    os.makedirs(temp_dir, exist_ok=True)
+    packages = []
+    for asset in reversed(list(assets)):
+        metadata = asset.get('metadata') or {}
+        if not force and metadata.get('extraction_status') == 'succeeded':
+            continue
+        figure_id = str(metadata.get('figure_id') or '')
+        if not figure_id:
+            continue
+        path = _asset_path(asset, temp_dir, f'{figure_id}.png')
+        assert path is not None
+        packages.append(_FigurePackage(
+            path=path,
+            figure_id=figure_id,
+            label=str(metadata.get('figure_label') or ''),
+            caption=str(metadata.get('caption') or ''),
+            source=str(asset.get('source') or ''),
+        ))
+    return packages
+
+
+def _layout_figure_packages(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    pdf_path: str | None,
+    temp_dir: str | PathLike[str],
+    *,
+    force: bool,
+    required: bool,
+) -> list[_FigurePackage]:
+    """Collect layout-aware figures for one paper, detecting them if needed.
+
+    Structured figures already downloaded into the corpus are preferred. PDF
+    layout detection only runs when the corpus holds no figures for the paper,
+    so a structured figure and its PDF-rendered duplicate are never both
+    analysed.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    pdf_path : str or None
+        Materialized PDF path used for detection fallback.
+    temp_dir : str or os.PathLike[str]
+        Directory in which to write figure images.
+    force : bool
+        Whether to reanalyse figures already marked as extracted.
+    required : bool
+        Whether a detection failure should be raised. An automatic run treats
+        an unreadable PDF as "no layout figures" so it can fall back to the
+        other image strategies.
+
+    Returns
+    -------
+    list[_FigurePackage]
+        Figure packages awaiting extraction, or an empty list when the paper
+        has no layout-aware figures.
+
+    Raises
+    ------
+    OSError
+        If ``required`` and the PDF cannot be read.
+    RuntimeError
+        If ``required`` and figure detection or rendering fails.
+    ValueError
+        If ``required`` and the paper or detected figures are unusable.
+    """
+    paper_id = paper.get('paper_id')
+    assets = get_figure_assets(conn, paper_id, include_content=True)
+    if not assets and pdf_path:
+        try:
+            store_pdf_layout_figures(conn, paper, pdf_path)
+        except (OSError, RuntimeError, ValueError):
+            if required:
+                raise
+            return []
+        assets = get_figure_assets(conn, paper_id, include_content=True)
+    return _figure_packages(assets, temp_dir, force=force)
+
+
 def _asset_path(
     asset: Mapping[str, Any] | None,
     temp_dir: str | PathLike[str],
@@ -362,6 +635,102 @@ def _paper_asset_paths(
     }
 
 
+def _paper_tables(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    pdf_path: str | None,
+    figure_text: bool = True,
+) -> str:
+    """Render one paper's tables as Markdown for the text prompt.
+
+    Tables come from the paper's structured XML when it has one in a
+    supported format, since plain-text assets are built without them.
+    Otherwise ruled tables are detected in the PDF.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus database connection.
+    paper_id : str
+        Paper whose tables are rendered.
+    pdf_path : str or None
+        Materialized PDF used when no structured document is stored.
+    figure_text : bool, optional
+        When ``False``, tables PyMuPDF detects inside a PDF's captioned
+        figures (gridded plots such as heat maps) are left out.
+
+    Returns
+    -------
+    str
+        Markdown tables, or an empty string when none are available.
+    """
+    documents = [
+        document
+        for document in get_structured_documents(conn, paper_id)
+        if str(document['metadata'].get('document_format', '')).lower() in STRUCTURED_TABLE_FORMATS
+    ]
+    if documents:
+        for document in documents:
+            tables = structured_tables_text(
+                document['content'],
+                str(document['metadata']['document_format']),
+                paper_id,
+            )
+            if tables:
+                return tables
+        return ''
+    if not pdf_path:
+        return ''
+    return pdf_tables_text(pdf_path, skip_regions=() if figure_text else figure_regions(pdf_path))
+
+
+def paper_source_text(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    paths: Mapping[str, str | None],
+    *,
+    abstract: bool = False,
+    tables: bool = True,
+    figure_text: bool = True,
+) -> str:
+    """Read the text a paper is scraped from.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus database connection.
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    paths : Mapping[str, str or None]
+        Materialized asset paths from :func:`_paper_asset_paths`.
+    abstract : bool, optional
+        Read the abstract instead of the full text.
+    tables : bool, optional
+        Append the paper's tables to full text.
+    figure_text : bool, optional
+        Keep text printed inside a PDF's figures. Text assets are unaffected.
+
+    Returns
+    -------
+    str
+        Abstract, or full text (text asset, else PDF) with any tables appended.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the paper has no asset of the requested kind.
+    """
+    source_path = paths['abstract'] if abstract else paths['text'] or paths['pdf']
+    if not source_path:
+        if abstract:
+            raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
+        raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
+    text = read_document_text(source_path, figure_text=figure_text)
+    if not abstract and tables:
+        text = append_tables(text, _paper_tables(conn, str(paper['paper_id']), paths['pdf'], figure_text=figure_text))
+    return text
+
+
 def _publication_key(paper: Mapping[str, Any]) -> str:
     """Build a stable publication-date sort key.
 
@@ -425,6 +794,187 @@ def _select_papers(
     return selected
 
 
+@dataclass(frozen=True, slots=True)
+class _TextInput:
+    """One paper's text prepared for extraction.
+
+    Parameters
+    ----------
+    source_text : str
+        Full source text, with tables, used by the checks.
+    text : str
+        Source text after any compression; image requests may use it as context.
+    chunks : list[str]
+        ``text`` split to fit the model's input budget.
+    """
+
+    source_text: str
+    text: str
+    chunks: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _TextResult:
+    """Records extracted from one paper's text.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        The prepared input the records came from.
+    materials : list[dict[str, Any]]
+        Merged and, when requested, checked records.
+    removed : list[dict[str, str]]
+        Audit rows for items the paper question or checks removed, edited or moved.
+    error : Exception or None
+        The failure that stopped extraction early, if any. ``materials`` then
+        holds the records gathered before it.
+    """
+
+    text_input: _TextInput
+    materials: list[dict[str, Any]]
+    removed: list[dict[str, str]]
+    error: Exception | None = None
+
+
+def _extract_text_records(
+    text_input: _TextInput,
+    recipe_data: Mapping[str, Any],
+    text_config: ModelConfig,
+    paper_id: str,
+    *,
+    verify: bool,
+    ask_question: bool,
+) -> _TextResult:
+    """Run the model requests for one paper's text and post-process the records.
+
+    This touches no database state, so it can run on a worker thread.
+
+    Parameters
+    ----------
+    text_input : _TextInput
+        Prepared text chunks and source text.
+    recipe_data : Mapping[str, Any]
+        Loaded recipe.
+    text_config : ModelConfig
+        Text model configuration.
+    paper_id : str
+        Paper identifier recorded in audit rows.
+    verify : bool
+        Whether to apply the recipe's checks.
+    ask_question : bool
+        Whether the recipe's paper question may be asked (full-text scrapes only).
+
+    Returns
+    -------
+    _TextResult
+        Records and audit rows for the paper. A failure part-way through is
+        returned in ``error`` with the records gathered before it.
+    """
+    materials: list[dict[str, Any]] = []
+    removed: list[dict[str, str]] = []
+    try:
+        for text_chunk in text_input.chunks:
+            materials.extend(scrape_text(text_chunk, recipe_data, model_config=text_config))
+        materials = merge_chunk_records(materials, recipe_data)
+        question = (recipe_data.get('checks') or {}).get('paper question')
+        if verify and question and ask_question and materials:
+            answer = ask_paper_question(text_input.chunks[0], question['question'], model_config=text_config)
+            materials, moved = apply_paper_answer(materials, recipe_data, answer, paper_id)
+            removed.extend(moved)
+        if verify:
+            materials, dropped = verify_records(materials, recipe_data, text_input.source_text, paper_id)
+            removed.extend(dropped)
+    except Exception as error:
+        return _TextResult(text_input, materials, removed, error)
+    return _TextResult(text_input, materials, removed)
+
+
+class _TextPipeline:
+    """Prepare papers in order and run their text requests on a thread pool.
+
+    Preparation (reading assets from the corpus) stays on the calling thread,
+    which owns the database connection, and runs a few papers ahead of the
+    paper being written so the model server always has requests queued.
+
+    Parameters
+    ----------
+    papers : Sequence[dict[str, Any]]
+        Papers in scrape order.
+    workers : int
+        Concurrent model requests.
+    asset_paths : Callable
+        ``row -> paths`` materializing a paper's assets.
+    needs_text : Callable
+        ``row -> bool`` deciding whether the paper's text stage runs.
+    prepare : Callable
+        ``(row, paths) -> _TextInput``.
+    extract : Callable
+        ``(row, _TextInput) -> _TextResult``, run on a worker thread.
+    """
+
+    def __init__(
+        self,
+        papers: Sequence[dict[str, Any]],
+        workers: int,
+        asset_paths: Callable[[dict[str, Any]], dict[str, str | None]],
+        needs_text: Callable[[dict[str, Any]], bool],
+        prepare: Callable[[dict[str, Any], dict[str, str | None]], _TextInput],
+        extract: Callable[[dict[str, Any], _TextInput], _TextResult],
+    ) -> None:
+        """Start the worker pool; nothing is prepared until :meth:`take`."""
+        self._papers = papers
+        self._ahead = 2 * workers
+        self._asset_paths = asset_paths
+        self._needs_text = needs_text
+        self._prepare = prepare
+        self._extract = extract
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='pmt-scrape')
+        self._jobs: dict[int, tuple[dict[str, str | None], Future[_TextResult] | None]] = {}
+        self._submitted = 0
+
+    def __enter__(self) -> _TextPipeline:
+        """Return the pipeline for use in a ``with`` block."""
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Cancel queued requests and wait for running ones to finish."""
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+    def take(self, index: int) -> tuple[dict[str, str | None], Future[_TextResult] | None]:
+        """Return a paper's asset paths and pending text result.
+
+        Parameters
+        ----------
+        index : int
+            Position of the paper in scrape order. Papers must be taken in order.
+
+        Returns
+        -------
+        tuple
+            Asset paths, and the future text result or ``None`` when the
+            paper's text stage is skipped.
+        """
+        while self._submitted < len(self._papers) and self._submitted <= index + self._ahead:
+            self._submit(self._submitted)
+            self._submitted += 1
+        return self._jobs.pop(index)
+
+    def _submit(self, index: int) -> None:
+        """Prepare one paper and queue its text requests, recording any preparation error."""
+        row = self._papers[index]
+        paths = self._asset_paths(row)
+        future: Future[_TextResult] | None = None
+        if self._needs_text(row):
+            try:
+                text_input = self._prepare(row, paths)
+            except Exception as error:
+                future = Future()
+                future.set_exception(error)
+            else:
+                future = self._executor.submit(self._extract, row, text_input)
+        self._jobs[index] = (paths, future)
+
+
 def scrape_papers(db_path: str = 'papers.db',
                   recipe: str = 'sse',
                   mode: str = 'text',
@@ -449,6 +999,10 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_mode: str = 'auto',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
+                  tables: bool = True,
+                  verify: bool = False,
+                  workers: int = 1,
+                  figure_text: bool = True,
                   ) -> None:
     """Scrape corpus papers and write extracted material records.
 
@@ -465,7 +1019,10 @@ def scrape_papers(db_path: str = 'papers.db',
     image_context : str, optional
         Text context policy for image requests.
     image_extraction : str, optional
-        PDF image extraction strategy.
+        Image selection strategy. ``layout`` sends stored structured figures,
+        falling back to figures detected from PDF geometry, each accompanied
+        by its caption. ``auto`` prefers those layout-aware figures and
+        otherwise uses embedded PDF images or rendered pages.
     image_dpi : int, optional
         Resolution used when rendering PDF pages.
     image_batch_size : str or int, optional
@@ -502,6 +1059,21 @@ def scrape_papers(db_path: str = 'papers.db',
         Target compression ratio, or ``"auto"``.
     compression_content_detection : bool, optional
         Whether Headroom should detect content types.
+    tables : bool, optional
+        Whether full-text scrapes append the paper's tables, rendered as
+        Markdown from its structured XML or detected in its PDF.
+    verify : bool, optional
+        Whether to apply the recipe's ``"checks"`` to each paper's records.
+        Removed and edited items are listed in ``<output>.dropped.csv``.
+    workers : int, optional
+        Papers whose text requests run concurrently. A model server such as
+        vLLM batches concurrent requests, so values above 1 make abstract and
+        text scrapes several times faster. Output order is unchanged. Image
+        modes run one request at a time.
+    figure_text : bool, optional
+        Whether full text read from a PDF keeps the labels and numbers printed
+        inside its figures. ``False`` redacts them, so values shown only in a
+        figure are neither read by the model nor accepted by the checks.
 
     Raises
     ------
@@ -526,6 +1098,10 @@ def scrape_papers(db_path: str = 'papers.db',
         raise ValueError(f'scrape_order must be one of: {", ".join(sorted(SCRAPE_ORDERS))}')
     if scrape_count is not None and scrape_count < 1:
         raise ValueError('scrape_count must be a positive integer')
+    if workers < 1:
+        raise ValueError('workers must be a positive integer')
+    if workers > 1 and mode in {'images', 'text-images'}:
+        raise ValueError('workers above 1 are only supported for abstract and text scrapes')
 
     should_scrape_abstract = mode == 'abstract'
     should_scrape_text = mode in {'text', 'text-images'}
@@ -551,11 +1127,13 @@ def scrape_papers(db_path: str = 'papers.db',
         'text_skipped': 0,
         'image_attempted': 0,
         'image_skipped': 0,
+        'layout_figures': 0,
         'materials': 0,
         'chunked_inputs': 0,
         'chunk_requests': 0,
         'abstract_chunked': 0,
         'text_chunked': 0,
+        'dropped': 0,
     }
     with connect(db_path) as conn:
         filters = active_filter_stack(conn)
@@ -580,11 +1158,38 @@ def scrape_papers(db_path: str = 'papers.db',
         else:
             print('No active corpus filters; all otherwise eligible papers are available for scraping.')
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
+        text_stage = 'abstract' if should_scrape_abstract else 'text'
+
+        def needs_text(paper: dict[str, Any]) -> bool:
+            """Return whether the paper's abstract or text stage should run."""
+            return (should_scrape_abstract or should_scrape_text) and (
+                force or paper.get(f'{text_stage}_scrape_status') != 'succeeded'
+            )
+
+        def prepare_text(paper: dict[str, Any], paper_paths: dict[str, str | None]) -> _TextInput:
+            """Read, compress and chunk one paper's text on the database thread."""
+            source = paper_source_text(conn, paper, paper_paths, abstract=should_scrape_abstract, tables=tables,
+                                        figure_text=figure_text)
+            prompt = build_scrape_prompt(recipe_data, source='text')
+            compressed = maybe_compress_text(source, prompt, text_config, compression)
+            return _TextInput(source, compressed, _text_chunks(compressed, text_config, prompt=prompt))
+
+        def extract_text(paper: dict[str, Any], text_input: _TextInput) -> _TextResult:
+            """Run one paper's model requests and checks."""
+            return _extract_text_records(text_input, recipe_data, text_config, str(paper['paper_id']),
+                                         verify=verify, ask_question=should_scrape_text)
+
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-scrape-') as temp_dir:
-            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar:
-                for row in papers:
-                    paths = _paper_asset_paths(conn, row, temp_dir)
-                    abstract_path = paths['abstract']
+            pipeline = _TextPipeline(
+                papers, workers, lambda paper: _paper_asset_paths(conn, paper, temp_dir),
+                needs_text, prepare_text, extract_text,
+            ) if workers > 1 else None
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar, pipeline or nullcontext():
+                for index, row in enumerate(papers):
+                    if pipeline:
+                        paths, text_job = pipeline.take(index)
+                    else:
+                        paths, text_job = _paper_asset_paths(conn, row, temp_dir), None
                     text_path = paths['text']
                     pdf_path = paths['pdf']
                     summary['papers'] += 1
@@ -593,51 +1198,33 @@ def scrape_papers(db_path: str = 'papers.db',
                     image_materials = []
                     text_source_path = None
                     image_source_paths = []
+                    scraped_figures: list[_FigurePackage] = []
                     text = None
 
-                    if should_scrape_abstract:
-                        if not force and row.get('abstract_scrape_status') == 'succeeded':
-                            summary['abstract_skipped'] += 1
+                    if should_scrape_abstract or should_scrape_text:
+                        stage = text_stage
+                        status_column = f'{stage}_scrape_status'
+                        if not needs_text(row):
+                            summary[f'{stage}_skipped'] += 1
                         else:
-                            summary['abstract_attempted'] += 1
+                            summary[f'{stage}_attempted'] += 1
                             try:
-                                if not abstract_path:
-                                    raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
-                                text = read_document_text(abstract_path)
-                                prompt = build_scrape_prompt(recipe_data, source='text')
-                                text = maybe_compress_text(text, prompt, text_config, compression)
-                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, 'abstract', text_chunks, text_config, summary)
-                                for text_chunk in text_chunks:
-                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                                    text_materials.extend(response)
-                                row['num_abstract_materials'] = len(text_materials)
-                                _set_status(row, 'abstract_scrape_status', 'succeeded')
+                                if text_job is not None:
+                                    result = text_job.result()
+                                else:
+                                    result = extract_text(row, prepare_text(row, paths))
+                                if should_scrape_text:
+                                    text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
+                                text = result.text_input.text
+                                _record_chunk_plan(row, stage, result.text_input.chunks, text_config, summary)
+                                text_materials = result.materials
+                                summary['dropped'] += _write_dropped(result.removed, output_path)
+                                if result.error is not None:
+                                    raise result.error
+                                row[f'num_{stage}_materials'] = len(text_materials)
+                                _set_status(row, status_column, 'succeeded')
                             except Exception as e:
-                                _set_status(row, 'abstract_scrape_status', 'failed', str(e))
-
-                    if should_scrape_text:
-                        if not force and row.get('text_scrape_status') == 'succeeded':
-                            summary['text_skipped'] += 1
-                        else:
-                            summary['text_attempted'] += 1
-                            try:
-                                source_path = text_path or pdf_path
-                                if not source_path:
-                                    raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
-                                text = read_document_text(source_path)
-                                text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
-                                prompt = build_scrape_prompt(recipe_data, source='text')
-                                text = maybe_compress_text(text, prompt, text_config, compression)
-                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, 'text', text_chunks, text_config, summary)
-                                for text_chunk in text_chunks:
-                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                                    text_materials.extend(response)
-                                row['num_text_materials'] = len(text_materials)
-                                _set_status(row, 'text_scrape_status', 'succeeded')
-                            except Exception as e:
-                                _set_status(row, 'text_scrape_status', 'failed', str(e))
+                                _set_status(row, status_column, 'failed', str(e))
 
                     if should_scrape_images:
                         image_paths = []
@@ -645,38 +1232,104 @@ def scrape_papers(db_path: str = 'papers.db',
                             summary['image_skipped'] += 1
                         else:
                             summary['image_attempted'] += 1
+                            previous_images = 0
+                            previous_materials = 0
                             try:
-                                if not pdf_path:
-                                    raise FileNotFoundError('No downloaded PDF asset found for image analysis.')
                                 image_key = _image_key_for_row(row, pdf_path)
                                 paper_image_dir = os.path.join(image_dir, image_key)
-                                image_paths = extract_pdf_images(
-                                    pdf_path,
-                                    paper_image_dir,
-                                    prefix=image_key,
-                                    strategy=image_extraction,
-                                    dpi=image_dpi,
-                                )
-                                if not image_paths:
-                                    raise RuntimeError('No PDF images could be extracted or rendered.')
+                                figure_packages = []
+                                if image_extraction in {'auto', 'layout'}:
+                                    figure_packages = _layout_figure_packages(
+                                        conn,
+                                        row,
+                                        pdf_path,
+                                        paper_image_dir,
+                                        force=force,
+                                        required=image_extraction == 'layout',
+                                    )
+                                    summary['layout_figures'] += len(figure_packages)
+                                if image_extraction == 'layout' and not figure_packages:
+                                    raise RuntimeError(
+                                        'No layout-aware figures are available for this paper.'
+                                    )
+                                if figure_packages:
+                                    if not force:
+                                        previous_images = int(row.get('num_images') or 0)
+                                        previous_materials = int(row.get('num_image_materials') or 0)
+                                    image_paths = [figure.path for figure in figure_packages]
+                                else:
+                                    if not pdf_path:
+                                        raise FileNotFoundError('No downloaded PDF asset found for image analysis.')
+                                    image_paths = extract_pdf_images(
+                                        pdf_path,
+                                        paper_image_dir,
+                                        prefix=image_key,
+                                        strategy='auto' if image_extraction == 'auto' else image_extraction,
+                                        dpi=image_dpi,
+                                    )
+                                    if not image_paths:
+                                        raise RuntimeError('No PDF images could be extracted or rendered.')
                                 context = None
                                 if image_context == 'paper-text':
                                     if text is None:
+                                        if not pdf_path:
+                                            raise FileNotFoundError(
+                                                'No downloaded PDF asset found for image context.'
+                                            )
                                         text = read_pdf_text(pdf_path)
                                     prompt = build_scrape_prompt(recipe_data, source='image', with_context=True)
                                     text = maybe_compress_text(text, prompt, vision_config, compression)
                                     context = text
-                                for image_batch in _image_batches(image_paths, image_batch_size):
-                                    response = scrape_images(image_batch,
-                                                             recipe_data,
-                                                             model_config=vision_config,
-                                                             context=context,
-                                                             compression_config=compression)
-                                    image_source_paths.extend(image_batch)
-                                    image_materials.extend(response)
+                                if figure_packages:
+                                    for figure_batch in _image_batches(figure_packages, image_batch_size):
+                                        batch_paths = [figure.path for figure in figure_batch]
+                                        try:
+                                            response = scrape_images(
+                                                batch_paths,
+                                                recipe_data,
+                                                model_config=vision_config,
+                                                context=context,
+                                                compression_config=compression,
+                                                image_labels=[
+                                                    figure.model_label for figure in figure_batch
+                                                ],
+                                            )
+                                        except Exception as batch_error:
+                                            for figure in figure_batch:
+                                                set_figure_extraction_status(
+                                                    conn,
+                                                    row['paper_id'],
+                                                    figure.figure_id,
+                                                    'failed',
+                                                    error=str(batch_error),
+                                                )
+                                            raise
+                                        for figure in figure_batch:
+                                            set_figure_extraction_status(
+                                                conn,
+                                                row['paper_id'],
+                                                figure.figure_id,
+                                                'succeeded',
+                                            )
+                                        image_source_paths.extend(batch_paths)
+                                        scraped_figures.extend(figure_batch)
+                                        image_materials.extend(_append_materials(
+                                            response, row, 'image', ';'.join(batch_paths), figure_batch,
+                                        ))
+                                        row['num_images'] = previous_images + len(image_source_paths)
+                                        row['num_image_materials'] = previous_materials + len(image_materials)
+                                else:
+                                    for image_batch in _image_batches(image_paths, image_batch_size):
+                                        response = scrape_images(image_batch,
+                                                                 recipe_data,
+                                                                 model_config=vision_config,
+                                                                 context=context,
+                                                                 compression_config=compression)
+                                        image_source_paths.extend(image_batch)
+                                        image_materials.extend(response)
                                 row['image_dir'] = paper_image_dir
-                                row['num_images'] = len(image_paths)
-                                row['num_image_materials'] = len(image_materials)
+                                row['num_images'] = previous_images + len(image_source_paths)
+                                row['num_image_materials'] = previous_materials + len(image_materials)
                                 _set_status(row, 'image_scrape_status', 'succeeded')
                                 if delete_images_after:
                                     for image_path in image_paths:
@@ -693,18 +1346,27 @@ def scrape_papers(db_path: str = 'papers.db',
                             if not combined_materials:
                                 raise ValueError('reconciliation returned no material records')
                             row_materials.extend(_append_materials(combined_materials, row, 'text+image',
-                                                                   f'{text_source};{image_source}'.strip(';')))
+                                                                   f'{text_source};{image_source}'.strip(';'),
+                                                                   scraped_figures))
                         except Exception as e:
                             row['last_error'] = f'Combining text and image results failed: {e}'
                             row_materials.extend(_append_materials(text_materials, row, 'text', text_source))
-                            row_materials.extend(_append_materials(image_materials, row, 'image', image_source))
+                            row_materials.extend(
+                                image_materials if scraped_figures else _append_materials(
+                                    image_materials, row, 'image', image_source,
+                                )
+                            )
                     elif text_materials:
                         if should_scrape_abstract:
                             row_materials.extend(_append_materials(text_materials, row, 'abstract', 'corpus:abstract'))
                         else:
                             row_materials.extend(_append_materials(text_materials, row, 'text', text_source_path))
                     elif image_materials:
-                        row_materials.extend(_append_materials(image_materials, row, 'image', ';'.join(image_source_paths)))
+                        row_materials.extend(
+                            image_materials if scraped_figures else _append_materials(
+                                image_materials, row, 'image', ';'.join(image_source_paths),
+                            )
+                        )
 
                     first_material, written_count = _write_materials(row_materials, first_material, output_path)
                     summary['materials'] += written_count
@@ -721,6 +1383,12 @@ def scrape_papers(db_path: str = 'papers.db',
             f"text={summary['text_skipped']}, "
             f"images={summary['image_skipped']}. Use --force to rescrape."
         )
+    if summary['layout_figures']:
+        print(
+            f"Analysed {summary['layout_figures']} layout-aware figures with their captions."
+        )
+    if summary['dropped']:
+        print(f"Checks removed, edited or moved {summary['dropped']} items; see {dropped_path(output_path)}.")
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
     if summary['chunked_inputs']:

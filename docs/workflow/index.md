@@ -59,8 +59,12 @@ quickstart
 configuration
 corpus
 topics
+emergence
 filtering
 recipes
 scraping
+entities
 hpc
+validation
+optimisation
 ```

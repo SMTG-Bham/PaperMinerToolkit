@@ -473,6 +473,42 @@ Missing inputs are removed before the request and restored as missing values aft
 
 </details>
 
+## Checks
+
+A recipe can declare checks that remove or correct extracted items after the model replies. They run only with `pmt scrape --verify` or `pmt postprocess`. Every change is written to an audit CSV. The `band_gap_validation` recipe uses all of them:
+
+```json
+"checks": {
+  "fields": ["Band gap", "All band gaps", "Cited literature band gaps"],
+  "value key": "value",
+  "values in source": true,
+  "unit": "eV",
+  "exclude terms": ["work function", "Fermi level", "PL peak"],
+  "exclude terms keys": ["value", "gap_type"],
+  "unsupported terms": {"SOC": ["spin-orbit", "spin orbit"]},
+  "drop empty": true
+}
+```
+
+| Key | Effect |
+|---|---|
+| `fields` | Fields to check. Defaults to every field that is not an identity field. |
+| `value key` | Key holding the value in list-of-object items. Defaults to `value`. |
+| `values in source` | Drop an item whose numbers are not printed in the paper's text or tables, within `tolerance` (relative, default `0.005`). |
+| `unit` | Drop a value whose first unit is not the given unit, or not one of a list of units, such as `3.64 V` when the unit is `eV`. Use a list such as `["eV", "meV"]` to accept several. Values with no unit are kept. |
+| `exclude terms` | Drop an item whose parts mention any of these terms (whole words, case-insensitive). |
+| `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
+| `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
+| `drop empty` | Drop items without a value, and records left with no checked field reported. |
+| `local words` | `{"key": "gap_type", "words": [...], "fields": [...], "window": 300}`. Remove each listed word from an item's `key` part unless the paper prints the word within `window` characters of the item's value, or in the same table. Use it for descriptive words a model adds by habit, such as a gap type the paper does not state for that value. `fields` defaults to every checked field. |
+| `paper question` | `{"question": "...", "if no": {"move": {"<field>": "<target field>" or null}}}`. During `pmt scrape --verify`, each paper that produced records is put to the model as one yes/no question; on a no, the listed fields' items move to the target field (or are cleared for `null`) before the other checks run. This costs one extra request per paper. `pmt postprocess` skips it because it calls no model. |
+
+Unknown keys, wrong value types and unknown field names are rejected when the recipe is loaded.
+
+Use `paper question` for a distinction a model makes more reliably about a whole paper than about each value. In `band_gap_validation` it asks whether the authors report any band gap of their own; papers that only quote other work, such as reviews, then have their values moved to `Cited literature band gaps`. On the validation set this raised the cited-value F1 from 0.35 to 0.51 with Qwen2.5-72B, while Qwen3-30B-A3B answered the question unreliably, so check the answers in the audit file for the model you use.
+
+Examples are shown to the model as the shape of a record, so write them as placeholders (`"<number> eV"`, `"<method as stated>"`) rather than realistic values, which models tend to copy into unrelated papers.
+
 Optional context compression does not construct another recipe-specific LLM prompt. It uses the selected extraction prompt to preserve relevant content before the normal request is made.
 
 ## Text and image reconciliation
@@ -488,7 +524,7 @@ The reconciliation prompt uses:
 
 It merges complementary fields only when records refer to the same configured record unit. Conflicting identity fields keep records separate. An unresolved conflict in a non-identity value is retained as a list rather than silently discarded.
 
-Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are not currently reconciled, so use a suitable model context limit when record duplication across chunks would be costly.
+Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are merged without a model call, by their identity fields (see [Scraping](scraping.md), under "Context limits and compression"), so use a suitable model context limit when a record split across chunks would be costly.
 
 ## Validation and common errors
 
@@ -503,7 +539,18 @@ Common failures include:
 - placing paper-specific facts in the recipe rather than extraction rules; and
 - sharing one final CSV between recipes with unrelated schemas.
 
-Before a large scrape, inspect the prompt and run a small representative batch. The Python prompt builders can be used without calling a model:
+Before a large scrape, inspect the exact prompt without calling a model:
+
+```bash
+pmt recipe prompt ./cycling_recipe.json
+pmt recipe prompt ./cycling_recipe.json --kind image-context
+pmt recipe prompt band_gap_validation --kind reconciliation --outfile reconciliation.txt
+```
+
+The available prompt kinds are `text`, `image`, `image-context`, and `reconciliation`. The text
+prompt is shown by default. Prompts are printed to standard output unless `--outfile` is supplied.
+
+The same prompt builders are also available from Python:
 
 ```python
 from paperminertoolkit.extraction.extract import build_image_extraction_prompt, build_text_extraction_prompt

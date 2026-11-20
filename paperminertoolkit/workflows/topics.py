@@ -21,7 +21,6 @@ import unicodedata
 import warnings
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from datetime import datetime, timezone
 from itertools import combinations, groupby
 from os import PathLike
 from pathlib import Path
@@ -36,7 +35,7 @@ from scipy.sparse import spmatrix
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer
 
-from paperminertoolkit.corpus.database import connect, get_asset
+from paperminertoolkit.corpus.database import connect, get_asset, utc_now as _utc_now
 from paperminertoolkit.corpus.documents import trim_reference_section
 
 
@@ -63,6 +62,13 @@ URL_RE = re.compile(r'https?://\S+', re.IGNORECASE)
 DOI_RE = re.compile(r'\b10\.\d{4,9}/\S+', re.IGNORECASE)
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_EVALUATION_SAMPLE_SIZE = 10000
+_PREDICTION_FIELDS = (
+    'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
+    'topic_name', 'probability', 'is_dominant', 'status',
+)
+_REPRESENTATIVE_FIELDS = (
+    'topic_id', 'topic_name', 'rank', 'paper_id', 'probability', 'title', 'publication_date',
+)
 
 
 class _TopicDocument(TypedDict):
@@ -141,15 +147,7 @@ class TopicAnalyzer:
         return features
 
 
-def _utc_now() -> str:
-    """Return a stable UTC timestamp for model metadata.
 
-    Returns
-    -------
-    str
-        ISO-8601 UTC timestamp with second precision.
-    """
-    return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
 def normalize_topic_text(value: object) -> str:
@@ -416,42 +414,72 @@ def assess_topic_corpus(
     if num_topics < 2:
         raise ValueError('num_topics must be at least 2.')
     usable = [document for document in documents if document['token_count'] > 0]
-    if len(usable) < num_topics:
+    return _corpus_report(
+        len(documents), len(usable), len(documents) - len(usable),
+        _median([document['token_count'] for document in usable]), num_topics,
+    )
+
+
+def _corpus_report(total: int, usable: int, empty: int,
+                   median_tokens: int | float, num_topics: int) -> dict[str, Any]:
+    """Describe corpus counts and apply the common LDA quality thresholds."""
+    if usable < num_topics:
         raise ValueError(
             f'LDA requires at least as many usable documents as topics; '
-            f'found {len(usable)} documents for {num_topics} topics.'
+            f'found {usable} documents for {num_topics} topics.'
         )
-
-    document_count = len(documents)
-    empty_count = document_count - len(usable)
-    token_counts = [document['token_count'] for document in usable]
-    warning_messages = []
-    recommended_documents = max(500, 50 * num_topics)
-    if len(usable) < recommended_documents:
-        warning_messages.append(
-            f'Small topic-model corpus: {len(usable)} usable documents for {num_topics} topics. '
-            f'Consider at least {recommended_documents} documents (50 per topic, minimum 500) '
+    messages = []
+    recommended = max(500, 50 * num_topics)
+    if usable < recommended:
+        messages.append(
+            f'Small topic-model corpus: {usable} usable documents for {num_topics} topics. '
+            f'Consider at least {recommended} documents (50 per topic, minimum 500) '
             'for more stable topics.'
         )
-    median_tokens = _median(token_counts)
     if median_tokens < 50:
-        warning_messages.append(
+        messages.append(
             f'Short topic-model documents: median usable length is {median_tokens:g} tokens; '
             'topic quality may be poor below roughly 50 tokens.'
         )
-    if document_count and empty_count / document_count > 0.1:
-        warning_messages.append(
-            f'{empty_count} of {document_count} documents contain no usable text '
-            'and will be excluded from training.'
+    if total and empty / total > 0.1:
+        messages.append(
+            f'{empty} of {total} documents contain no usable text and will be excluded from training.'
         )
     return {
-        'documents_total': document_count,
-        'documents_usable_before_vectorization': len(usable),
-        'documents_empty': empty_count,
+        'documents_total': total,
+        'documents_usable_before_vectorization': usable,
+        'documents_empty': empty,
         'median_tokens': median_tokens,
-        'documents_per_topic': len(usable) / num_topics,
-        'warnings': warning_messages,
+        'documents_per_topic': usable / num_topics,
+        'warnings': messages,
     }
+
+
+def _add_vocabulary_report(report: dict[str, Any], used: int, vocabulary_size: int,
+                           num_topics: int, seconds: float) -> None:
+    """Add vocabulary coverage and its quality warnings to a corpus report."""
+    if used < num_topics:
+        raise ValueError(
+            f'Only {used} documents contain retained vocabulary for {num_topics} topics. '
+            'Lower min_df, raise max_df, or reduce the topic count.'
+        )
+    without_vocabulary = report['documents_usable_before_vectorization'] - used
+    report.update({
+        'documents_used': used,
+        'documents_without_vocabulary_terms': without_vocabulary,
+        'vocabulary_size': vocabulary_size,
+        'vectorization_seconds': seconds,
+    })
+    if vocabulary_size < 2 * num_topics:
+        report['warnings'].append(
+            f'Small topic vocabulary: {vocabulary_size} retained terms for {num_topics} topics. '
+            'Consider lowering min_df, raising max_features, or reducing the topic count.'
+        )
+    if without_vocabulary:
+        report['warnings'].append(
+            f'{without_vocabulary} usable documents contained no terms from the retained '
+            'vocabulary and were excluded.'
+        )
 
 
 def _emit_warnings(messages: Iterable[str]) -> None:
@@ -464,6 +492,12 @@ def _emit_warnings(messages: Iterable[str]) -> None:
     """
     for message in messages:
         warnings.warn(message, UserWarning, stacklevel=3)
+
+
+def _fingerprint_record(document: Mapping[str, Any]) -> bytes:
+    """Encode one ID and text digest using the version-two fingerprint format."""
+    return (document['paper_id'].encode('utf-8') + b'\0'
+            + hashlib.sha256(document['text'].encode('utf-8')).digest() + b'\0')
 
 
 def _corpus_fingerprint(documents: Iterable[_TopicDocument]) -> str:
@@ -481,10 +515,7 @@ def _corpus_fingerprint(documents: Iterable[_TopicDocument]) -> str:
     """
     digest = hashlib.sha256()
     for document in sorted(documents, key=lambda item: item['paper_id']):
-        digest.update(document['paper_id'].encode('utf-8'))
-        digest.update(b'\0')
-        digest.update(hashlib.sha256(document['text'].encode('utf-8')).digest())
-        digest.update(b'\0')
+        digest.update(_fingerprint_record(document))
     return digest.hexdigest()
 
 
@@ -642,6 +673,32 @@ def _topic_names(
     return {str(topic_id): str(values.get(str(topic_id), '')) for topic_id in range(num_topics)}
 
 
+def _prediction_rows(document: Mapping[str, Any], distribution: NDArray[np.float64] | None,
+                     names: Mapping[str, str]) -> Iterator[dict[str, Any]]:
+    """Serialize one document's probabilities, including the no-vocabulary state."""
+    base = {key: document[key] for key in ('paper_id', 'doi', 'title', 'publication_date')}
+    if distribution is None:
+        yield {**base, 'status': 'no_vocabulary_terms'}
+        return
+    dominant_topic = int(distribution.argmax())
+    for topic_id, probability in enumerate(distribution):
+        yield {
+            **base, 'topic_id': topic_id, 'topic_name': names[str(topic_id)],
+            'probability': f'{float(probability):.12g}',
+            'is_dominant': topic_id == dominant_topic, 'status': 'predicted',
+        }
+
+
+def _representative_row(document: Mapping[str, Any], topic_id: int, topic_name: str,
+                        rank: int, probability: float) -> dict[str, Any]:
+    """Serialize a selected representative without changing its ranking policy."""
+    return {
+        'topic_id': topic_id, 'topic_name': topic_name, 'rank': rank,
+        'paper_id': document['paper_id'], 'probability': f'{float(probability):.12g}',
+        'title': document['title'], 'publication_date': document['publication_date'],
+    }
+
+
 def _write_predictions(
     path: str | PathLike[str],
     documents: Sequence[_TopicDocument],
@@ -670,29 +727,11 @@ def _write_predictions(
         If the destination cannot be written.
     """
     distribution_by_index = dict(zip(included_indices, distributions))
-    fieldnames = [
-        'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
-        'topic_name', 'probability', 'is_dominant', 'status',
-    ]
     with Path(path).open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=_PREDICTION_FIELDS)
         writer.writeheader()
         for document_index, document in enumerate(documents):
-            distribution = distribution_by_index.get(document_index)
-            base = {key: document[key] for key in ['paper_id', 'doi', 'title', 'publication_date']}
-            if distribution is None:
-                writer.writerow({**base, 'status': 'no_vocabulary_terms'})
-                continue
-            dominant_topic = int(distribution.argmax())
-            for topic_id, probability in enumerate(distribution):
-                writer.writerow({
-                    **base,
-                    'topic_id': topic_id,
-                    'topic_name': names[str(topic_id)],
-                    'probability': f'{float(probability):.12g}',
-                    'is_dominant': topic_id == dominant_topic,
-                    'status': 'predicted',
-                })
+            writer.writerows(_prediction_rows(document, distribution_by_index.get(document_index), names))
 
 
 def _write_representatives(
@@ -722,23 +761,17 @@ def _write_representatives(
     OSError
         If the destination cannot be written.
     """
-    fieldnames = ['topic_id', 'topic_name', 'rank', 'paper_id', 'probability', 'title', 'publication_date']
     with Path(path).open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=_REPRESENTATIVE_FIELDS)
         writer.writeheader()
         for topic_id in range(distributions.shape[1]):
             ranked = distributions[:, topic_id].argsort()[::-1][:count]
             for rank, document_index in enumerate(ranked, start=1):
                 document = documents[int(document_index)]
-                writer.writerow({
-                    'topic_id': topic_id,
-                    'topic_name': names[str(topic_id)],
-                    'rank': rank,
-                    'paper_id': document['paper_id'],
-                    'probability': f'{float(distributions[document_index, topic_id]):.12g}',
-                    'title': document['title'],
-                    'publication_date': document['publication_date'],
-                })
+                writer.writerow(_representative_row(
+                    document, topic_id, names[str(topic_id)], rank,
+                    float(distributions[document_index, topic_id]),
+                ))
 
 
 def _prepare_output_directory(
@@ -773,85 +806,17 @@ def _prepare_output_directory(
     return path
 
 
-def _streaming_corpus_report(
-    prepared: Mapping[str, Any],
-    num_topics: int,
-) -> dict[str, Any]:
-    """Build topic-count-specific diagnostics from a prepared corpus cache.
+def _streaming_corpus_report(prepared: Mapping[str, Any], num_topics: int) -> dict[str, Any]:
+    """Build topic-specific diagnostics from prepared streaming corpus statistics."""
+    report = _corpus_report(
+        prepared['documents_total'], prepared['documents_usable_before_vectorization'],
+        prepared['documents_empty'], prepared['median_tokens'], num_topics,
+    )
+    _add_vocabulary_report(report, prepared['documents_used'], prepared['vocabulary_size'],
+                           num_topics, prepared['preparation_seconds'])
+    report['cache_size_bytes'] = prepared['cache_size_bytes']
+    return report
 
-    Parameters
-    ----------
-    prepared : Mapping[str, Any]
-        Metadata produced while constructing the streaming corpus cache.
-    num_topics : int
-        Requested number of latent topics.
-
-    Returns
-    -------
-    dict[str, Any]
-        Corpus counts, timing data, vocabulary size, and quality warnings.
-
-    Raises
-    ------
-    ValueError
-        If too few usable or vectorized documents remain for ``num_topics``.
-    """
-    usable = prepared['documents_usable_before_vectorization']
-    used = prepared['documents_used']
-    if usable < num_topics:
-        raise ValueError(
-            f'LDA requires at least as many usable documents as topics; '
-            f'found {usable} documents for {num_topics} topics.'
-        )
-    if used < num_topics:
-        raise ValueError(
-            f'Only {used} documents contain retained vocabulary for {num_topics} topics. '
-            'Lower min_df, raise max_df, or reduce the topic count.'
-        )
-    warnings_list = []
-    recommended = max(500, 50 * num_topics)
-    if usable < recommended:
-        warnings_list.append(
-            f'Small topic-model corpus: {usable} usable documents for {num_topics} topics. '
-            f'Consider at least {recommended} documents (50 per topic, minimum 500) '
-            'for more stable topics.'
-        )
-    if prepared['median_tokens'] < 50:
-        warnings_list.append(
-            f'Short topic-model documents: median usable length is '
-            f'{prepared["median_tokens"]:g} tokens; topic quality may be poor below roughly 50 tokens.'
-        )
-    total = prepared['documents_total']
-    empty = prepared['documents_empty']
-    if total and empty / total > 0.1:
-        warnings_list.append(
-            f'{empty} of {total} documents contain no usable text and will be excluded from training.'
-        )
-    without_vocabulary = usable - used
-    if prepared['vocabulary_size'] < 2 * num_topics:
-        warnings_list.append(
-            f'Small topic vocabulary: {prepared["vocabulary_size"]} retained terms for '
-            f'{num_topics} topics. Consider lowering min_df, raising max_features, '
-            'or reducing the topic count.'
-        )
-    if without_vocabulary:
-        warnings_list.append(
-            f'{without_vocabulary} usable documents contained no terms from the retained '
-            'vocabulary and were excluded.'
-        )
-    return {
-        'documents_total': total,
-        'documents_usable_before_vectorization': usable,
-        'documents_empty': empty,
-        'median_tokens': prepared['median_tokens'],
-        'documents_per_topic': usable / num_topics,
-        'documents_used': used,
-        'documents_without_vocabulary_terms': without_vocabulary,
-        'vocabulary_size': prepared['vocabulary_size'],
-        'vectorization_seconds': prepared['preparation_seconds'],
-        'cache_size_bytes': prepared['cache_size_bytes'],
-        'warnings': warnings_list,
-    }
 
 
 def _prepare_streaming_corpus(
@@ -924,10 +889,7 @@ def _prepare_streaming_corpus(
             batch_df = Counter()
             for document in documents:
                 document_count += 1
-                digest.update(document['paper_id'].encode('utf-8'))
-                digest.update(b'\0')
-                digest.update(hashlib.sha256(document['text'].encode('utf-8')).digest())
-                digest.update(b'\0')
+                digest.update(_fingerprint_record(document))
                 if document['token_count'] <= 0:
                     continue
                 token_counts.append(document['token_count'])
@@ -1117,40 +1079,27 @@ def _write_streamed_outputs(
     dict[str, Any]
         Prediction coverage and dominant-topic balance metrics.
     """
-    prediction_fields = [
-        'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
-        'topic_name', 'probability', 'is_dominant', 'status',
-    ]
     representative_heaps = {topic_id: [] for topic_id in range(model.n_components)}
     dominant_counts = [0] * model.n_components
     predicted = 0
     sequence = 0
     with Path(predictions_path).open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=prediction_fields)
+        writer = csv.DictWriter(handle, fieldnames=_PREDICTION_FIELDS)
         writer.writeheader()
         for matrix, documents in _cached_batches(prepared):
             included = np.flatnonzero(matrix.getnnz(axis=1) > 0)
             distributions = model.transform(matrix[included]) if len(included) else np.empty((0, model.n_components))
             distribution_by_row = dict(zip(included.tolist(), distributions))
             for row_index, document in enumerate(documents):
-                base = {key: document[key] for key in ['paper_id', 'doi', 'title', 'publication_date']}
                 distribution = distribution_by_row.get(row_index)
+                writer.writerows(_prediction_rows(document, distribution, names))
                 if distribution is None:
-                    writer.writerow({**base, 'status': 'no_vocabulary_terms'})
                     continue
                 predicted += 1
                 dominant_topic = int(distribution.argmax())
                 dominant_counts[dominant_topic] += 1
                 for topic_id, probability in enumerate(distribution):
                     probability = float(probability)
-                    writer.writerow({
-                        **base,
-                        'topic_id': topic_id,
-                        'topic_name': names[str(topic_id)],
-                        'probability': f'{probability:.12g}',
-                        'is_dominant': topic_id == dominant_topic,
-                        'status': 'predicted',
-                    })
                     item = (probability, sequence, document)
                     heap = representative_heaps[topic_id]
                     if len(heap) < representative_count:
@@ -1159,32 +1108,34 @@ def _write_streamed_outputs(
                         heapq.heapreplace(heap, item)
                 sequence += 1
 
-    fields = ['topic_id', 'topic_name', 'rank', 'paper_id', 'probability', 'title', 'publication_date']
     with Path(representatives_path).open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=_REPRESENTATIVE_FIELDS)
         writer.writeheader()
         for topic_id in range(model.n_components):
             ranked = sorted(representative_heaps[topic_id], reverse=True)
             for rank, (probability, _, document) in enumerate(ranked, start=1):
-                writer.writerow({
-                    'topic_id': topic_id,
-                    'topic_name': names[str(topic_id)],
-                    'rank': rank,
-                    'paper_id': document['paper_id'],
-                    'probability': f'{probability:.12g}',
-                    'title': document['title'],
-                    'publication_date': document['publication_date'],
-                })
-    proportions = [count / predicted for count in dominant_counts if count] if predicted else []
+                writer.writerow(_representative_row(
+                    document, topic_id, names[str(topic_id)], rank, probability,
+                ))
+    return {**_dominant_topic_metrics(dominant_counts), 'papers_predicted': predicted}
+
+
+def _dominant_topic_metrics(counts: Sequence[int]) -> dict[str, Any]:
+    """Calculate dimensionless normalised entropy from dominant-topic counts."""
+    predicted = sum(counts)
+    proportions = [count / predicted for count in counts if count] if predicted else []
     entropy = -sum(value * math.log(value) for value in proportions)
-    balance = entropy / math.log(model.n_components) if model.n_components > 1 and predicted else 0
+    balance = entropy / math.log(len(counts)) if len(counts) > 1 and predicted else 0
     return {
-        'dominant_topic_counts': dominant_counts,
-        'dominant_topic_balance': balance,
-        'smallest_dominant_topic': min(dominant_counts),
-        'largest_dominant_topic': max(dominant_counts),
-        'papers_predicted': predicted,
+        'dominant_topic_counts': list(counts), 'dominant_topic_balance': balance,
+        'smallest_dominant_topic': min(counts), 'largest_dominant_topic': max(counts),
     }
+
+
+def _topic_diversity(topic_rows: Sequence[_TopicRow]) -> float:
+    """Return the fraction of distinct terms across all exported topic terms."""
+    terms = [term for topic in topic_rows for term in topic['top_terms']]
+    return len(set(terms)) / len(terms) if terms else 0
 
 
 def _model_quality_metrics(
@@ -1213,40 +1164,72 @@ def _model_quality_metrics(
     """
     dominant_topics = distributions.argmax(axis=1)
     dominant_counts = [int((dominant_topics == topic_id).sum()) for topic_id in range(distributions.shape[1])]
-    proportions = [count / len(distributions) for count in dominant_counts if count]
-    entropy = -sum(proportion * math.log(proportion) for proportion in proportions)
-    normalized_entropy = entropy / math.log(distributions.shape[1]) if distributions.shape[1] > 1 else 0
-    all_top_terms = [term for topic in topic_rows for term in topic['top_terms']]
-    topic_diversity = len(set(all_top_terms)) / len(all_top_terms) if all_top_terms else 0
     return {
         'perplexity': float(model.perplexity(matrix)),
         'log_likelihood': float(model.score(matrix)),
-        'topic_diversity': topic_diversity,
-        'dominant_topic_counts': dominant_counts,
-        'dominant_topic_balance': normalized_entropy,
-        'smallest_dominant_topic': min(dominant_counts),
-        'largest_dominant_topic': max(dominant_counts),
+        'topic_diversity': _topic_diversity(topic_rows),
+        **_dominant_topic_metrics(dominant_counts),
+    }
+
+
+def _save_training_artifacts(
+    output_path: Path,
+    model: LatentDirichletAllocation,
+    vectorizer: CountVectorizer,
+    config: dict[str, Any],
+    report: dict[str, Any],
+    fingerprint: dict[str, Any],
+    topic_rows: list[_TopicRow],
+    names: dict[str, str],
+) -> dict[str, Any]:
+    """Persist the common fitted-model artifacts and return their run summary.
+
+    Parameters
+    ----------
+    output_path : pathlib.Path
+        Prepared artifact directory.
+    model : sklearn.decomposition.LatentDirichletAllocation
+        Fitted estimator from either training algorithm.
+    vectorizer : sklearn.feature_extraction.text.CountVectorizer
+        Corresponding fitted vocabulary and analyzer.
+    config, report, fingerprint : dict[str, Any]
+        Model settings, diagnostics, and normalized corpus identity.
+    topic_rows : list[_TopicRow]
+        Exportable topic descriptions.
+    names : dict[str, str]
+        Manual names keyed by topic ID.
+
+    Returns
+    -------
+    dict[str, Any]
+        Artifact paths and the supplied model metadata.
+    """
+    joblib.dump(model, output_path / MODEL_FILENAME)
+    joblib.dump(vectorizer, output_path / VECTORIZER_FILENAME)
+    _write_json(output_path / CONFIG_FILENAME, config)
+    _write_json(output_path / REPORT_FILENAME, report)
+    _write_json(output_path / FINGERPRINT_FILENAME, fingerprint)
+    _write_json(output_path / TOPIC_NAMES_FILENAME, names)
+    (output_path / STOPWORDS_FILENAME).write_text(
+        ''.join(f'{word}\n' for word in config['domain_stopwords']), encoding='utf-8'
+    )
+    _write_topics(output_path / TOPICS_FILENAME, topic_rows)
+    return {
+        'model_dir': str(output_path),
+        'config': config,
+        'report': report,
+        'fingerprint': fingerprint,
+        'topics': topic_rows,
+        'predictions_path': str(output_path / PREDICTIONS_FILENAME),
     }
 
 
 def _train_streaming_topic_model(
     output_dir: str | PathLike[str],
     prepared: Mapping[str, Any],
-    num_topics: int,
-    text_fields: Iterable[str],
-    min_df: int,
-    max_df: float,
-    max_features: int,
-    max_iter: int,
-    random_state: int,
-    top_terms: int,
-    representative_papers: int,
-    domain_stopwords: list[str],
-    ngram_max: int,
+    config: dict[str, Any],
     overwrite: bool,
     emit_warnings: bool,
-    batch_size: int,
-    evaluation_sample_size: int,
 ) -> dict[str, Any]:
     """Train and persist online LDA from a reusable streaming cache.
 
@@ -1256,42 +1239,19 @@ def _train_streaming_topic_model(
         Destination model artifact directory.
     prepared : Mapping[str, Any]
         Prepared streaming corpus cache and diagnostics.
-    num_topics : int
-        Number of latent topics.
-    text_fields : Iterable[str]
-        Corpus fields represented by the model.
-    min_df : int
-        Minimum feature document frequency.
-    max_df : float
-        Maximum feature document-frequency fraction.
-    max_features : int
-        Maximum vocabulary size.
-    max_iter : int
-        Number of complete passes over cached batches.
-    random_state : int
-        Model initialization seed.
-    top_terms : int
-        Terms exported for each topic.
-    representative_papers : int
-        Representative papers exported for each topic.
-    domain_stopwords : list[str]
-        Normalized corpus-specific stopwords.
-    ngram_max : {1, 2}
-        Maximum feature n-gram size.
+    config : dict[str, Any]
+        Validated training options; model identity and creation time are added.
     overwrite : bool
         Whether known artifacts may be replaced.
     emit_warnings : bool
         Whether to emit heuristic corpus warnings.
-    batch_size : int
-        Documents processed per online batch.
-    evaluation_sample_size : int
-        Maximum documents used for fit metrics.
 
     Returns
     -------
     dict[str, Any]
         Artifact paths, configuration, diagnostics, fingerprint, and topics.
     """
+    num_topics = config['num_topics']
     report = _streaming_corpus_report(prepared, num_topics)
     if emit_warnings:
         _emit_warnings(report['warnings'])
@@ -1299,12 +1259,12 @@ def _train_streaming_topic_model(
         n_components=num_topics,
         learning_method='online',
         max_iter=1,
-        batch_size=batch_size,
+        batch_size=config['batch_size'],
         total_samples=prepared['documents_used'],
-        random_state=random_state,
+        random_state=config['random_state'],
     )
     fitting_started = time.perf_counter()
-    for _ in range(max_iter):
+    for _ in range(config['max_iter']):
         for matrix, _metadata in _cached_batches(prepared):
             included = matrix.getnnz(axis=1) > 0
             if included.any():
@@ -1312,11 +1272,8 @@ def _train_streaming_topic_model(
     report['fitting_seconds'] = time.perf_counter() - fitting_started
 
     vectorizer = prepared['vectorizer']
-    topic_rows = _topic_rows(model, vectorizer, top_terms)
-    all_top_terms = [term for topic in topic_rows for term in topic['top_terms']]
-    report['topic_diversity'] = (
-        len(set(all_top_terms)) / len(all_top_terms) if all_top_terms else 0
-    )
+    topic_rows = _topic_rows(model, vectorizer, config['top_terms'])
+    report['topic_diversity'] = _topic_diversity(topic_rows)
     evaluation_matrix = sparse.load_npz(prepared['evaluation_path'])
     report['evaluation_documents'] = evaluation_matrix.shape[0]
     report['metrics_scope'] = (
@@ -1329,26 +1286,7 @@ def _train_streaming_topic_model(
         report['perplexity'] = None
         report['log_likelihood'] = None
 
-    config = {
-        'artifact_version': ARTIFACT_VERSION,
-        'created_at': _utc_now(),
-        'num_topics': num_topics,
-        'text_fields': list(text_fields),
-        'min_df': min_df,
-        'max_df': max_df,
-        'max_features': max_features,
-        'learning_method': 'online',
-        'max_iter': max_iter,
-        'random_state': random_state,
-        'top_terms': top_terms,
-        'representative_papers': representative_papers,
-        'domain_stopwords': domain_stopwords,
-        'ngram_max': ngram_max,
-        'streaming': True,
-        'batch_size': batch_size,
-        'evaluation_sample_size': evaluation_sample_size,
-        'sklearn_version': sklearn.__version__,
-    }
+    config['created_at'] = _utc_now()
     fingerprint = prepared['fingerprint']
     config['model_id'] = _model_identifier(model, vectorizer, config, fingerprint)
     names = {str(topic_id): '' for topic_id in range(num_topics)}
@@ -1360,27 +1298,12 @@ def _train_streaming_topic_model(
         names,
         output_path / PREDICTIONS_FILENAME,
         output_path / REPRESENTATIVES_FILENAME,
-        representative_papers,
+        config['representative_papers'],
     )
     report.update(inference_metrics)
-    joblib.dump(model, output_path / MODEL_FILENAME)
-    joblib.dump(vectorizer, output_path / VECTORIZER_FILENAME)
-    _write_json(output_path / CONFIG_FILENAME, config)
-    _write_json(output_path / REPORT_FILENAME, report)
-    _write_json(output_path / FINGERPRINT_FILENAME, fingerprint)
-    _write_json(output_path / TOPIC_NAMES_FILENAME, names)
-    (output_path / STOPWORDS_FILENAME).write_text(
-        ''.join(f'{word}\n' for word in domain_stopwords), encoding='utf-8'
+    return _save_training_artifacts(
+        output_path, model, vectorizer, config, report, fingerprint, topic_rows, names,
     )
-    _write_topics(output_path / TOPICS_FILENAME, topic_rows)
-    return {
-        'model_dir': str(output_path),
-        'config': config,
-        'report': report,
-        'fingerprint': fingerprint,
-        'topics': topic_rows,
-        'predictions_path': str(output_path / PREDICTIONS_FILENAME),
-    }
 
 
 def train_topic_model(db_path: str | PathLike[str],
@@ -1484,6 +1407,25 @@ def train_topic_model(db_path: str | PathLike[str],
         raise ValueError('batch_size and evaluation_sample_size must be positive.')
 
     domain_stopwords = load_domain_stopwords(stopwords_file)
+    config = {
+        'artifact_version': ARTIFACT_VERSION,
+        'num_topics': num_topics,
+        'text_fields': list(fields),
+        'min_df': min_df,
+        'max_df': max_df,
+        'max_features': max_features,
+        'learning_method': learning_method,
+        'max_iter': max_iter,
+        'random_state': random_state,
+        'top_terms': top_terms,
+        'representative_papers': representative_papers,
+        'domain_stopwords': domain_stopwords,
+        'ngram_max': ngram_max,
+        'streaming': bool(streaming),
+        'batch_size': batch_size,
+        'evaluation_sample_size': evaluation_sample_size,
+        'sklearn_version': sklearn.__version__,
+    }
     if streaming:
         if learning_method != 'online':
             raise ValueError('Streaming training requires learning_method="online"; use in-memory mode for batch LDA.')
@@ -1491,10 +1433,7 @@ def train_topic_model(db_path: str | PathLike[str],
             raise ValueError('Explicit documents are only supported by in-memory training.')
         if _prepared_streaming is not None:
             return _train_streaming_topic_model(
-                output_dir, _prepared_streaming, num_topics, fields, min_df, max_df,
-                max_features, max_iter, random_state, top_terms,
-                representative_papers, domain_stopwords, ngram_max, overwrite,
-                emit_warnings, batch_size, evaluation_sample_size,
+                output_dir, _prepared_streaming, config, overwrite, emit_warnings,
             )
         if cache_dir is not None:
             Path(cache_dir).mkdir(parents=True, exist_ok=True)
@@ -1505,10 +1444,7 @@ def train_topic_model(db_path: str | PathLike[str],
                 max_features, batch_size, evaluation_sample_size, temporary_dir,
             )
             return _train_streaming_topic_model(
-                output_dir, prepared, num_topics, fields, min_df, max_df,
-                max_features, max_iter, random_state, top_terms,
-                representative_papers, domain_stopwords, ngram_max, overwrite,
-                emit_warnings, batch_size, evaluation_sample_size,
+                output_dir, prepared, config, overwrite, emit_warnings,
             )
 
     documents = documents if documents is not None else load_topic_documents(db_path, fields)
@@ -1533,27 +1469,10 @@ def train_topic_model(db_path: str | PathLike[str],
     included_indices = [index for index, included in enumerate(included_mask) if included]
     training_documents = [usable_documents[index] for index in included_indices]
     matrix = matrix[included_mask]
-    if len(training_documents) < num_topics:
-        raise ValueError(
-            f'Only {len(training_documents)} documents contain retained vocabulary for {num_topics} topics. '
-            'Lower min_df, raise max_df, or reduce the topic count.'
-        )
-
-    feature_count = len(vectorizer.get_feature_names_out())
-    report['documents_used'] = len(training_documents)
-    report['documents_without_vocabulary_terms'] = len(usable_documents) - len(training_documents)
-    report['vocabulary_size'] = feature_count
-    report['vectorization_seconds'] = time.perf_counter() - vectorization_started
-    if feature_count < 2 * num_topics:
-        report['warnings'].append(
-            f'Small topic vocabulary: {feature_count} retained terms for {num_topics} topics. '
-            'Consider lowering min_df, raising max_features, or reducing the topic count.'
-        )
-    if report['documents_without_vocabulary_terms']:
-        report['warnings'].append(
-            f'{report["documents_without_vocabulary_terms"]} usable documents contained no terms '
-            'from the retained vocabulary and were excluded.'
-        )
+    _add_vocabulary_report(
+        report, len(training_documents), len(vectorizer.get_feature_names_out()),
+        num_topics, time.perf_counter() - vectorization_started,
+    )
     if emit_warnings:
         _emit_warnings(report['warnings'])
 
@@ -1568,26 +1487,7 @@ def train_topic_model(db_path: str | PathLike[str],
     report['fitting_seconds'] = time.perf_counter() - fitting_started
     topic_rows = _topic_rows(model, vectorizer, top_terms)
     report.update(_model_quality_metrics(model, matrix, distributions, topic_rows))
-    config = {
-        'artifact_version': ARTIFACT_VERSION,
-        'created_at': _utc_now(),
-        'num_topics': num_topics,
-        'text_fields': list(fields),
-        'min_df': min_df,
-        'max_df': max_df,
-        'max_features': max_features,
-        'learning_method': learning_method,
-        'max_iter': max_iter,
-        'random_state': random_state,
-        'top_terms': top_terms,
-        'representative_papers': representative_papers,
-        'domain_stopwords': domain_stopwords,
-        'ngram_max': ngram_max,
-        'streaming': False,
-        'batch_size': batch_size,
-        'evaluation_sample_size': evaluation_sample_size,
-        'sklearn_version': sklearn.__version__,
-    }
+    config['created_at'] = _utc_now()
     fingerprint = {
         'algorithm': 'sha256-paper-id-and-normalized-text-v2',
         'sha256': _corpus_fingerprint(documents),
@@ -1598,17 +1498,9 @@ def train_topic_model(db_path: str | PathLike[str],
     names = {str(topic_id): '' for topic_id in range(num_topics)}
     output_path = _prepare_output_directory(output_dir, overwrite)
 
-    joblib.dump(model, output_path / MODEL_FILENAME)
-    joblib.dump(vectorizer, output_path / VECTORIZER_FILENAME)
-    _write_json(output_path / CONFIG_FILENAME, config)
-    _write_json(output_path / REPORT_FILENAME, report)
-    _write_json(output_path / FINGERPRINT_FILENAME, fingerprint)
-    _write_json(output_path / TOPIC_NAMES_FILENAME, names)
-    (output_path / STOPWORDS_FILENAME).write_text(
-        ''.join(f'{word}\n' for word in domain_stopwords),
-        encoding='utf-8',
+    summary = _save_training_artifacts(
+        output_path, model, vectorizer, config, report, fingerprint, topic_rows, names,
     )
-    _write_topics(output_path / TOPICS_FILENAME, topic_rows)
     _write_representatives(
         output_path / REPRESENTATIVES_FILENAME,
         training_documents,
@@ -1634,14 +1526,8 @@ def train_topic_model(db_path: str | PathLike[str],
         names,
         all_included_indices,
     )
-    return {
-        'model_dir': str(output_path),
-        'config': config,
-        'report': report,
-        'fingerprint': fingerprint,
-        'topics': topic_rows,
-        'predictions_path': str(output_path / PREDICTIONS_FILENAME),
-    }
+    return summary
+
 
 
 def load_topic_model(
@@ -1799,10 +1685,7 @@ def topic_corpus_fingerprint(
     for batch in iter_topic_document_batches(db_path, fields, batch_size):
         for document in batch:
             documents += 1
-            digest.update(document['paper_id'].encode('utf-8'))
-            digest.update(b'\0')
-            digest.update(hashlib.sha256(document['text'].encode('utf-8')).digest())
-            digest.update(b'\0')
+            digest.update(_fingerprint_record(document))
     return {
         'algorithm': 'sha256-paper-id-and-normalized-text-v2',
         'sha256': digest.hexdigest(),
@@ -1889,33 +1772,18 @@ def predict_topic_model(
         If the artifact is unsupported or the corpus contains no papers.
     """
     model, vectorizer, config, names = load_topic_model(model_dir)
-    fields = [
-        'paper_id', 'doi', 'title', 'publication_date', 'topic_id',
-        'topic_name', 'probability', 'is_dominant', 'status',
-    ]
     total = 0
     predicted = 0
     with Path(output_path).open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=_PREDICTION_FIELDS)
         writer.writeheader()
         for prediction in _iter_topic_predictions(
                 model, vectorizer, config, db_path, batch_size):
             total += 1
             document = prediction['document']
-            base = {key: document[key] for key in ['paper_id', 'doi', 'title', 'publication_date']}
-            if prediction['status'] != 'predicted':
-                writer.writerow({**base, 'status': prediction['status']})
-                continue
-            predicted += 1
-            for topic_id, probability in enumerate(prediction['distribution']):
-                writer.writerow({
-                    **base,
-                    'topic_id': topic_id,
-                    'topic_name': names[str(topic_id)],
-                    'probability': f'{float(probability):.12g}',
-                    'is_dominant': topic_id == prediction['dominant_topic'],
-                    'status': 'predicted',
-                })
+            distribution = prediction['distribution']
+            writer.writerows(_prediction_rows(document, distribution, names))
+            predicted += distribution is not None
     if not total:
         raise ValueError('The corpus contains no papers to predict.')
     return {

@@ -11,11 +11,15 @@ import base64
 import mimetypes
 import openai
 import requests
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self, TypedDict, Unpack
 
+from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
-from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
+from paperminertoolkit.settings import (DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, DEFAULT_OUTPUT_TOKEN_LIMIT,
+                                        DEFAULT_REQUEST_TIMEOUT, get_model_profile, load_settings,
+                                        reasoning_effort_setting, thinking_setting)
 
 OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -32,6 +36,10 @@ class _ModelOverrides(TypedDict, total=False):
     temperature: float | int | str
     top_p: float | int | str
     input_token_limit: int | str
+    output_token_limit: int | str
+    request_timeout: float | int | str
+    reasoning_effort: str | None
+    thinking: bool | str | None
 
 
 class ModelCapabilityError(ValueError):
@@ -62,6 +70,16 @@ class ModelConfig:
         Nucleus sampling probability.
     input_token_limit : int
         Maximum model input size in tokens.
+    output_token_limit : int
+        Maximum tokens generated per extraction request.
+    request_timeout : float
+        Seconds to wait for one request to an OpenAI-compatible server.
+    reasoning_effort : str | None
+        Reasoning effort sent with each request, or ``None`` for the model's
+        default.
+    thinking : bool | None
+        Whether a hybrid model thinks before answering (OpenAI-compatible
+        servers only), or ``None`` for the model's default.
     """
 
     provider: str = 'openai'
@@ -72,6 +90,10 @@ class ModelConfig:
     temperature: float = 0
     top_p: float = 1
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
+    output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    reasoning_effort: str | None = None
+    thinking: bool | None = None
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides: Unpack[_ModelOverrides]) -> Self:
@@ -120,6 +142,16 @@ class ModelConfig:
             input_token_limit=int(
                 overrides.get('input_token_limit', configured.get('input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT))
             ),
+            output_token_limit=int(
+                overrides.get('output_token_limit', configured.get('output_token_limit', DEFAULT_OUTPUT_TOKEN_LIMIT))
+            ),
+            request_timeout=float(
+                overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
+            ),
+            reasoning_effort=reasoning_effort_setting(
+                overrides.get('reasoning_effort', configured.get('reasoning_effort'))
+            ),
+            thinking=thinking_setting(overrides.get('thinking', configured.get('thinking'))),
         )
 
     def generation_args(self) -> dict[str, float]:
@@ -139,6 +171,40 @@ class ModelConfig:
         if provider == 'anthropic':
             args.pop('top_p')
         return args
+
+    def reasoning_args(self) -> dict[str, Any]:
+        """Build provider-specific reasoning parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            Request arguments that set the reasoning effort and thinking
+            switch, or an empty dict when both use the model's default.
+            OpenAI-compatible servers get ``reasoning_effort`` and, for
+            ``thinking``, ``chat_template_kwargs.enable_thinking``; OpenAI's
+            Responses API gets ``reasoning.effort``.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support a configured setting.
+        """
+        provider = self.provider.lower().replace('_', '-')
+        if self.reasoning_effort is None and self.thinking is None:
+            return {}
+        if provider == 'local':
+            args: dict[str, Any] = {}
+            if self.reasoning_effort is not None:
+                args['reasoning_effort'] = self.reasoning_effort
+            if self.thinking is not None:
+                args['extra_body'] = {'chat_template_kwargs': {'enable_thinking': self.thinking}}
+            return args
+        if provider == 'openai':
+            if self.thinking is not None:
+                raise ValueError('thinking is only supported for local OpenAI-compatible servers; '
+                                 'set reasoning_effort for OpenAI models.')
+            return {'reasoning': {'effort': self.reasoning_effort}}
+        raise ValueError(f'Reasoning settings are not supported for provider "{self.provider}".')
 
     def require(self, capability: str) -> None:
         """Require a model input capability.
@@ -179,6 +245,26 @@ def _image_to_data_url(path: str) -> str:
     return f'data:{mime_type};base64,{encoded}'
 
 
+def _image_label(image_labels: Sequence[str] | None, index: int) -> str:
+    """Return the label describing one image in a vision request.
+
+    Parameters
+    ----------
+    image_labels : Sequence[str] or None
+        Per-image descriptions aligned with the request's image order.
+    index : int
+        Position of the image within the request.
+
+    Returns
+    -------
+    str
+        Label text, or an empty string when the image has no description.
+    """
+    if image_labels is None or index >= len(image_labels):
+        return ''
+    return str(image_labels[index]).strip()
+
+
 class BaseModelClient:
     """Abstract interface implemented by concrete model provider clients."""
 
@@ -189,8 +275,15 @@ class BaseModelClient:
         ----------
         config : ModelConfig
             Configuration used for provider requests.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support the configured reasoning
+            settings.
         """
         self.config = config
+        config.reasoning_args()
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         """Send a text-only request.
@@ -219,7 +312,8 @@ class BaseModelClient:
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send a vision request with local images.
 
         Parameters
@@ -234,6 +328,10 @@ class BaseModelClient:
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions, such as a figure label and caption, sent
+            immediately before their image so the model can attribute
+            findings to a specific figure.
 
         Returns
         -------
@@ -260,7 +358,7 @@ class OpenAIResponsesClient(BaseModelClient):
             OpenAI model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {}
+        kwargs: dict[str, Any] = {'timeout': config.request_timeout}
         if config.api_key:
             kwargs['api_key'] = config.api_key
         if config.base_url:
@@ -323,6 +421,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI request failed: {e}') from e
@@ -333,7 +432,8 @@ class OpenAIResponsesClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through OpenAI Responses.
 
         Parameters
@@ -348,6 +448,8 @@ class OpenAIResponsesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -365,7 +467,10 @@ class OpenAIResponsesClient(BaseModelClient):
         content = [{'type': 'input_text', 'text': prompt}]
         if context:
             content.append({'type': 'input_text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'input_text', 'text': label})
             content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
@@ -382,6 +487,7 @@ class OpenAIResponsesClient(BaseModelClient):
                 input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'OpenAI vision request failed: {e}') from e
@@ -435,7 +541,8 @@ class AnthropicMessagesClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through Anthropic Messages.
 
         Parameters
@@ -450,6 +557,8 @@ class AnthropicMessagesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -469,7 +578,10 @@ class AnthropicMessagesClient(BaseModelClient):
         content = [{'type': 'text', 'text': prompt}]
         if context:
             content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'text', 'text': label})
             mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
             with open(image_path, 'rb') as image_file:
                 encoded = base64.b64encode(image_file.read()).decode('ascii')
@@ -527,13 +639,8 @@ class AnthropicMessagesClient(BaseModelClient):
         }
         if system:
             payload['system'] = system
-        headers = {
-            'x-api-key': self.config.api_key,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        }
-        base_url = (self.config.base_url or 'https://api.anthropic.com').rstrip('/')
-        endpoint = f'{base_url}/messages' if base_url.endswith('/v1') else f'{base_url}/v1/messages'
+        headers = request_headers(self.config.api_key)
+        endpoint = messages_url(self.config.base_url)
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
             response.raise_for_status()
@@ -586,7 +693,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {'api_key': config.api_key or 'not-needed'}
+        kwargs: dict[str, Any] = {'api_key': config.api_key or 'not-needed', 'timeout': config.request_timeout}
         if config.base_url:
             kwargs['base_url'] = config.base_url
         self.client = openai.OpenAI(**kwargs)
@@ -621,7 +728,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send images as OpenAI-compatible chat content.
 
         Parameters
@@ -636,6 +744,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -653,7 +763,10 @@ class OpenAICompatibleChatClient(BaseModelClient):
         content = [{'type': 'text', 'text': prompt}]
         if context:
             content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
+        for index, image_path in enumerate(image_paths):
+            label = _image_label(image_labels, index)
+            if label:
+                content.append({'type': 'text', 'text': label})
             content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
         messages = [{'role': 'user', 'content': content}]
         messages = maybe_compress_image_messages(
@@ -692,6 +805,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
                 messages=messages,
                 max_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'Local model request failed: {e}') from e
@@ -756,7 +870,8 @@ def query_images(prompt: str,
                  config: ModelConfig | None = None,
                  context: str | None = None,
                  max_output_tokens: int = 10000,
-                 compression_config: CompressionConfig | None = None) -> str:
+                 compression_config: CompressionConfig | None = None,
+                 image_labels: Sequence[str] | None = None) -> str:
     """Send an image request through a configured provider.
 
     Parameters
@@ -773,6 +888,8 @@ def query_images(prompt: str,
         Maximum number of tokens to generate.
     compression_config : CompressionConfig | None, optional
         Compression policy for the provider payload.
+    image_labels : Sequence[str] or None, optional
+        Per-image descriptions sent immediately before their image.
 
     Returns
     -------
@@ -781,4 +898,5 @@ def query_images(prompt: str,
     """
     return get_model_client(config).query_with_images(prompt, image_paths, context=context,
                                                       max_output_tokens=max_output_tokens,
-                                                      compression_config=compression_config)
+                                                      compression_config=compression_config,
+                                                      image_labels=image_labels)

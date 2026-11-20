@@ -476,7 +476,7 @@ def get_crossref_metadata(doi: str, timeout: int = 30, email: str | None = None)
     Raises
     ------
     ValueError
-        If no contact email is available.
+        If ``email`` was supplied but cannot be a contact address.
     RuntimeError
         If the Crossref request exhausts its retries.
     """

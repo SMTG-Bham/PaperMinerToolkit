@@ -88,6 +88,40 @@ def _configured_sources(sources: Sequence[str] | None) -> list[str]:
     return registry.resolve_names(sources, registry.ENRICH, label='enrichment')
 
 
+def _contact_address(sources: Sequence[str], email: str | None) -> str:
+    """Resolve the contact address one enrichment run should advertise.
+
+    Crossref's setting comes first because Crossref is the service the address
+    qualifies a run for, and NCBI's is a fallback because it covers a corpus
+    configured for only one of the two. Both are resolved before Crossref
+    reports an absent address, so a run holding an address from either setting
+    is never told it has none.
+
+    Parameters
+    ----------
+    sources : Sequence[str]
+        Enrichment providers selected for this run.
+    email : str or None
+        Contact address supplied by the caller, if any.
+
+    Returns
+    -------
+    str
+        Contact address to advertise, or an empty string when none is stored.
+
+    Raises
+    ------
+    ValueError
+        If a supplied or stored address cannot be a contact address.
+    """
+    resolved = str(email or '').strip()
+    if not resolved and 'crossref' in sources:
+        resolved = str(crossref_client.configured_email()).strip()
+    if not resolved and 'pubmed' in sources:
+        resolved = str(pubmed.configured_email()).strip()
+    return crossref_client.resolve_email(resolved) if 'crossref' in sources else resolved
+
+
 def _short_openalex_id(value: object) -> str:
     """Reduce an OpenAlex entity URL to its short identifier."""
     identifier = str(value or '').strip().rstrip('/')
@@ -346,6 +380,141 @@ def _arxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[
     return rows
 
 
+def _identifier_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    resolve: Callable[[Mapping[str, Any]], str],
+) -> dict[str, str]:
+    """Index corpus rows by the stored identifier a provider can resolve.
+
+    Parameters
+    ----------
+    candidates : Sequence[Mapping[str, Any]]
+        Candidate corpus rows.
+    resolve : Callable[[Mapping[str, Any]], str]
+        Provider-specific stored identifier resolver.
+
+    Returns
+    -------
+    dict[str, str]
+        Resolved identifiers mapped to the last matching nonempty paper ID.
+    """
+    identifiers = {}
+    for candidate in candidates:
+        paper_id = str(candidate.get('paper_id') or '')
+        if not paper_id:
+            continue
+        identifier = resolve(candidate)
+        if identifier:
+            identifiers[identifier] = paper_id
+    return identifiers
+
+
+def _preprint_fields(
+    entry: Mapping[str, Any],
+    identifier_column: str,
+    identifier: str,
+    fallback_doi: str,
+) -> _Fields:
+    """Map shared preprint metadata while retaining native DOI rules.
+
+    Parameters
+    ----------
+    entry : Mapping[str, Any]
+        Provider's normalized preprint record.
+    identifier_column : str
+        Corpus column for the provider's identifier.
+    identifier : str
+        Identifier normalized according to the provider's rules.
+    fallback_doi : str
+        DOI used when no published version is known. This can differ from the
+        normalized identifier for archives with unregistered version suffixes.
+
+    Returns
+    -------
+    dict[str, Any]
+        Bibliographic fields and the preprint's open-access status.
+    """
+    published = clean_doi(entry.get('published_doi')) if entry.get('published_doi') else ''
+    return {
+        'doi': published or fallback_doi,
+        'title': _text(entry.get('title')),
+        'journal': _text(entry.get('journal')),
+        'publication_date': _text(entry.get('publication_date')),
+        'authors': _text(entry.get('authors')),
+        identifier_column: identifier,
+        'work_type': '' if published else 'preprint',
+        'license': _text(entry.get('license')),
+        'is_oa': 1,
+        'oa_status': 'green',
+    }
+
+
+def _preprint_category_rows(
+    paper_id: str,
+    entry: Mapping[str, Any] | None,
+    source: str,
+) -> list[_Record]:
+    """Build provider-specific category rows without changing their ranks.
+
+    Parameters
+    ----------
+    paper_id : str
+        Paper the categories describe.
+    entry : Mapping[str, Any] or None
+        Preprint record containing category mappings.
+    source : str
+        Provider name used for the source and category scheme.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Nonempty categories in input order, retaining repeated identifiers.
+    """
+    rows: list[_Record] = []
+    if not entry:
+        return rows
+    for rank, category in enumerate(entry.get('categories') or []):
+        term = _text(category.get('id'))
+        if not term:
+            continue
+        rows.append({
+            'paper_id': paper_id, 'scheme': f'{source}_category', 'subject_id': term,
+            'display_name': _text(category.get('name')) or term, 'subject_rank': rank,
+            'is_primary': int(bool(category.get('is_primary'))), 'source': source,
+        })
+    return rows
+
+
+def _preprint_provenance(
+    entry: Mapping[str, Any],
+    identifier_column: str,
+    identifier: str,
+) -> _Record:
+    """Collect the provenance fields shared by DOI-addressed preprints.
+
+    Parameters
+    ----------
+    entry : Mapping[str, Any]
+        Provider's normalized preprint record.
+    identifier_column : str
+        Corpus column for the provider's identifier.
+    identifier : str
+        Identifier normalized according to the provider's rules.
+
+    Returns
+    -------
+    dict[str, Any]
+        Common provenance fields; callers add source-specific content fields.
+    """
+    return {
+        identifier_column: identifier,
+        'version': _text(entry.get('version')),
+        'category': _text(entry.get('category')),
+        'license': _text(entry.get('license')),
+        'published_doi': _text(entry.get('published_doi')),
+    }
+
+
 def _medrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Map each candidate's medRxiv DOI to its paper identifier.
 
@@ -364,15 +533,7 @@ def _medrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, st
     dict[str, str]
         Bare medRxiv DOI to paper identifier, for rows that carry one.
     """
-    by_medrxiv = {}
-    for candidate in candidates:
-        paper_id = str(candidate.get('paper_id') or '')
-        if not paper_id:
-            continue
-        identifier = medrxiv.resolve_medrxiv_doi(candidate)
-        if identifier:
-            by_medrxiv[identifier] = paper_id
-    return by_medrxiv
+    return _identifier_candidates(candidates, medrxiv.resolve_medrxiv_doi)
 
 
 def _medrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
@@ -396,19 +557,9 @@ def _medrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     dict[str, Any]
         Enrichment fields contributed by medRxiv.
     """
-    published = clean_doi(entry.get('published_doi')) if entry.get('published_doi') else ''
-    return {
-        'doi': published or clean_doi(entry.get('medrxiv_doi') or ''),
-        'title': _text(entry.get('title')),
-        'journal': _text(entry.get('journal')),
-        'publication_date': _text(entry.get('publication_date')),
-        'authors': _text(entry.get('authors')),
-        'medrxiv_doi': medrxiv.normalize_medrxiv_doi(entry.get('medrxiv_doi')),
-        'work_type': '' if published else 'preprint',
-        'license': _text(entry.get('license')),
-        'is_oa': 1,
-        'oa_status': 'green',
-    }
+    return _preprint_fields(entry, 'medrxiv_doi',
+                            medrxiv.normalize_medrxiv_doi(entry.get('medrxiv_doi')),
+                            clean_doi(entry.get('medrxiv_doi') or ''))
 
 
 def _medrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
@@ -432,19 +583,7 @@ def _medrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> lis
     list[dict[str, Any]]
         Rows for the ``paper_subjects`` table.
     """
-    if not entry:
-        return []
-    rows: list[_Record] = []
-    for rank, category in enumerate(entry.get('categories') or []):
-        term = _text(category.get('id'))
-        if not term:
-            continue
-        rows.append({
-            'paper_id': paper_id, 'scheme': 'medrxiv_category', 'subject_id': term,
-            'display_name': _text(category.get('name')) or term, 'subject_rank': rank,
-            'is_primary': int(bool(category.get('is_primary'))), 'source': 'medrxiv',
-        })
-    return rows
+    return _preprint_category_rows(paper_id, entry, 'medrxiv')
 
 
 def _biorxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -465,15 +604,7 @@ def _biorxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, st
     dict[str, str]
         Bare bioRxiv DOI to paper identifier, for rows that carry one.
     """
-    by_biorxiv = {}
-    for candidate in candidates:
-        paper_id = str(candidate.get('paper_id') or '')
-        if not paper_id:
-            continue
-        identifier = biorxiv.resolve_biorxiv_doi(candidate)
-        if identifier:
-            by_biorxiv[identifier] = paper_id
-    return by_biorxiv
+    return _identifier_candidates(candidates, biorxiv.resolve_biorxiv_doi)
 
 
 def _biorxiv_fields(entry: Mapping[str, Any]) -> _Fields:
@@ -497,19 +628,9 @@ def _biorxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     dict[str, Any]
         Enrichment fields contributed by bioRxiv.
     """
-    published = clean_doi(entry.get('published_doi')) if entry.get('published_doi') else ''
-    return {
-        'doi': published or clean_doi(entry.get('biorxiv_doi') or ''),
-        'title': _text(entry.get('title')),
-        'journal': _text(entry.get('journal')),
-        'publication_date': _text(entry.get('publication_date')),
-        'authors': _text(entry.get('authors')),
-        'biorxiv_doi': biorxiv.normalize_biorxiv_doi(entry.get('biorxiv_doi')),
-        'work_type': '' if published else 'preprint',
-        'license': _text(entry.get('license')),
-        'is_oa': 1,
-        'oa_status': 'green',
-    }
+    return _preprint_fields(entry, 'biorxiv_doi',
+                            biorxiv.normalize_biorxiv_doi(entry.get('biorxiv_doi')),
+                            clean_doi(entry.get('biorxiv_doi') or ''))
 
 
 def _biorxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
@@ -535,19 +656,7 @@ def _biorxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> lis
     list[dict[str, Any]]
         Rows for the ``paper_subjects`` table.
     """
-    if not entry:
-        return []
-    rows: list[_Record] = []
-    for rank, category in enumerate(entry.get('categories') or []):
-        term = _text(category.get('id'))
-        if not term:
-            continue
-        rows.append({
-            'paper_id': paper_id, 'scheme': 'biorxiv_category', 'subject_id': term,
-            'display_name': _text(category.get('name')) or term, 'subject_rank': rank,
-            'is_primary': int(bool(category.get('is_primary'))), 'source': 'biorxiv',
-        })
-    return rows
+    return _preprint_category_rows(paper_id, entry, 'biorxiv')
 
 
 def _openalex_fields(work: Mapping[str, Any]) -> _Fields:
@@ -570,19 +679,13 @@ def _openalex_fields(work: Mapping[str, Any]) -> _Fields:
     access = work.get('open_access') or {}
     identifiers = work.get('ids') or {}
     pages = [_text(biblio.get('first_page')), _text(biblio.get('last_page'))]
-    authors = '; '.join(
-        name for name in (
-            ((authorship or {}).get('author') or {}).get('display_name')
-            for authorship in work.get('authorships') or []
-        ) if name
-    )
     return {
         'openalex_id': openalex.work_id(work),
         'doi': clean_doi(work.get('doi')),
         'title': _text(work.get('title') or work.get('display_name')),
         'journal': _text(source.get('display_name')),
         'publication_date': _text(work.get('publication_date') or work.get('publication_year')),
-        'authors': authors,
+        'authors': openalex.author_names(work),
         'publisher': _text(source.get('host_organization_name')),
         'work_type': _text(work.get('type')),
         'volume': _text(biblio.get('volume')),
@@ -681,15 +784,7 @@ def _chemrxiv_candidates(candidates: Sequence[Mapping[str, Any]]) -> dict[str, s
     dict[str, str]
         chemRxiv DOI to paper identifier, for rows that carry one.
     """
-    by_chemrxiv = {}
-    for candidate in candidates:
-        paper_id = str(candidate.get('paper_id') or '')
-        if not paper_id:
-            continue
-        identifier = chemrxiv.resolve_chemrxiv_doi(candidate)
-        if identifier:
-            by_chemrxiv[identifier] = paper_id
-    return by_chemrxiv
+    return _identifier_candidates(candidates, chemrxiv.resolve_chemrxiv_doi)
 
 
 def _chemrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
@@ -718,20 +813,8 @@ def _chemrxiv_fields(entry: Mapping[str, Any]) -> _Fields:
     dict[str, Any]
         Enrichment fields contributed by chemRxiv.
     """
-    published = clean_doi(entry.get('published_doi')) if entry.get('published_doi') else ''
     identifier = chemrxiv.normalize_chemrxiv_doi(entry.get('chemrxiv_doi'))
-    return {
-        'doi': published or identifier,
-        'title': _text(entry.get('title')),
-        'journal': _text(entry.get('journal')),
-        'publication_date': _text(entry.get('publication_date')),
-        'authors': _text(entry.get('authors')),
-        'chemrxiv_doi': identifier,
-        'work_type': '' if published else 'preprint',
-        'license': _text(entry.get('license')),
-        'is_oa': 1,
-        'oa_status': 'green',
-    }
+    return _preprint_fields(entry, 'chemrxiv_doi', identifier, identifier)
 
 
 def _chemrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> list[_Record]:
@@ -760,16 +843,7 @@ def _chemrxiv_subject_rows(paper_id: str, entry: Mapping[str, Any] | None) -> li
     """
     if not entry:
         return []
-    rows: list[_Record] = []
-    for rank, category in enumerate(entry.get('categories') or []):
-        term = _text(category.get('id'))
-        if not term:
-            continue
-        rows.append({
-            'paper_id': paper_id, 'scheme': 'chemrxiv_category', 'subject_id': term,
-            'display_name': _text(category.get('name')) or term, 'subject_rank': rank,
-            'is_primary': int(bool(category.get('is_primary'))), 'source': 'chemrxiv',
-        })
+    rows = _preprint_category_rows(paper_id, entry, 'chemrxiv')
     for rank, keyword in enumerate(entry.get('keywords') or []):
         term = _text(keyword)
         if not term:
@@ -838,31 +912,22 @@ def _provenance(crossref: Mapping[str, Any] | None,
         }
     if medrxiv_entry is not None:
         provenance['medrxiv'] = {
-            'medrxiv_doi': medrxiv.normalize_medrxiv_doi(medrxiv_entry.get('medrxiv_doi')),
-            'version': _text(medrxiv_entry.get('version')),
-            'category': _text(medrxiv_entry.get('category')),
-            'license': _text(medrxiv_entry.get('license')),
-            'published_doi': _text(medrxiv_entry.get('published_doi')),
+            **_preprint_provenance(medrxiv_entry, 'medrxiv_doi',
+                                   medrxiv.normalize_medrxiv_doi(medrxiv_entry.get('medrxiv_doi'))),
             'jatsxml': _text(medrxiv_entry.get('jatsxml')),
         }
     if biorxiv_entry is not None:
         provenance['biorxiv'] = {
-            'biorxiv_doi': biorxiv.normalize_biorxiv_doi(biorxiv_entry.get('biorxiv_doi')),
-            'version': _text(biorxiv_entry.get('version')),
-            'category': _text(biorxiv_entry.get('category')),
-            'license': _text(biorxiv_entry.get('license')),
-            'published_doi': _text(biorxiv_entry.get('published_doi')),
+            **_preprint_provenance(biorxiv_entry, 'biorxiv_doi',
+                                   biorxiv.normalize_biorxiv_doi(biorxiv_entry.get('biorxiv_doi'))),
             'jatsxml': _text(biorxiv_entry.get('jatsxml')),
         }
     if chemrxiv_entry is not None:
         # No jatsxml: chemRxiv serves PDFs and abstracts but no full text.
         provenance['chemrxiv'] = {
-            'chemrxiv_doi': chemrxiv.normalize_chemrxiv_doi(chemrxiv_entry.get('chemrxiv_doi')),
-            'version': _text(chemrxiv_entry.get('version')),
-            'category': _text(chemrxiv_entry.get('category')),
+            **_preprint_provenance(chemrxiv_entry, 'chemrxiv_doi',
+                                   chemrxiv.normalize_chemrxiv_doi(chemrxiv_entry.get('chemrxiv_doi'))),
             'keywords': list(chemrxiv_entry.get('keywords') or []),
-            'license': _text(chemrxiv_entry.get('license')),
-            'published_doi': _text(chemrxiv_entry.get('published_doi')),
             'asset_url': _text(chemrxiv_entry.get('asset_url')),
         }
     return provenance
@@ -1263,7 +1328,7 @@ class _FetchContext:
     api_key: str | None
     openalex_session: provider.HTTPClient | None
     crossref_session: provider.HTTPClient | None
-    pace: float
+    pace: float | None
     pmids: Sequence[str] = ()
     pubmed_session: provider.HTTPClient | None = None
     pubmed_api_key: str | None = None
@@ -1396,7 +1461,7 @@ def _enrich_batch(conn: sqlite3.Connection,
                  references: bool = True,
                  openalex_session: provider.HTTPClient | None = None,
                  crossref_session: provider.HTTPClient | None = None,
-                 pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                 pace: float | None = None,
                  pubmed_session: provider.HTTPClient | None = None,
                  pubmed_api_key: str | None = None,
                  arxiv_session: provider.HTTPClient | None = None,
@@ -1423,8 +1488,9 @@ def _enrich_batch(conn: sqlite3.Connection,
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
@@ -1603,7 +1669,7 @@ def enrich_papers(conn: sqlite3.Connection,
                   api_key: str | None = None,
                   openalex_session: provider.HTTPClient | None = None,
                   crossref_session: provider.HTTPClient | None = None,
-                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                  pace: float | None = None,
                   pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
                   arxiv_session: provider.HTTPClient | None = None,
@@ -1636,8 +1702,9 @@ def enrich_papers(conn: sqlite3.Connection,
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
@@ -1657,9 +1724,7 @@ def enrich_papers(conn: sqlite3.Connection,
         Counts of each resulting status and of stored child rows.
     """
     sources = _configured_sources(sources)
-    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
-    if not email and 'pubmed' in sources:
-        email = pubmed.configured_email()
+    email = _contact_address(sources, email)
     api_key = api_key if api_key is not None else openalex.configured_api_key()
     if pubmed_api_key is None and 'pubmed' in sources:
         pubmed_api_key = pubmed.configured_api_key()
@@ -1711,7 +1776,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                   api_key: str | None = None,
                   openalex_session: provider.HTTPClient | None = None,
                   crossref_session: provider.HTTPClient | None = None,
-                  pace: float = crossref_client.CROSSREF_MIN_INTERVAL,
+                  pace: float | None = None,
                   pubmed_session: provider.HTTPClient | None = None,
                   pubmed_api_key: str | None = None,
                   arxiv_session: provider.HTTPClient | None = None,
@@ -1752,8 +1817,9 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
         HTTP client used for OpenAlex requests.
     crossref_session : provider.HTTPClient or None, optional
         HTTP session used for Crossref requests.
-    pace : float, optional
-        Seconds to wait between consecutive Crossref requests.
+    pace : float or None, optional
+        Seconds to wait between consecutive Crossref requests. ``None`` paces
+        by the pool the Crossref contact address qualifies for.
     pubmed_session : provider.HTTPClient or None, optional
         HTTP client used for PubMed requests.
     pubmed_api_key : str or None, optional
@@ -1782,9 +1848,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
     sources = _configured_sources(sources)
     if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         raise ValueError(f'batch_size must be between 1 and {MAX_BATCH_SIZE}.')
-    email = crossref_client.resolve_email(email) if 'crossref' in sources else (email or '')
-    if not email and 'pubmed' in sources:
-        email = pubmed.configured_email()
+    email = _contact_address(sources, email)
     api_key = api_key if api_key is not None else openalex.configured_api_key()
     if pubmed_api_key is None and 'pubmed' in sources:
         pubmed_api_key = pubmed.configured_api_key()

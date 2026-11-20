@@ -46,6 +46,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+bert = [
+  "torch",
+  "transformers>=4.30",
+  "sentencepiece",
+]
 test = [
   "pytest",
   "pytest-cov",
@@ -75,7 +80,7 @@ where = ["."]
 include = ["paperminertoolkit*"]
 
 [tool.setuptools.package-data]
-"paperminertoolkit" = ["resources/*.json"]
+"paperminertoolkit" = ["resources/*.json", "resources/*.html", "resources/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
