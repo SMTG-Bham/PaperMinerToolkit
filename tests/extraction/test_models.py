@@ -120,6 +120,27 @@ def test_model_config_provider_override_drops_profile_specific_connection(monkey
         models.ModelConfig.from_profile('text', provider='anthropic')
 
 
+def test_model_config_provider_override_drops_profile_reasoning_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local profile's reasoning effort and thinking switch are not sent to another provider."""
+    monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
+        'provider': 'local',
+        'model': 'openai/gpt-oss-120b',
+        'base_url': 'http://127.0.0.1:8000/v1',
+        'reasoning_effort': 'medium',
+        'thinking': 'on',
+    })
+    monkeypatch.setattr(models, 'load_settings', lambda: {})
+
+    same = models.ModelConfig.from_profile('text')
+    other = models.ModelConfig.from_profile('text', provider='claude-code', model='opus')
+    explicit = models.ModelConfig.from_profile('text', provider='openai', model='gpt-test', reasoning_effort='low')
+
+    assert (same.reasoning_effort, same.thinking) == ('medium', True)
+    assert (other.reasoning_effort, other.thinking) == (None, None)
+    assert isinstance(models.get_model_client(other), models.ClaudeCodeClient)
+    assert explicit.reasoning_effort == 'low'
+
+
 def test_model_config_generation_args_and_require() -> None:
     """Test generation arguments and capability validation."""
     config = text_config()
@@ -710,6 +731,7 @@ def test_claude_code_client_runs_the_cli_without_tools(monkeypatch: pytest.Monke
     assert command[command.index('--model') + 1] == 'haiku'
     assert command[command.index('--system-prompt') + 1] == 'rules'
     assert calls[0]['input'] == 'paper'
+    assert calls[0]['timeout'] == models.DEFAULT_REQUEST_TIMEOUT
 
 
 def test_claude_code_client_reports_cli_errors(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -41,6 +41,14 @@ pmt recipe optimise papers.db ./my_recipe.json validation.csv \
   --optimiser-model claude-opus-5-5 --optimiser-provider anthropic
 ```
 
+With `--optimiser-provider claude-code` the revisions come from a logged-in
+Claude Code CLI instead of an API key: each request runs `claude -p` with every
+tool disabled, and `--optimiser-model` takes a Claude Code model name or alias
+such as `opus`. The CLI is found as `claude` on `PATH`, or set
+`PAPERMINERTOOLKIT_CLAUDE_CODE_BIN` to its path. Reasoning effort and thinking
+settings of the extraction profile are not passed to an optimiser on another
+provider.
+
 Every round scrapes every validation paper, so one run makes up to
 `(iterations + 1) × papers` extraction requests plus one optimiser request per
 revision. Start with a small validation set and a few iterations.

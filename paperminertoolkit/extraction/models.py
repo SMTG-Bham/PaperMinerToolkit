@@ -136,6 +136,10 @@ class ModelConfig:
         provider_key = f'{provider.lower()}_api_key'
         profile_api_key = None if provider_changed else configured.get('api_key')
         profile_base_url = None if provider_changed else configured.get('base_url')
+        # Reasoning settings are provider-specific too: a profile's effort or thinking switch
+        # for one provider must not be sent to another (e.g. a separate recipe-optimiser model).
+        profile_effort = None if provider_changed else configured.get('reasoning_effort')
+        profile_thinking = None if provider_changed else configured.get('thinking')
         return cls(
             provider=provider,
             name=name or configured.get('model') or DEFAULT_MODEL,
@@ -153,10 +157,8 @@ class ModelConfig:
             request_timeout=float(
                 overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
             ),
-            reasoning_effort=reasoning_effort_setting(
-                overrides.get('reasoning_effort', configured.get('reasoning_effort'))
-            ),
-            thinking=thinking_setting(overrides.get('thinking', configured.get('thinking'))),
+            reasoning_effort=reasoning_effort_setting(overrides.get('reasoning_effort', profile_effort)),
+            thinking=thinking_setting(overrides.get('thinking', profile_thinking)),
         )
 
     def generation_args(self) -> dict[str, float]:
@@ -823,6 +825,7 @@ class ClaudeCodeClient(BaseModelClient):
     This uses ``claude -p`` with every tool disabled, so requests are billed to
     the Claude Code login rather than an API key. The executable is read from
     ``PAPERMINERTOOLKIT_CLAUDE_CODE_BIN`` or found on ``PATH`` as ``claude``.
+    Each request may run for at most the configured ``request_timeout``.
     """
 
     def _executable(self) -> str:
@@ -874,7 +877,7 @@ class ClaudeCodeClient(BaseModelClient):
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-claude-') as cwd:
             try:
                 completed = subprocess.run(command, input=prompt, capture_output=True, text=True,
-                                           encoding='utf-8', cwd=cwd, timeout=900)
+                                           encoding='utf-8', cwd=cwd, timeout=self.config.request_timeout)
             except subprocess.TimeoutExpired as error:
                 raise RuntimeError('Claude Code request timed out.') from error
         try:
