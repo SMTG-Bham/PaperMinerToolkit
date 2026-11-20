@@ -8,9 +8,14 @@ OpenAI-compatible local chat servers.
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import openai
+import os
 import requests
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self, TypedDict, Unpack
@@ -131,6 +136,10 @@ class ModelConfig:
         provider_key = f'{provider.lower()}_api_key'
         profile_api_key = None if provider_changed else configured.get('api_key')
         profile_base_url = None if provider_changed else configured.get('base_url')
+        # Reasoning settings are provider-specific too: a profile's effort or thinking switch
+        # for one provider must not be sent to another (e.g. a separate recipe-optimiser model).
+        profile_effort = None if provider_changed else configured.get('reasoning_effort')
+        profile_thinking = None if provider_changed else configured.get('thinking')
         return cls(
             provider=provider,
             name=name or configured.get('model') or DEFAULT_MODEL,
@@ -148,10 +157,8 @@ class ModelConfig:
             request_timeout=float(
                 overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
             ),
-            reasoning_effort=reasoning_effort_setting(
-                overrides.get('reasoning_effort', configured.get('reasoning_effort'))
-            ),
-            thinking=thinking_setting(overrides.get('thinking', configured.get('thinking'))),
+            reasoning_effort=reasoning_effort_setting(overrides.get('reasoning_effort', profile_effort)),
+            thinking=thinking_setting(overrides.get('thinking', profile_thinking)),
         )
 
     def generation_args(self) -> dict[str, float]:
@@ -812,6 +819,93 @@ class OpenAICompatibleChatClient(BaseModelClient):
         return response.choices[0].message.content or ''
 
 
+class ClaudeCodeClient(BaseModelClient):
+    """Client that sends text requests through a logged-in Claude Code CLI.
+
+    This uses ``claude -p`` with every tool disabled, so requests are billed to
+    the Claude Code login rather than an API key. The executable is read from
+    ``PAPERMINERTOOLKIT_CLAUDE_CODE_BIN`` or found on ``PATH`` as ``claude``.
+    Each request may run for at most the configured ``request_timeout``.
+    """
+
+    def _executable(self) -> str:
+        """Locate the Claude Code executable.
+
+        Returns
+        -------
+        str
+            Path to the ``claude`` executable.
+
+        Raises
+        ------
+        ValueError
+            If no executable can be found.
+        """
+        executable = os.environ.get('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN') or shutil.which('claude')
+        if not executable:
+            raise ValueError('Provider "claude-code" needs the claude CLI on PATH or '
+                             'PAPERMINERTOOLKIT_CLAUDE_CODE_BIN set to its path.')
+        return executable
+
+    def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text-only request through ``claude -p``.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Provider-neutral chat messages. System messages become the system
+            prompt and the remaining messages are sent as the user prompt.
+        max_output_tokens : int, optional
+            Unused; Claude Code applies its own output limit.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        RuntimeError
+            If the CLI fails, times out, or reports an error result.
+        """
+        system = '\n\n'.join(str(m['content']) for m in messages if m.get('role') == 'system')
+        prompt = '\n\n'.join(str(m['content']) for m in messages if m.get('role') != 'system')
+        command = [self._executable(), '-p', '--output-format', 'json', '--tools', '',
+                   '--strict-mcp-config', '--no-session-persistence', '--model', self.config.name]
+        if system:
+            command += ['--system-prompt', system]
+        with tempfile.TemporaryDirectory(prefix='paperminertoolkit-claude-') as cwd:
+            try:
+                completed = subprocess.run(command, input=prompt, capture_output=True, text=True,
+                                           encoding='utf-8', cwd=cwd, timeout=self.config.request_timeout)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('Claude Code request timed out.') from error
+        try:
+            result = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            detail = (completed.stderr or completed.stdout).strip()[:500]
+            raise RuntimeError(f'Claude Code returned no JSON result (exit {completed.returncode}): {detail}') from error
+        if result.get('is_error') or completed.returncode:
+            raise RuntimeError(f'Claude Code request failed: {str(result.get("result"))[:500]}')
+        return str(result.get('result') or '')
+
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
+        """Reject image requests, which this client does not support.
+
+        Raises
+        ------
+        ModelCapabilityError
+            Always.
+        """
+        raise ModelCapabilityError('Provider "claude-code" supports text requests only.')
+
+
 def get_model_client(config: ModelConfig | None = None) -> BaseModelClient:
     """Create the provider client for a model configuration.
 
@@ -840,6 +934,8 @@ def get_model_client(config: ModelConfig | None = None) -> BaseModelClient:
         if not config.base_url:
             raise ValueError(f'Provider "{config.provider}" requires a base URL.')
         return OpenAICompatibleChatClient(config)
+    if provider == 'claude-code':
+        return ClaudeCodeClient(config)
     raise ValueError(f'Unknown model provider: {config.provider}')
 
 
