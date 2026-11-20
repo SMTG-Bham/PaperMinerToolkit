@@ -29,7 +29,7 @@ pmt filter regex --help
 | --- | --- |
 | `pmt corpus` | Inspect corpus contents and storage. |
 | `pmt filter` | Apply, inspect, and reset regex or topic filters. |
-| `pmt topics` | Train, compare, inspect, name, apply, and store LDA models. |
+| `pmt topics` | Train, compare, inspect, name, apply, and store LDA models; map emerging fields. |
 | `pmt entities` | Annotate corpus or file text using fine-tuned BERT token classifiers. |
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |

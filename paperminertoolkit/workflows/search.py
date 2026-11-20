@@ -8,6 +8,8 @@ that appear in multiple sources.
 from __future__ import annotations
 
 import datetime
+import math
+import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,6 +36,23 @@ from paperminertoolkit.providers import registry as sources
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
 SEARCH_FIELDS = PAPER_FIELDS + ['abstract']
+# OpenAlex scope terms, lifted out of the query like the preprint servers' own.
+_OPENALEX_SCOPE_RE = re.compile(r'(?<!\S)(from|to|sample|in):("[^"]*"|\S+)', re.IGNORECASE)
+_OPENALEX_DATE_RE = re.compile(r'^\d{4}(?:-\d{2}-\d{2})?$')
+# The ``in:`` scope term picks the OpenAlex search filter, and so which fields must match.
+# ``all`` adds full text, which matches many papers that only mention the query in passing.
+OPENALEX_SEARCH_FIELDS = {
+    'title': 'title.search',
+    'abstract': 'abstract.search',
+    'title-abstract': 'title_and_abstract.search',
+    'fulltext': 'fulltext.search',
+    'all': 'default.search',
+}
+OPENALEX_DEFAULT_FIELDS = 'title-abstract'
+# OpenAlex returns at most this many works for one sample request.
+OPENALEX_MAX_SAMPLE = 10000
+# A fixed seed makes a sampled corpus reproducible from its recorded query.
+OPENALEX_SAMPLE_SEED = 0
 
 
 def _recast_elsevier_records(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -261,13 +280,158 @@ def _openalex_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return _paper_rows(openalex.work_to_paper(work) for work in works)
 
 
-def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
-    """Search OpenAlex works.
+def openalex_query_scope(query: str) -> tuple[str, dict[str, str]]:
+    """Split an OpenAlex query into search words and scope terms.
+
+    ``from:`` and ``to:`` take a year or an ISO date and bound the
+    publication date. ``sample:per-year`` asks for the same fraction of every
+    publication year's matches instead of the most relevant ones, which a
+    relevance ranking spreads unevenly over the years. ``in:`` names the
+    fields that must match, one of :data:`OPENALEX_SEARCH_FIELDS`; it
+    defaults to :data:`OPENALEX_DEFAULT_FIELDS`, the title and abstract.
 
     Parameters
     ----------
     query : str
-        Search expression.
+        Search phrase, optionally carrying ``from:``, ``to:``, ``sample:``,
+        or ``in:``.
+
+    Returns
+    -------
+    tuple[str, dict[str, str]]
+        The search words, and the scope with ``from``, ``to``, and ``sample``
+        keys for whichever were supplied and an ``in`` key that is always set.
+
+    Raises
+    ------
+    ValueError
+        If a date is malformed, ``sample:`` is not ``per-year``,
+        ``sample:per-year`` lacks a ``from:`` and ``to:`` year, or ``in:``
+        names unknown fields.
+    """
+    scope: dict[str, str] = {}
+
+    def lift(match: re.Match[str]) -> str:
+        """Record one scope term and remove it from the search words."""
+        scope[match.group(1).lower()] = match.group(2).strip('"')
+        return ' '
+
+    words = ' '.join(_OPENALEX_SCOPE_RE.sub(lift, str(query or '')).split())
+    scope['in'] = scope.get('in', OPENALEX_DEFAULT_FIELDS).lower()
+    if scope['in'] not in OPENALEX_SEARCH_FIELDS:
+        raise ValueError(f'in: must be one of {", ".join(OPENALEX_SEARCH_FIELDS)}, '
+                         f'got {scope["in"]!r}')
+    for field in ('from', 'to'):
+        if field in scope and not _OPENALEX_DATE_RE.match(scope[field]):
+            raise ValueError(f'{field}: must be a year or an ISO date such as 2024-01-31, '
+                             f'got {scope[field]!r}')
+    if 'sample' in scope:
+        if scope['sample'].lower() != 'per-year':
+            raise ValueError(f'sample: accepts only per-year, got {scope["sample"]!r}')
+        if 'from' not in scope or 'to' not in scope:
+            raise ValueError('sample:per-year needs from: and to: years to sample between.')
+    return words, scope
+
+
+def _openalex_date_filters(scope: Mapping[str, str]) -> list[str]:
+    """Translate ``from:`` and ``to:`` scope terms into OpenAlex filters."""
+    filters = []
+    if 'from' in scope:
+        start = scope['from']
+        filters.append(f'from_publication_date:{start if len(start) > 4 else start + "-01-01"}')
+    if 'to' in scope:
+        end = scope['to']
+        filters.append(f'to_publication_date:{end if len(end) > 4 else end + "-12-31"}')
+    return filters
+
+
+def _openalex_search_filter(words: str, scope: Mapping[str, str]) -> str:
+    """Build the OpenAlex search filter for the fields named by ``in:``.
+
+    OpenAlex separates filters with commas and has no escape for them, so
+    commas in the search words are sent as spaces; its search ignores
+    punctuation either way.
+    """
+    field = OPENALEX_SEARCH_FIELDS[scope.get('in', OPENALEX_DEFAULT_FIELDS)]
+    return f'{field}:{" ".join(words.replace(",", " ").split())}'
+
+
+def _openalex_sample_by_year(words: str, scope: Mapping[str, str], count: int,
+                             api_key: str | None) -> pd.DataFrame:
+    """Fetch the same fraction of every year's OpenAlex matches.
+
+    Each year's matches are counted first. When they total no more than
+    ``count`` all of them are fetched; otherwise a seeded random sample of the
+    same fraction is drawn from every year, so each year keeps its share of
+    the field.
+    """
+    search_filter = _openalex_search_filter(words, scope)
+    start, end = int(scope['from'][:4]), int(scope['to'][:4])
+    if start > end:
+        raise ValueError('from: must not be later than to:.')
+    matched = {}
+    for year in range(start, end + 1):
+        payload = openalex.request_json(openalex.WORKS_URL, params={
+            'filter': f'{search_filter},publication_year:{year}',
+            'per-page': 1, 'select': 'id',
+        }, api_key=api_key) or {}
+        matched[year] = int((payload.get('meta') or {}).get('count') or 0)
+    total = sum(matched.values())
+    fraction = min(1.0, count / total) if total else 0.0
+    targets = {year: (found if fraction >= 1 else min(OPENALEX_MAX_SAMPLE, math.floor(found * fraction)))
+               for year, found in matched.items()}
+    print(f'OpenAlex matched {total} works from {start} to {end}; fetching '
+          f'{sum(targets.values())}, {fraction:.1%} of each year.')
+    works: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    with tqdm(total=sum(targets.values()), desc='Sampling OpenAlex', colour='green') as pbar:
+        for year, target in targets.items():
+            if not target:
+                continue
+            params: dict[str, Any] = {'filter': f'{search_filter},publication_year:{year}',
+                                      'per-page': 200}
+            if fraction >= 1:
+                params['cursor'] = '*'
+            else:
+                params.update({'sample': target, 'seed': OPENALEX_SAMPLE_SEED, 'page': 1})
+            while True:
+                payload = openalex.request_json(openalex.WORKS_URL, params=params,
+                                                api_key=api_key) or {}
+                results = payload.get('results') or []
+                for work in results:
+                    identifier = str(work.get('id') or '')
+                    if identifier and identifier in seen:
+                        continue
+                    seen.add(identifier)
+                    works.append(work)
+                    pbar.update(1)
+                if not results:
+                    break
+                if fraction >= 1:
+                    params['cursor'] = (payload.get('meta') or {}).get('next_cursor')
+                    if not params['cursor']:
+                        break
+                else:
+                    params['page'] += 1
+                    if (params['page'] - 1) * 200 >= target:
+                        break
+    return _openalex_rows(works)
+
+
+def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
+    """Search OpenAlex works.
+
+    Matches are ranked by relevance. The query may carry ``from:`` and ``to:``
+    years or dates to bound the publication date, ``sample:per-year`` to draw
+    the same fraction of every year's matches instead of the most relevant
+    ones, and ``in:`` to choose the fields that must match, the title and
+    abstract by default; see :func:`openalex_query_scope`. ``in:all`` also
+    searches full text, as OpenAlex's own ``search`` parameter does.
+
+    Parameters
+    ----------
+    query : str
+        Search expression, optionally with scope terms.
     count : int, default=200
         Maximum number of records to return.
 
@@ -280,10 +444,26 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     ------
     RuntimeError
         If an OpenAlex request cannot be completed.
+    ValueError
+        If a scope term is malformed or no search words remain.
     """
     api_key = openalex.configured_api_key()
+    words, scope = openalex_query_scope(query)
+    if not words:
+        raise ValueError('The OpenAlex query needs search words besides its scope terms.')
+    if 'sample' in scope:
+        return _openalex_sample_by_year(words, scope, count, api_key)
     per_page = min(max(int(count), 1), 200)
-    params = {'search': query, 'per-page': per_page, 'cursor': '*'}
+    params: dict[str, Any] = {'per-page': per_page, 'cursor': '*'}
+    filters = _openalex_date_filters(scope)
+    if scope['in'] == 'all':
+        # The search parameter covers the same fields and, unlike a filter, accepts commas.
+        params['search'] = words
+    else:
+        filters.insert(0, _openalex_search_filter(words, scope))
+        params['sort'] = 'relevance_score:desc'
+    if filters:
+        params['filter'] = ','.join(filters)
     works = []
     with tqdm(total=count, desc='Searching OpenAlex', colour='green') as pbar:
         while len(works) < count:

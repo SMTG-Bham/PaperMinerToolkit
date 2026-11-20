@@ -37,6 +37,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.providers.rxiv',
     'paperminertoolkit.providers.unpaywall',
     'paperminertoolkit.workflows.download',
+    'paperminertoolkit.workflows.emergence',
     'paperminertoolkit.workflows.enrichment',
     'paperminertoolkit.workflows.entities',
     'paperminertoolkit.workflows.figures',

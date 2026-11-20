@@ -14,5 +14,6 @@ entities
 imports
 recipe_optimisation
 topics
+emergence
 utilities
 ```
