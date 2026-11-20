@@ -1411,7 +1411,8 @@ def _report(summary: Mapping[str, Any], areas: Sequence[Mapping[str, Any]],
         f'`{TOPIC_TERMS_FILENAME}` has up to ten of each.',
         '',
         *figure('areas', 'Share of the corpus by area'),
-        *figure('topics', 'Topic size and share growth'),
+        *figure('area_growth', 'Area size and share growth'),
+        *figure('topic_growth', 'Topic size and share growth'),
     ]
     flagged: dict[int, list[str]] = {}
     for niche in niches:
@@ -1467,6 +1468,7 @@ def _report(summary: Mapping[str, Any], areas: Sequence[Mapping[str, Any]],
              for rank, niche in enumerate(niches[:top])]),
         '',
         *figure('niches', 'Share of the top niches'),
+        *figure('niche_growth', 'Niche size and share growth'),
         '### Details', '',
     ]
     for niche in niches[:min(top, 10)]:
@@ -1649,69 +1651,158 @@ def _plot_niches(niches: Sequence[Mapping[str, Any]], table: NDArray[np.int64],
     return figure
 
 
-def _plot_topics(topics: Sequence[Mapping[str, Any]], window: NDArray[np.int64]) -> Any | None:
-    """Plot each topic's yearly share change against its size, coloured by direction."""
-    from matplotlib.lines import Line2D
-    from matplotlib.ticker import FuncFormatter, LogLocator
+def _place_labels(axis: Any, labels: Sequence[tuple[float, float, str, bool, float, str]]) -> None:
+    """Label points, moving a label off any label placed before it.
 
-    rows = [row for row in topics
-            if math.isfinite(row['share_growth_per_year']) and row['dated_papers']]
-    if not rows:
-        return None
-    width, height = 9.0, 6.6
-    figure = _figure(
-        width, height, 'Topic size and share growth',
-        'Each dot is a topic: the yearly change in its share of the corpus over '
-        f'{window[0]}-{window[-1]}, with a 95% interval, against its papers. Blue: share rising '
-        '(growth z ≥ 2); red: falling (z ≤ −2); grey: no significant change. Numbers are the '
-        'field map\'s topics; the three fastest rising and falling are named.')
-    figure.subplots_adjust(left=0.8 / width, right=1 - 0.3 / width, top=1 - 1.2 / height,
-                           bottom=0.65 / height)
-    axis = figure.add_subplot()
-    axis.grid(True, axis='both')
-    axis.axvline(0, color=_AXIS, linewidth=1.0, zorder=1)
-    xs = []
-    for row in rows:
-        slope, z, papers = math.log(row['share_growth_per_year']), row['growth_z'], row['dated_papers']
-        colour = _RISE if z >= 2 else _FALL if z <= -2 else _MUTED
-        x = 100 * (row['share_growth_per_year'] - 1)
-        if math.isfinite(z) and z != 0:
-            se = abs(slope / z)
-            axis.plot([100 * math.expm1(slope - 1.96 * se), 100 * math.expm1(slope + 1.96 * se)],
-                      [papers, papers], color=colour, alpha=0.35, linewidth=1.2,
-                      solid_capstyle='butt', zorder=2)
-        axis.scatter([x], [papers], s=42, color=colour, edgecolors=_SURFACE, linewidths=1.2,
-                     zorder=3)
-        xs.append(x)
+    Each label first goes just above its point, on its right or left. Where
+    that box would overlap an earlier label, it tries below the point, then
+    further above and below, and keeps the first free place, or the last tried.
+
+    Parameters
+    ----------
+    axis : matplotlib.axes.Axes
+        Axes holding the points, with its scales and limits already set.
+    labels : Sequence[tuple[float, float, str, bool, float, str]]
+        ``(x, y, text, left, fontsize, colour)`` for each label, in priority order.
+    """
+    axis.get_xlim(), axis.get_ylim()  # settle autoscaled limits before measuring
+    points = 72 / axis.figure.dpi
+    placed: list[tuple[float, float, float, float]] = []
+    for x, y, text, left, size, colour in labels:
+        px, py = (value * points for value in axis.transData.transform((x, y)))
+        # Rough text extent in points: DejaVu Sans averages about 0.6 em a character.
+        width, height = 0.6 * size * len(text), 1.25 * size
+        start = px - 5 - width if left else px + 5
+        for rise in (3.0, -3.0 - height, 3.0 + height, -3.0 - 2 * height):
+            box = (start, py + rise, start + width, py + rise + height)
+            if not any(box[0] < other[2] and other[0] < box[2]
+                       and box[1] < other[3] and other[1] < box[3] for other in placed):
+                break
+        placed.append(box)
+        axis.annotate(text, (x, y), xytext=(-5 if left else 5, rise), textcoords='offset points',
+                      ha='right' if left else 'left', va='bottom', fontsize=size, color=colour,
+                      zorder=5)
+
+
+def _growth_naming(rows: Sequence[Mapping[str, Any]], level: str,
+                   named_count: int) -> tuple[set[int], str]:
+    """Choose the clusters a growth plot names, and say how in its subtitle.
+
+    Parameters
+    ----------
+    rows : Sequence[Mapping[str, Any]]
+        Plotted cluster rows of one level, in report order.
+    level : str
+        ``'area'``, ``'topic'``, or ``'niche'``.
+    named_count : int
+        Top-ranked niches to name.
+
+    Returns
+    -------
+    tuple[set[int], str]
+        Clusters to name, and the sentence of the subtitle describing them.
+    """
+    if level == 'area':
+        return ({row['cluster'] for row in rows},
+                "Numbers are the field map's areas, each named by its first term.")
+    if level == 'niche':
+        ranked = [row['cluster'] for row in rows if row.get('eligible')][:named_count]
+        return (set(ranked),
+                f'Ringed: flagged as emerging. The {len(ranked)} top-ranked niches are named, '
+                'with their number in the niche table.')
     finite = [row for row in rows if math.isfinite(row['growth_z'])]
     named = ({row['cluster'] for row in sorted(finite, key=lambda row: -row['growth_z'])[:3]
               if row['growth_z'] >= 2}
              | {row['cluster'] for row in sorted(finite, key=lambda row: row['growth_z'])[:3]
                 if row['growth_z'] <= -2})
-    for x, row in zip(xs, rows):
-        if row['cluster'] in named:
-            # Named topics are labelled on their outer side, away from the crowd near zero.
-            left = row['growth_z'] < 0
-            axis.annotate(f'{row["cluster"]} {_shorten(_first_terms(row, 1), 24)}',
-                          (x, row['dated_papers']), xytext=(-5 if left else 5, 3),
-                          textcoords='offset points', ha='right' if left else 'left',
-                          fontsize=7.5, color=_INK)
-        else:
-            axis.annotate(str(row['cluster']), (x, row['dated_papers']), xytext=(4, 3),
-                          textcoords='offset points', fontsize=6.5, color=_INK2)
+    return named, ("Numbers are the field map's topics; the three fastest rising and falling "
+                   'are named.')
+
+
+def _plot_growth(clusters: Sequence[Mapping[str, Any]], window: NDArray[np.int64], level: str,
+                 named_count: int = 10) -> Any | None:
+    """Plot each cluster's yearly share change against its size, coloured by direction.
+
+    Parameters
+    ----------
+    clusters : Sequence[Mapping[str, Any]]
+        Cluster rows of one tree level, in report order.
+    window : numpy.ndarray
+        Years of the growth window.
+    level : str
+        ``'area'``, ``'topic'``, or ``'niche'``. Areas are all named. Topics name
+        the three fastest rising and falling. Niches leave out the 95% intervals,
+        which would hide hundreds of dots, ring the flagged niches, and name the
+        ``named_count`` top-ranked.
+    named_count : int, default=10
+        Top-ranked niches to name.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or None
+        The figure, or ``None`` when no cluster has a fitted trend.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import FuncFormatter, LogLocator
+
+    rows = [row for row in clusters
+            if math.isfinite(row['share_growth_per_year']) and row['dated_papers']]
+    if not rows:
+        return None
+    niche = level == 'niche'
+    named, naming = _growth_naming(rows, level, named_count)
+    interval = ' against its papers' if niche else ', with a 95% interval, against its papers'
+    width, height = 9.0, 6.6
+    figure = _figure(
+        width, height, f'{level.capitalize()} size and share growth',
+        f'Each dot is {"an" if level == "area" else "a"} {level}: the yearly change in its share '
+        f'of the corpus over {window[0]}-{window[-1]}{interval}. Blue: share rising '
+        f'(growth z ≥ 2); red: falling (z ≤ −2); grey: no significant change. {naming}')
+    figure.subplots_adjust(left=0.8 / width, right=1 - 0.3 / width, top=1 - 1.2 / height,
+                           bottom=0.65 / height)
+    axis = figure.add_subplot()
+    axis.grid(True, axis='both')
+    axis.axvline(0, color=_AXIS, linewidth=1.0, zorder=1)
+    xs: list[float] = []
+    for row in rows:
+        slope, z, papers = math.log(row['share_growth_per_year']), row['growth_z'], row['dated_papers']
+        colour = _RISE if z >= 2 else _FALL if z <= -2 else _MUTED
+        x = 100 * (row['share_growth_per_year'] - 1)
+        if not niche and math.isfinite(z) and z != 0:
+            se = abs(slope / z)
+            axis.plot([100 * math.expm1(slope - 1.96 * se), 100 * math.expm1(slope + 1.96 * se)],
+                      [papers, papers], color=colour, alpha=0.35, linewidth=1.2,
+                      solid_capstyle='butt', zorder=2)
+        ringed = niche and bool(row.get('flag'))
+        axis.scatter([x], [papers], s=20 if niche else 42, color=colour,
+                     edgecolors=_INK if ringed else _SURFACE,
+                     linewidths=1.0 if ringed else 0.6 if niche else 1.2,
+                     zorder=4 if ringed else 3)
+        xs.append(x)
     pad = max(2.0, 0.12 * (max(xs) - min(xs)))
     axis.set_xlim(min(xs) - pad, max(xs) + pad)
     axis.set_yscale('log')
+    # Named clusters are labelled first, on their outer side, away from the crowd near zero.
+    _place_labels(axis, [
+        (x, row['dated_papers'], f'{row["cluster"]} {_shorten(_first_terms(row, 1), 24)}',
+         row['growth_z'] < 0, 7.5, _INK)
+        for x, row in zip(xs, rows) if row['cluster'] in named
+    ] + ([] if niche else [
+        (x, row['dated_papers'], str(row['cluster']), False, 6.5, _INK2)
+        for x, row in zip(xs, rows) if row['cluster'] not in named
+    ]))
     axis.yaxis.set_major_locator(LogLocator(subs=(1.0, 2.0, 5.0)))
     axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:g}'))
     axis.yaxis.set_minor_formatter(FuncFormatter(lambda value, _: ''))
     axis.set_xlabel('Share change per year (%)')
     axis.set_ylabel('Papers (log scale)')
-    axis.legend(handles=[Line2D([], [], marker='o', linestyle='', markersize=7, color=colour,
-                                label=label)
-                         for colour, label in ((_RISE, 'share rising'), (_FALL, 'share falling'),
-                                               (_MUTED, 'no significant change'))],
-                loc='best')
+    handles = [Line2D([], [], marker='o', linestyle='', markersize=7, color=colour, label=label)
+               for colour, label in ((_RISE, 'share rising'), (_FALL, 'share falling'),
+                                     (_MUTED, 'no significant change'))]
+    if niche:
+        handles.append(Line2D([], [], marker='o', linestyle='', markersize=7, color=_RISE,
+                              markeredgecolor=_INK, label='flagged as emerging'))
+    axis.legend(handles=handles, loc='best')
     return figure
 
 
@@ -1863,8 +1954,10 @@ def _draw_plots(output: Path, span: NDArray[np.int64], totals: NDArray[np.int64]
     with matplotlib.rc_context(_PLOT_STYLE):
         for name, figure in (
             ('areas', _plot_areas(areas, tables['area'], span, totals, window)),
-            ('topics', _plot_topics(topics, window)),
+            ('area_growth', _plot_growth(areas, window, 'area')),
+            ('topic_growth', _plot_growth(topics, window, 'topic')),
             ('niches', _plot_niches(niches[:min(top, 12)], tables['niche'], span, totals, window)),
+            ('niche_growth', _plot_growth(niches, window, 'niche', min(top, 10))),
             ('timeline', _plot_timeline(niches, timeline, top)),
             ('watch_terms', _plot_watch(watch, coverage, span)),
         ):

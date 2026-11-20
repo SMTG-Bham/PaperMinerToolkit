@@ -89,10 +89,10 @@ A date in the earliest year examined means by then. A second table lists niches 
 
 **Emerging terms** ranks words and bigrams by growth z times their concentration in a few niches, so field vocabulary outranks phrasing that is spreading through every abstract. `--watch` adds yearly document counts for terms you name.
 
-The report embeds five figures from the `plots/` directory; `--no-plots` skips them:
+The report embeds seven figures from the `plots/` directory; `--no-plots` skips them:
 
 - `areas.png`: each area's yearly share, with the growth window shaded and the fitted trend, curved when a shape was found;
-- `topics.png`: each topic's yearly share change, with its 95% interval, against its size, blue where the share is rising and red where it is falling;
+- `area_growth.png`, `topic_growth.png`, and `niche_growth.png`: each cluster's yearly share change against its size, one tree level per figure, blue where the share is rising and red where it is falling. Areas and topics carry their 95% intervals. The niche figure leaves them out, as they would hide several hundred dots, rings the flagged niches, and names the ten top-ranked;
 - `niches.png`: the shares of the twelve top-ranked niches, with lines at the years each was first seen and first flagged;
 - `timeline.png`: the timeline table as a heatmap, with flags as dots and the first-seen year boxed;
 - `watch_terms.png`: the share of each year's papers that use each `--watch` term.

@@ -528,6 +528,37 @@ def test_openalex_search_fetches_everything_when_the_sample_would_cover_it(
         search.openalex_search('garnet from:2021 to:2020 sample:per-year', count=100)
 
 
+def test_openalex_sample_skips_empty_years_repeated_works_and_short_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip a year without matches, keep one copy of a repeated work, and stop at an empty page."""
+    matches = {2019: 0, 2020: 4, 2021: 4, 2022: 4}
+    # 2021's sample repeats a work already fetched for 2020, and 2022's comes back empty.
+    samples = {2020: ['W1', 'W2'], 2021: ['W2', 'W3'], 2022: []}
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Answer count requests from ``matches`` and sample requests from ``samples``."""
+        params = dict(params)
+        calls.append(params)
+        year = int(params['filter'].rsplit(':', 1)[1])
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': matches[year]}}
+        return {'results': [{'id': f'https://openalex.org/{work}', 'title': work}
+                            for work in samples[year]], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2019 to:2022 sample:per-year', count=6)
+
+    sampled = [call for call in calls if 'sample' in call]
+    assert [call['filter'].rsplit(':', 1)[1] for call in sampled] == ['2020', '2021', '2022']
+    assert all(call['sample'] == 2 and call['page'] == 1 for call in sampled)
+    assert rows['paper_id'].tolist() == ['openalex:W1', 'openalex:W2', 'openalex:W3']
+
+
 def test_search_for_papers_rejects_invalid_source() -> None:
     """Search for papers rejects invalid source."""
     with pytest.raises(ValueError, match='source must be one of'):

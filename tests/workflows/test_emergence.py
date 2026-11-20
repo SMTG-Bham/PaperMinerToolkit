@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import csv
 import hashlib
 import json
 import math
-from collections.abc import Sequence
+import sys
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -316,8 +320,9 @@ def test_analyze_emergence_maps_known_growth_and_decline(tmp_path: Path) -> None
                  emergence.EMBEDDINGS_FILENAME):
         assert (output / name).exists(), name
     plots = sorted((output / emergence.PLOTS_DIRNAME).iterdir())
-    assert [path.name for path in plots] == ['areas.png', 'niches.png', 'timeline.png',
-                                             'topics.png', 'watch_terms.png']
+    assert [path.name for path in plots] == ['area_growth.png', 'areas.png', 'niche_growth.png',
+                                             'niches.png', 'timeline.png', 'topic_growth.png',
+                                             'watch_terms.png']
     assert all(path.read_bytes()[:4] == b'\x89PNG' for path in plots)
     assert sorted(summary['plots']) == [str(path) for path in plots]
     assert 'NaN' not in (output / emergence.SUMMARY_FILENAME).read_text()
@@ -437,3 +442,330 @@ def test_load_emergence_documents_can_keep_title_only_papers(tmp_path: Path) -> 
     documents, _ = emergence.load_emergence_documents(db_path, require_abstract=False)
     assert [document['title'] for document in documents] == ['Title only']
     assert emergence._embedding_text(documents[0]) == 'Title only'
+
+
+def test_load_emergence_documents_drops_dated_papers_without_any_text(tmp_path: Path) -> None:
+    """Count a dated paper whose title is only markup and which has no abstract as textless."""
+    db_path = tmp_path / 'papers.db'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/c', 'title': '<sup></sup>',
+                                   'publication_date': '2021'})
+    documents, counts = emergence.load_emergence_documents(db_path, require_abstract=False)
+    assert documents == [] and counts['no_text'] == 1
+
+
+class _FakeTensor:
+    """Wrap a NumPy array in the few tensor methods the transformer embedder calls."""
+
+    def __init__(self, array: np.ndarray) -> None:
+        """Hold the wrapped array.
+
+        Parameters
+        ----------
+        array : numpy.ndarray
+            Values of the tensor.
+        """
+        self.array = array
+
+    def __getitem__(self, index: Any) -> _FakeTensor:
+        """Index the wrapped array."""
+        return _FakeTensor(self.array[index])
+
+    def float(self) -> _FakeTensor:
+        """Return the tensor unchanged, as it already holds floats."""
+        return self
+
+    def cpu(self) -> _FakeTensor:
+        """Return the tensor unchanged, as it already lives in host memory."""
+        return self
+
+    def numpy(self) -> np.ndarray:
+        """Return the wrapped array."""
+        return self.array
+
+
+class _FakeBatch(dict):
+    """Tokenizer output that can be moved to a device."""
+
+    def to(self, device: str) -> _FakeBatch:
+        """Return the batch unchanged; devices are not modelled."""
+        return self
+
+
+class _FakeEncoder:
+    """Stand in for a Hugging Face encoder whose CLS vector is ``[length, 1, 0]``."""
+
+    config = SimpleNamespace(hidden_size=3)
+
+    def __init__(self) -> None:
+        """Start on no device."""
+        self.device = ''
+
+    def to(self, device: str) -> _FakeEncoder:
+        """Record the device the model is moved to."""
+        self.device = device
+        return self
+
+    def eval(self) -> _FakeEncoder:
+        """Return the model; there is no training mode to leave."""
+        return self
+
+    def __call__(self, lengths: list[int]) -> SimpleNamespace:
+        """Return hidden states for two tokens whose first is ``[length, 1, 0]``.
+
+        Parameters
+        ----------
+        lengths : list[int]
+            Length of each text in the batch, as the fake tokenizer encodes it.
+
+        Returns
+        -------
+        types.SimpleNamespace
+            Output with a ``last_hidden_state`` of shape (batch, 2, 3).
+        """
+        hidden = np.zeros((len(lengths), 2, 3))
+        hidden[:, 0, 0] = lengths
+        hidden[:, 0, 1] = 1.0
+        return SimpleNamespace(last_hidden_state=_FakeTensor(hidden))
+
+
+def test_transformer_embedder_encodes_length_sorted_batches_in_input_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batch texts by length on the CPU when CUDA is absent, and return vectors in input order."""
+    batches: list[list[str]] = []
+    loaded: list[str] = []
+    model = _FakeEncoder()
+
+    def tokenize(texts: list[str], **options: Any) -> _FakeBatch:
+        """Record a batch and encode each text as its length."""
+        batches.append(list(texts))
+        assert options['padding'] and options['truncation'] and options['return_tensors'] == 'pt'
+        return _FakeBatch(lengths=[len(text) for text in texts])
+
+    def load_tokenizer(name: str) -> Callable[..., _FakeBatch]:
+        """Record the tokenizer asked for and return the fake one."""
+        loaded.append(name)
+        return tokenize
+
+    def load_model(name: str) -> _FakeEncoder:
+        """Record the model asked for and return the fake one."""
+        loaded.append(name)
+        return model
+
+    # Small stand-ins, so the embedding loop runs without PyTorch or a model download.
+    torch = ModuleType('torch')
+    torch.cuda = SimpleNamespace(is_available=lambda: False)
+    torch.inference_mode = contextlib.nullcontext
+    transformers = ModuleType('transformers')
+    transformers.AutoTokenizer = SimpleNamespace(from_pretrained=load_tokenizer)
+    transformers.AutoModel = SimpleNamespace(from_pretrained=load_model)
+    monkeypatch.setitem(sys.modules, 'torch', torch)
+    monkeypatch.setitem(sys.modules, 'transformers', transformers)
+
+    embed = emergence.transformer_embedder('fake/model', batch_size=2)
+    vectors = embed(['ccc', 'a', 'bb'])
+
+    assert loaded == ['fake/model', 'fake/model'] and model.device == 'cpu'
+    assert batches == [['a', 'bb'], ['ccc']]
+    assert vectors.tolist() == [[3.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0]]
+
+
+def test_fits_give_up_when_every_paper_falls_in_one_year() -> None:
+    """Return no trend, shape, or curve when a single year leaves the fit singular."""
+    years = np.full(5, 2020)
+    counts, totals = np.full(5, 4), np.full(5, 100)
+    assert emergence._fit_counts(counts.astype(float), totals.astype(float), np.zeros(5),
+                                 degree=1) is None
+    assert all(math.isnan(value) for value in emergence.growth_trend(counts, totals, years))
+    assert emergence.trend_shape(counts, totals, years)['shape'] == ''
+    assert emergence._trend_curve(counts, totals, years, 'peaked') is None
+
+
+def test_trend_shape_needs_a_curvature_error_to_judge_the_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give no shape when the fitted curvature has a zero standard error."""
+    monkeypatch.setattr(emergence, '_fit_counts',
+                        lambda *_, **__: (np.array([0.0, 0.1, 0.05]), np.zeros((3, 3))))
+    years = np.arange(2018, 2026)
+    result = emergence.trend_shape(np.full(len(years), 10), np.full(len(years), 100), years)
+    assert result['shape'] == '' and math.isnan(result['curvature_z'])
+
+
+def test_trend_curve_draws_the_fitted_share_or_nothing_for_a_sparse_series() -> None:
+    """Return the fitted yearly share, and no curve when too few papers leave nothing to fit."""
+    years = np.array([2020, 2021, 2022])
+    curve = emergence._trend_curve(np.array([2, 4, 8]), np.full(3, 100), years, '')
+    assert curve == pytest.approx([0.02, 0.04, 0.08], rel=1e-4)
+    assert emergence._trend_curve(np.array([0, 1, 0]), np.full(3, 100), years, '') is None
+
+
+def test_topic_term_rows_skip_topics_without_papers_in_the_window() -> None:
+    """Pass over a topic whose papers all predate the growth window."""
+    years = np.array([2005, 2006, 2007, *range(2018, 2026)])
+    topics = np.array([1, 1, 1, *[0] * 8])
+    # One term used evenly by every paper: neither topic has anything rising or fading.
+    D = sparse.csr_matrix(np.ones((len(years), 1)))
+    rows = emergence._topic_term_rows(D, np.array(['garnet']), years, topics, topics, 2025,
+                                      emergence.EmergenceSettings())
+    assert rows == []
+
+
+def test_cutoff_snapshot_needs_enough_papers_and_years_before_the_cutoff() -> None:
+    """Skip a cutoff with too few papers to cluster or too few years to fit growth."""
+    years = np.repeat(np.arange(2016, 2026), 3)
+    X = np.random.default_rng(0).normal(size=(len(years), 4))
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    novelty = np.full(len(years), np.nan)
+    # 4 * niche_size = 80 papers are needed; there are 30.
+    assert emergence._cutoff_snapshot(X, years, novelty, 2025,
+                                      emergence.EmergenceSettings(niche_size=20)) is None
+    small = emergence.EmergenceSettings(niche_size=5)
+    # 21 papers precede 2022, enough for 20, but they span 7 years, fewer than growth_window.
+    assert emergence._cutoff_snapshot(X, years, novelty, 2022, small) is None
+    snapshot = emergence._cutoff_snapshot(X, years, novelty, 2025, small)
+    assert snapshot is not None and len(snapshot['labels']) == len(years)
+
+
+def test_backtest_skips_cutoffs_without_later_papers_or_a_snapshot() -> None:
+    """Pass over a cutoff with too few later papers and one that could not be re-clustered."""
+    settings = emergence.EmergenceSettings(niche_size=5, backtest_cutoffs=2)
+    years = np.array([2015] * 10 + [2025] * 5)
+    asked: list[int] = []
+
+    def no_snapshot(cutoff: int) -> dict[str, Any] | None:
+        """Record the cutoff and report that the corpus could not be re-clustered then."""
+        asked.append(cutoff)
+        return None
+
+    # Cutoff 2021 has no papers in 2022-2024; cutoff 2022 has the five from 2025.
+    summaries, pooled = emergence._backtest(np.zeros((len(years), 2)), years, 2025, settings,
+                                            no_snapshot)
+    assert (summaries, pooled) == ([], [])
+    assert asked == [2022]
+
+
+def test_sparkline_draws_a_series_without_papers_flat() -> None:
+    """Draw an all-zero series at the lowest block instead of dividing by zero."""
+    assert emergence._sparkline([1.0, 2.0]) == '▅█'
+    assert emergence._sparkline([0.0, 0.0, 0.0]) == '▁▁▁'
+    assert emergence._sparkline([]) == ''
+
+
+def _cluster_row(cluster: int, **fields: Any) -> dict[str, Any]:
+    """Build a cluster row with the fields the report and plots read.
+
+    Parameters
+    ----------
+    cluster : int
+        Cluster identifier.
+    **fields : Any
+        Values replacing the defaults.
+
+    Returns
+    -------
+    dict[str, Any]
+        One area, topic, or niche row.
+    """
+    row: dict[str, Any] = {
+        'cluster': cluster, 'area': 0, 'topic': 0, 'label_terms': 'oxyhalide; glassy; niobium',
+        'dated_papers': 40, 'recent_papers': 12, 'recent_share': 0.2,
+        'share_growth_per_year': 1.3, 'growth_z': 3.0, 'recency_lift': 1.8, 'status': 'emerging',
+        'shape': 'steady', 'turning_year': '', 'share_sparkline': '▁▄█', 'flag': False,
+        'central_titles': 'Oxyhalide glass (2025) || Glassy niobium (2024)',
+        'rising_terms': '', 'fading_terms': '',
+    }
+    row.update(fields)
+    return row
+
+
+def test_report_lists_terms_rising_and_fading_inside_a_topic() -> None:
+    """Write a topic's changing terms under it, and no timeline section when none was run."""
+    summary = {'end_year': 2025, 'db_path': 'papers.db', 'papers_used': 40, 'papers_read': 41,
+               'dropped': {'no_year': 1}, 'embedding_model': 'stub'}
+    topic = _cluster_row(0, rising_terms='oxyhalide; glassy', fading_terms='ceria')
+    report = emergence._report(summary, [_cluster_row(0)], [topic], [], [], [], [], [], [], 2018,
+                               emergence.EmergenceSettings(), 20, {})
+    assert '  - rising: oxyhalide, glassy; fading: ceria' in report
+    assert '## Emergence timeline' not in report
+
+
+def test_plots_are_skipped_when_there_is_nothing_to_draw() -> None:
+    """Draw no figure for no niches, topics without a fitted trend, or a skipped timeline."""
+    span = np.arange(2016, 2026)
+    window = span[-8:]
+    table = np.zeros((1, len(span)), dtype=np.int64)
+    assert emergence._plot_niches([], table, span, np.full(len(span), 10), window) is None
+    assert emergence._plot_growth([_cluster_row(0, share_growth_per_year=math.nan)], window,
+                                  'topic') is None
+    assert emergence._plot_timeline([_cluster_row(0)], [], 20) is None
+
+
+def test_growth_plots_name_every_area_the_top_niches_and_the_fastest_topics() -> None:
+    """Name all areas, the top-ranked eligible niches, and the three fastest topics each way."""
+    rows = [_cluster_row(index, growth_z=z, eligible=index != 1, flag=index == 0)
+            for index, z in enumerate([5.0, 4.0, 3.0, 2.5, -1.0, -2.5, -3.0, -4.0, -5.0])]
+    assert emergence._growth_naming(rows, 'area', 10)[0] == set(range(9))
+    assert emergence._growth_naming(rows, 'niche', 2)[0] == {0, 2}
+    assert emergence._growth_naming(rows, 'topic', 10)[0] == {0, 1, 2, 6, 7, 8}
+    window = np.arange(2018, 2026)
+    niches = emergence._plot_growth(rows, window, 'niche', 2)
+    # Niches name only the top-ranked, without the numbers of the rest or interval lines.
+    assert [text.get_text() for text in niches.axes[0].texts] == ['0 oxyhalide', '2 oxyhalide']
+    assert len(niches.axes[0].lines) == 1  # the zero line
+    legend = [text.get_text() for text in niches.axes[0].get_legend().get_texts()]
+    assert legend[-1] == 'flagged as emerging'
+    areas = emergence._plot_growth(rows, window, 'area')
+    assert any('Each dot is an area' in text.get_text() for text in areas.texts)
+    assert len(areas.axes[0].texts) == 9
+    # Every row sits on one point: the four rising areas, labelled on the right, step from just
+    # above it to below, further above, and further below, rather than printing over each other.
+    assert [text.xyann[1] for text in areas.axes[0].texts][:5] == [3.0, -12.375, 12.375, -21.75,
+                                                                  3.0]
+
+
+def test_share_panels_hide_spare_axes_and_watched_terms_share_a_legend() -> None:
+    """Hide the unused panels of a part-filled grid, and name several watched terms in a legend."""
+    span = np.arange(2016, 2026)
+    table = np.array([np.arange(len(span)) + 2 * cluster for cluster in range(5)])
+    table[4] = 0  # An area without papers in the span has no trend to fit.
+    figure = emergence._plot_areas([_cluster_row(cluster) for cluster in range(5)], table, span,
+                                   np.full(len(span), 100), span[-8:])
+    assert [axis.get_visible() for axis in figure.axes] == [True] * 5 + [False] * 3
+
+    watch = [{'term': 'oxyhalide', 'docs': 5, '2024': 2, '2025': 3},
+             {'term': 'glassy', 'docs': 3, '2024': 1, '2025': 2},
+             {'term': 'absent', 'docs': 0, '2024': 0, '2025': 0}]
+    coverage = [{'year': 2024, 'papers': 10}, {'year': 2025, 'papers': 12}]
+    figure = emergence._plot_watch(watch, coverage, np.arange(2024, 2026))
+    legend = figure.axes[0].get_legend()
+    assert [text.get_text() for text in legend.get_texts()] == ['oxyhalide', 'glassy']
+
+
+def test_draw_plots_explains_how_to_get_matplotlib(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Name the missing dependency and the option that skips the plots."""
+    monkeypatch.setitem(sys.modules, 'matplotlib', None)
+    span = np.arange(2018, 2026)
+    with pytest.raises(RuntimeError, match='requires matplotlib.*--no-plots'):
+        emergence._draw_plots(tmp_path, span, np.ones(len(span), dtype=np.int64), {}, [], [], [],
+                              [], [], [], 2025, emergence.EmergenceSettings(), 20)
+
+
+def test_analyze_emergence_caps_the_corpus_and_leaves_out_the_current_year(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refuse a corpus too large for one Ward tree, and by default stop before this year."""
+    db_path = tmp_path / 'papers.db'
+    this_year = time.gmtime().tm_year
+    build_emergence_corpus(db_path, start=2020, end=2021)
+    build_emergence_corpus(db_path, start=this_year, end=this_year)
+    with monkeypatch.context() as patch:
+        patch.setattr(emergence, 'MAX_DOCUMENTS', emergence.MIN_DOCUMENTS)
+        with pytest.raises(ValueError, match=f'exceed the {emergence.MIN_DOCUMENTS} that one Ward'):
+            emergence.analyze_emergence(db_path, tmp_path / 'capped', settings=SMALL,
+                                        embedder=theme_embedder)
+    # This year is incomplete, so the default analysis year is last year and only 2020 and
+    # 2021 count, too few to fit growth.
+    with pytest.raises(ValueError, match=f'spans 2 publication years up to {this_year - 1};'):
+        emergence.analyze_emergence(db_path, tmp_path / 'default', settings=SMALL,
+                                    embedder=theme_embedder)
