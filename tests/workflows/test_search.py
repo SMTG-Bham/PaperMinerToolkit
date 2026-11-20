@@ -383,7 +383,9 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
     rows = search.openalex_search('solid electrolyte', count=201)
 
     assert calls[0]['url'] == search.openalex.WORKS_URL
-    assert calls[0]['params']['search'] == 'solid electrolyte'
+    assert calls[0]['params']['filter'] == 'title_and_abstract.search:solid electrolyte'
+    assert calls[0]['params']['sort'] == 'relevance_score:desc'
+    assert 'search' not in calls[0]['params']
     assert calls[0]['params']['per-page'] == 200
     assert calls[0]['params']['cursor'] == '*'
     assert calls[0]['api_key'] == 'oa-key'
@@ -419,6 +421,142 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
     assert 'api_key' not in calls[0]['params']
     assert calls[0]['api_key'] is None
     assert rows['paper_id'].tolist() == ['openalex:W1']
+
+
+def test_openalex_query_scope_lifts_dates_sampling_and_fields() -> None:
+    """Separate from:, to:, sample:, and in: terms from the OpenAlex search words."""
+    words, scope = search.openalex_query_scope('"solid electrolyte" from:2010 to:2025-06-30 sample:per-year')
+    assert words == '"solid electrolyte"'
+    assert scope == {'from': '2010', 'to': '2025-06-30', 'sample': 'per-year', 'in': 'title-abstract'}
+    assert search.openalex_query_scope('garnet') == ('garnet', {'in': 'title-abstract'})
+    assert search.openalex_query_scope('garnet In:ALL') == ('garnet', {'in': 'all'})
+    with pytest.raises(ValueError, match='in: must be one of title, abstract'):
+        search.openalex_query_scope('garnet in:body')
+    with pytest.raises(ValueError, match='from: must be a year'):
+        search.openalex_query_scope('garnet from:2010s')
+    with pytest.raises(ValueError, match='accepts only per-year'):
+        search.openalex_query_scope('garnet from:2010 to:2020 sample:random')
+    with pytest.raises(ValueError, match='needs from: and to:'):
+        search.openalex_query_scope('garnet sample:per-year')
+
+
+def test_openalex_search_bounds_dates_and_chooses_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send the search and dates as filters, or the search parameter for in:all."""
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Record the request and return one work."""
+        calls.append(dict(params))
+        return {'results': [{'id': 'https://openalex.org/W1', 'title': 'one'}], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    search.openalex_search('garnet, llzo from:2010 to:2020-06-30', count=5)
+    search.openalex_search('garnet in:title', count=5)
+    search.openalex_search('garnet, llzo from:2010 in:all', count=5)
+
+    assert calls[0]['filter'] == ('title_and_abstract.search:garnet llzo,'
+                                  'from_publication_date:2010-01-01,to_publication_date:2020-06-30')
+    assert calls[0]['sort'] == 'relevance_score:desc' and 'search' not in calls[0]
+    assert calls[1]['filter'] == 'title.search:garnet'
+    assert calls[2]['search'] == 'garnet, llzo'
+    assert calls[2]['filter'] == 'from_publication_date:2010-01-01' and 'sort' not in calls[2]
+    with pytest.raises(ValueError, match='needs search words'):
+        search.openalex_search('from:2010 to:2020', count=5)
+
+
+def test_openalex_search_samples_every_year_at_the_same_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count each year, then draw one seeded fraction of every year's matches."""
+    matches = {2020: 300, 2021: 100}
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Answer count requests from ``matches`` and sample requests with that many works."""
+        params = dict(params)
+        calls.append(params)
+        year = int(params['filter'].rsplit(':', 1)[1])
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': matches[year]}}
+        start = (params['page'] - 1) * params['per-page']
+        size = max(0, min(params['per-page'], params['sample'] - start))
+        return {'results': [{'id': f'https://openalex.org/W{year}{start + index}', 'title': 't'}
+                            for index in range(size)], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2020 to:2021 sample:per-year', count=200)
+
+    samples = [call for call in calls if 'sample' in call]
+    assert {call['sample'] for call in samples} == {150, 50}
+    assert all(call['seed'] == search.OPENALEX_SAMPLE_SEED for call in samples)
+    assert samples[0]['filter'] == 'title_and_abstract.search:garnet,publication_year:2020'
+    assert len(rows) == 200
+
+
+def test_openalex_search_fetches_everything_when_the_sample_would_cover_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Page through every match with a cursor when count exceeds the total."""
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Report two matches a year and return them on one cursor page."""
+        params = dict(params)
+        calls.append(params)
+        year = params['filter'].rsplit(':', 1)[1]
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': 2}}
+        return {'results': [{'id': f'https://openalex.org/W{year}{index}', 'title': 't'}
+                            for index in range(2)], 'meta': {'next_cursor': None}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2020 to:2021 sample:per-year', count=100)
+
+    assert len(rows) == 4
+    assert all(call.get('cursor') == '*' for call in calls if call.get('select') != 'id')
+    calls.clear()
+    search.openalex_search('garnet, llzo from:2020 to:2021 sample:per-year in:all', count=100)
+    assert calls[0]['filter'] == 'default.search:garnet llzo,publication_year:2020'
+    with pytest.raises(ValueError, match='not be later'):
+        search.openalex_search('garnet from:2021 to:2020 sample:per-year', count=100)
+
+
+def test_openalex_sample_skips_empty_years_repeated_works_and_short_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip a year without matches, keep one copy of a repeated work, and stop at an empty page."""
+    matches = {2019: 0, 2020: 4, 2021: 4, 2022: 4}
+    # 2021's sample repeats a work already fetched for 2020, and 2022's comes back empty.
+    samples = {2020: ['W1', 'W2'], 2021: ['W2', 'W3'], 2022: []}
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Answer count requests from ``matches`` and sample requests from ``samples``."""
+        params = dict(params)
+        calls.append(params)
+        year = int(params['filter'].rsplit(':', 1)[1])
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': matches[year]}}
+        return {'results': [{'id': f'https://openalex.org/{work}', 'title': work}
+                            for work in samples[year]], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2019 to:2022 sample:per-year', count=6)
+
+    sampled = [call for call in calls if 'sample' in call]
+    assert [call['filter'].rsplit(':', 1)[1] for call in sampled] == ['2020', '2021', '2022']
+    assert all(call['sample'] == 2 and call['page'] == 1 for call in sampled)
+    assert rows['paper_id'].tolist() == ['openalex:W1', 'openalex:W2', 'openalex:W3']
 
 
 def test_search_for_papers_rejects_invalid_source() -> None:

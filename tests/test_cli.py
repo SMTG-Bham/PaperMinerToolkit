@@ -41,7 +41,7 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     assert all(command in filter_help.output for command in cli.filter_group.commands)
     assert topics_help.exit_code == 0
     assert set(cli.topics_group.commands) == {
-        'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models',
+        'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models', 'emergence',
     }
     assert recipe_help.exit_code == 0
     assert entities_help.exit_code == 0
@@ -535,6 +535,63 @@ def test_topics_models_reports_an_empty_corpus(monkeypatch: pytest.MonkeyPatch, 
     result = CliRunner().invoke(cli.topics_models, [str(db_path)])
     assert result.exit_code == 0
     assert 'No topic models' in result.output
+
+
+def test_topics_emergence_delegates_settings_and_reports_the_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Pass windows and granularity through and summarise the field map."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    calls = {}
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record the analysis arguments and return a summary."""
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        return {
+            'papers_used': 900, 'papers_read': 1000, 'end_year': 2024, 'areas': 6,
+            'topics': 20, 'niches': 90,
+            'topic_status': {'emerging': 2, 'growing': 3, 'stable': 15, 'declining': 0,
+                             'too small': 0},
+            'flagged_niches': [{'niche': 4}], 'backtest_rho_score': 0.41,
+            'report': str(tmp_path / 'out' / 'report.md'),
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.topics_emergence, [
+        str(db_path), str(tmp_path / 'out'), '--end-year', '2024', '--areas', '6',
+        '--topic-size', '150', '--niche-size', '30', '--backtest-cutoffs', '0', '--timeline-years', '2',
+        '--include-title-only', '--watch', 'halide', '--watch', 'garnet', '--overwrite', '--no-plots',
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls['args'] == (str(db_path), str(tmp_path / 'out'))
+    settings = calls['kwargs']['settings']
+    assert (settings.areas, settings.topic_size, settings.niche_size) == (6, 150, 30)
+    assert (settings.backtest_cutoffs, settings.timeline_years) == (0, 2)
+    assert calls['kwargs']['end_year'] == 2024
+    assert calls['kwargs']['require_abstract'] is False
+    assert calls['kwargs']['watch_terms'] == ('halide', 'garnet')
+    assert calls['kwargs']['overwrite'] is True
+    assert calls['kwargs']['plots'] is False
+    assert '6 areas, 20 topics (2 emerging, 3 growing, 15 stable), 90 niches, 1 flagged' in result.output
+    assert 'Spearman 0.41' in result.output
+
+
+def test_topics_emergence_reports_analysis_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Turn a corpus that cannot be analysed into a clean command error."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def refuse(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Reject the corpus as too short."""
+        raise ValueError('The corpus spans 1 publication years')
+
+    monkeypatch.setattr(cli, 'analyze_emergence', refuse)
+    result = CliRunner().invoke(cli.topics_emergence, [str(db_path), str(tmp_path / 'out')])
+    assert result.exit_code != 0
+    assert 'spans 1 publication years' in result.output
 
 
 def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

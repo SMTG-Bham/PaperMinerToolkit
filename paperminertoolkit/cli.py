@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import sqlite3
 import sys
 from contextlib import nullcontext, redirect_stdout
@@ -46,6 +47,9 @@ from paperminertoolkit.extraction.scrape import SCRAPE_ORDERS, scrape_papers
 from paperminertoolkit.extraction.store import store_results
 from paperminertoolkit.workflows.recipe_optimisation import OPTIMISE_MODES, optimise_recipe
 from paperminertoolkit.workflows.validation import ReviewApp, serve as serve_validation
+from paperminertoolkit.workflows.emergence import (DEFAULT_EMBEDDING_MODEL,
+                                                   EmergenceSettings,
+                                                   analyze_emergence)
 from paperminertoolkit.workflows.topics import (aggregate_topic_trends,
                                  compare_topic_models,
                                  predict_topic_model,
@@ -906,6 +910,81 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
     )
 
 
+@click.command('emergence')
+@click.argument('db_path', default='papers.db', type=click.Path(exists=True))
+@click.argument('output_dir', default='emergence', type=click.Path(file_okay=False))
+@click.option('--end-year', default=None, type=int,
+              help='Last complete publication year; defaults to the latest before this year.')
+@click.option('--growth-window', default=8, type=click.IntRange(min=3), show_default=True,
+              help='Years over which share growth is fitted.')
+@click.option('--recent-window', default=3, type=click.IntRange(min=1), show_default=True,
+              help='Final years counted as recent.')
+@click.option('--areas', default=12, type=click.IntRange(min=2), show_default=True,
+              help='Number of areas, the coarsest clusters.')
+@click.option('--topic-size', default=250, type=click.IntRange(min=2), show_default=True,
+              help='Target papers per topic.')
+@click.option('--niche-size', default=40, type=click.IntRange(min=1), show_default=True,
+              help='Target papers per niche, the finest clusters.')
+@click.option('--min-papers', default=8, type=click.IntRange(min=1), show_default=True,
+              help='Dated papers a niche needs before it is ranked.')
+@click.option('--horizon', default=3, type=click.IntRange(min=1), show_default=True,
+              help='Years after each backtest cutoff over which growth is checked.')
+@click.option('--backtest-cutoffs', default=4, type=click.IntRange(min=0), show_default=True,
+              help='Backtest cutoff years; 0 skips the backtest.')
+@click.option('--timeline-years', default=6, type=click.IntRange(min=0), show_default=True,
+              help='Earlier years re-clustered to date when each niche was first flagged; '
+                   '0 skips the timeline.')
+@click.option('--include-title-only', is_flag=True, default=False,
+              help='Embed papers without an abstract from their title instead of dropping them.')
+@click.option('--model', 'embedding_model', default=DEFAULT_EMBEDDING_MODEL, show_default=True,
+              help='Hugging Face embedding model.')
+@click.option('--embedding-cache', default=None, type=click.Path(dir_okay=False),
+              help='Embedding cache (.npz) to share between runs; defaults to the output directory.')
+@click.option('--batch-size', default=32, type=click.IntRange(min=1), show_default=True,
+              help='Texts per embedding batch.')
+@_topic_stopwords_file_option
+@click.option('--watch', 'watch_terms', multiple=True,
+              help='Term whose yearly document count is reported. Repeat for more.')
+@click.option('--top', default=20, type=click.IntRange(min=1), show_default=True,
+              help='Niches listed in the report.')
+@click.option('--plots/--no-plots', default=True, show_default=True,
+              help="Draw the report's figures into plots/ in the output directory.")
+@click.option('--overwrite', is_flag=True, default=False,
+              help='Replace a previous analysis in the output directory.')
+def topics_emergence(db_path: str, output_dir: str, end_year: int | None, growth_window: int,
+                     recent_window: int, areas: int, topic_size: int, niche_size: int,
+                     min_papers: int, horizon: int, backtest_cutoffs: int, timeline_years: int,
+                     include_title_only: bool, embedding_model: str,
+                     embedding_cache: str | None, batch_size: int, stopwords_file: str | None,
+                     watch_terms: tuple[str, ...], top: int, plots: bool, overwrite: bool) -> None:
+    """Map the corpus into areas, topics, and niches and rank emerging niches."""
+    settings = EmergenceSettings(
+        growth_window=growth_window, recent_window=recent_window, areas=areas,
+        topic_size=topic_size, niche_size=niche_size, min_papers=min_papers, horizon=horizon,
+        backtest_cutoffs=backtest_cutoffs, timeline_years=timeline_years,
+    )
+    try:
+        summary = analyze_emergence(
+            db_path, output_dir, settings=settings, end_year=end_year,
+            require_abstract=not include_title_only, embedding_model=embedding_model,
+            embedding_cache=embedding_cache, batch_size=batch_size,
+            stopwords_file=stopwords_file, watch_terms=watch_terms, top=top,
+            overwrite=overwrite, plots=plots,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    status = ', '.join(f'{count} {name}' for name, count in summary['topic_status'].items() if count)
+    click.echo(
+        f'Analysed {summary["papers_used"]} of {summary["papers_read"]} papers up to '
+        f'{summary["end_year"]}: {summary["areas"]} areas, {summary["topics"]} topics '
+        f'({status}), {summary["niches"]} niches, {len(summary["flagged_niches"])} flagged as emerging.'
+    )
+    rho = summary['backtest_rho_score']
+    if math.isfinite(rho):
+        click.echo(f'Backtest: niche score vs later share growth, Spearman {rho:.2f}.')
+    click.echo(f'Report: {summary["report"]}')
+
+
 @click.command('models')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
@@ -1539,7 +1618,7 @@ def filter_group() -> None:
 
 @click.group('topics')
 def topics_group() -> None:
-    """Train, inspect, and apply LDA topic models."""
+    """Train, inspect, and apply LDA topic models, and find emerging fields."""
 
 
 @click.group('import')
@@ -1596,6 +1675,7 @@ topics_group.add_command(topics_predict, 'predict')
 topics_group.add_command(topics_trends, 'trends')
 topics_group.add_command(topics_store, 'store')
 topics_group.add_command(topics_models, 'models')
+topics_group.add_command(topics_emergence, 'emergence')
 main.add_command(topics_group)
 
 entities_group.add_command(entities_corpus, 'corpus')

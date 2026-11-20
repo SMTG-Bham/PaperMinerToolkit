@@ -127,6 +127,26 @@ pmt search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
 
 The available prefixes are `ti:`, `au:`, `abs:`, `co:`, `jr:`, `cat:`, `rn:`, `id:`, and `all:`.
 
+OpenAlex ranks matches by relevance and matches the query against titles and abstracts. Its
+queries accept `from:` and `to:`, each a year or an ISO date, to bound the publication date, and
+`sample:per-year` to draw the same seeded fraction of every year's matches instead of the most
+relevant ones. That keeps each year's share of the field intact, which {doc}`emergence` relies on:
+
+```bash
+pmt search 'garnet electrolyte from:2015 to:2025' papers.db --source openalex
+pmt search '"solid electrolyte" from:2010 to:2025 sample:per-year' papers.db \
+  --source openalex --count 20000 --store-abstract
+```
+
+`sample:per-year` needs both a `from:` and a `to:` year.
+
+`in:` chooses the fields that must match: `title`, `abstract`, `title-abstract` (the default),
+`fulltext`, or `all`, which adds full text to the title and abstract. Full text widens a search a
+long way: in a 20,000-paper sample of solid-electrolyte work taken with `in:all`, only 37% of the
+papers mentioned the phrase in their title or abstract. OpenAlex reads commas in the query as filter
+separators, so they are sent as spaces, except with `in:all` outside `sample:per-year`, which uses
+OpenAlex's own search parameter.
+
 arXiv is a preprint server, so its records often describe a paper the corpus already holds.
 When the submitting author deposited a DOI, the arXiv row merges into the published row, which
 keeps its own journal and date and simply gains the arXiv identifier and PDF location. Without a
