@@ -116,10 +116,16 @@ ENRICHMENT_STATUSES = frozenset({
     'unresolved',
     'failed',
 })
+# Identifier columns that merge two rows when their stored text is identical.
+_MATCH_ID_COLUMNS = ('paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi',
+                     'biorxiv_doi', 'chemrxiv_doi')
+# Every column that duplicate matching reads.
+_MATCH_COLUMNS = ('doi', 'title', 'publication_date', *_MATCH_ID_COLUMNS)
 _Paper: TypeAlias = dict[str, Any]
 _PaperInput: TypeAlias = Mapping[str, Any]
 _BlobContent: TypeAlias = str | bytes | Path | Iterable[int]
 _Asset: TypeAlias = dict[str, Any]
+_MatchKey: TypeAlias = tuple[str, ...]
 
 
 def utc_now() -> str:
@@ -597,6 +603,7 @@ def add_search_result(
     paper: Mapping[str, Any],
     source: str,
     result_rank: int,
+    index: PaperIndex | None = None,
 ) -> bool:
     """Link one provider result to its resolved corpus paper.
 
@@ -612,15 +619,46 @@ def add_search_result(
         Provider that returned the result.
     result_rank : int
         Zero-based position of the result within that provider's response.
+    index : PaperIndex or None, optional
+        Current index of the corpus used to resolve the paper. Without one,
+        every stored row is scanned.
 
     Returns
     -------
     bool
         Whether a stored paper could be resolved and linked.
     """
-    matched = find_paper(conn, paper)
+    matched = find_paper(conn, paper, index)
     if matched is None:
         return False
+    link_search_result(conn, search_id, matched['paper_id'], source, result_rank)
+    return True
+
+
+def link_search_result(
+    conn: sqlite3.Connection,
+    search_id: int,
+    paper_id: str,
+    source: str,
+    result_rank: int,
+) -> None:
+    """Link one provider result to an already resolved corpus paper.
+
+    A paper returned several times by one provider keeps its best rank.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    search_id : int
+        Search invocation that returned the paper.
+    paper_id : str
+        Identifier of the stored paper the result resolved to.
+    source : str
+        Provider that returned the result.
+    result_rank : int
+        Zero-based position of the result within that provider's response.
+    """
     conn.execute(
         """
         INSERT INTO paper_search_results (search_id, paper_id, source, result_rank)
@@ -628,9 +666,8 @@ def add_search_result(
         ON CONFLICT(search_id, paper_id, source) DO UPDATE SET
             result_rank = MIN(result_rank, excluded.result_rank)
         """,
-        (int(search_id), matched['paper_id'], source, int(result_rank)),
+        (int(search_id), paper_id, source, int(result_rank)),
     )
-    return True
 
 
 def search_history(conn: sqlite3.Connection, limit: int | None = None) -> list[dict[str, Any]]:
@@ -970,8 +1007,7 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
         return True
-    for column in ['paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi',
-                   'biorxiv_doi', 'chemrxiv_doi']:
+    for column in _MATCH_ID_COLUMNS:
         if _has_value(existing.get(column)) and str(existing.get(column)) == str(incoming.get(column)):
             return True
     existing_title = _title_key(existing.get('title'))
@@ -982,7 +1018,172 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
                 and existing_year and incoming_year and existing_year == incoming_year)
 
 
-def _find_existing_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
+def _stored_match_keys(existing: _PaperInput) -> set[_MatchKey]:
+    """List the keys under which a stored row can match incoming papers.
+
+    :func:`_papers_match` is a disjunction of equality tests, so two rows match
+    exactly when the keys of the stored row share an element with those that
+    :func:`_incoming_match_keys` gives the incoming row. Each key is tagged with
+    the rule that produced it, so values never match across rules.
+
+    Parameters
+    ----------
+    existing : _PaperInput
+        Stored corpus paper row.
+
+    Returns
+    -------
+    set[tuple[str, ...]]
+        Normalized DOI, identifier, and title-with-year keys.
+    """
+    keys: set[_MatchKey] = set()
+    doi = _clean_doi(existing.get('doi'))
+    if doi:
+        keys.add(('doi', doi))
+    for column in _MATCH_ID_COLUMNS:
+        if _has_value(existing.get(column)):
+            keys.add((column, str(existing.get(column))))
+    title = _title_key(existing.get('title'))
+    year = _year(existing.get('publication_date'))
+    if title and year:
+        keys.add(('title', title, year))
+    return keys
+
+
+def _incoming_match_keys(incoming: _PaperInput) -> set[_MatchKey]:
+    """List the keys an incoming row looks up to find its stored duplicates.
+
+    Parameters
+    ----------
+    incoming : _PaperInput
+        Normalized incoming paper metadata.
+
+    Returns
+    -------
+    set[tuple[str, ...]]
+        Keys built as in :func:`_stored_match_keys`, except that identifier
+        values are taken as text whether or not they are empty, as
+        :func:`_papers_match` compares them.
+    """
+    keys: set[_MatchKey] = set()
+    doi = _clean_doi(incoming.get('doi'))
+    if doi:
+        keys.add(('doi', doi))
+    for column in _MATCH_ID_COLUMNS:
+        keys.add((column, str(incoming.get(column))))
+    title = _title_key(incoming.get('title'))
+    year = _year(incoming.get('publication_date'))
+    if title and year:
+        keys.add(('title', title, year))
+    return keys
+
+
+class PaperIndex:
+    """Find corpus papers by the keys that duplicate matching compares.
+
+    :func:`find_paper` without an index scans every stored row, so matching each
+    record of a large search against the corpus is quadratic. This index reads
+    the matching columns once and then answers each lookup from a dictionary of
+    normalized DOIs, identifiers, and title-with-year keys. It returns the same
+    row as the scan: the earliest stored row that matches.
+
+    The index describes the corpus as it was when built, plus the rows passed to
+    :meth:`refresh`. :func:`upsert_papers` refreshes the rows it writes; a
+    caller that changes a paper's DOI, title, date, or identifiers in any other
+    way must refresh that paper before the next lookup.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection whose ``papers`` table is indexed.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        """Index every stored paper.
+
+        Parameters
+        ----------
+        conn : sqlite3.Connection
+            Open corpus connection whose ``papers`` table is indexed.
+        """
+        self._conn = conn
+        self._keys_by_rowid: dict[int, set[_MatchKey]] = {}
+        self._rowids_by_key: dict[_MatchKey, set[int]] = {}
+        columns = ', '.join(_MATCH_COLUMNS)
+        for row in conn.execute(f'SELECT rowid, {columns} FROM papers'):
+            self._index_row(tuple(row))
+
+    def _index_row(self, row: tuple[Any, ...]) -> None:
+        """Replace the keys of one stored row.
+
+        Parameters
+        ----------
+        row : tuple[Any, ...]
+            The row's ``rowid`` followed by its values for ``_MATCH_COLUMNS``.
+        """
+        rowid = int(row[0])
+        for key in self._keys_by_rowid.pop(rowid, set()):
+            rowids = self._rowids_by_key[key]
+            rowids.discard(rowid)
+            if not rowids:
+                del self._rowids_by_key[key]
+        keys = _stored_match_keys(dict(zip(_MATCH_COLUMNS, row[1:])))
+        self._keys_by_rowid[rowid] = keys
+        for key in keys:
+            self._rowids_by_key.setdefault(key, set()).add(rowid)
+
+    def refresh(self, paper_id: str) -> None:
+        """Re-read one paper's matching columns after it was inserted or changed.
+
+        Parameters
+        ----------
+        paper_id : str
+            Identifier of the paper to re-index. Unknown identifiers are ignored.
+        """
+        columns = ', '.join(_MATCH_COLUMNS)
+        row = self._conn.execute(
+            f'SELECT rowid, {columns} FROM papers WHERE paper_id = ?', (paper_id,)
+        ).fetchone()
+        if row is not None:
+            self._index_row(tuple(row))
+
+    def find(self, paper: _PaperInput) -> _Paper | None:
+        """Find the earliest stored paper matching supplied metadata.
+
+        Parameters
+        ----------
+        paper : _PaperInput
+            Paper metadata to match; it is normalized first, as by
+            :func:`find_paper`.
+
+        Returns
+        -------
+        _Paper or None
+            A fresh copy of the matching corpus row, or ``None``.
+
+        Raises
+        ------
+        RuntimeError
+            If the matched row was deleted after it was indexed.
+        """
+        incoming = normalize_paper(paper)
+        candidates = [
+            min(self._rowids_by_key[key])
+            for key in _incoming_match_keys(incoming)
+            if key in self._rowids_by_key
+        ]
+        if not candidates:
+            return None
+        rowid = min(candidates)
+        row = self._conn.execute('SELECT * FROM papers WHERE rowid = ?', (rowid,)).fetchone()
+        if row is None:
+            raise RuntimeError(f'Paper index is stale: stored row {rowid} no longer exists.')
+        return dict(row)
+
+
+def _find_existing_paper(conn: sqlite3.Connection,
+                         paper: _PaperInput,
+                         index: PaperIndex | None = None) -> _Paper | None:
     """Find the first corpus row matching a paper.
 
     Parameters
@@ -991,12 +1192,16 @@ def _find_existing_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper
         Open corpus connection.
     paper : _PaperInput
         Paper metadata to match.
+    index : PaperIndex or None, optional
+        Current index of the corpus. Without one, every stored row is scanned.
 
     Returns
     -------
     _Paper or None
         Matching corpus row, or ``None``.
     """
+    if index is not None:
+        return index.find(paper)
     incoming = normalize_paper(paper)
     for existing in paper_rows(conn):
         if _papers_match(existing, incoming):
@@ -1004,7 +1209,9 @@ def _find_existing_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper
     return None
 
 
-def find_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
+def find_paper(conn: sqlite3.Connection,
+               paper: _PaperInput,
+               index: PaperIndex | None = None) -> _Paper | None:
     """Find a corpus paper matching supplied metadata.
 
     Parameters
@@ -1013,13 +1220,16 @@ def find_paper(conn: sqlite3.Connection, paper: _PaperInput) -> _Paper | None:
         Open corpus connection.
     paper : _PaperInput
         Paper metadata to match.
+    index : PaperIndex or None, optional
+        Current index of the corpus, for callers that look up many papers.
+        Without one, every stored row is scanned.
 
     Returns
     -------
     _Paper or None
         Matching corpus row, or ``None``.
     """
-    return _find_existing_paper(conn, paper)
+    return _find_existing_paper(conn, paper, index)
 
 
 def _json_dumps(value: Any) -> str:
@@ -1042,7 +1252,7 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput) -> str:
+def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput, commit: bool = True) -> str:
     """Insert or update one paper row.
 
     Parameters
@@ -1051,6 +1261,9 @@ def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput) -> str:
         Open corpus connection.
     paper : _PaperInput
         Paper metadata and optional pipeline state.
+    commit : bool, default=True
+        Whether to commit after writing. Bulk writers pass ``False`` and commit
+        once at the end.
 
     Returns
     -------
@@ -1079,12 +1292,19 @@ def upsert_paper(conn: sqlite3.Connection, paper: _PaperInput) -> str:
         """,
         values,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return paper_id
 
 
-def upsert_papers(conn: sqlite3.Connection, papers: Iterable[_PaperInput]) -> tuple[int, int]:
+def upsert_papers(conn: sqlite3.Connection,
+                  papers: Iterable[_PaperInput],
+                  index: PaperIndex | None = None,
+                  commit: bool = True) -> tuple[int, int]:
     """Merge multiple papers into the corpus.
+
+    Each paper is merged into the earliest stored row it matches, including rows
+    written earlier in the same call, or inserted as a new row.
 
     Parameters
     ----------
@@ -1092,6 +1312,11 @@ def upsert_papers(conn: sqlite3.Connection, papers: Iterable[_PaperInput]) -> tu
         Open corpus connection.
     papers : Iterable[_PaperInput]
         Paper mappings to insert or merge.
+    index : PaperIndex or None, optional
+        Current index of the corpus, which is kept up to date with every row
+        written. A temporary index is built when none is supplied.
+    commit : bool, default=True
+        Whether to commit once all papers are written.
 
     Returns
     -------
@@ -1101,14 +1326,19 @@ def upsert_papers(conn: sqlite3.Connection, papers: Iterable[_PaperInput]) -> tu
     added = 0
     updated = 0
     for paper in papers:
+        if index is None:
+            index = PaperIndex(conn)
         incoming = normalize_paper(paper)
-        existing = _find_existing_paper(conn, incoming)
+        existing = index.find(incoming)
         if existing is None:
-            upsert_paper(conn, incoming)
+            paper_id = upsert_paper(conn, incoming, commit=False)
             added += 1
         else:
-            upsert_paper(conn, _merge_paper(existing, incoming))
+            paper_id = upsert_paper(conn, _merge_paper(existing, incoming), commit=False)
             updated += 1
+        index.refresh(paper_id)
+    if commit and added + updated:
+        conn.commit()
     return added, updated
 
 
@@ -1550,7 +1780,8 @@ def store_blob(conn: sqlite3.Connection,
                content: _BlobContent,
                kind: str,
                mime_type: str,
-               compression: str = 'gzip') -> str:
+               compression: str = 'gzip',
+               commit: bool = True) -> str:
     """Store a deduplicated content blob.
 
     Parameters
@@ -1565,6 +1796,8 @@ def store_blob(conn: sqlite3.Connection,
         MIME type of the uncompressed content.
     compression : str, optional
         Storage compression codec.
+    commit : bool, default=True
+        Whether to commit after storing a new blob.
 
     Returns
     -------
@@ -1603,7 +1836,8 @@ def store_blob(conn: sqlite3.Connection,
             utc_now(),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return blob_id
 
 
@@ -1613,7 +1847,8 @@ def link_asset(conn: sqlite3.Connection,
                role: str,
                source: str = '',
                original_filename: str = '',
-               metadata: Mapping[str, Any] | None = None) -> None:
+               metadata: Mapping[str, Any] | None = None,
+               commit: bool = True) -> None:
     """Link a stored blob to a paper asset role.
 
     Parameters
@@ -1632,6 +1867,8 @@ def link_asset(conn: sqlite3.Connection,
         Original asset filename.
     metadata : Mapping[str, Any] or None, optional
         Extensible metadata associated with this paper-to-blob link.
+    commit : bool, default=True
+        Whether to commit after writing the link.
     """
     conn.execute(
         """
@@ -1650,7 +1887,8 @@ def link_asset(conn: sqlite3.Connection,
             utc_now(),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def add_asset(conn: sqlite3.Connection,
@@ -1662,7 +1900,8 @@ def add_asset(conn: sqlite3.Connection,
               source: str = '',
               original_filename: str = '',
               compression: str = 'gzip',
-              metadata: Mapping[str, Any] | None = None) -> str:
+              metadata: Mapping[str, Any] | None = None,
+              commit: bool = True) -> str:
     """Store and link an asset for a paper.
 
     Parameters
@@ -1687,14 +1926,17 @@ def add_asset(conn: sqlite3.Connection,
         Storage compression codec.
     metadata : Mapping[str, Any] or None, optional
         Extensible metadata associated with the paper asset.
+    commit : bool, default=True
+        Whether to commit the paper, blob, and link once all three are written.
 
     Returns
     -------
     str
         Identifier of the linked content blob.
     """
-    paper_id = upsert_paper(conn, paper)
-    blob_id = store_blob(conn, content, kind=kind, mime_type=mime_type, compression=compression)
+    paper_id = upsert_paper(conn, paper, commit=False)
+    blob_id = store_blob(conn, content, kind=kind, mime_type=mime_type, compression=compression,
+                         commit=False)
     link_asset(
         conn,
         paper_id,
@@ -1703,7 +1945,10 @@ def add_asset(conn: sqlite3.Connection,
         source=source,
         original_filename=original_filename,
         metadata=metadata,
+        commit=False,
     )
+    if commit:
+        conn.commit()
     return blob_id
 
 
