@@ -88,10 +88,11 @@ TOPIC_TERM_LIFT = 1.5
 TOPIC_TERM_CONCENTRATION = 0.25
 TOPIC_TERM_DISPERSION = 2.0
 _SPARK = '▁▂▃▄▅▆▇█'
-# Plot colours: chart surface and ink, a blue/red pair for rising and falling share, a
-# sequential blue ramp for percentiles, and categorical slots taken in this order.
+# Plot colours: chart surface (white, so figures drop into papers and slides as they are) and
+# ink, a blue/red pair for rising and falling share, a sequential blue ramp for percentiles,
+# and categorical slots taken in this order.
 _SURFACE, _INK, _INK2, _MUTED, _AXIS, _BAND, _GRID = (
-    '#fcfcfb', '#0b0b0b', '#52514e', '#898781', '#c3c2b7', '#f0efec', '#e1e0d9')
+    '#ffffff', '#0b0b0b', '#52514e', '#898781', '#c3c2b7', '#f0efec', '#e1e0d9')
 _RISE, _FALL = '#2a78d6', '#e34948'
 _RAMP = ('#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b')
 _SERIES = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948')
