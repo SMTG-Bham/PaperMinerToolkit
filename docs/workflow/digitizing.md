@@ -6,16 +6,16 @@ figrecover reads each panel's axes from its tick labels and titles by OCR, and t
 
 ## Installation
 
-figrecover is optional and is not published on PyPI. Install it from GitHub with its OCR extra, in the same environment as PaperMinerToolkit:
+figrecover is optional and is not published on PyPI; the PyPI package named `figrecover` is an unrelated project, so do not `pip install figrecover`. Install release 0.1.0 from GitHub with its OCR extra, in the same environment as PaperMinerToolkit:
 
 ```bash
-pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover"
+pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
 ```
 
 figrecover needs Python 3.14 and runs on Linux. Its OCR extra pins `opencv-python` and `rapidocr<3.10` only for its interactive click window, which `pmt digitize` never opens. In an environment that already has `opencv-python-headless` and a newer RapidOCR, as the Sol `paperminertoolkit` environment does, install figrecover without its dependencies so that a second OpenCV build does not replace the first:
 
 ```bash
-pip install --no-deps "figrecover @ git+https://github.com/SMTG-Bham/figrecover"
+pip install --no-deps "figrecover @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
 ```
 
 ## Usage

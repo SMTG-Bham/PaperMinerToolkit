@@ -16,10 +16,11 @@ detected from its PDF and stored for later runs. Progress is checkpointed per
 figure in the figure asset's metadata, so a rerun skips figures already
 recovered; ``force`` recovers them again.
 
-figrecover is optional and is not published on PyPI. Install it with its OCR
+figrecover is optional and is not published on PyPI (the PyPI package named
+figrecover is an unrelated project). Install release 0.1.0 with its OCR
 extra::
 
-    pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover"
+    pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from paperminertoolkit.corpus.database import (
 )
 from paperminertoolkit.workflows.figures import PDF_LAYOUT_SOURCE, store_pdf_layout_figures
 
-FIGRECOVER_INSTALL = 'pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover"'
+FIGRECOVER_INSTALL = 'pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"'
 OUTPUT_COLUMNS = [
     'Paper id', 'doi', 'Figure id', 'Figure label', 'Figure source', 'Referenced as',
     'Record rows', 'Record names', 'Panel', 'Series', 'Series style', 'X title', 'Y title', 'x', 'y',

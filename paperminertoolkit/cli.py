@@ -451,7 +451,7 @@ def digitize(
     figure in the corpus (detecting figures from the PDF when the paper has
     none), reads its axes by OCR, and writes every curve's points. Curves
     are named by colour and line style, as figrecover does not read legends.
-    Needs figrecover with its OCR extra, installed from GitHub.
+    Needs figrecover 0.1.0 with its OCR extra, installed from GitHub.
     """
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
