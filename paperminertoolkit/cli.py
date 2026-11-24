@@ -1110,7 +1110,7 @@ def entities_text(input_path: str, output_path: str, model: str, device: str,
               help='Number of images per vision request, or "all".')
 @click.option('--model', default=None, help='Text model name override for this scrape run.')
 @click.option('--provider', default=None,
-              help='Text provider override: openai, anthropic, or local. Pair with --model when changing provider.')
+              help='Text provider override: openai, anthropic, local, or claude-code. Pair with --model when changing provider.')
 @click.option('--base-url', default=None, help='Text model base URL override.')
 @click.option('--vision-model', default=None, help='Vision model name override for this scrape run.')
 @click.option('--vision-provider', default=None,
@@ -1383,11 +1383,11 @@ def recipe_prompt(recipe: str, kind: str, outfile: str | None) -> None:
 @click.option('--include-unreachable', is_flag=True, default=False,
               help='Count expected values that never appear in the paper text as misses when choosing recipes.')
 @click.option('--model', default=None, help='Extraction model name override.')
-@click.option('--provider', default=None, help='Extraction provider override: openai, anthropic, or local.')
+@click.option('--provider', default=None, help='Extraction provider override: openai, anthropic, local, or claude-code.')
 @click.option('--base-url', default=None, help='Extraction model base URL override.')
 @click.option('--optimiser-model', default=None,
               help='Model that rewrites the recipe; defaults to the extraction model.')
-@click.option('--optimiser-provider', default=None, help='Optimiser provider override.')
+@click.option('--optimiser-provider', default=None, help='Optimiser provider override: openai, anthropic, local, or claude-code (a logged-in Claude Code CLI).')
 @click.option('--optimiser-base-url', default=None, help='Optimiser model base URL override.')
 def recipe_optimise(db_path: str, recipe: str, validation_path: str, output_dir: str, mode: str,
                     iterations: int, patience: int, holdout: float, seed: int, numeric_tolerance: float,
@@ -1480,7 +1480,7 @@ def update_anthropic_api_key() -> None:
 
 @click.command('model')
 @click.argument('profile', default='text', type=click.Choice(['text', 'vision']))
-@click.option('--provider', prompt=True, help='Provider: openai, anthropic, or local.')
+@click.option('--provider', prompt=True, help='Provider: openai, anthropic, local, or claude-code.')
 @click.option('--model', prompt=True, help='Model name.')
 @click.option('--base-url', default=None, help='Base URL for local providers.')
 @click.option('--api-key', default=None, help='Provider API key. Leave unset for env/provider defaults.')

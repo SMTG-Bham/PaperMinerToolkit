@@ -7,6 +7,8 @@ clients, and public query helpers without calling live model APIs.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import types
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -116,6 +118,27 @@ def test_model_config_provider_override_drops_profile_specific_connection(monkey
 
     with pytest.raises(ValueError, match='explicit model name'):
         models.ModelConfig.from_profile('text', provider='anthropic')
+
+
+def test_model_config_provider_override_drops_profile_reasoning_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local profile's reasoning effort and thinking switch are not sent to another provider."""
+    monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
+        'provider': 'local',
+        'model': 'openai/gpt-oss-120b',
+        'base_url': 'http://127.0.0.1:8000/v1',
+        'reasoning_effort': 'medium',
+        'thinking': 'on',
+    })
+    monkeypatch.setattr(models, 'load_settings', lambda: {})
+
+    same = models.ModelConfig.from_profile('text')
+    other = models.ModelConfig.from_profile('text', provider='claude-code', model='opus')
+    explicit = models.ModelConfig.from_profile('text', provider='openai', model='gpt-test', reasoning_effort='low')
+
+    assert (same.reasoning_effort, same.thinking) == ('medium', True)
+    assert (other.reasoning_effort, other.thinking) == (None, None)
+    assert isinstance(models.get_model_client(other), models.ClaudeCodeClient)
+    assert explicit.reasoning_effort == 'low'
 
 
 def test_model_config_generation_args_and_require() -> None:
@@ -683,3 +706,45 @@ def test_image_label_helper_tolerates_short_and_missing_label_sequences() -> Non
     assert models._image_label(None, 0) == ''
     assert models._image_label(['first'], 1) == ''
     assert models._image_label(['  spaced  '], 0) == 'spaced'
+
+
+def test_claude_code_client_runs_the_cli_without_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send system and user text through ``claude -p`` and read its JSON result."""
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        """Record the CLI call and return a successful JSON result."""
+        calls.append({'command': command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({'is_error': False, 'result': '[]'}),
+                                           stderr='')
+
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', fake_run)
+    client = models.get_model_client(models.ModelConfig(provider='claude-code', name='haiku'))
+
+    response = client.query([{'role': 'system', 'content': 'rules'}, {'role': 'user', 'content': 'paper'}])
+
+    assert response == '[]'
+    command = calls[0]['command']
+    assert command[:2] == ['claude-bin', '-p']
+    assert command[command.index('--tools') + 1] == ''
+    assert command[command.index('--model') + 1] == 'haiku'
+    assert command[command.index('--system-prompt') + 1] == 'rules'
+    assert calls[0]['input'] == 'paper'
+    assert calls[0]['timeout'] == models.DEFAULT_REQUEST_TIMEOUT
+
+
+def test_claude_code_client_reports_cli_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raise a readable error for failed or non-JSON CLI output."""
+    results = iter([
+        subprocess.CompletedProcess([], 1, stdout=json.dumps({'is_error': True, 'result': 'Not logged in'}), stderr=''),
+        subprocess.CompletedProcess([], 1, stdout='', stderr='boom'),
+    ])
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', lambda *args, **kwargs: next(results))
+    client = models.ClaudeCodeClient(models.ModelConfig(provider='claude-code', name='haiku'))
+
+    with pytest.raises(RuntimeError, match='Not logged in'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+    with pytest.raises(RuntimeError, match='boom'):
+        client.query([{'role': 'user', 'content': 'paper'}])

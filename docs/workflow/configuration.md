@@ -240,6 +240,19 @@ pmt config status
 
 Use model identifiers available to your provider account. PaperMinerToolkit infers ordinary capabilities from the provider and model name; `--capability` is an override for unusual or locally served models.
 
+## Claude Code login
+
+The `claude-code` provider sends text requests through a logged-in Claude Code CLI
+(`claude -p` with every tool disabled), so they use that login rather than an API key.
+The model name is any Claude Code model name or alias, such as `opus`. The CLI is found
+as `claude` on `PATH`; set `PAPERMINERTOOLKIT_CLAUDE_CODE_BIN` to use another path.
+Image requests are not supported, and each request may run for at most the profile's
+request timeout.
+
+```bash
+pmt config model text --provider claude-code --model opus
+```
+
 ## Local OpenAI-compatible servers
 
 Point both profiles at the local endpoint when a model supports text and images:
