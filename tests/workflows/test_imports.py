@@ -58,11 +58,13 @@ def test_import_pdfs_writes_imported_rows_with_metadata(
         }, 'enriched', ''),
     )
 
-    imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
+    summary = imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
 
     with corpus.connect(db_path) as conn:
         imported = corpus.paper_rows(conn)
         asset = corpus.get_asset(conn, f'external:{FIXTURE_PDF.stem}', 'pdf')
+    assert summary == {'files': 1, 'added': 1, 'updated': 0, 'doi_found': 1, 'enriched': 1,
+                       'metadata_errors': 0, 'paper_ids': [f'external:{FIXTURE_PDF.stem}']}
     output = capsys.readouterr().out
     row = imported[0]
     assert len(imported) == 1

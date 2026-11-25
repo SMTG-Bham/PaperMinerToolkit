@@ -13,14 +13,18 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+import tempfile
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
 from typing import Any, TypeAlias
 
+from paperminertoolkit._doi import clean_doi
 
-SCHEMA_VERSION = 12
+
+SCHEMA_VERSION = 13
 SUPPORTED_COMPRESSIONS = {'none', 'gzip'}
 STRUCTURED_DOCUMENT_ROLE = 'structured'
 FIGURE_ASSET_ROLE = 'figure'
@@ -50,6 +54,9 @@ PIPELINE_COLUMNS = {
     'abstract_download_status': 'pending',
     'text_download_status': 'pending',
     'pdf_download_status': 'pending',
+    'supplement_download_status': 'pending',
+    'supplement_text_scrape_status': 'pending',
+    'supplement_image_scrape_status': 'pending',
     'text_scrape_status': 'pending',
     'abstract_scrape_status': 'pending',
     'image_scrape_status': 'pending',
@@ -116,11 +123,12 @@ ENRICHMENT_STATUSES = frozenset({
     'unresolved',
     'failed',
 })
+# Preprint DOI columns that merge two rows when their normalized DOIs are identical.
+_MATCH_DOI_COLUMNS = ('medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi')
 # Identifier columns that merge two rows when their stored text is identical.
-_MATCH_ID_COLUMNS = ('paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id', 'medrxiv_doi',
-                     'biorxiv_doi', 'chemrxiv_doi')
+_MATCH_ID_COLUMNS = ('paper_id', 'core_id', 'pmid', 'pmcid', 'arxiv_id')
 # Every column that duplicate matching reads.
-_MATCH_COLUMNS = ('doi', 'title', 'publication_date', *_MATCH_ID_COLUMNS)
+_MATCH_COLUMNS = ('doi', 'title', 'publication_date', *_MATCH_DOI_COLUMNS, *_MATCH_ID_COLUMNS)
 _Paper: TypeAlias = dict[str, Any]
 _PaperInput: TypeAlias = Mapping[str, Any]
 _BlobContent: TypeAlias = str | bytes | Path | Iterable[int]
@@ -168,6 +176,83 @@ def set_pipeline_status(paper: _Paper, column: str, status: str, error: str | No
         paper['last_error'] = ''
 
 
+@contextmanager
+def connect_read_only(db_path: str | PathLike[str]) -> Iterator[sqlite3.Connection]:
+    """Open an existing current-schema corpus without creating, migrating, or writing it.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Existing corpus database path.
+
+    Yields
+    ------
+    sqlite3.Connection
+        Read-only connection with dictionary-like rows. Any attempt to write
+        through it raises :class:`sqlite3.OperationalError`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the database file does not exist.
+    RuntimeError
+        If the corpus schema is older or newer than this package's.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f'No corpus database at {db_path}')
+    conn = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        if version != SCHEMA_VERSION:
+            raise RuntimeError(
+                f'Corpus schema version {version} does not match the supported version '
+                f'{SCHEMA_VERSION}. Open it once with a corpus-writing command, such as '
+                'pmt status, to migrate it.'
+            )
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def corpus_copy(db_path: str | PathLike[str]) -> Iterator[Path]:
+    """Copy a corpus to a temporary file, for dry runs that must not touch the original.
+
+    The copy is made with SQLite's online backup, so it is consistent even
+    while another process has the corpus open, and it is deleted on exit.
+    It needs free space for one copy of the corpus in the temporary directory
+    (``TMPDIR``).
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Existing, current-schema corpus; it is opened read-only.
+
+    Yields
+    ------
+    pathlib.Path
+        Path of the temporary copy, which callers may modify freely.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the corpus does not exist.
+    RuntimeError
+        If its schema does not match this package's.
+    """
+    with connect_read_only(db_path) as source, \
+            tempfile.TemporaryDirectory(prefix='paperminertoolkit-dry-run-') as directory:
+        target = Path(directory) / Path(db_path).name
+        destination = sqlite3.connect(target)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+        yield target
+
+
 def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
     """Open and initialize a corpus database.
 
@@ -187,8 +272,13 @@ def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
         If the database schema is newer than this package supports.
     """
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    init_corpus(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        init_corpus(conn)
+    except BaseException:
+        # A corrupt or newer corpus must not leave an open handle behind.
+        conn.close()
+        raise
     return conn
 
 
@@ -448,6 +538,8 @@ def init_corpus(conn: sqlite3.Connection) -> None:
         if column in existing_columns:
             continue
         conn.execute(f'ALTER TABLE papers ADD COLUMN {column} {column_type}')
+        if column in PIPELINE_COLUMNS:
+            conn.execute(f'UPDATE papers SET {column} = ?', (PIPELINE_COLUMNS[column],))
         added_columns.append(column)
     if 'enrichment_status' in added_columns:
         conn.execute(
@@ -815,12 +907,7 @@ def _clean_doi(value: object) -> str:
     """
     if not _has_value(value):
         return ''
-    doi = str(value).strip()
-    if doi.lower().startswith('doi:'):
-        doi = doi[4:]
-    if doi.lower().startswith('https://doi.org/'):
-        doi = doi[16:]
-    return doi.strip().rstrip('.').lower()
+    return clean_doi(value)
 
 
 def _title_key(value: object) -> str:
@@ -1007,6 +1094,10 @@ def _papers_match(existing: _PaperInput, incoming: _PaperInput) -> bool:
     incoming_doi = _clean_doi(incoming.get('doi'))
     if existing_doi and incoming_doi and existing_doi == incoming_doi:
         return True
+    for column in _MATCH_DOI_COLUMNS:
+        existing_identifier = _clean_doi(existing.get(column))
+        if existing_identifier and existing_identifier == _clean_doi(incoming.get(column)):
+            return True
     for column in _MATCH_ID_COLUMNS:
         if _has_value(existing.get(column)) and str(existing.get(column)) == str(incoming.get(column)):
             return True
@@ -1040,6 +1131,10 @@ def _stored_match_keys(existing: _PaperInput) -> set[_MatchKey]:
     doi = _clean_doi(existing.get('doi'))
     if doi:
         keys.add(('doi', doi))
+    for column in _MATCH_DOI_COLUMNS:
+        identifier = _clean_doi(existing.get(column))
+        if identifier:
+            keys.add((column, identifier))
     for column in _MATCH_ID_COLUMNS:
         if _has_value(existing.get(column)):
             keys.add((column, str(existing.get(column))))
@@ -1062,13 +1157,17 @@ def _incoming_match_keys(incoming: _PaperInput) -> set[_MatchKey]:
     -------
     set[tuple[str, ...]]
         Keys built as in :func:`_stored_match_keys`, except that identifier
-        values are taken as text whether or not they are empty, as
-        :func:`_papers_match` compares them.
+        values other than preprint DOIs are taken as text whether or not they
+        are empty, as :func:`_papers_match` compares them.
     """
     keys: set[_MatchKey] = set()
     doi = _clean_doi(incoming.get('doi'))
     if doi:
         keys.add(('doi', doi))
+    for column in _MATCH_DOI_COLUMNS:
+        identifier = _clean_doi(incoming.get(column))
+        if identifier:
+            keys.add((column, identifier))
     for column in _MATCH_ID_COLUMNS:
         keys.add((column, str(incoming.get(column))))
     title = _title_key(incoming.get('title'))
@@ -1397,7 +1496,8 @@ def enrichment_candidates(conn: sqlite3.Connection,
                           statuses: Iterable[str] = ('pending',),
                           after_rowid: int = 0,
                           limit: int = 100,
-                          refreshed_before: str = '') -> list[_Paper]:
+                          refreshed_before: str = '',
+                          paper_ids: Iterable[str] | None = None) -> list[_Paper]:
     """Return the next page of papers needing enrichment.
 
     Results are keyset-paginated by ``rowid`` so an interrupted run resumes
@@ -1416,6 +1516,10 @@ def enrichment_candidates(conn: sqlite3.Connection,
         Maximum number of rows to return.
     refreshed_before : str, default=''
         Also select succeeded rows enriched before this ISO-8601 timestamp.
+    paper_ids : Iterable[str] or None, optional
+        Restrict candidates to these canonical identifiers. The status rules
+        still apply, so an already enriched paper needs ``statuses`` to
+        include ``succeeded``. ``None`` considers every row.
 
     Returns
     -------
@@ -1424,6 +1528,11 @@ def enrichment_candidates(conn: sqlite3.Connection,
     """
     statuses = list(statuses)
     placeholders = ', '.join('?' for _ in statuses) or "''"
+    id_clause, id_values = '', []
+    if paper_ids is not None:
+        id_values = list(dict.fromkeys(paper_ids))
+        id_placeholders = ', '.join('?' for _ in id_values) or "''"
+        id_clause = f'AND paper_id IN ({id_placeholders})'
     rows = conn.execute(
         f"""
         SELECT rowid AS rowid, paper_id, doi, title, journal, publication_date, authors,
@@ -1438,10 +1547,11 @@ def enrichment_candidates(conn: sqlite3.Connection,
                    AND enriched_at IS NOT NULL
                    AND enriched_at <> ''
                    AND enriched_at < ?))
+          {id_clause}
         ORDER BY rowid
         LIMIT ?
         """,
-        [after_rowid, *statuses, refreshed_before, refreshed_before, limit],
+        [after_rowid, *statuses, refreshed_before, refreshed_before, *id_values, limit],
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -1489,7 +1599,9 @@ def write_enrichment(conn: sqlite3.Connection,
                      authors: Iterable[_PaperInput] = (),
                      subjects: Iterable[_PaperInput] = (),
                      references: Iterable[_PaperInput] = (),
-                     sources: Iterable[str] = ()) -> int:
+                     sources: Iterable[str] = (),
+                     *,
+                     replace_children: bool = True) -> int:
     """Write one batch of enrichment updates and child rows in a transaction.
 
     Child rows are replaced per paper rather than merged, so re-running
@@ -1512,6 +1624,10 @@ def write_enrichment(conn: sqlite3.Connection,
     sources : Iterable[str], optional
         Providers these rows came from. Only their rows are replaced; an empty
         value replaces every child row for the papers being updated.
+    replace_children : bool, default=True
+        Whether to replace child rows. Set to ``False`` for parent-only
+        updates, such as recording a provider outage without changing stored
+        authors, subjects, or references. Child-row inputs are ignored then.
 
     Returns
     -------
@@ -1525,7 +1641,7 @@ def write_enrichment(conn: sqlite3.Connection,
         'paper_authors': [dict(row) for row in authors],
         'paper_subjects': [dict(row) for row in subjects],
         'paper_references': [dict(row) for row in references],
-    }
+    } if replace_children else {}
     scoped = [str(source) for source in sources if str(source)]
     if scoped:
         placeholders = ', '.join('?' for _ in scoped)
@@ -2461,6 +2577,83 @@ def has_figure_asset(
     return False
 
 
+def figure_sources(conn: sqlite3.Connection, paper_id: str) -> set[str]:
+    """Return the sources of the figure images stored for one paper.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+
+    Returns
+    -------
+    set[str]
+        Distinct asset sources, such as ``pdf-layout`` or a provider name.
+    """
+    rows = conn.execute(
+        'SELECT DISTINCT source FROM paper_assets WHERE paper_id = ? AND role = ?',
+        (paper_id, FIGURE_ASSET_ROLE),
+    ).fetchall()
+    return {str(row[0] or '') for row in rows}
+
+
+def remove_figure_assets(conn: sqlite3.Connection, paper_id: str, source: str) -> int:
+    """Unlink every figure image of one paper that came from one source.
+
+    The image blobs stay in the corpus; only the paper's links to them go,
+    so another paper sharing an image keeps it.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    source : str
+        Asset source whose figures are removed, such as ``pdf-layout``.
+
+    Returns
+    -------
+    int
+        Number of figure links removed.
+    """
+    cursor = conn.execute(
+        'DELETE FROM paper_assets WHERE paper_id = ? AND role = ? AND source = ?',
+        (paper_id, FIGURE_ASSET_ROLE, source),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def papers_with_role(conn: sqlite3.Connection, role: str) -> list[str]:
+    """Return the identifiers of papers that have at least one asset of a role.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    role : str
+        Asset role, such as ``structured``, ``pdf``, or ``figure``.
+
+    Returns
+    -------
+    list[str]
+        Paper identifiers in corpus order.
+    """
+    rows = conn.execute(
+        """
+        SELECT p.paper_id FROM papers AS p
+        WHERE EXISTS (SELECT 1 FROM paper_assets AS a
+                      WHERE a.paper_id = p.paper_id AND a.role = ?)
+        ORDER BY p.rowid
+        """,
+        (role,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def set_figure_extraction_status(
     conn: sqlite3.Connection,
     paper_id: str,
@@ -2498,6 +2691,83 @@ def set_figure_extraction_status(
     ValueError
         If ``figure_id`` or ``status`` is empty.
     """
+    return _set_figure_stage_status(conn, paper_id, figure_id, 'extraction', status, error)
+
+
+def set_figure_digitization_status(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    figure_id: str,
+    status: str,
+    *,
+    error: str = '',
+) -> bool:
+    """Record whether one figure's plotted data has been recovered.
+
+    Kept apart from the extraction status, so recovering a figure's curves
+    and sending it to a vision model resume independently of each other.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str
+        Parsed figure identifier assigned by a layout parser.
+    status : str
+        Outcome, such as ``"succeeded"`` or ``"failed"``.
+    error : str, optional
+        Failure detail stored alongside a non-successful status.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset was found and updated.
+
+    Raises
+    ------
+    ValueError
+        If ``figure_id`` or ``status`` is empty.
+    """
+    return _set_figure_stage_status(conn, paper_id, figure_id, 'digitization', status, error)
+
+
+def _set_figure_stage_status(
+    conn: sqlite3.Connection,
+    paper_id: str,
+    figure_id: str,
+    stage: str,
+    status: str,
+    error: str,
+) -> bool:
+    """Store ``<stage>_status`` and ``<stage>_error`` in a figure asset's metadata.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper_id : str
+        Owning paper identifier.
+    figure_id : str
+        Parsed figure identifier.
+    stage : str
+        Metadata key prefix, such as ``"extraction"``.
+    status : str
+        Outcome to store.
+    error : str
+        Failure detail to store.
+
+    Returns
+    -------
+    bool
+        Whether a matching figure asset was found and updated.
+
+    Raises
+    ------
+    ValueError
+        If ``figure_id`` or ``status`` is empty.
+    """
     wanted_figure = figure_id.strip()
     normalized_status = status.strip()
     if not wanted_figure:
@@ -2513,8 +2783,8 @@ def set_figure_extraction_status(
         metadata = json.loads(row['metadata_json'])
         if metadata.get('figure_id') != wanted_figure:
             continue
-        metadata['extraction_status'] = normalized_status
-        metadata['extraction_error'] = error.strip()
+        metadata[f'{stage}_status'] = normalized_status
+        metadata[f'{stage}_error'] = error.strip()
         conn.execute(
             'UPDATE paper_assets SET metadata_json = ? WHERE rowid = ?',
             (json.dumps(metadata), row['rowid']),
@@ -2545,7 +2815,8 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
             'SELECT COUNT(DISTINCT paper_id) FROM paper_assets WHERE role = ?',
             (role,),
         ).fetchone()[0]
-        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE, FIGURE_ASSET_ROLE]
+        for role in ['abstract', 'text', 'pdf', STRUCTURED_DOCUMENT_ROLE, FIGURE_ASSET_ROLE,
+                     'supplement']
     }
     sizes = conn.execute('SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(stored_size), 0) FROM blobs').fetchone()
     chunked_text = conn.execute('SELECT COUNT(*) FROM papers WHERE num_text_chunks > 1').fetchone()[0]
@@ -2559,6 +2830,10 @@ def corpus_stats(conn: sqlite3.Connection) -> dict[str, int | float]:
         'papers_with_pdf': asset_counts['pdf'],
         'papers_with_structured_documents': asset_counts[STRUCTURED_DOCUMENT_ROLE],
         'papers_with_figure_assets': asset_counts[FIGURE_ASSET_ROLE],
+        'papers_with_supplements': asset_counts['supplement'],
+        'supplements': conn.execute(
+            "SELECT COUNT(*) FROM paper_assets WHERE role = 'supplement'"
+        ).fetchone()[0],
         'papers_with_chunked_text': chunked_text,
         'papers_with_chunked_abstracts': chunked_abstracts,
         'blobs': blob_count,

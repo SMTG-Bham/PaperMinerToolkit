@@ -70,6 +70,21 @@ def test_get_content_is_paced_retried_and_never_returns_a_missing_document(
                              session=FakeSession([FakeResponse(text='', status_code=404)]))
 
 
+def test_elsevier_doi_and_publisher_checks_recognise_imprints() -> None:
+    """DOI prefixes and publisher names identify Elsevier and its imprints only (#84)."""
+    assert elsevier.is_elsevier_doi('10.1016/j.joule.2024.05.004')
+    assert elsevier.is_elsevier_doi('https://doi.org/10.1016/J.JALLCOM.2025.180614')
+    assert elsevier.is_elsevier_doi('10.1006/jmbi.1999.3091')
+    assert not elsevier.is_elsevier_doi('10.1039/b905028k')
+    assert not elsevier.is_elsevier_doi('10.10160/not-a-prefix-match')
+    assert not elsevier.is_elsevier_doi(None)
+    assert not elsevier.is_elsevier_doi('')
+    assert elsevier.is_elsevier_publisher('Elsevier BV')
+    assert elsevier.is_elsevier_publisher('Cell Press')
+    assert not elsevier.is_elsevier_publisher('American Physical Society (APS)')
+    assert not elsevier.is_elsevier_publisher(None)
+
+
 def test_elsevier_url_builders_quote_query_and_doi_values() -> None:
     """Elsevier URL builders quote query and DOI values."""
     scopus_url = elsevier.search_url('scopus', 'solid electrolyte', 10, 'TITLE-ABS-KEY')
@@ -121,6 +136,30 @@ def test_request_json_sends_the_key_as_a_header() -> None:
     assert session.calls[0]['headers']['X-ELS-APIKey'] == 'elsevier-key'
     assert session.calls[0]['headers']['User-Agent'] == provider.USER_AGENT
     assert session.calls[0]['params'] == {}
+
+
+@pytest.mark.parametrize(('body', 'message'), [
+    ('not JSON', 'Elsevier returned malformed JSON'),
+    ('[]', 'Elsevier returned an unexpected payload of type list'),
+])
+def test_request_json_rejects_invalid_bodies(body: str, message: str) -> None:
+    """Keep decoding errors distinct from failed or missing HTTP requests."""
+    session = FakeSession([FakeResponse(text=body)])
+
+    with pytest.raises(RuntimeError, match=message):
+        elsevier.request_json(elsevier.BASE_URL, 'elsevier-key', session=session)
+    assert len(session.calls) == 1
+
+
+def test_request_json_preserves_retry_options_and_missing_results() -> None:
+    """Honor request options while returning None for a missing JSON record."""
+    session = FakeSession([FakeResponse(status_code=503), FakeResponse(status_code=404)])
+
+    assert elsevier.request_json(elsevier.BASE_URL, 'elsevier-key', params={'count': 1},
+                                 session=session, timeout=7.5, attempts=2) is None
+    assert len(session.calls) == 2
+    assert all(call['timeout'] == 7.5 and call['params'] == {'count': 1}
+               for call in session.calls)
 
 
 def test_full_text_document_requests_and_preserves_native_xml() -> None:

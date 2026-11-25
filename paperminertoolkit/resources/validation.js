@@ -385,9 +385,21 @@ function renderExtraRowFields(row) {
   }).join('');
 }
 
+function provenanceSummary(row) {
+  const data = row?.provenance || {};
+  const source = {'supplement-text': 'Supporting information (text)', 'supplement-image': 'Supporting information (image)'}[data.Source] || data.Source;
+  return [source, data['Supplement label'] || data['Supplement filename'] || data['Figure label']].filter(Boolean).join(' · ');
+}
+
+function provenanceDetails(row) {
+  const entries = Object.entries(row?.provenance || {}).filter(([, value]) => value);
+  if (!entries.length) return '';
+  return `<details><summary>${esc(provenanceSummary(row) || 'Source evidence')}</summary>${entries.map(([label, value]) => `<div class="tiny"><strong>${esc(label)}:</strong> ${esc(value)}</div>`).join('')}</details>`;
+}
+
 function extraCards(rows) {
   return rows.length ? '<h3>Unpaired scraped entries</h3>' + rows.map(row =>
-    `<div class="extra-card"><div class="row"><strong>${esc(identity(row))}</strong><button class="secondary ${decisions.extra[row.id] ? 'danger' : ''}" data-mark-extra="${esc(row.id)}">${decisions.extra[row.id] ? 'Undo extra' : 'Mark extra'}</button></div><small class="muted">${esc(row.meta.doi || row.meta.paper_id)}</small>${decisions.extra[row.id] ? `<p class="muted tiny">Accuracy of this extra entry. Field and part choices below override this choice.</p>${extraChoices(`data-extra-row="${esc(row.id)}"`, extraStatus(decisions.extra[row.id]))}${renderExtraRowFields(row)}` : ''}</div>`).join('') : '';
+    `<div class="extra-card"><div class="row"><strong>${esc(identity(row))}</strong><button class="secondary ${decisions.extra[row.id] ? 'danger' : ''}" data-mark-extra="${esc(row.id)}">${decisions.extra[row.id] ? 'Undo extra' : 'Mark extra'}</button></div><small class="muted">${esc(row.meta.doi || row.meta.paper_id)}</small>${provenanceDetails(row)}${decisions.extra[row.id] ? `<p class="muted tiny">Accuracy of this extra entry. Field and part choices below override this choice.</p>${extraChoices(`data-extra-row="${esc(row.id)}"`, extraStatus(decisions.extra[row.id]))}${renderExtraRowFields(row)}` : ''}</div>`).join('') : '';
 }
 
 function renderGold(gold) {
@@ -412,9 +424,9 @@ function renderGold(gold) {
   const row = gold.rows.find(candidate => candidate.id === currentEntry);
   const paired = pairedRow(gold, row);
   const scraped = scrapedPaperValue?.rows.find(candidate => candidate.id === paired);
-  const choices = (scrapedPaperValue?.rows || []).map(candidate => `<option value="${esc(candidate.id)}" ${paired === candidate.id ? 'selected' : ''}>${esc(identity(candidate))}</option>`).join('');
+  const choices = (scrapedPaperValue?.rows || []).map(candidate => `<option value="${esc(candidate.id)}" ${paired === candidate.id ? 'selected' : ''}>${esc(identity(candidate))}${provenanceSummary(candidate) ? ' · ' + esc(provenanceSummary(candidate)) : ''}</option>`).join('');
   const status = entryStatus(gold, row);
-  $('detail').innerHTML = top + `<div class="pairing"><div><label>Validation entry</label><div class="value">${esc(identity(row))}</div></div><div><label for="material-pair">Scraped entry ${!has(decisions.materialPairs, row.id) && paired ? '(suggested)' : ''}</label><select id="material-pair"><option value="">Missing / no pair</option>${choices}</select></div></div><div class="row"><button class="secondary" data-action="missing">Mark missing</button><button class="primary" data-action="mark-all" ${!scraped ? 'disabled' : ''}>Mark entry correct</button><span class="badge ${status === 'correct' ? 'good' : status === 'incorrect' || status === 'missing' ? 'bad' : ''}">${esc(status)}</span></div>` +
+  $('detail').innerHTML = top + `<div class="pairing"><div><label>Validation entry</label><div class="value">${esc(identity(row))}</div>${provenanceDetails(row)}</div><div><label for="material-pair">Scraped entry ${!has(decisions.materialPairs, row.id) && paired ? '(suggested)' : ''}</label><select id="material-pair"><option value="">Missing / no pair</option>${choices}</select>${provenanceDetails(scraped)}</div></div><div class="row"><button class="secondary" data-action="missing">Mark missing</button><button class="primary" data-action="mark-all" ${!scraped ? 'disabled' : ''}>Mark entry correct</button><span class="badge ${status === 'correct' ? 'good' : status === 'incorrect' || status === 'missing' ? 'bad' : ''}">${esc(status)}</span></div>` +
     session.fields.map(field => renderField(row, scraped, field)).join('') +
     '<div class="footer-actions"><button class="secondary" data-action="prev">Previous entry</button><button class="secondary" data-action="next">Next entry</button></div>' + extraCards(extra);
 }

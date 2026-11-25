@@ -12,10 +12,33 @@ from paperminertoolkit.providers import registry
 
 
 def test_every_provider_declares_a_probe() -> None:
-    """Give every source a probe, so none is silently reported as unchecked."""
-    assert not [name for name in registry.SOURCES if not registry.SOURCES[name].probe]
-    for name in registry.SOURCES:
+    """Probe every shared remote service; local and per-publisher routes have none."""
+    assert {name for name in registry.SOURCES if not registry.SOURCES[name].probe} == {
+        'structured', 'publisher',
+    }
+    for name in registry.SOURCES.keys() - {'structured', 'publisher'}:
         assert callable(registry.resolve_probe(name))
+
+
+def test_figshare_probe_checks_public_metadata_without_downloading_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check repository reachability through its small public listing response."""
+    from paperminertoolkit.providers import supplements
+
+    urls = []
+
+    def listing(url: str) -> list[dict[str, int]]:
+        """Return one public metadata record."""
+        urls.append(url)
+        return [{'id': 1}]
+
+    monkeypatch.setattr(supplements, '_json_url', listing)
+    assert 'public metadata' in diagnostics._probe_figshare()
+    assert urls == ['https://api.figshare.com/v2/articles?page_size=1']
+    monkeypatch.setattr(supplements, '_json_url', lambda url: {'invalid': True})
+    with pytest.raises(RuntimeError, match='invalid public metadata'):
+        diagnostics._probe_figshare()
 
 
 def test_only_the_content_probe_costs_anything() -> None:

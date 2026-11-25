@@ -296,7 +296,13 @@ def _request_page(
                                 error_types=(*provider.RETRY_ERRORS, KeyError))
     if response is None:
         raise RuntimeError(f'Crossref request failed after {attempts} attempts: 404')
-    return response.json()['message']
+    payload = provider.require_mapping(
+        provider.decode_payload(response, label='Crossref'), label='Crossref',
+    )
+    message = provider.require_mapping((payload or {}).get('message'), label='Crossref message')
+    if message is None:
+        raise RuntimeError('Crossref response is missing a message object.')
+    return message
 
 
 def configured_email(settings: Mapping[str, str] | None = None) -> str:
@@ -409,7 +415,7 @@ def work_by_doi(doi: str,
     session = session or requests.Session()
     url = f'{CROSSREF_SINGLE_WORK_URL}/{quote(doi, safe="")}'
     try:
-        return _request_page(session, contact_params(email), email, url=url)
+        return _request_page(session, contact_params(email), email, url=url, timeout=timeout)
     except RuntimeError:
         return None
 

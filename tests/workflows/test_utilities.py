@@ -30,10 +30,14 @@ def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path:
             'last_error': 'previous failure',
         })
 
-    utilities.reset(str(db_path))
+    summary = utilities.reset(str(db_path))
 
     with corpus.connect(db_path) as conn:
         row = corpus.paper_rows(conn)[0]
+    assert summary['papers_reset'] == 1
+    assert summary['supplement_stages_reset'] == 0
+    assert 'metadata_status' in summary['columns']
+    assert len(summary['columns']) == len(set(summary['columns']))
     assert row['paper_id'] == 'paper-1'
     assert row['title'] == 'Lithium solid electrolyte'
     assert row['metadata_status'] == 'retrieved'

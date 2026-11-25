@@ -5,6 +5,7 @@ Persistent corpus storage, provider-neutral document layouts, file handling, met
 ```{toctree}
 :maxdepth: 1
 
+supplements
 database
 layout
 pdf_layout

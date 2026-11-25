@@ -1,0 +1,7 @@
+# Every run writes under runs/<label>/: the staged corpus copy, the scraped CSV,
+# the run history and the Slurm log. The summary tables land beside them.
+runs/
+*.csv
+*.db
+*.db-journal
+*.db-wal

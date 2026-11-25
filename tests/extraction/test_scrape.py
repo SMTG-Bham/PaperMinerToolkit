@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+import math
 import os
 import threading
 from pathlib import Path
@@ -150,6 +151,31 @@ def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: p
     assert chunks[1].split(chr(10) * 2)[0] in chunks[0]
 
 
+def test_text_chunks_fit_dense_tables_within_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-split dense pieces so no chunk overflows, and keep table rows whole."""
+    text_config = FakeModelConfig('text', name='model')
+    monkeypatch.setattr(scrape, 'request_token_budget', lambda prompt, model_config: 100)
+
+    def tokens(text: str, model_config: object = None) -> int:
+        """Count prose at four characters a token and every digit as a token."""
+        digits = sum(character.isdigit() for character in text)
+        return digits + math.ceil((len(text) - digits) / 4)
+
+    monkeypatch.setattr(scrape, 'token_length', tokens)
+    prose = ''.join(f'Paragraph {chr(97 + index % 26)} of the methods section.\n' for index in range(30))
+    rows = [f'{index:04d}\t{index * 37 % 1000:03d}\t{index * 91 % 1000:03d}' for index in range(60)]
+    text = prose + '\n'.join(rows) + '\n'
+
+    chunks = scrape._text_chunks(text, text_config)
+
+    assert all(tokens(chunk) <= 100 for chunk in chunks)
+    assert all(any(row in chunk.splitlines() for chunk in chunks) for row in rows)
+    # Equal-length pieces, as chunks used to be cut, overflow inside the table.
+    count = math.ceil(tokens(text) / 100)
+    size = math.ceil(len(text) / count)
+    assert max(tokens(text[start:start + size]) for start in range(0, len(text), size)) > 100
+
+
 def test_material_file_and_image_helpers_handle_common_inputs(tmp_path: Path) -> None:
     """Test material, file, path, and image batching helpers."""
     row = pd.Series({
@@ -225,6 +251,32 @@ def test_select_papers_orders_and_limits_corpus_rows(monkeypatch: pytest.MonkeyP
         scrape._select_papers(papers, scrape_count=0)
 
 
+@pytest.mark.parametrize(('order', 'dated_ids'), [
+    ('publication-asc', ['older', 'newer-first', 'newer-second']),
+    ('publication-desc', ['newer-first', 'newer-second', 'older']),
+])
+def test_publication_order_keeps_missing_dates_last_and_preserves_ties(
+    order: str,
+    dated_ids: list[str],
+) -> None:
+    """Select dated papers before undated papers without changing equal-date order."""
+    papers = [
+        {'paper_id': 'missing', 'publication_date': None},
+        {'paper_id': 'newer-first', 'publication_date': '2026-01-01'},
+        {'paper_id': 'empty', 'publication_date': ''},
+        {'paper_id': 'older', 'publication_date': '2024-01-01'},
+        {'paper_id': 'absent'},
+        {'paper_id': 'newer-second', 'publication_date': '2026-01-01'},
+    ]
+    original_ids = [paper['paper_id'] for paper in papers]
+    expected = dated_ids + ['missing', 'empty', 'absent']
+
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order)] == expected
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order, 2)] == expected[:2]
+    assert [paper['paper_id'] for paper in scrape._select_papers(papers, order, 4)] == expected[:4]
+    assert [paper['paper_id'] for paper in papers] == original_ids
+
+
 def test_scrape_papers_rejects_invalid_modes(tmp_path: Path) -> None:
     """Test validation of scrape, image, compression, and selection options."""
     papers_dir = tmp_path / 'papers'
@@ -291,7 +343,7 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
 
     monkeypatch.setattr(scrape, 'scrape_text', fake_analyze_text)
 
-    scrape.scrape_papers(
+    summary = scrape.scrape_papers(
         str(db_path),
         output_path=str(output_path),
         mode='text',
@@ -301,6 +353,13 @@ def test_scrape_papers_text_mode_writes_materials_updates_status_and_preserves_i
         base_url='http://localhost:8000/v1',
     )
 
+    assert summary['papers_selected'] == 2
+    assert (summary['text_attempted'], summary['text_succeeded'], summary['text_failed']) == (1, 1, 0)
+    assert summary['text_skipped'] == 1
+    assert summary['materials'] == 2
+    assert summary['failed_papers'] == []
+    assert summary['output_path'] == str(output_path)
+    assert summary['elapsed_seconds'] >= 0
     materials = pd.read_csv(output_path, index_col=0)
     papers = read_corpus(db_path)
     captured = capsys.readouterr()
@@ -552,14 +611,42 @@ def test_scrape_papers_records_text_failures_when_source_is_missing(
     monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
     monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
 
-    scrape.scrape_papers(str(db_path), output_path=str(output_path))
+    summary = scrape.scrape_papers(str(db_path), output_path=str(output_path))
 
+    assert summary['text_failed'] == summary['missing_source'] == 1
+    assert summary['failed_papers'][0]['paper_id'] == 'missing-paper'
+    assert summary['failed_papers'][0]['stage'] == 'text'
+    assert 'No downloaded text or PDF asset found' in summary['failed_papers'][0]['error']
     papers = read_corpus(db_path)
     output = capsys.readouterr().out
     assert papers.loc[0, 'text_scrape_status'] == 'failed'
     assert 'No downloaded text or PDF asset found' in papers.loc[0, 'last_error']
     assert not output_path.exists()
     assert 'No new scraped material rows were written' in output
+
+
+def test_scrape_papers_limits_a_run_to_named_papers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Process only named papers, even when an active filter would exclude them."""
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'first'}, {'paper_id': 'second'}])
+    monkeypatch.setattr(scrape, 'load_recipe', lambda recipe: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'active_filter_stack', lambda conn: [{'name': 'exclude-all'}])
+    monkeypatch.setattr(scrape, 'current_filter_statuses', lambda conn: {})
+
+    summary = scrape.scrape_papers(str(db_path), output_path=str(tmp_path / 'out.csv'),
+                                   paper_ids=['second'])
+
+    assert summary['papers_selected'] == 1
+    assert [failure['paper_id'] for failure in summary['failed_papers']] == ['second']
+    assert 'Scraping 1 named papers' in capsys.readouterr().out
+    statuses = read_corpus(db_path).set_index('paper_id')['text_scrape_status']
+    assert statuses['first'] != 'failed'
 
 
 def test_scrape_papers_records_abstract_failures_when_source_is_missing(

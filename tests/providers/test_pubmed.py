@@ -789,3 +789,13 @@ def test_article_ids_do_not_borrow_a_reference_doi_when_the_record_has_none() ->
     </PubmedArticle>''')
 
     assert pubmed._article_ids(record) == {'doi': '', 'pmid': '2', 'pmcid': ''}
+
+
+def test_pmc_cloud_pdf_does_not_mistake_supporting_pdf_for_article() -> None:
+    """Only the canonical article PDF may populate the main PDF asset."""
+    session = FakeSession([FakeResponse(text=cloud_listing(
+        'PMC1.1/aaa-supporting.pdf', 'PMC1.1/PMC1.1.pdf',
+    ))])
+    assert pubmed.pmc_cloud_pdf_url('PMC1', session=session).endswith('/PMC1.1.pdf')
+    only_si = FakeSession([FakeResponse(text=cloud_listing('PMC1.1/supporting.pdf'))])
+    assert pubmed.pmc_cloud_pdf_url('PMC1', session=only_si) == ''

@@ -508,3 +508,116 @@ def store_pdf_layout_figures(
     finally:
         shutil.rmtree(render_dir, ignore_errors=True)
     return FigureDownloadSummary(stored, skipped, len(failures), tuple(failures))
+
+
+#: Outcomes of :func:`detect_paper_figures` for one paper.
+DETECT_STATUSES = ('detected', 'none_found', 'skipped_structured', 'skipped_existing', 'no_pdf',
+                   'failed')
+
+
+def detect_paper_figures(
+    conn: sqlite3.Connection,
+    paper: Mapping[str, Any],
+    *,
+    force: bool = False,
+    padding: float = 12.0,
+    dpi: int = 200,
+    minimum_confidence: float = 0.2,
+) -> dict[str, Any]:
+    """Detect a paper's figures from its stored PDF, keeping one figure source per paper.
+
+    A paper keeps figures from one origin, so image scraping never analyses
+    a figure twice: a paper with structured figures is skipped, and one with
+    PDF-detected figures is skipped unless ``force``, which removes those
+    figures and detects them again (so figures whose numbering changed leave
+    no stale copies).
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open corpus connection.
+    paper : Mapping[str, Any]
+        Corpus paper row.
+    force : bool, default=False
+        Replace figures this paper already has from PDF detection.
+    padding, dpi, minimum_confidence
+        As for :func:`store_pdf_layout_figures`.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``paper_id``, ``status`` (one of :data:`DETECT_STATUSES`),
+        ``stored`` and ``replaced`` figure counts, and ``failures``.
+    """
+    paper_id = str(paper.get('paper_id') or '')
+    result: dict[str, Any] = {'paper_id': paper_id, 'status': 'detected', 'stored': 0,
+                              'replaced': 0, 'failures': []}
+    sources = database.figure_sources(conn, paper_id)
+    if sources - {PDF_LAYOUT_SOURCE}:
+        return {**result, 'status': 'skipped_structured'}
+    if PDF_LAYOUT_SOURCE in sources and not force:
+        return {**result, 'status': 'skipped_existing'}
+    pdf = database.get_asset(conn, paper_id, 'pdf')
+    if pdf is None:
+        return {**result, 'status': 'no_pdf'}
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', paper_id).strip('._') or 'paper'
+    with tempfile.TemporaryDirectory(prefix='pmt-figures-') as directory:
+        pdf_path = Path(directory) / f'{safe_name}.pdf'
+        pdf_path.write_bytes(pdf['content'])
+        try:
+            if PDF_LAYOUT_SOURCE in sources:
+                result['replaced'] = database.remove_figure_assets(conn, paper_id, PDF_LAYOUT_SOURCE)
+            summary = store_pdf_layout_figures(conn, paper, pdf_path, padding=padding, dpi=dpi,
+                                               minimum_confidence=minimum_confidence)
+        except (OSError, RuntimeError, ValueError) as error:
+            return {**result, 'status': 'failed', 'failures': [str(error)]}
+    result.update(stored=summary.downloaded, failures=list(summary.failures))
+    if not summary.downloaded and not summary.failures:
+        result['status'] = 'none_found'
+    elif not summary.downloaded:
+        result['status'] = 'failed'
+    return result
+
+
+def download_paper_figures(
+    db_path: str | PathLike[str],
+    paper_id: str,
+    *,
+    force: bool = False,
+    session: provider.HTTPClient | None = None,
+    max_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+) -> dict[str, Any]:
+    """Download a paper's structured figures, then retire any PDF-detected copies.
+
+    Structured figures are the publisher's own images, so once a paper has
+    them its PDF-detected figures are removed: image scraping and
+    digitization then see each figure once, in its better form.
+
+    Parameters
+    ----------
+    db_path : str or os.PathLike[str]
+        Corpus database.
+    paper_id : str
+        Paper to process.
+    force, session, max_bytes
+        As for :func:`download_structured_figures`.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``paper_id``, ``downloaded``, ``skipped``, ``failed``, ``failures``,
+        and ``pdf_layout_replaced`` (PDF-detected figures removed).
+    """
+    summary = download_structured_figures(db_path, paper_id, force=force, session=session,
+                                          max_bytes=max_bytes)
+    replaced = 0
+    conn = database.connect(db_path)
+    try:
+        sources = database.figure_sources(conn, paper_id)
+        if PDF_LAYOUT_SOURCE in sources and sources - {PDF_LAYOUT_SOURCE}:
+            replaced = database.remove_figure_assets(conn, paper_id, PDF_LAYOUT_SOURCE)
+    finally:
+        conn.close()
+    return {'paper_id': paper_id, 'downloaded': summary.downloaded, 'skipped': summary.skipped,
+            'failed': summary.failed, 'failures': list(summary.failures),
+            'pdf_layout_replaced': replaced}

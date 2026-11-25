@@ -109,6 +109,16 @@ def _probe_pubmed() -> str:
     return '10/s with a key' if key else '3/s unauthenticated'
 
 
+def _probe_figshare() -> str:
+    """Read one public Figshare metadata record without downloading files."""
+    from paperminertoolkit.providers import supplements
+
+    result = supplements._json_url(f'{supplements.FIGSHARE_URL}/articles?page_size=1')
+    if not isinstance(result, list):
+        raise RuntimeError('Figshare returned invalid public metadata')
+    return 'public metadata available; no credentials required'
+
+
 def _probe_elsevier() -> str:
     """Validate the key, reporting any quota the response declared."""
     key = elsevier.configured_api_key()
@@ -256,8 +266,12 @@ def provider_status(names: Sequence[str] | None = None, probe: bool = True) -> l
             continue
         checker = registry.resolve_probe(name)
         if checker is None:
+            detail = {
+                'structured': 'reads stored article XML; no remote service to probe',
+                'publisher': 'availability depends on the paper publisher; no shared endpoint',
+            }.get(name, 'no probe registered')
             rows.append(ProviderStatus(name, entry.label, credential, NOT_PROBED,
-                                       'no probe registered'))
+                                       detail))
             continue
         start = time.monotonic()
         try:

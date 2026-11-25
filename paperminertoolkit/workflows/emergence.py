@@ -2228,17 +2228,17 @@ def analyze_emergence(
                 coverage, timeline_rows, int(span[0]), settings, top, figures),
         encoding='utf-8',
     )
-    (output / SUMMARY_FILENAME).write_text(json.dumps(_json_safe(summary), indent=2),
+    (output / SUMMARY_FILENAME).write_text(json.dumps(json_safe(summary), indent=2),
                                            encoding='utf-8')
     return summary
 
 
-def _json_safe(value: Any) -> Any:
+def json_safe(value: Any) -> Any:
     """Replace NaN and infinity with ``None`` so the summary is strict JSON."""
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, Mapping):
-        return {key: _json_safe(item) for key, item in value.items()}
+        return {key: json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
+        return [json_safe(item) for item in value]
     return value

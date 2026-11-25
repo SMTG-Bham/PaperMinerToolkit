@@ -47,6 +47,35 @@ def test_helpers_reject_empty_ids_and_skip_unscraped_papers(tmp_path: Path) -> N
         assert corpus.paper_rows(conn)[0]['store_status'] == 'pending'
 
 
+@pytest.mark.parametrize('existing_output', [False, True])
+@pytest.mark.parametrize('si_status', ['succeeded', 'partial'])
+def test_store_preserves_supplement_provenance_and_marks_si_only_rows_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_output: bool, si_status: str,
+) -> None:
+    """Retain distinct SI evidence when creating or extending a legacy CSV."""
+    db_path, input_path, output_path = tmp_path / 'papers.db', tmp_path / 'scraped.csv', tmp_path / 'materials.csv'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'si-only', 'supplement_text_scrape_status': si_status})
+    if existing_output:
+        pd.DataFrame([{'Paper id': 'older', 'Name': 'Existing'}]).to_csv(output_path)
+    records = [{
+        'Paper id': 'si-only', 'Name': 'LLZO', 'Source': 'supplement-text',
+        'Source path': f'corpus:supplement:asset-{index}!table.csv',
+        'Supplement id': f'asset-{index}', 'Supplement label': f'Table S{index}',
+        'Supplement filename': 'table.csv',
+        'Supplement source URL': f'https://example.org/si-{index}.zip',
+    } for index in (1, 2)]
+    pd.DataFrame(records).to_csv(input_path)
+    monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
+    store.store_results(db_path=db_path, in_filepath=input_path, out_filepath=output_path,
+                        unit_conversion=False, assume_yes=True)
+    stored = pd.read_csv(output_path, index_col=0)
+    assert stored.loc[stored['Paper id'] == 'si-only'].to_dict('records') == records
+    assert not input_path.exists()
+    with corpus.connect(db_path) as conn:
+        assert corpus.paper_rows(conn)[0]['store_status'] == 'stored'
+
+
 def write_papers_corpus(path: Path) -> None:
     """Write a minimal paper corpus for store unit tests."""
     with corpus.connect(path) as conn:
@@ -82,10 +111,12 @@ def test_store_results_reports_missing_scraped_materials_file(
     in_path = tmp_path / 'missing.csv'
     out_path = tmp_path / 'materials.csv'
 
-    store.store_results(in_filepath=str(in_path), out_filepath=str(out_path))
+    summary = store.store_results(in_filepath=str(in_path), out_filepath=str(out_path))
 
     output = capsys.readouterr().out
     assert f'No scraped materials file found at {in_path}' in output
+    assert summary['status'] == 'nothing_to_store'
+    assert summary['rows_read'] == 0
     assert not out_path.exists()
 
 
@@ -138,13 +169,19 @@ def test_store_results_converts_units_skips_unmatched_columns_and_updates_papers
 
     monkeypatch.setattr(store, 'convert_units', fake_convert_units)
 
-    store.store_results(
+    summary = store.store_results(
         db_path=str(papers_path),
         in_filepath=str(in_path),
         out_filepath=str(out_path),
         assume_yes=True,
         model_config={'provider': 'test'},
     )
+    assert summary['status'] == 'stored'
+    assert summary['rows_read'] == summary['rows_written'] == summary['rows_total'] == 1
+    assert summary['converted_columns'] == ['Conductivity [S cm^-1]']
+    assert summary['unconverted_columns'] == ['Paper id', 'Name']
+    assert summary['skipped_columns'] == ['Unknown']
+    assert summary['papers_marked_stored'] == 1
 
     materials = pd.read_csv(out_path, index_col=0)
     papers = read_papers_corpus(papers_path)
@@ -229,13 +266,14 @@ def test_store_results_keeps_files_when_user_rejects_conversions(
     monkeypatch.setattr(store, 'load_recipe', lambda _: sample_recipe())
     monkeypatch.setattr('builtins.input', lambda _: 'no')
 
-    store.store_results(
+    summary = store.store_results(
         db_path=str(papers_path),
         in_filepath=str(in_path),
         out_filepath=str(out_path),
         assume_yes=False,
     )
 
+    assert summary['status'] == 'declined'
     assert not out_path.exists()
     assert in_path.exists()
     assert not list(tmp_path.glob('.paperminertoolkit-converted-*'))

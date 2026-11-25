@@ -75,6 +75,30 @@ def test_review_matches_papers_before_materials_and_keeps_empty_papers(tmp_path:
     assert first['material_suggestions'][first['rows'][1]['id']] == by_name['Na2O']
 
 
+def test_review_retains_si_provenance_without_turning_it_into_recipe_fields(tmp_path: Path) -> None:
+    """Keep article and supplementary evidence distinguishable within a paper."""
+    gold = _csv(['Paper id', 'Material system', 'Band gap'], [['one', 'ZnO', '3 eV']])
+    scraped = _csv([
+        'Paper id', 'Material system', 'Band gap', 'Source', 'Source path',
+        'Supplement id', 'Supplement label', 'Supplement filename', 'Supplement source URL',
+    ], [
+        ['one', 'ZnO', '3 eV', 'text', 'corpus:text', '', '', '', ''],
+        ['one', 'ZnO', '3 eV', 'supplement-text', 'corpus:supplement:abc!data.csv',
+         'abc', 'Table S1', 'data.csv', 'https://example.org/SI.zip'],
+    ])
+    session = ReviewApp(output=tmp_path / 'review.json').load(gold, scraped, 'band_gap_validation')
+    assert len(session['scraped']) == 1
+    article, supplement = session['scraped'][0]['rows']
+    assert article['provenance']['Source'] == 'text'
+    assert supplement['provenance'] == {
+        'Source': 'supplement-text', 'Source path': 'corpus:supplement:abc!data.csv',
+        'Supplement id': 'abc', 'Supplement label': 'Table S1',
+        'Supplement filename': 'data.csv', 'Supplement source URL': 'https://example.org/SI.zip',
+    }
+    assert 'Supplement id' not in session['fields']
+    assert article['values'] == supplement['values']
+
+
 def test_review_title_fallback_conflicts_and_ambiguous_matches(tmp_path: Path) -> None:
     """Fallback metadata never overrides a contradictory DOI."""
     app = ReviewApp(output=tmp_path / 'review.json')
@@ -696,3 +720,103 @@ def test_serve_prints_its_address_and_closes_on_interrupt(
     assert re.search(r'^Validation review: http://127\.0\.0\.1:\d+/\?token=\S+$', output, re.MULTILINE)
     assert 'Press Ctrl+C to stop the review server.' in output
     assert closed == [True]
+
+
+def _complete_decisions(session: dict[str, Any]) -> dict[str, Any]:
+    """Accept every suggested pair and reject the unmatched scraped paper."""
+    pairs = [row for paper in session['validation'] for row in paper['material_suggestions']]
+    extra = next(paper for paper in session['scraped'] if paper['meta']['doi'] == '10.9999/extra')
+    return {
+        'fields': {row: {'Material system': {'status': 'correct'}} for row in pairs},
+        'parts': {row: {'Band gap': {'values': {'': {'status': 'correct'}}}} for row in pairs},
+        'extra': {row['id']: {'status': 'incorrect'} for row in extra['rows']},
+        'run': {key: 'recorded' for key in RUN_FIELDS},
+    }
+
+
+def test_review_session_builds_the_gui_session_without_writing(tmp_path: Path) -> None:
+    """Match the GUI's session and leave the review directory untouched."""
+    session = validation_workflow.review_session(_gold(), _scraped(), 'band_gap_validation')
+    assert not validation_workflow.REVIEW_DIR.exists()
+    loaded = ReviewApp(output=tmp_path / 'review.json').load(_gold(), _scraped(), 'band_gap_validation')
+    assert session['fingerprint'] == loaded['fingerprint']
+    assert session['validation'] == loaded['validation']
+    assert session['decisions'] == {} and session['review_path'] is None
+
+
+def test_validate_score_matches_the_gui_for_saved_and_direct_inputs(tmp_path: Path) -> None:
+    """Score a saved review, or its files plus decisions, exactly as the GUI does."""
+    gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'
+    gold.write_text(_gold(), encoding='utf-8')
+    scraped.write_text(_scraped(), encoding='utf-8')
+    app = ReviewApp(output=tmp_path / 'review.json')
+    app.load(_gold(), _scraped(), 'band_gap_validation')
+    app.save(_complete_decisions(app.session))
+    expected = score_review(app.session, app.decisions)
+    runner = CliRunner()
+
+    saved = runner.invoke(cli.main, ['validate', 'score', '--review', str(tmp_path / 'review.json'),
+                                     '--json'])
+    assert saved.exit_code == 0, saved.output
+    assert json.loads(saved.stdout)['fields'] == expected['fields']
+    assert json.loads(saved.stdout)['complete'] is True
+
+    outfile = tmp_path / 'score.json'
+    direct = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--decisions', str(tmp_path / 'review.json'),
+        '--outfile', str(outfile)])
+    assert direct.exit_code == 0, direct.output
+    assert 'complete: yes' in direct.stdout
+    assert 'Material system' in direct.stdout and '0.750' in direct.stdout
+    assert json.loads(outfile.read_text(encoding='utf-8'))['fields'] == expected['fields']
+
+    undecided = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--json'])
+    assert undecided.exit_code == 0, undecided.output
+    assert json.loads(undecided.stdout)['complete'] is False
+
+
+def test_saved_review_rebuilds_the_session_and_refuses_an_edited_copy(tmp_path: Path) -> None:
+    """Rebuild a saved review from its CSV copy, and refuse a copy changed since the decisions."""
+    review_path = tmp_path / 'review.json'
+    app = ReviewApp(output=review_path)
+    app.load(_gold(), _scraped(), 'band_gap_validation')
+    app.save({'notes': {'v:2': 'checked'}})
+    session, decisions = validation_workflow.saved_review(review_path)
+    assert session['fingerprint'] == app.session['fingerprint']
+    assert session['validation'] == app.session['validation']
+    assert decisions == {'notes': {'v:2': 'checked'}}
+
+    snapshot_path = validation_workflow.REVIEW_DIR / json.loads(review_path.read_text())['input_cache']
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    snapshot['scraped_csv'] += '9,late,10.1/late,CdS,2.4 eV\n'
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    with pytest.raises(ValueError, match='no longer match its decisions'):
+        validation_workflow.saved_review(review_path)
+
+
+def test_validate_score_rejects_mismatched_decisions_and_bad_option_sets(tmp_path: Path) -> None:
+    """Refuse decisions made on other inputs, and incomplete or mixed options."""
+    gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'
+    gold.write_text(_gold(), encoding='utf-8')
+    scraped.write_text(_scraped(), encoding='utf-8')
+    other = tmp_path / 'other.json'
+    other.write_text(json.dumps({'fingerprint': '0' * 64, 'decisions': {}}), encoding='utf-8')
+    runner = CliRunner()
+    mismatch = runner.invoke(cli.main, [
+        'validate', 'score', '--validation', str(gold), '--scraped', str(scraped),
+        '--recipe', 'band_gap_validation', '--decisions', str(other), '--json'])
+    assert mismatch.exit_code == 1
+    assert json.loads(mismatch.stdout)['error']['type'] == 'operational'
+    assert 'saved for different inputs' in mismatch.stderr
+
+    no_cache = runner.invoke(cli.main, ['validate', 'score', '--review', str(other)])
+    assert no_cache.exit_code == 1
+    assert 'no saved copy of its input CSVs' in no_cache.stderr
+
+    assert runner.invoke(cli.main, ['validate', 'score']).exit_code == 2
+    assert runner.invoke(cli.main, ['validate', 'score', '--validation', str(gold)]).exit_code == 2
+    assert runner.invoke(cli.main, ['validate', 'score', '--review', str(other),
+                                    '--scraped', str(scraped)]).exit_code == 2

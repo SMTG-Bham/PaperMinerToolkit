@@ -7,7 +7,7 @@ profiles used by search, download, and extraction workflows.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import openai
 import os
@@ -294,6 +294,34 @@ def load_settings() -> dict[str, Any]:
     return merged
 
 
+def _saved_settings() -> dict[str, Any]:
+    """Read only what the settings file holds, without defaults or environment overrides.
+
+    Setters update this and write it back, so a credential supplied through an
+    environment variable is never copied into the settings file.
+
+    Returns
+    -------
+    dict[str, Any]
+        The decoded settings file, or an empty mapping when it does not exist.
+
+    Raises
+    ------
+    RuntimeError
+        If the settings file exists but cannot be read or decoded.
+    """
+    try:
+        with open(SETTINGS_FILE, mode='r', encoding='utf-8') as json_file:
+            saved = json.load(json_file)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        raise RuntimeError(f'Error loading {SETTINGS_FILE}: {e}.') from e
+    if not isinstance(saved, dict):
+        raise RuntimeError(f'Error loading {SETTINGS_FILE}: expected a JSON object.')
+    return saved
+
+
 def _save_settings(settings: dict[str, Any]) -> None:
     """Persist PaperMinerToolkit settings as JSON.
 
@@ -413,7 +441,7 @@ def set_model_profile(
         Switch a hybrid model's thinking on or off through its chat template
         (OpenAI-compatible servers only). ``None`` leaves the model's default.
     """
-    settings = load_settings()
+    settings = _saved_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
     settings.setdefault('model_profiles', {})[profile] = {
         'provider': provider,
@@ -504,44 +532,83 @@ def _show_current_setting(
     print(f'Current {label}: {value}')
 
 
-def update_openai_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def _update_api_key(
+    settings: dict[str, Any] | Literal[True],
+    key: str,
+    label: str,
+    validate: Callable[[str], bool] | None = None,
+    *,
+    strip: bool = False,
+    value: str | None = None,
+) -> None:
+    """Prompt for, optionally validate, and persist one provider API key.
+
+    Parameters
+    ----------
+    settings : dict[str, Any] or Literal[True]
+        Mapping to update in place, or ``True`` to load the current settings.
+    key : str
+        Settings key containing the credential.
+    label : str
+        Label used in the display, prompt, and validation error.
+    validate : callable or None, optional
+        Provider-specific check, if the provider supports key validation.
+    strip : bool, default=False
+        Whether this provider trims surrounding whitespace from entered keys.
+    value : str or None, optional
+        Key to save without prompting; ``None`` prompts on stdin.
+
+    Raises
+    ------
+    ValueError
+        If the provider rejects the entered key.
+    """
+    if settings is True:
+        settings = _saved_settings()
+    if value is None:
+        _show_current_setting(settings, key, label)
+        api_key = input(f'Enter {label}: ')
+    else:
+        api_key = value
+    if strip:
+        api_key = api_key.strip()
+    if validate is not None and not validate(api_key):
+        raise ValueError(f'{label} is invalid.')
+    settings[key] = api_key
+    _save_settings(settings)
+
+
+def update_openai_key(settings: dict[str, Any] | Literal[True] = True,
+                      value: str | None = None) -> None:
     """Prompt for, validate, and save an OpenAI API key.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered key fails OpenAI authentication.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'openai_api_key', 'OpenAI API key')
-    api_key = input('Enter OpenAI API key: ')
-    if _check_openai_api_key(api_key):
-        settings['openai_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('OpenAI API key is invalid.')
+    _update_api_key(settings, 'openai_api_key', 'OpenAI API key', _check_openai_api_key, value=value)
 
 
-def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_anthropic_key(settings: dict[str, Any] | Literal[True] = True,
+                         value: str | None = None) -> None:
     """Prompt for and save an Anthropic API key.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'anthropic_api_key', 'Anthropic API key')
-    api_key = input('Enter Anthropic API key: ')
-    settings['anthropic_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'anthropic_api_key', 'Anthropic API key', value=value)
 
 
 def _check_elsevier_api_key(api_key: str) -> bool:
@@ -561,47 +628,41 @@ def _check_elsevier_api_key(api_key: str) -> bool:
     return check_api_key(api_key)
 
 
-def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_elsevier_key(settings: dict[str, Any] | Literal[True] = True,
+                        value: str | None = None) -> None:
     """Prompt for, validate, and save an Elsevier API key.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered key fails Elsevier validation.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'elsevier_api_key', 'Elsevier API key')
-    api_key = input('Enter Elsevier API key: ')
-    if _check_elsevier_api_key(api_key):
-        settings['elsevier_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('Elsevier API key is invalid.')
+    _update_api_key(settings, 'elsevier_api_key', 'Elsevier API key', _check_elsevier_api_key, value=value)
 
 
-def update_core_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_core_key(settings: dict[str, Any] | Literal[True] = True,
+                    value: str | None = None) -> None:
     """Prompt for and save a CORE API key.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'core_api_key', 'CORE API key')
-    api_key = input('Enter CORE API key: ')
-    settings['core_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'core_api_key', 'CORE API key', value=value)
 
 
-def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_core_rate(settings: dict[str, Any] | Literal[True] = True,
+                     value: str | None = None) -> None:
     """Prompt for and save the seconds to leave between CORE requests.
 
     CORE grants registered organisations and members a faster pace than the
@@ -611,7 +672,10 @@ def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Seconds to save without prompting; blank restores the free allowance.
+        ``None`` prompts on stdin.
 
     Raises
     ------
@@ -621,14 +685,16 @@ def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
     from paperminertoolkit.providers.core import (CORE_FREE_SINGLE_PER_WINDOW,
                                                   CORE_MIN_INTERVAL,
                                                   CORE_WINDOW_SECONDS)
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'core_min_interval',
-                          'CORE seconds between requests', secret=False)
-    print(f'Leave blank for CORE\'s free allowance of {CORE_FREE_SINGLE_PER_WINDOW} requests '
-          f'per {CORE_WINDOW_SECONDS:.0f} seconds, which is {CORE_MIN_INTERVAL:.1f} seconds '
-          'between requests. Enter a smaller number only if CORE granted you a faster rate.')
-    entered = input('Enter seconds between CORE requests: ').strip()
+    if settings is True:
+        settings = _saved_settings()
+    if value is None:
+        _show_current_setting(settings, 'core_min_interval',
+                              'CORE seconds between requests', secret=False)
+        print(f'Leave blank for CORE\'s free allowance of {CORE_FREE_SINGLE_PER_WINDOW} requests '
+              f'per {CORE_WINDOW_SECONDS:.0f} seconds, which is {CORE_MIN_INTERVAL:.1f} seconds '
+              'between requests. Enter a smaller number only if CORE granted you a faster rate.')
+        value = input('Enter seconds between CORE requests: ')
+    entered = value.strip()
     if not entered:
         settings.pop('core_min_interval', None)
         _save_settings(settings)
@@ -643,50 +709,59 @@ def update_core_rate(settings: dict[str, Any] | Literal[True] = True) -> None:
     _save_settings(settings)
 
 
-def _update_email(settings: dict[str, Any] | Literal[True], key: str, label: str) -> None:
+def _update_email(settings: dict[str, Any] | Literal[True], key: str, label: str,
+                  value: str | None = None) -> None:
     """Prompt for and persist one provider contact email.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True]
-        Mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
     key : str
         Settings key containing the contact address.
     label : str
         Provider label used in the display, prompt, and validation error.
+    value : str or None, optional
+        Address to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered address does not contain an ``@`` character.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, key, label, secret=False)
-    email = input(f'Enter {label}: ').strip()
+    if settings is True:
+        settings = _saved_settings()
+    if value is None:
+        _show_current_setting(settings, key, label, secret=False)
+        value = input(f'Enter {label}: ')
+    email = value.strip()
     if '@' not in email:
         raise ValueError(f'{label} must be a valid email address.')
     settings[key] = email
     _save_settings(settings)
 
 
-def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_unpaywall_email(settings: dict[str, Any] | Literal[True] = True,
+                           value: str | None = None) -> None:
     """Prompt for and save the email address sent to Unpaywall.
 
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered value does not contain an ``@`` character.
     """
-    _update_email(settings, 'unpaywall_email', 'Unpaywall email')
+    _update_email(settings, 'unpaywall_email', 'Unpaywall email', value=value)
 
 
-def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_crossref_email(settings: dict[str, Any] | Literal[True] = True,
+                          value: str | None = None) -> None:
     """Prompt for and save the contact email sent to Crossref.
 
     Crossref asks that automated clients identify themselves with a contact
@@ -695,17 +770,20 @@ def update_crossref_email(settings: dict[str, Any] | Literal[True] = True) -> No
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered value does not contain an ``@`` character.
     """
-    _update_email(settings, 'crossref_email', 'Crossref email')
+    _update_email(settings, 'crossref_email', 'Crossref email', value=value)
 
 
-def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True,
+                    value: str | None = None) -> None:
     """Prompt for and save an NCBI E-utilities API key.
 
     The key is optional. PubMed and PMC serve unauthenticated clients at three
@@ -714,17 +792,15 @@ def update_ncbi_key(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'ncbi_api_key', 'NCBI API key')
-    api_key = input('Enter NCBI API key: ')
-    settings['ncbi_api_key'] = api_key
-    _save_settings(settings)
+    _update_api_key(settings, 'ncbi_api_key', 'NCBI API key', value=value)
 
 
-def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True,
+                      value: str | None = None) -> None:
     """Prompt for and save the contact email sent to NCBI E-utilities.
 
     NCBI asks that automated clients identify themselves so it can warn a
@@ -734,14 +810,16 @@ def update_ncbi_email(settings: dict[str, Any] | Literal[True] = True) -> None:
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If the entered value does not contain an ``@`` character.
     """
-    _update_email(settings, 'ncbi_email', 'NCBI email')
+    _update_email(settings, 'ncbi_email', 'NCBI email', value=value)
 
 
 def _check_openalex_api_key(api_key: str) -> bool:
@@ -771,7 +849,8 @@ def _check_openalex_api_key(api_key: str) -> bool:
     return response.status_code != 401
 
 
-def update_openalex_key(settings: dict[str, Any] | Literal[True] = True) -> None:
+def update_openalex_key(settings: dict[str, Any] | Literal[True] = True,
+                        value: str | None = None) -> None:
     """Prompt for, validate, and save an OpenAlex API key.
 
     OpenAlex permits unauthenticated requests with a smaller daily credit
@@ -780,19 +859,16 @@ def update_openalex_key(settings: dict[str, Any] | Literal[True] = True) -> None
     Parameters
     ----------
     settings : dict[str, Any] or Literal[True], default=True
-        Settings mapping to update. A true value loads the current settings.
+        Mapping to update in place, or ``True`` to load the current settings.
+    value : str or None, optional
+        Value to save without prompting; ``None`` prompts on stdin.
 
     Raises
     ------
     ValueError
         If OpenAlex explicitly rejects the entered key.
     """
-    if settings:
-        settings = load_settings()
-    _show_current_setting(settings, 'openalex_api_key', 'OpenAlex API key')
-    api_key = input('Enter OpenAlex API key: ').strip()
-    if _check_openalex_api_key(api_key):
-        settings['openalex_api_key'] = api_key
-        _save_settings(settings)
-    else:
-        raise ValueError('OpenAlex API key is invalid.')
+    _update_api_key(
+        settings, 'openalex_api_key', 'OpenAlex API key', _check_openalex_api_key,
+        strip=True, value=value,
+    )

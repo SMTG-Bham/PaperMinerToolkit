@@ -81,6 +81,140 @@ def test_token_length_counts_with_the_configured_model_tokenizer(monkeypatch: py
     assert requested == ['Qwen/Qwen3.8-27B']
 
 
+def test_token_length_counts_with_the_configured_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Load the configured local tokenizer, not the package's default model."""
+    seen = []
+
+    def count(text: str, model: str) -> int:
+        """Record which tokenizer was asked for and count characters."""
+        seen.append(model)
+        return len(text)
+
+    monkeypatch.setattr(tokenizer, '_transformers_token_count', count)
+    local = {'provider': 'local', 'name': 'Qwen/Qwen3-30B-A3B-Instruct-2507'}
+
+    assert extract.token_length('123456', model_config=local) == 6
+    assert extract.token_length('123', model_config=local, model='other/model') == 3
+    assert seen == ['Qwen/Qwen3-30B-A3B-Instruct-2507', 'other/model']
+
+
+def vocabulary_recipe() -> dict[str, Any]:
+    """Return a recipe with a closed vocabulary, a long example and a placeholder example."""
+    recipe = sample_recipe()
+    recipe['search fields'] |= {
+        'Pathway': {
+            'prompt': 'Biotic or abiotic.',
+            'example': 'biotic',
+            'values': ['biotic', 'abiotic', 'abiotic control'],
+            'value aliases': {'enzymatic': 'biotic'},
+        },
+        'Method': {'prompt': 'How it was measured.', 'example': 'Dried at 40 C under vacuum to constant mass'},
+        'Endpoint': {'prompt': 'Final value.', 'example': '<value>%'},
+    }
+    return recipe
+
+
+def test_prompts_list_allowed_values_and_forbid_copying_examples() -> None:
+    """Show a field's vocabulary and the no-copying rule in every prompt."""
+    recipe = vocabulary_recipe()
+    prompts = [
+        extract.build_text_extraction_prompt(recipe),
+        extract.build_image_extraction_prompt(recipe),
+        extract.build_reconciliation_prompt(recipe),
+    ]
+
+    for prompt in prompts:
+        assert ('"Pathway": Biotic or abiotic. Allowed values: "biotic", "abiotic", "abiotic control", '
+                'or "None".') in prompt
+        assert 'never copy an example value or placeholder into a record' in prompt
+    assert 'Allowed values' not in extract._field_schema(sample_recipe())
+
+
+def test_check_record_values_maps_variants_and_records_what_it_replaced() -> None:
+    """Fold spellings and aliases onto the vocabulary and keep rejected values visible."""
+    recipe = vocabulary_recipe()
+    records: list[Any] = [
+        {'Name': 'A', 'Pathway': ' Abiotic-Control. '},
+        {'Name': 'B', 'Pathway': 'Enzymatic'},
+        {'Name': 'C', 'Pathway': 'photolysis'},
+        {'Name': 'D', 'Pathway': ['biotic', 'enzymatic']},
+        {'Name': 'E', 'Pathway': ['biotic', 'abiotic']},
+        {'Name': 'F', 'Pathway': 'None'},
+        {'Name': 'G'},
+        'not a record',
+    ]
+
+    checked = extract.check_record_values(records, recipe)
+
+    assert checked is records
+    assert [record['Pathway'] for record in records[:6]] == [
+        'abiotic control', 'biotic', 'None', 'biotic', 'None', 'None',
+    ]
+    assert records[2]['Value warnings'] == 'Pathway: "photolysis" is not one of biotic, abiotic, abiotic control'
+    assert records[4]['Value warnings'] == (
+        'Pathway: ["biotic", "abiotic"] is not one of biotic, abiotic, abiotic control'
+    )
+    assert all('Value warnings' not in record for record in (records[0], records[1], records[3], records[5]))
+    assert records[6] == {'Name': 'G'}
+    assert records[7] == 'not a record'
+
+    snapshot = json.dumps(records)
+    extract.check_record_values(records, recipe)
+    assert json.dumps(records) == snapshot
+
+
+def test_check_record_values_drops_copied_examples_but_keeps_short_real_values() -> None:
+    """Blank exact copies of long or placeholder examples; keep short values that match by chance."""
+    recipe = vocabulary_recipe()
+    records = [
+        {'Name': 'LLZO', 'Conductivity': '1e-3 S cm^-1',
+         'Method': 'dried at 40 C under vacuum to constant mass', 'Endpoint': '<value>%'},
+        {'Name': 'LATP', 'Method': 'Dried at 60 C', 'Endpoint': '85%'},
+    ]
+
+    extract.check_record_values(records, recipe)
+
+    assert records[0]['Name'] == 'LLZO'
+    assert records[0]['Conductivity'] == '1e-3 S cm^-1'
+    assert records[0]['Method'] == 'None'
+    assert records[0]['Endpoint'] == 'None'
+    assert records[0]['Value warnings'] == (
+        'Method: dropped a copy of the recipe example; Endpoint: dropped a copy of the recipe example'
+    )
+    assert records[1] == {'Name': 'LATP', 'Method': 'Dried at 60 C', 'Endpoint': '85%'}
+
+
+def test_every_model_reply_is_checked_against_the_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apply the vocabulary to text, image and reconciliation replies alike."""
+    recipe = vocabulary_recipe()
+    monkeypatch.setattr(extract, 'query_model',
+                        lambda messages, model_config=None: '[{"Name": "A", "Pathway": "enzymatic"}]')
+    monkeypatch.setattr(extract, 'query_images', lambda *_args, **_kwargs: '[{"Name": "B", "Pathway": "Abiotic"}]')
+
+    assert extract.scrape_text('paper text', recipe)[0]['Pathway'] == 'biotic'
+    assert extract.combine_material_records([], [], recipe)[0]['Pathway'] == 'biotic'
+    vision_config = type('VisionConfig', (), {'output_token_limit': 4096})()
+    assert extract.scrape_images(['figure.png'], recipe, model_config=vision_config)[0]['Pathway'] == 'abiotic'
+
+
+def test_polymer_degradation_pathway_folds_the_variants_models_returned() -> None:
+    """Map the off-vocabulary pathways of a real run onto the four values, and drop the rest."""
+    recipe = load_recipe('polymer_degradation')
+    expected = {
+        'enzymatic': 'biotic',
+        'enzymatic degradation': 'biotic',
+        'abiotic and biotic (combined)': 'combined',
+        'combined': 'combined',
+        'Abiotic control': 'abiotic control',
+        'outdoor weathering': 'None',
+    }
+    records = [{'Degradation pathway': value} for value in expected]
+
+    extract.check_record_values(records, recipe)
+
+    assert [record['Degradation pathway'] for record in records] == list(expected.values())
+
+
 def test_prompt_builders_include_recipe_schema_examples_and_source_rules() -> None:
     """Test that prompt builders include recipe and source instructions."""
     recipe = sample_recipe()
@@ -193,6 +327,53 @@ def test_polymer_prompt_example_contains_one_homopolymer_and_one_test(recipe_nam
         assert example['Biodegradation test duration'] == f'{duration} days'
 
 
+@pytest.mark.parametrize('prompt_kind', ['text', 'image', 'reconciliation'])
+def test_polymer_degradation_prompts_keep_biotic_abiotic_and_curve_rules(prompt_kind: str) -> None:
+    """Carry pathway, control, sequential-stage, and curve rules into every prompt."""
+    recipe = load_recipe('polymer_degradation')
+    if prompt_kind == 'reconciliation':
+        prompt = extract.build_reconciliation_prompt(recipe)
+    else:
+        prompt = extract.build_scrape_prompt(recipe, source=prompt_kind)
+
+    assert recipe['record definition']['unit'] in prompt
+    assert 'one record per distinct polymer sample and degradation test' in prompt
+    assert 'Time points within one test belong to the same record' in prompt
+    assert 'Return each abiotic control as its own record' in prompt
+    assert 'return one record per stage' in prompt
+    assert 'Do not decide it from the name of the medium alone' in prompt
+    assert "name the figure in 'Mass loss figure'" in prompt
+    assert 'If the paper reports no such experiment, return []' in prompt
+    assert 'both the sample identity and test context are compatible' in prompt
+
+    if prompt_kind == 'reconciliation':
+        identity_fields = set(recipe['record definition']['identity fields'])
+        assert {'Name', 'Degradation pathway', 'Degradation test type', 'Pre-treatment'}.issubset(identity_fields)
+        identity_section = prompt.split('Primary identity fields:\n', 1)[1].split('\n\n', 1)[0]
+        assert all(f'"{field}"' in identity_section for field in identity_fields)
+
+
+def test_polymer_degradation_example_is_one_schematic_mass_loss_test() -> None:
+    """Describe one test's shape with placeholders, never with numbers a model could copy as results."""
+    recipe = load_recipe('polymer_degradation')
+    prompt = extract.build_text_extraction_prompt(recipe)
+    examples = json.loads(prompt.split('Example output shape:\n', 1)[1])
+
+    assert len(examples) == 1
+    example = examples[0]
+    assert set(example) == set(recipe['search fields'])
+    assert example['Degradation pathway'] in recipe['search fields']['Degradation pathway']['values']
+    assert example['Composition'].lower() == 'homopolymer'
+    # A 2026 run copied the old example's numbers into a PLA paper's records.
+    assert [field for field, value in example.items() if re.search(r'\d', str(value))] == []
+    assert example['Mass loss curve'].count('<value>% at <time> d') > 1
+    assert example['Mass loss'] == '<value>%'
+    assert example['Test duration'] == '<time> days'
+    assert example['Mineralisation'] == 'None'
+    assert example['Mineralisation curve'] == 'None'
+    assert 'hypothetical sample and one test' in prompt
+
+
 def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that model queries use the text profile and output limit."""
     calls = {}
@@ -246,6 +427,25 @@ def test_extract_json_objects_parses_clean_fenced_messy_and_invalid_responses() 
 
     with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
         extract._extract_json_objects('No records were found.')
+
+
+def test_extract_json_objects_reads_leading_empty_array_with_prose_as_no_records() -> None:
+    """Test that an empty array followed by an explanation means no records."""
+    fence = chr(96) * 3
+    responses = [
+        '[]\n\nThe paper reports no band gap values.',
+        '[] The text contains no relevant measurements.',
+        f'{fence}json\n[]\n{fence}\n\n### Explanation:\nNo band gaps are reported.',
+        '[ ]\nNothing relevant was found.',
+    ]
+    for response in responses:
+        assert extract._extract_json_objects(response) == []
+
+    assert extract._extract_json_objects('[]\nOne value: {"Name": "ZnO"}') == [{'Name': 'ZnO'}]
+
+    for response in ('No records [] were found.', 'Based on the text, nothing is reported.'):
+        with pytest.raises(ValueError, match='Model response did not contain valid JSON objects'):
+            extract._extract_json_objects(response)
 
 
 def test_extract_json_objects_uses_regex_fallback_after_decoder_scan_fails(monkeypatch: pytest.MonkeyPatch) -> None:

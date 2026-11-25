@@ -12,6 +12,7 @@ from click.testing import CliRunner
 
 import paperminertoolkit.cli as cli
 import paperminertoolkit.corpus.database as corpus
+import paperminertoolkit.settings as settings
 from paperminertoolkit.extraction.postprocess import PostprocessSummary
 
 
@@ -34,7 +35,8 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
 
     assert root_help.exit_code == 0
     for command in ['search', 'download', 'corpus', 'filter', 'topics', 'import',
-                    'config', 'recipe', 'entities', 'scrape', 'store', 'validate', 'status', 'reset']:
+                    'config', 'recipe', 'entities', 'scrape', 'store', 'validate', 'status', 'reset',
+                    'figures']:
         assert command in root_help.output
     assert filter_help.exit_code == 0
     assert set(cli.filter_group.commands) == {'regex', 'topic', 'status', 'reset'}
@@ -54,10 +56,11 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
 
 def test_nested_groups_register_every_command_at_its_public_path() -> None:
     """Keep the installed command hierarchy from drifting from its design."""
-    assert set(cli.corpus_group.commands) == {'stats', 'searches'}
+    assert set(cli.corpus_group.commands) == {'stats', 'searches', 'list', 'show', 'export'}
     assert set(cli.import_group.commands) == {'pdfs', 'author'}
-    assert set(cli.recipe_group.commands) == {'prompt', 'optimise'}
-    assert set(cli.validate_group.commands) == {'gui', 'template'}
+    assert set(cli.recipe_group.commands) == {'list', 'show', 'prompt', 'optimise'}
+    assert set(cli.validate_group.commands) == {'gui', 'template', 'score'}
+    assert set(cli.figures_group.commands) == {'download', 'detect', 'list', 'export', 'render'}
     assert set(cli.config_group.commands) == {
         'model', 'status', 'providers', 'elsevier-key', 'core-key', 'core-rate',
         'unpaywall-email', 'crossref-email', 'openalex-key', 'ncbi-key',
@@ -65,7 +68,7 @@ def test_nested_groups_register_every_command_at_its_public_path() -> None:
     }
     for group in [cli.main, cli.corpus_group, cli.filter_group, cli.topics_group,
                   cli.import_group, cli.config_group, cli.recipe_group,
-                  cli.validate_group, cli.entities_group]:
+                  cli.validate_group, cli.entities_group, cli.figures_group]:
         for public_name, command in group.commands.items():
             assert command.name == public_name
 
@@ -285,7 +288,7 @@ def test_download_passes_format_and_sources(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: calls.update({
+        lambda path, download_format, sources, download_abstract, force, **kwargs: calls.update({
             'db_path': path,
             'download_format': download_format,
             'sources': sources,
@@ -337,7 +340,7 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update({
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update({
             'sources': sources,
             'force': force,
         }),
@@ -348,6 +351,50 @@ def test_search_and_download_source_choices_accept_openalex(monkeypatch: pytest.
     assert result.exit_code == 0
     assert download_calls['sources'] == ['openalex']
     assert download_calls['force'] is False
+
+
+@pytest.mark.parametrize('arguments,expected', [
+    ([], {'download_supplements': True, 'supplement_sources': ['all']}),
+    (['--no-supplements'], {'download_supplements': False, 'supplement_sources': ['all']}),
+    (['--format', 'supplement', '--no-supplements'],
+     {'download_supplements': False, 'supplement_sources': ['all']}),
+    (['--format', 'supplement', '--supplement-source', 'structured',
+      '--supplement-source', 'publisher'],
+     {'download_supplements': True, 'supplement_sources': ['structured', 'publisher']}),
+])
+def test_download_passes_supplement_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    arguments: list[str],
+    expected: dict[str, Any],
+) -> None:
+    """Expose default, disabled, and SI-only acquisition through the CLI."""
+    seen: dict[str, Any] = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+
+    def collect(*args: Any, **kwargs: Any) -> dict[str, int]:
+        """Capture acquisition controls without making provider requests."""
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(cli, 'download_papers', collect)
+    result = CliRunner().invoke(cli.download, [str(db_path), *arguments])
+    assert result.exit_code == 0, result.output
+    assert {key: seen[key] for key in expected} == expected
+    if '--format' in arguments:
+        assert seen['download_format'] == 'supplement'
+
+
+def test_scrape_can_disable_supplements(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Pass the SI extraction opt-out independently of text and image modes."""
+    seen: dict[str, Any] = {}
+    db_path = tmp_path / 'papers.db'
+    db_path.touch()
+    monkeypatch.setattr(cli, 'scrape_papers', lambda *args, **kwargs: seen.update(kwargs))
+    result = CliRunner().invoke(cli.scrape, [str(db_path), '--no-supplements'])
+    assert result.exit_code == 0, result.output
+    assert seen['include_supplements'] is False
 
 
 def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
@@ -577,6 +624,37 @@ def test_topics_emergence_delegates_settings_and_reports_the_map(
     assert calls['kwargs']['plots'] is False
     assert '6 areas, 20 topics (2 emerging, 3 growing, 15 stable), 90 niches, 1 flagged' in result.output
     assert 'Spearman 0.41' in result.output
+
+
+def test_topics_emergence_json_prints_the_summary_as_strict_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Print the run summary as JSON, with a skipped backtest as null and chatter on stderr."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Print progress and return a summary without a backtest."""
+        print('Embedding papers')
+        return {
+            'output_dir': str(tmp_path / 'out'), 'report': str(tmp_path / 'out' / 'report.md'),
+            'plots': [], 'papers_read': 10, 'papers_used': 9, 'end_year': 2024, 'areas': 2,
+            'topics': 4, 'niches': 10, 'topic_status': {'emerging': 1, 'stable': 3},
+            'flagged_niches': [{'niche': 3, 'growth_z': float('nan')}],
+            'backtest_rho_score': float('nan'), 'settings': {'backtest_cutoffs': 0},
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.main, ['topics', 'emergence', str(db_path), str(tmp_path / 'out'),
+                                           '--backtest-cutoffs', '0', '--json'])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload['backtest_rho_score'] is None
+    assert payload['flagged_niches'] == [{'niche': 3, 'growth_z': None}]
+    assert payload['report'] == str(tmp_path / 'out' / 'report.md')
+    assert 'Embedding papers' in result.stderr
+    assert 'Spearman' not in result.output
 
 
 def test_topics_emergence_reports_analysis_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -870,6 +948,7 @@ def test_scrape_passes_model_image_cleanup_and_output_options(
     assert calls['args'] == (str(db_path), 'custom_recipe')
     assert calls['kwargs'] == {
         'mode': 'text-images',
+        'include_supplements': True,
         'image_dir': 'images',
         'image_context': 'paper-text',
         'image_extraction': 'pages',
@@ -962,33 +1041,26 @@ def test_store_passes_files_recipe_and_assume_yes(monkeypatch: pytest.MonkeyPatc
     }
 
 
-def test_key_update_entry_points_call_settings_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Delegate API configuration entry points to their settings helpers."""
-    calls = []
-    monkeypatch.setattr(cli, 'update_elsevier_key', lambda: calls.append('elsevier'))
-    monkeypatch.setattr(cli, 'update_core_key', lambda: calls.append('core'))
-    monkeypatch.setattr(cli, 'update_core_rate', lambda: calls.append('core-rate'))
-    monkeypatch.setattr(cli, 'update_unpaywall_email', lambda: calls.append('unpaywall'))
-    monkeypatch.setattr(cli, 'update_crossref_email', lambda: calls.append('crossref'))
-    monkeypatch.setattr(cli, 'update_openalex_key', lambda: calls.append('openalex'))
-    monkeypatch.setattr(cli, 'update_ncbi_key', lambda: calls.append('ncbi-key'))
-    monkeypatch.setattr(cli, 'update_ncbi_email', lambda: calls.append('ncbi-email'))
-    monkeypatch.setattr(cli, 'update_openai_key', lambda: calls.append('openai'))
-    monkeypatch.setattr(cli, 'update_anthropic_key', lambda: calls.append('anthropic'))
-
-    cli.update_elsevier_api_key()
-    cli.update_core_api_key()
-    cli.update_core_request_rate()
-    cli.update_unpaywall_api_email()
-    cli.update_crossref_api_email()
-    cli.update_openalex_api_key()
-    cli.update_ncbi_api_key()
-    cli.update_ncbi_api_email()
-    cli.update_openai_api_key()
-    cli.update_anthropic_api_key()
-
-    assert calls == ['elsevier', 'core', 'core-rate', 'unpaywall', 'crossref',
-                     'openalex', 'ncbi-key', 'ncbi-email', 'openai', 'anthropic']
+def test_every_setter_command_saves_its_setting_without_prompting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Register one non-interactive command per provider setting."""
+    for name in ['elsevier-key', 'openalex-key', 'openai-key']:
+        provider = name.split('-')[0]
+        monkeypatch.setattr(settings, f'_check_{provider}_api_key', lambda _: True)
+    runner = CliRunner()
+    for name, key, _, secret, _, _ in cli._SETTERS:
+        value = '2.5' if name == 'core-rate' else ('me@example.org' if 'email' in name
+                                                   else f'value-for-{name}')
+        result = runner.invoke(cli.main, ['config', name, '--value-stdin', '--json'],
+                               input=f'{value}\n')
+        assert result.exit_code == 0, (name, result.output)
+        payload = json.loads(result.stdout)
+        assert payload['setting'] == key and payload['source'] == 'stdin'
+        assert payload['secret'] is secret
+        assert value not in result.stdout if secret else payload['value'] in {value, 2.5}
+        stored = settings._saved_settings()[key]
+        assert stored == (2.5 if name == 'core-rate' else value)
 
 
 def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1146,7 +1218,8 @@ def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.Mo
     db_path = tmp_path / 'papers.db'
     db_path.write_text('')
     calls = []
-    monkeypatch.setattr(cli, 'reset', lambda path: calls.append(('reset', path)))
+    monkeypatch.setattr(cli, 'reset', lambda path: calls.append(('reset', path)) or {
+        'papers_reset': 0, 'supplement_stages_reset': 0, 'columns': []})
     monkeypatch.setattr(cli, 'status', lambda path: calls.append(('status', path)))
 
     runner = CliRunner()
@@ -1288,7 +1361,7 @@ def test_search_download_and_enrich_source_choices_accept_arxiv(
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update(
             {'sources': sources}),
     )
 
@@ -1337,7 +1410,7 @@ def test_search_download_and_enrich_source_choices_accept_pubmed(
     monkeypatch.setattr(
         cli,
         'download_papers',
-        lambda path, download_format, sources, download_abstract, force: download_calls.update(
+        lambda path, download_format, sources, download_abstract, force, **kwargs: download_calls.update(
             {'sources': sources}),
     )
 

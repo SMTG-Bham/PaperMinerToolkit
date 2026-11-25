@@ -16,9 +16,9 @@
 
 # PaperMinerToolkit
 
-PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
+PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, PDFs, and supporting information; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
-The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
+The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation](https://paperminertoolkit.readthedocs.io/).
 
 ## Installation
 
@@ -61,7 +61,42 @@ pmt store papers.db \
   --assume-yes
 ```
 
+To recover the curves of the figures that records name, such as a recipe's `Mass loss figure`, use `pmt digitize` with the optional [figrecover](https://github.com/SMTG-Bham/figrecover) package; see [recovering curves from figures](https://paperminertoolkit.readthedocs.io/en/latest/workflow/digitizing.html).
+
 Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
+
+Text and PDF acquisition also attempts supporting information (SI), and text/image scraping includes stored SI by default. Use `--no-supplements` on `gather`, `download`, or `scrape` to opt out. Abstract-only runs skip SI. To acquire SI for existing entries without redownloading the article or fetching abstracts:
+
+```bash
+pmt download papers.db --format supplement
+```
+
+Discovery uses stored article links, PMC, public Figshare records tied to the paper DOI, and publisher supplement links. Each file retains its source and separate extraction status; see the [supporting-information workflow](https://paperminertoolkit.readthedocs.io/en/latest/workflow/corpus.html#supporting-information) for coverage and limits.
+
+## CLI automation and AI agents
+
+Discover the installed interface and inspect corpus records without parsing tables:
+
+```bash
+pmt --version
+pmt schema corpus export
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv --json
+pmt corpus list papers.db --limit 5 --json
+pmt status papers.db --json
+```
+
+`python -m paperminertoolkit` exposes the same commands. JSON is available on
+selected commands through their local `--json` option; progress and errors use
+stderr. Preserve JSON even when a search exits with code 1: successful papers
+from a partial search remain in the corpus. Use `corpus show` to inspect a paper
+and `corpus export` to retrieve a stored abstract, text, or PDF.
+
+The [agent CLI guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/agents.html)
+documents discovery, credentials, JSON shapes, exit codes, and resumable
+extraction. The [standard-library subprocess example](examples/agent_cli.py)
+closes stdin and handles partial results; run it with `--help` before supplying
+a query and explicit corpus path.
 
 ## BERT entity extraction
 

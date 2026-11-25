@@ -748,3 +748,24 @@ def test_claude_code_client_reports_cli_errors(monkeypatch: pytest.MonkeyPatch) 
         client.query([{'role': 'user', 'content': 'paper'}])
     with pytest.raises(RuntimeError, match='boom'):
         client.query([{'role': 'user', 'content': 'paper'}])
+
+
+def test_claude_code_client_needs_the_cli_and_text_only_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explain a missing CLI, a timed-out request, and refuse images."""
+    client = models.ClaudeCodeClient(models.ModelConfig(provider='claude-code', name='haiku',
+                                                        request_timeout=5))
+    monkeypatch.delenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', raising=False)
+    monkeypatch.setattr(models.shutil, 'which', lambda name: None)
+    with pytest.raises(ValueError, match='needs the claude CLI'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+
+    def time_out(command: list[str], **kwargs: Any) -> NoReturn:
+        """Fail as a request that outlives its timeout."""
+        raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', time_out)
+    with pytest.raises(RuntimeError, match='timed out'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+    with pytest.raises(models.ModelCapabilityError, match='text requests only'):
+        client.query_with_images('Describe.', ['figure.png'])

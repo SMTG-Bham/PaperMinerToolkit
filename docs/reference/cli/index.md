@@ -6,22 +6,34 @@ PaperMinerToolkit provides one `pmt` executable. Commands that operate on the sa
 pmt --help
 pmt filter --help
 pmt filter regex --help
+pmt --version
+pmt schema corpus export
 ```
+
+`python -m paperminertoolkit` exposes the same command tree. `pmt schema`
+describes the installed commands as JSON, including options, defaults, and
+choices. Selected commands accept a command-local `--json` flag; see the
+{doc}`agent CLI guide <../../workflow/agents>` for payloads, exit codes, and an
+unattended workflow.
 
 ## Top-level commands
 
 | Command | Purpose |
 | --- | --- |
+| `pmt schema` | Describe all commands or one command subtree as JSON. |
 | `pmt probe` | Check provider configuration and availability. |
 | `pmt gather` | Search and retrieve content for matching papers in one run. |
 | `pmt search` | Find papers and add them to a corpus. |
 | `pmt enrich` | Supplement stored bibliographic metadata. |
-| `pmt download` | Retrieve abstracts, full text, and PDFs. |
+| `pmt download` | Retrieve abstracts, full text, PDFs, and supporting information. |
 | `pmt scrape` | Extract recipe-defined records with language or vision models. |
+| `pmt scrape-progress` | Report how far a scrape has got and what a rerun would still do. |
 | `pmt postprocess` | Merge and check the records of an existing scrape output. |
 | `pmt store` | Validate, convert, and store extracted records. |
+| `pmt digitize` | Recover curves from the figures that extracted records name. |
 | `pmt status` | Inspect pipeline progress. |
 | `pmt reset` | Reset pipeline statuses for deliberate reruns. |
+| `pmt mcp` | Serve the commands to an agent over the Model Context Protocol. |
 
 ## Command groups
 
@@ -34,6 +46,8 @@ pmt filter regex --help
 | `pmt import` | Import local PDFs or an author's works. |
 | `pmt config` | Configure model profiles and provider credentials. |
 | `pmt recipe` | Inspect recipes, render their LLM prompts, and optimise them against a validation set. |
+| `pmt validate` | Create validation sets, review extracted records, and score them. |
+| `pmt figures` | Download, detect, list, export, and render paper figures. |
 
 Exact arguments and options are generated from the installed commands on the pages below. For task-oriented instructions, use the {doc}`../../workflow/index` and the {doc}`../../examples/index`.
 
@@ -48,4 +62,5 @@ entities
 imports
 configuration
 recipes
+figures
 ```

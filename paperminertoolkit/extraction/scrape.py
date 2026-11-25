@@ -8,6 +8,7 @@ the main ``pmt scrape`` command.
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
 import pandas as pd
 import random
@@ -16,15 +17,19 @@ import sqlite3
 import sys
 import tempfile
 import textwrap
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
+
+from paperminertoolkit import _progress as progress_events
+from paperminertoolkit._progress import bars_disabled
 from typing import Any, TypeAlias
 
-from paperminertoolkit.extraction.compression import compression_config, maybe_compress_text
+from paperminertoolkit.extraction.compression import CompressionConfig, compression_config, maybe_compress_text
 from paperminertoolkit.corpus.tables import STRUCTURED_TABLE_FORMATS, append_tables, pdf_tables_text, structured_tables_text
 from paperminertoolkit.corpus.documents import (extract_pdf_images,
                                     read_document_text,
@@ -43,6 +48,8 @@ from paperminertoolkit.corpus.filtering import active_filter_stack, current_filt
 from paperminertoolkit.extraction.merge import merge_chunk_records
 from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
+from paperminertoolkit.corpus.supplements import get_supplements, set_supplement_extraction_status
+from paperminertoolkit.extraction.supplements import supplement_images, supplement_parts, supplement_text
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
 from paperminertoolkit.extraction.verify import DROPPED_COLUMNS, apply_paper_answer, verify_records
 from paperminertoolkit.corpus.pdf_layout import figure_regions
@@ -54,6 +61,12 @@ IMAGE_EXTRACTION_MODES = {'auto', 'embedded', 'pages', 'layout'}
 SCRAPE_ORDERS = {'corpus', 'random', 'publication-asc', 'publication-desc', 'title', 'paper-id'}
 _Paper: TypeAlias = dict[str, Any]
 _Material: TypeAlias = dict[str, Any]
+
+
+# A supporting-information file that needs more text requests than this is a
+# raw data dump, such as a genome annotation or instrument export, not reported
+# results: one was split into 180 requests in a 2026 polymer-degradation run.
+MAX_SUPPLEMENT_TEXT_REQUESTS = 20
 
 
 _CHUNK_SAFETY = 0.9
@@ -121,8 +134,6 @@ def _pack_blocks(blocks: Sequence[str], max_chars: int) -> list[str]:
     if current:
         chunks.append('\n\n'.join(current))
     return chunks
-
-
 def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') -> list[str]:
     """Split text into chunks that fit a model context window.
 
@@ -742,9 +753,222 @@ def _publication_key(paper: Mapping[str, Any]) -> str:
     Returns
     -------
     str
-        Publication date, or a value that sorts missing dates last.
+        Publication date, or an empty string when the date is missing.
     """
-    return str(paper.get('publication_date') or '9999-99-99')
+    return str(paper.get('publication_date') or '')
+
+
+def _supplement_status(statuses: Iterable[str]) -> str:
+    """Aggregate supplementary member outcomes without hiding partial errors."""
+    outcomes = set(statuses) - {'not_applicable'}
+    if not outcomes:
+        return 'not_applicable'
+    if outcomes <= {'succeeded'}:
+        return 'succeeded'
+    if 'succeeded' in outcomes or 'partial' in outcomes:
+        return 'partial'
+    if 'failed' in outcomes:
+        return 'failed'
+    return 'unsupported'
+
+
+def _scrape_supplements(
+    conn: sqlite3.Connection,
+    row: _Paper,
+    *,
+    mode: str,
+    recipe: Mapping[str, Any],
+    text_config: ModelConfig,
+    vision_config: ModelConfig | None,
+    compression: CompressionConfig,
+    image_dir: str,
+    image_dpi: int,
+    image_batch_size: str | int,
+    image_context: str,
+    delete_images_after: bool,
+    force: bool,
+    output_path: str,
+    first_material: bool,
+    summary: dict[str, int],
+) -> bool:
+    """Extract SI independently of the main article with durable provenance.
+
+    Each successful asset member is written before its checkpoint is stored.
+    Failed members are retried while successful members are skipped, including
+    when SI is enabled after the article itself was already processed.
+    """
+    assets = get_supplements(conn, row['paper_id'], include_content=True)
+    stages = [stage for stage in ('text', 'image')
+              if mode == 'text-images' or mode == ('images' if stage == 'image' else stage)]
+    outcomes: dict[str, list[str]] = {stage: [] for stage in stages}
+    seen_blobs = set()
+    for asset in assets:
+        if asset['blob_id'] in seen_blobs:
+            continue
+        seen_blobs.add(asset['blob_id'])
+        metadata = asset.get('metadata') or {}
+        pending_stages = []
+        for stage in stages:
+            previous_status = metadata.get(f'{stage}_extraction_status')
+            if not force and previous_status in {'succeeded', 'not_applicable'}:
+                summary['supplement_skipped'] += 1
+                outcomes[stage].append(previous_status)
+            else:
+                pending_stages.append(stage)
+        if not pending_stages:
+            continue
+        label = str(metadata.get('label') or asset.get('original_filename') or asset['blob_id'])
+        source_url = str(metadata.get('source_url') or '')
+        try:
+            parts = supplement_parts(asset)
+            parse_error = ''
+        except Exception as error:
+            parts = []
+            parse_error = str(error)
+        for stage in pending_stages:
+            summary[f'supplement_{stage}_attempted'] += 1
+            members = dict(metadata.get(f'{stage}_extraction_members') or {}) if not force else {}
+            errors = []
+            if parse_error:
+                errors.append(parse_error)
+                members = {'': 'failed'}
+                summary['supplement_failed'] += 1
+            for part in parts:
+                key = part.member or part.name
+                if not force and members.get(key) == 'succeeded':
+                    summary['supplement_skipped'] += 1
+                    continue
+                if part.kind in {'unsupported', 'zip'}:
+                    members[key] = 'unsupported'
+                    summary['supplement_unsupported'] += 1
+                    errors.append(f'{key}: unsupported supplementary format')
+                    continue
+                if not (part.supports_text if stage == 'text' else part.supports_images):
+                    members[key] = 'not_applicable'
+                    continue
+                reference = f'corpus:supplement:{asset["blob_id"]}'
+                if part.member:
+                    reference += f'!{part.member}'
+                description = f'Supporting information: {label}\nFile: {part.name}\nAsset: {reference}'
+                if source_url:
+                    description += f'\nSource URL: {source_url}'
+                response_records = []
+                image_paths = []
+                try:
+                    if stage == 'text':
+                        text = supplement_text(part)
+                        if not text.strip():
+                            raise ValueError('No extractable text; use image mode for scanned PDF pages')
+                        prompt = build_scrape_prompt(recipe, source='text')
+                        text = maybe_compress_text(text, prompt, text_config, compression)
+                        chunks = _text_chunks(text, text_config, prompt=f'{prompt}\n{description}')
+                        if len(chunks) > MAX_SUPPLEMENT_TEXT_REQUESTS:
+                            members[key] = 'unsupported'
+                            summary['supplement_unsupported'] += 1
+                            errors.append(f'{key}: too large for text extraction ({len(chunks)} requests, '
+                                          f'limit {MAX_SUPPLEMENT_TEXT_REQUESTS})')
+                            continue
+                        if len(chunks) > 1:
+                            print(f'Warning: supporting information {reference} was split into '
+                                  f'{len(chunks)} independent text requests.', file=sys.stderr)
+                        for chunk in chunks:
+                            response_records.extend(scrape_text(
+                                f'{description}\n\n{chunk}', recipe, model_config=text_config,
+                            ))
+                        if len(chunks) > 1:
+                            # Chunks overlap, so a record near a cut is reported twice.
+                            response_records = merge_chunk_records(response_records, recipe)
+                    else:
+                        member_key = hashlib.sha256(key.encode()).hexdigest()[:16]
+                        directory = os.path.join(image_dir, _safe_path_part(row['paper_id']),
+                                                 'supplements', _safe_path_part(asset['blob_id']), member_key)
+                        image_paths = supplement_images(part, directory, dpi=image_dpi)
+                        if not image_paths:
+                            raise ValueError('No supplementary images or PDF pages could be read')
+                        context = None
+                        if image_context == 'paper-text' and part.supports_text:
+                            # SI context belongs to its own file, not a different article asset.
+                            context = supplement_text(part)
+                            prompt = build_scrape_prompt(recipe, source='image', with_context=True)
+                            context = maybe_compress_text(context, prompt, vision_config, compression)
+                        for batch in _image_batches(image_paths, image_batch_size):
+                            response_records.extend(scrape_images(
+                                batch, recipe, model_config=vision_config, context=context,
+                                compression_config=compression,
+                                image_labels=[f'{description}\nPage/image {image_paths.index(path) + 1}'
+                                              for path in batch],
+                            ))
+                except Exception as error:
+                    members[key] = 'failed'
+                    summary['supplement_failed'] += 1
+                    errors.append(f'{key}: {error}')
+                    continue
+                records = _append_materials(response_records, row, f'supplement-{stage}', reference)
+                for record in records:
+                    record['Supplement id'] = asset['blob_id']
+                    record['Supplement label'] = label
+                    record['Supplement filename'] = part.name
+                    record['Supplement source URL'] = source_url
+                first_material, written = _write_materials(records, first_material, output_path)
+                summary['materials'] += written
+                summary['supplement_materials'] += written
+                members[key] = 'succeeded'
+                # Persist each successful member to avoid repeated output on retries.
+                set_supplement_extraction_status(conn, row['paper_id'], asset['blob_id'], stage,
+                                                'partial', members=members)
+                if delete_images_after:
+                    for path in image_paths:
+                        _delete_file(path)
+            status = _supplement_status(members.values())
+            error_text = '; '.join(errors)
+            set_supplement_extraction_status(conn, row['paper_id'], asset['blob_id'], stage,
+                                            status, error=error_text, members=members)
+            outcomes[stage].append(status)
+            if error_text:
+                print(f'Supporting information {asset["blob_id"]} ({stage}): {error_text}', file=sys.stderr)
+    for stage, statuses in outcomes.items():
+        # Assign directly so successful SI does not clear an unrelated article error.
+        row[f'supplement_{stage}_scrape_status'] = _supplement_status(statuses) if assets else 'not_found'
+    return first_material
+
+
+_OUTCOME_KEYS = tuple(f'{stage}_{outcome}' for stage in ('abstract', 'text', 'image')
+                      for outcome in ('succeeded', 'failed')) + ('supplement_failed',)
+
+
+def _paper_outcome(summary: Mapping[str, Any], before: Mapping[str, int]) -> str:
+    """Name one paper's outcome from the summary counters it moved.
+
+    Returns ``failed`` if any of its stages or SI files failed, ``succeeded``
+    if a stage succeeded, and ``skipped`` when every stage was already done.
+    """
+    moved = {key for key in _OUTCOME_KEYS if summary[key] != before[key]}
+    if any(key.endswith('_failed') for key in moved):
+        return 'failed'
+    return 'succeeded' if moved else 'skipped'
+
+
+def _record_failure(summary: dict[str, Any], row: Mapping[str, Any], stage: str,
+                    error: Exception) -> None:
+    """Count a failed scrape stage and remember which paper it was.
+
+    Parameters
+    ----------
+    summary : dict[str, Any]
+        Run summary to update.
+    row : Mapping[str, Any]
+        Paper row whose stage failed.
+    stage : str
+        ``abstract``, ``text``, or ``image``.
+    error : Exception
+        The failure, recorded as text.
+    """
+    summary[f'{stage}_failed'] += 1
+    if isinstance(error, FileNotFoundError):
+        summary['missing_source'] += 1
+    summary['failed_papers'].append({
+        'paper_id': str(row.get('paper_id') or ''), 'stage': stage, 'error': str(error),
+    })
 
 
 def _select_papers(
@@ -760,7 +984,8 @@ def _select_papers(
         Corpus paper rows.
     scrape_order : str, optional
         Selection order, such as corpus order, random order, or publication
-        date.
+        date. Missing publication dates sort last in either direction;
+        papers with equal dates retain their corpus order.
     scrape_count : int, optional
         Maximum number of papers to return.
 
@@ -781,10 +1006,10 @@ def _select_papers(
     selected = list(papers)
     if scrape_order == 'random':
         random.shuffle(selected)
-    elif scrape_order == 'publication-asc':
-        selected.sort(key=_publication_key)
-    elif scrape_order == 'publication-desc':
-        selected.sort(key=_publication_key, reverse=True)
+    elif scrape_order in {'publication-asc', 'publication-desc'}:
+        selected.sort(key=_publication_key, reverse=scrape_order == 'publication-desc')
+        # A second stable sort keeps undated rows last without reversing ties.
+        selected.sort(key=lambda paper: not bool(paper.get('publication_date')))
     elif scrape_order == 'title':
         selected.sort(key=lambda paper: str(paper.get('title') or '').lower())
     elif scrape_order == 'paper-id':
@@ -999,11 +1224,13 @@ def scrape_papers(db_path: str = 'papers.db',
                   compression_mode: str = 'auto',
                   compression_ratio: float | str = 'auto',
                   compression_content_detection: bool = True,
+                  include_supplements: bool = True,
+                  paper_ids: Iterable[str] | None = None,
                   tables: bool = True,
                   verify: bool = False,
                   workers: int = 1,
                   figure_text: bool = True,
-                  ) -> None:
+                  ) -> dict[str, Any]:
     """Scrape corpus papers and write extracted material records.
 
     Parameters
@@ -1059,6 +1286,14 @@ def scrape_papers(db_path: str = 'papers.db',
         Target compression ratio, or ``"auto"``.
     compression_content_detection : bool, optional
         Whether Headroom should detect content types.
+    include_supplements : bool, default=True
+        Whether text and image modes also process downloaded supporting
+        information. SI has independent checkpoints and per-file provenance;
+        abstract-only scraping never includes SI.
+    paper_ids : Iterable[str] or None, optional
+        Only consider these canonical paper identifiers. Active corpus
+        filters do not apply to papers named this way; ``scrape_order`` and
+        ``scrape_count`` still do. ``None`` considers the whole corpus.
     tables : bool, optional
         Whether full-text scrapes append the paper's tables, rendered as
         Markdown from its structured XML or detected in its PDF.
@@ -1075,11 +1310,22 @@ def scrape_papers(db_path: str = 'papers.db',
         inside its figures. ``False`` redacts them, so values shown only in a
         figure are neither read by the model nor accepted by the checks.
 
+    Returns
+    -------
+    dict[str, Any]
+        Run summary. Besides the progress counters printed at the end, it
+        holds ``papers_selected``, per-stage ``*_attempted``, ``*_skipped``,
+        ``*_succeeded`` and ``*_failed`` counts, ``missing_source`` (failed
+        stages with no downloaded asset to read), ``failed_papers`` (one
+        ``paper_id``, ``stage`` and ``error`` entry per failed stage),
+        ``output_path`` and ``elapsed_seconds``.
+
     Raises
     ------
     ValueError
         If a scrape, image, ordering, count, or compression option is invalid.
     """
+    started = time.monotonic()
     mode = mode.lower()
     image_context = image_context.lower()
     image_extraction = image_extraction.lower()
@@ -1119,26 +1365,47 @@ def scrape_papers(db_path: str = 'papers.db',
         vision_config.require('vision')
 
     first_material = not os.path.isfile(output_path)
-    summary = {
+    summary: dict[str, Any] = {
+        'mode': mode,
+        'output_path': str(output_path),
+        'papers_selected': 0,
         'papers': 0,
         'abstract_attempted': 0,
         'abstract_skipped': 0,
+        'abstract_succeeded': 0,
+        'abstract_failed': 0,
         'text_attempted': 0,
         'text_skipped': 0,
+        'text_succeeded': 0,
+        'text_failed': 0,
         'image_attempted': 0,
         'image_skipped': 0,
+        'image_succeeded': 0,
+        'image_failed': 0,
+        'missing_source': 0,
+        'failed_papers': [],
         'layout_figures': 0,
         'materials': 0,
         'chunked_inputs': 0,
         'chunk_requests': 0,
         'abstract_chunked': 0,
         'text_chunked': 0,
+        'supplement_text_attempted': 0,
+        'supplement_image_attempted': 0,
+        'supplement_skipped': 0,
+        'supplement_failed': 0,
+        'supplement_unsupported': 0,
+        'supplement_materials': 0,
         'dropped': 0,
     }
     with connect(db_path) as conn:
         filters = active_filter_stack(conn)
         papers = paper_rows(conn)
-        if filters:
+        if paper_ids is not None:
+            selected_ids = set(paper_ids)
+            papers = [paper for paper in papers if paper['paper_id'] in selected_ids]
+            print(f'Scraping {len(papers)} named papers; active corpus filters do not apply to them.')
+        elif filters:
             overview = filter_overview(conn)
             counts = overview['counts']
             if ignore_filters:
@@ -1158,6 +1425,8 @@ def scrape_papers(db_path: str = 'papers.db',
         else:
             print('No active corpus filters; all otherwise eligible papers are available for scraping.')
         papers = _select_papers(papers, scrape_order=scrape_order, scrape_count=scrape_count)
+        summary['papers_selected'] = len(papers)
+        progress_events.emit('run_start', total=len(papers), mode=mode)
         text_stage = 'abstract' if should_scrape_abstract else 'text'
 
         def needs_text(paper: dict[str, Any]) -> bool:
@@ -1184,10 +1453,12 @@ def scrape_papers(db_path: str = 'papers.db',
                 papers, workers, lambda paper: _paper_asset_paths(conn, paper, temp_dir),
                 needs_text, prepare_text, extract_text,
             ) if workers > 1 else None
-            with tqdm(total=len(papers), desc='Scraping Papers', colour='green') as pbar, pipeline or nullcontext():
-                for index, row in enumerate(papers):
+            with tqdm(total=len(papers), desc='Scraping Papers', colour='green',
+                      disable=bars_disabled()) as pbar, pipeline or nullcontext():
+                for done, row in enumerate(papers, start=1):
+                    before = {key: summary[key] for key in _OUTCOME_KEYS}
                     if pipeline:
-                        paths, text_job = pipeline.take(index)
+                        paths, text_job = pipeline.take(done - 1)
                     else:
                         paths, text_job = _paper_asset_paths(conn, row, temp_dir), None
                     text_path = paths['text']
@@ -1223,8 +1494,10 @@ def scrape_papers(db_path: str = 'papers.db',
                                     raise result.error
                                 row[f'num_{stage}_materials'] = len(text_materials)
                                 _set_status(row, status_column, 'succeeded')
+                                summary[f'{stage}_succeeded'] += 1
                             except Exception as e:
                                 _set_status(row, status_column, 'failed', str(e))
+                                _record_failure(summary, row, stage, e)
 
                     if should_scrape_images:
                         image_paths = []
@@ -1331,11 +1604,13 @@ def scrape_papers(db_path: str = 'papers.db',
                                 row['num_images'] = previous_images + len(image_source_paths)
                                 row['num_image_materials'] = previous_materials + len(image_materials)
                                 _set_status(row, 'image_scrape_status', 'succeeded')
+                                summary['image_succeeded'] += 1
                                 if delete_images_after:
                                     for image_path in image_paths:
                                         _delete_file(image_path)
                             except Exception as e:
                                 _set_status(row, 'image_scrape_status', 'failed', str(e))
+                                _record_failure(summary, row, 'image', e)
 
                     if text_materials and image_materials:
                         text_source = text_source_path or ''
@@ -1370,8 +1645,20 @@ def scrape_papers(db_path: str = 'papers.db',
 
                     first_material, written_count = _write_materials(row_materials, first_material, output_path)
                     summary['materials'] += written_count
+                    if include_supplements and mode != 'abstract':
+                        first_material = _scrape_supplements(
+                            conn, row, mode=mode, recipe=recipe_data,
+                            text_config=text_config, vision_config=vision_config,
+                            compression=compression, image_dir=image_dir, image_dpi=image_dpi,
+                            image_batch_size=image_batch_size, image_context=image_context,
+                            delete_images_after=delete_images_after, force=force,
+                            output_path=output_path, first_material=first_material, summary=summary,
+                        )
                     upsert_paper(conn, row)
                     pbar.update(1)
+                    progress_events.emit('paper_done', paper_id=row['paper_id'], done=done,
+                                         total=len(papers), status=_paper_outcome(summary, before),
+                                         materials=len(row_materials))
 
     print(
         f"Scrape complete: {summary['papers']} papers processed, "
@@ -1391,6 +1678,15 @@ def scrape_papers(db_path: str = 'papers.db',
         print(f"Checks removed, edited or moved {summary['dropped']} items; see {dropped_path(output_path)}.")
     if summary['materials'] == 0:
         print(f"No new scraped material rows were written to {output_path}.")
+    if any(summary[key] for key in ('supplement_text_attempted', 'supplement_image_attempted', 'supplement_skipped')):
+        print(
+            f"Supporting information: text stages={summary['supplement_text_attempted']}, "
+            f"image stages={summary['supplement_image_attempted']}, "
+            f"completed stages/members skipped={summary['supplement_skipped']}, "
+            f"unsupported file stages={summary['supplement_unsupported']}, "
+            f"failed file stages={summary['supplement_failed']}, "
+            f"material rows={summary['supplement_materials']}."
+        )
     if summary['chunked_inputs']:
         input_summary = (
             '1 paper input was'
@@ -1403,3 +1699,7 @@ def scrape_papers(db_path: str = 'papers.db',
             f"(abstracts={summary['abstract_chunked']}, text={summary['text_chunked']}).",
             file=sys.stderr,
         )
+    summary['elapsed_seconds'] = round(time.monotonic() - started, 3)
+    progress_events.emit('run_end', papers=summary['papers'], materials=summary['materials'],
+                         failed=len(summary['failed_papers']))
+    return summary
