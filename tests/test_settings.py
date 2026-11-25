@@ -165,6 +165,21 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file: Path)
         settings.load_settings()
 
 
+@pytest.mark.parametrize(('content', 'problem'), [
+    ('{not-json', 'Error loading'),
+    ('["not", "an", "object"]', 'expected a JSON object'),
+])
+def test_saved_settings_rejects_an_unreadable_or_non_object_file(
+    isolated_settings_file: Path, content: str, problem: str,
+) -> None:
+    """Refuse to read a damaged settings file as empty, so a setter cannot overwrite it."""
+    isolated_settings_file.write_text(content, encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=problem) as error:
+        settings._saved_settings()
+    assert str(isolated_settings_file) in str(error.value)
+
+
 def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Override every stored service credential from the environment."""
     isolated_settings_file.write_text(json.dumps({

@@ -95,6 +95,17 @@ def test_list_rejects_invalid_bounds(corpus_path: Path, arguments: list[str]) ->
     assert result.stdout == ''
 
 
+def test_human_listing_reports_an_empty_page(tmp_path: Path) -> None:
+    """Say that a page past the last paper is empty rather than print no rows."""
+    path = tmp_path / 'papers.db'
+    with open_corpus(path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'paper:a', 'title': 'Paper a'})
+    result = CliRunner().invoke(cli.corpus_list, [str(path), '--offset', '1'])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [f'Corpus: {path} | 1 papers | offset=1 limit=20',
+                                          'No papers in this page.']
+
+
 def test_show_exposes_decoded_metadata_latest_assets_and_provenance(corpus_path: Path) -> None:
     """Inspection returns structured metadata without decompressed content bytes."""
     result = CliRunner().invoke(cli.corpus_show, [str(corpus_path), 'paper:a', '--json'])
@@ -423,6 +434,7 @@ def test_missing_database_does_not_create_a_file(
     ('older', 'Migrate it with a corpus-writing workflow'),
     ('newer', 'newer than supported'),
     ('incomplete', 'Incomplete PaperMinerToolkit corpus schema'),
+    ('missing-column', 'Incomplete PaperMinerToolkit corpus schema'),
 ])
 def test_invalid_database_fails_without_migration_or_writes(
     tmp_path: Path, kind: str, expected_error: str,
@@ -439,6 +451,8 @@ def test_invalid_database_fails_without_migration_or_writes(
         with open_corpus(path) as conn:
             if kind == 'incomplete':
                 conn.execute('DROP TABLE paper_authors')
+            elif kind == 'missing-column':
+                conn.execute('ALTER TABLE papers RENAME COLUMN metadata_json TO legacy_metadata')
             else:
                 version = corpus.SCHEMA_VERSION + (1 if kind == 'newer' else -1)
                 conn.execute(f'PRAGMA user_version = {version}')
