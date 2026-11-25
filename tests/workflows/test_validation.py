@@ -778,6 +778,25 @@ def test_validate_score_matches_the_gui_for_saved_and_direct_inputs(tmp_path: Pa
     assert json.loads(undecided.stdout)['complete'] is False
 
 
+def test_saved_review_rebuilds_the_session_and_refuses_an_edited_copy(tmp_path: Path) -> None:
+    """Rebuild a saved review from its CSV copy, and refuse a copy changed since the decisions."""
+    review_path = tmp_path / 'review.json'
+    app = ReviewApp(output=review_path)
+    app.load(_gold(), _scraped(), 'band_gap_validation')
+    app.save({'notes': {'v:2': 'checked'}})
+    session, decisions = validation_workflow.saved_review(review_path)
+    assert session['fingerprint'] == app.session['fingerprint']
+    assert session['validation'] == app.session['validation']
+    assert decisions == {'notes': {'v:2': 'checked'}}
+
+    snapshot_path = validation_workflow.REVIEW_DIR / json.loads(review_path.read_text())['input_cache']
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    snapshot['scraped_csv'] += '9,late,10.1/late,CdS,2.4 eV\n'
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    with pytest.raises(ValueError, match='no longer match its decisions'):
+        validation_workflow.saved_review(review_path)
+
+
 def test_validate_score_rejects_mismatched_decisions_and_bad_option_sets(tmp_path: Path) -> None:
     """Refuse decisions made on other inputs, and incomplete or mixed options."""
     gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'

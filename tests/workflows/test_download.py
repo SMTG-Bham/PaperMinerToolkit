@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 import io
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from pypdf import PdfWriter
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.download as download
+from paperminertoolkit.corpus import filtering
 from tests.doubles import NullProgress
 
 
@@ -3263,3 +3265,152 @@ def test_abstract_prefetch_skips_stored_abstracts_and_lone_lookups(
         lookups.batches.clear()
         download._prefetch_abstract_metadata(conn, papers[:2], ['openalex'])
         assert lookups.batches == []
+
+
+def test_abstract_prefetch_batches_openalex_work_ids_and_keys_them_by_short_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Papers known only by an OpenAlex work ID are looked up together on ``ids.openalex`` (#74).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the OpenAlex page request.
+    """
+    db_path = tmp_path / 'papers.db'
+    papers = [{'paper_id': 'openalex:W1'}, {'paper_id': 'openalex:W2'}, {'paper_id': 'openalex:W3'}]
+    write_corpus(db_path, papers)
+    pages: list[tuple[str, object]] = []
+
+    def works_page(value: str, **options: object) -> list[dict[str, Any]]:
+        """Answer one OR-filtered page, omitting the work OpenAlex does not know."""
+        pages.append((value, options['filter_name']))
+        return [{'id': 'https://openalex.org/W1', 'abstract_inverted_index': {'Batched.': [0]}},
+                {'id': 'https://openalex.org/W2', 'abstract_inverted_index': None}]
+
+    monkeypatch.setattr(download.openalex, 'works_page', works_page)
+    with corpus.connect(db_path) as conn:
+        prefetched = download._prefetch_abstract_metadata(conn, papers, ['openalex'])
+
+    assert pages == [('W1|W2|W3', 'ids.openalex')]
+    assert set(prefetched.openalex) == {'W1', 'W2'}
+    assert download._openalex_has_abstract(prefetched.openalex['W1']) is True
+    assert download._openalex_has_abstract(prefetched.openalex['W2']) is False
+
+
+def test_abstract_prefetch_skips_pmids_openalex_answers_and_survives_a_failed_efetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PubMed is not asked for abstracts OpenAlex holds, and a failed EFetch costs nothing (#74).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fake the providers.
+    capsys : pytest.CaptureFixture[str]
+        Fixture used to read the fallback notice.
+    """
+    db_path = tmp_path / 'papers.db'
+    papers = [{'paper_id': 'doi:10.1000/a', 'doi': '10.1000/a', 'pmid': '111'},
+              {'paper_id': 'doi:10.1000/b', 'doi': '10.1000/b', 'pmid': '222'},
+              {'paper_id': 'pmid:333', 'doi': ''}]
+    write_corpus(db_path, papers)
+    lookups = BatchLookups({'10.1000/a': openalex_abstract_work('10.1000/a', 'OpenAlex abstract.'),
+                            '10.1000/b': openalex_abstract_work('10.1000/b', None)})
+    lookups.install(monkeypatch)
+    with corpus.connect(db_path) as conn:
+        prefetched = download._prefetch_abstract_metadata(conn, papers, ['openalex', 'pubmed'])
+        assert lookups.efetches == [['222', '333']]
+        assert set(prefetched.pubmed) == {'222', '333'}
+
+        def unreachable(identifiers: list[str], **_: object) -> NoReturn:
+            """Fail as an unreachable EFetch endpoint does."""
+            raise RuntimeError('PubMed EFetch timed out')
+
+        monkeypatch.setattr(download.pubmed, 'efetch_ids', unreachable)
+        failed = download._prefetch_abstract_metadata(conn, papers, ['openalex', 'pubmed'])
+
+    assert failed.pubmed == {}
+    assert set(failed.openalex) == {'doi:10.1000/a', 'doi:10.1000/b'}
+    assert ('PubMed batch lookup failed, fetching records one at a time: PubMed EFetch timed out'
+            in capsys.readouterr().out)
+
+
+def test_an_elsevier_row_without_doi_or_full_text_link_has_no_endpoint(tmp_path: Path) -> None:
+    """Elsevier may publish the row, but with no DOI or full-text link there is nothing to ask (#84).
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the text destination.
+    """
+    paper = {'paper_id': 'SCOPUS_ID:1', 'publisher': 'Elsevier BV', 'elsevier_link': SCOPUS_RECORD_LINK}
+    assert download._elsevier_route(paper) == ''
+    assert download._full_text_uri(paper) is None
+    assert download._pdf_urls(paper) == []
+    assert download._should_try_elsevier_text(paper) is False
+    destination = tmp_path / 'paper.txt'
+    assert download._download_elsevier_text(paper, destination) == (
+        False, 'missing Elsevier full-text URL', None)
+    assert not destination.exists()
+
+
+def test_plan_downloads_rejects_unknown_formats_and_plans_supplements_alone(tmp_path: Path) -> None:
+    """An unknown format is refused; the supplement format plans SI discovery and nothing else.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus.
+    """
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [{'paper_id': 'a', 'doi': '10.1000/a'}])
+    with pytest.raises(ValueError, match='download_format must be one of'):
+        download.plan_downloads(db_path, download_format='html')
+
+    plan = download.plan_downloads(db_path, download_format='Supplement')
+
+    assert (plan['format'], plan['sources']) == ('supplement', [])
+    assert plan['supplement_sources'] == download.normalize_supplement_sources(None)
+    assert plan['would_attempt'] == {'texts': 0, 'pdfs': 0, 'abstracts': 0, 'supplement_discovery': 1}
+    assert plan['papers'] == [{'paper_id': 'a', 'attempt': ['supplements'], 'stored': []}]
+
+
+def test_plan_downloads_filters_named_papers_and_counts_text_no_source_serves(tmp_path: Path) -> None:
+    """Named papers the filters exclude are dropped, and unreachable text is counted apart.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the corpus and filter rules.
+    """
+    db_path = tmp_path / 'papers.db'
+    write_corpus(db_path, [
+        {'paper_id': 'aps', 'doi': '10.1103/PhysRevLett.103.096405', 'title': 'Keep APS'},
+        {'paper_id': 'jallcom', 'doi': '10.1016/j.jallcom.2025.180614', 'title': 'Keep Elsevier'},
+        {'paper_id': 'dropped', 'doi': '10.1016/j.jallcom.2025.180615', 'title': 'Drop Elsevier'},
+    ])
+    rules = tmp_path / 'keep.json'
+    rules.write_text(json.dumps({'name': 'keep', 'fields': ['title'],
+                                 'include': [{'name': 'keep', 'pattern': 'Keep'}]}), encoding='utf-8')
+    filtering.apply_regex_filter(db_path, rules)
+    options: dict[str, Any] = {'download_format': 'text', 'sources': ['elsevier'],
+                               'download_abstract': False, 'download_supplements': False,
+                               'paper_ids': ['aps', 'jallcom', 'dropped']}
+
+    plan = download.plan_downloads(db_path, **options)
+
+    assert {paper['paper_id']: paper['attempt'] for paper in plan['papers']} == {
+        'aps': [], 'jallcom': ['text']}
+    assert plan['no_text_source'] == 1
+    assert plan['would_attempt']['texts'] == 1
+    every = download.plan_downloads(db_path, **options, respect_filters=False)
+    assert {paper['paper_id'] for paper in every['papers']} == {'aps', 'jallcom', 'dropped'}
+    assert every['no_text_source'] == 1 and every['would_attempt']['texts'] == 2

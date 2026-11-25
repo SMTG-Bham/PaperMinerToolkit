@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 import types
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 import numpy.typing as npt
@@ -148,6 +149,7 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     ('Supplementary Figure 2', [('2', '', True)]),
     ('Figure 2 and Table 3', [('2', '', False)]),
     ('Figure 3 of ref. 12', [('3', '', False)]),
+    ('Figure in ref. 12', []),
     ('FIG. 10', [('10', '', False)]),
     ('Table 2', []),
     ('None', []),
@@ -185,6 +187,17 @@ def test_requests_group_references_by_paper_and_figure(records: Path) -> None:
     assert ('paper-1', '4') in [(request.paper_id, request.target.number) for request in every]
     with pytest.raises(KeyError, match='Figure field'):
         digitize.figure_requests(frame, 'Figure field')
+
+
+def test_records_without_a_paper_id_are_left_out() -> None:
+    """Request no figure for a record whose Paper id is blank or a missing marker."""
+    frame = pd.DataFrame({'Paper id': ['', float('nan'), 'None', 'paper-1'],
+                          'Mass loss figure': ['Figure 1', 'Figure 2', 'Figure 3', 'Figure 4']})
+
+    requests = digitize.figure_requests(frame, 'Mass loss figure')
+
+    assert [(request.paper_id, request.target.number) for request in requests] == [('paper-1', '4')]
+    assert requests[0].rows == ['3'] and requests[0].names == []
 
 
 def test_digitize_writes_points_checkpoints_and_resumes(
@@ -314,6 +327,44 @@ def test_missing_figrecover_explains_how_to_install_it(monkeypatch: pytest.Monke
     monkeypatch.setattr(digitize.importlib, 'import_module', refuse)
     with pytest.raises(RuntimeError, match='figrecover with its OCR extra'):
         digitize._figrecover()
+
+
+def test_figrecover_is_used_only_with_its_ocr_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return the installed figrecover, and refuse it while its OCR extra is missing."""
+    module = stand_in([])
+    monkeypatch.setitem(sys.modules, 'figrecover', module)
+    monkeypatch.setitem(sys.modules, 'rapidocr', types.ModuleType('rapidocr'))
+    assert digitize._figrecover() is module
+
+    monkeypatch.setitem(sys.modules, 'rapidocr', None)
+    with pytest.raises(RuntimeError, match='figrecover with its OCR extra') as raised:
+        digitize._figrecover()
+    assert isinstance(raised.value.__cause__, ImportError)
+    assert digitize.FIGRECOVER_INSTALL in str(raised.value)
+
+
+def test_a_failed_figure_detection_is_noted_and_the_run_goes_on(
+    corpus_db: Path, records: Path, tmp_path: Path, install: Callable[..., types.ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note why a paper's PDF gave no figures, and still recover the other papers' figures."""
+    install([Panel('a')])
+    with corpus.connect(corpus_db) as conn:
+        corpus.add_asset(conn, {'paper_id': 'paper-2'}, b'%PDF-1.7 stand-in', role='pdf', kind='pdf',
+                         mime_type='application/pdf', source='pubmed', original_filename='two.pdf')
+
+    def unreadable(conn: Any, paper: dict[str, Any], pdf_path: str) -> NoReturn:
+        """Fail as a PDF that MuPDF cannot open does."""
+        raise RuntimeError('cannot open the stored PDF')
+
+    monkeypatch.setattr(digitize, 'store_pdf_layout_figures', unreadable)
+
+    summary = digitize.digitize_figures(corpus_db, records, 'Mass loss figure', tmp_path / 'out.csv',
+                                        missing_field='Mass loss curve')
+
+    assert 'paper-2: figure detection failed: cannot open the stored PDF' in summary['errors']
+    assert (summary['digitized'], summary['not_found']) == (1, 3)
+    assert {row['Paper id'] for row in read_rows(tmp_path / 'out.csv')} == {'paper-1'}
 
 
 def test_cli_reports_json_and_rejects_missing_columns(

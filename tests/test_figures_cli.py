@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from click.testing import CliRunner
@@ -168,3 +170,133 @@ def test_download_command_selects_papers_with_structured_documents(
     assert summary['papers'] == 1 and summary['downloaded'] == 1
     named = _run('download', str(db_path), '--paper-id', 'plain')
     assert named['papers'] == 0 and named['papers_without_structured_documents'] == 1
+
+
+def _text(*arguments: str) -> Any:
+    """Run a figures command without --json and return the click result."""
+    return CliRunner().invoke(cli.main, ['figures', *arguments])
+
+
+def test_download_prints_a_summary_with_failures_and_reports_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Summarise the run on stdout, list failures on stderr, and stop cleanly on an error."""
+    db_path = tmp_path / 'corpus.db'
+    _add_jats(db_path, b'<article><body/></article>')
+
+    def download(path: str, paper_id: str, *, force: bool = False) -> dict[str, Any]:
+        """Report one stored, two existing, and one refused figure."""
+        return {'paper_id': paper_id, 'downloaded': 1, 'skipped': 2, 'failed': 1,
+                'failures': ['https://cdn.example/two.png: HTTP 404'], 'pdf_layout_replaced': 1}
+
+    monkeypatch.setattr(figures_cli, 'download_paper_figures', download)
+    result = _text('download', str(db_path), '--progress', 'none')
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == ('Figures from structured documents of 1 papers: 1 downloaded, '
+                                     '2 already stored, 1 failed; 1 PDF-detected figures replaced.')
+    assert '  paper:figures: https://cdn.example/two.png: HTTP 404' in result.stderr.splitlines()
+
+    def exhausted(path: str, paper_id: str, *, force: bool = False) -> NoReturn:
+        """Fail as a provider error that escapes the per-figure handling does."""
+        raise RuntimeError('daily credit budget is exhausted')
+
+    monkeypatch.setattr(figures_cli, 'download_paper_figures', exhausted)
+    failed = _text('download', str(db_path), '--progress', 'none')
+    assert failed.exit_code == 1
+    assert 'daily credit budget is exhausted' in failed.stderr
+    assert 'Figures from structured documents' not in failed.stdout
+
+
+def test_detect_prints_statuses_and_failures_and_reports_errors(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count every detection outcome in words, list failures, and stop cleanly on an error."""
+    with closing(database.connect(db_path)) as conn:
+        database.upsert_paper(conn, {'paper_id': 'broken', 'title': 'Keep broken'})
+    detect = figures_cli.detect_paper_figures
+
+    def detect_or_fail(conn: sqlite3.Connection, paper: dict[str, Any], **options: Any) -> dict[str, Any]:
+        """Fail the paper named broken and detect the others for real."""
+        if paper['paper_id'] == 'broken':
+            return {'paper_id': 'broken', 'status': 'failed', 'stored': 0, 'replaced': 0,
+                    'failures': ['cannot open the stored PDF']}
+        return detect(conn, paper, **options)
+
+    monkeypatch.setattr(figures_cli, 'detect_paper_figures', detect_or_fail)
+    result = _text('detect', str(db_path), '--progress', 'none')
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        'Detected figures in 1 of 4 papers: 1 figures stored, 0 replaced.',
+        'Skipped: 1 with structured figures, 0 already detected, 1 without a PDF; '
+        '0 had no figure captions; 1 failed.',
+    ]
+    assert '  broken: cannot open the stored PDF' in result.stderr.splitlines()
+
+    def locked(conn: sqlite3.Connection, paper: dict[str, Any], **options: Any) -> NoReturn:
+        """Fail as a corpus another process holds does."""
+        raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(figures_cli, 'detect_paper_figures', locked)
+    failed = _text('detect', str(db_path), '--progress', 'none')
+    assert failed.exit_code == 1
+    assert 'database is locked' in failed.stderr
+
+
+def test_list_and_export_print_text_and_refuse_an_older_corpus(db_path: Path, tmp_path: Path) -> None:
+    """Describe each stored figure in a line, export in words, and refuse an unmigrated corpus."""
+    _run('detect', str(db_path))
+    with closing(database.connect(db_path)) as conn:
+        assert database.set_figure_extraction_status(conn, 'structured', 'fig-1', 'succeeded')
+    listed = _text('list', str(db_path))
+    assert listed.exit_code == 0, listed.output
+    lines = listed.stdout.splitlines()
+    assert lines[0] == '2 figures; showing 2 from offset 0.'
+    assert set(lines[1:]) == {
+        'with-pdf pdf-figure-1 [pdf-layout, region; not scraped] Figure 1: '
+        'Conductivity map for the sample.',
+        'structured fig-1 [pubmed; succeeded] Figure 1: Publisher figure.',
+    }
+    outdir = tmp_path / 'figures'
+    exported = _text('export', str(db_path), str(outdir))
+    assert exported.exit_code == 0, exported.output
+    assert exported.stdout.strip() == f'Exported 2 figures to {outdir}.'
+    assert (outdir / 'structured' / 'fig-1.png').read_bytes() == PNG
+
+    older = tmp_path / 'older.db'
+    shutil.copyfile(db_path, older)
+    with closing(sqlite3.connect(older)) as conn:
+        conn.execute(f'PRAGMA user_version = {database.SCHEMA_VERSION - 1}')
+    for arguments in (['list', str(older)], ['export', str(older), str(tmp_path / 'older-figures')]):
+        refused = _text(*arguments)
+        assert refused.exit_code == 1
+        assert 'does not match the supported version' in refused.stderr
+    assert not (tmp_path / 'older-figures').exists()
+
+
+def test_render_prints_each_image_and_reports_an_unreadable_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Name each written image, with its label for layout, and stop cleanly on a bad PDF."""
+    pdf = tmp_path / 'figure.pdf'
+    _write_figure_pdf(pdf)
+    outdir = str(tmp_path / 'layout')
+    layout = _text('render', str(pdf), outdir)
+    assert layout.exit_code == 0, layout.output
+    head, image = layout.stdout.splitlines()
+    assert head == f'Wrote 1 images to {outdir} (layout).'
+    assert image.startswith('  ') and image.endswith(' Figure 1')
+    assert Path(image.strip().removesuffix(' Figure 1')).is_file()
+    pages = _text('render', str(pdf), str(tmp_path / 'pages'), '--strategy', 'pages')
+    assert pages.exit_code == 0, pages.output
+    head, image = pages.stdout.splitlines()
+    assert head == f'Wrote 1 images to {tmp_path / "pages"} (pages).'
+    assert Path(image.strip()).is_file()
+
+    def unreadable(*_: object, **__: object) -> NoReturn:
+        """Fail as a PDF without a readable page tree does."""
+        raise ValueError('cannot read the PDF page tree')
+
+    monkeypatch.setattr(figures_cli, 'detect_pdf_layout', unreadable)
+    failed = _text('render', str(pdf), str(tmp_path / 'failed'))
+    assert failed.exit_code == 1
+    assert 'cannot read the PDF page tree' in failed.stderr

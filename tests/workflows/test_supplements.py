@@ -151,6 +151,48 @@ def test_missing_old_candidate_is_retried_after_discovery_outage(tmp_path: Path,
         assert paper['supplement_download_status'] == 'partial'
 
 
+def test_malformed_imported_metadata_is_read_as_empty_and_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata that is not JSON is treated as empty, and valid metadata is stored after the run."""
+    assert supplements._metadata({'metadata': '{not json'}) == {}
+    assert supplements._metadata({'metadata_json': '{"source": "scopus"}'}) == {'source': 'scopus'}
+    assert supplements._metadata({'metadata': '["a list"]'}) == {}
+    monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult())
+    with corpus.connect(tmp_path / 'corpus.db') as conn:
+        paper = {'paper_id': 'paper:1', 'metadata': '{not json'}
+        result = supplements.download_paper_supplements(conn, paper, ['structured'])
+        stored = json.loads(conn.execute('SELECT metadata_json FROM papers').fetchone()[0])
+    assert result['supplements_unavailable'] == 1
+    assert paper['supplement_download_status'] == 'unavailable'
+    assert stored['supplement_discovery']['candidates'] == []
+    assert stored['supplement_download_error'] == ''
+
+
+def test_a_supplement_the_corpus_did_not_keep_is_a_failed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count a file as failed, not stored, when its asset cannot be found after writing it."""
+    item = candidate()
+    monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult([item]))
+    monkeypatch.setattr(supplements.provider, 'download_supplement', downloaded)
+
+    def lost(*_: object, **__: object) -> str:
+        """Report a blob identifier without storing anything, as a lost write would."""
+        return 'sha256:' + '0' * 64
+
+    monkeypatch.setattr(supplements, 'add_supplement', lost)
+    with corpus.connect(tmp_path / 'corpus.db') as conn:
+        paper = {'paper_id': 'doi:10.1234/paper'}
+        corpus.upsert_paper(conn, paper)
+        result = supplements.download_paper_supplements(conn, paper, ['structured'])
+        assert get_supplements(conn, paper['paper_id']) == []
+    assert (result['supplements'], result['supplements_failed']) == (0, 1)
+    assert paper['supplement_download_status'] == 'failed'
+    error = paper['metadata']['supplement_download_error']
+    assert error.startswith('structured ') and error.endswith(': supplement asset was not persisted')
+
+
 def test_source_normalization_validates_and_preserves_registry_order() -> None:
     """Source validation happens before any database or network mutation."""
     assert supplements.normalize_supplement_sources(['all']) == list(supplements.SUPPLEMENT_SOURCES)

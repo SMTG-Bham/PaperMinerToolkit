@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 import requests
@@ -465,6 +465,66 @@ def test_store_pdf_layout_figures_records_unreadable_render_output(
     assert summary.downloaded == 0
     assert summary.failed == 1
     assert 'Figure 1' in summary.failures[0]
+
+
+def _paper_with_pdf(conn: Any, paper: dict[str, object], pdf_path: Path) -> None:
+    """Store a paper row and its PDF asset."""
+    database.upsert_paper(conn, paper)
+    database.add_asset(conn, paper, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
+
+
+def test_detect_paper_figures_reports_pdfs_without_figures_and_unreadable_pdfs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call a PDF without captions none found, and one that cannot be read failed."""
+    fitz = pytest.importorskip('fitz')
+    blank = tmp_path / 'blank.pdf'
+    document = fitz.open()
+    document.new_page(width=600, height=800)
+    document.save(blank)
+    document.close()
+    paper = _paper('paper:blank')
+
+    with database.connect(tmp_path / 'detect.db') as conn:
+        _paper_with_pdf(conn, paper, blank)
+        found = figures.detect_paper_figures(conn, paper)
+
+        def unreadable(*_: object, **__: object) -> NoReturn:
+            """Fail as a PDF that MuPDF cannot open does."""
+            raise RuntimeError('cannot open the stored PDF')
+
+        monkeypatch.setattr(figures, 'store_pdf_layout_figures', unreadable)
+        failed = figures.detect_paper_figures(conn, paper)
+
+    assert found == {'paper_id': 'paper:blank', 'status': 'none_found', 'stored': 0, 'replaced': 0,
+                     'failures': []}
+    assert failed == {'paper_id': 'paper:blank', 'status': 'failed', 'stored': 0, 'replaced': 0,
+                      'failures': ['cannot open the stored PDF']}
+
+
+def test_detect_paper_figures_fails_a_paper_whose_found_figures_were_not_stored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call a paper failed, with the reasons, when figures were found but none could be stored."""
+    pdf_path = tmp_path / 'layout.pdf'
+    _write_figure_pdf(pdf_path)
+
+    def missing_render(*_: object, **__: object) -> list[str]:
+        """Report a rendered file that does not exist."""
+        return [str(tmp_path / 'absent.png')]
+
+    monkeypatch.setattr(figures, 'render_pdf_figures', missing_render)
+    paper = _paper('paper:unrendered')
+    with database.connect(tmp_path / 'unrendered.db') as conn:
+        _paper_with_pdf(conn, paper, pdf_path)
+        result = figures.detect_paper_figures(conn, paper)
+        assert database.get_figure_assets(conn, 'paper:unrendered') == []
+
+    assert (result['status'], result['stored']) == ('failed', 0)
+    assert len(result['failures']) == 1
+    assert result['failures'][0].startswith('Figure 1: ')
 
 
 def test_download_structured_figures_records_reference_sentences(tmp_path: Path) -> None:
