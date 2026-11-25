@@ -410,7 +410,7 @@ def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         asset = corpus.get_asset_metadata(conn, 'legacy:1', 'text')
 
-    assert version == corpus.SCHEMA_VERSION == 12
+    assert version == corpus.SCHEMA_VERSION == 13
     assert 'metadata_json' in columns
     assert asset is not None
     assert asset['blob_id'] == 'text:legacy'
@@ -739,6 +739,19 @@ def test_enrichment_candidates_ignore_succeeded_rows_by_default(tmp_path: Path) 
     assert [row['paper_id'] for row in stale] == ['demo:1']
 
 
+def test_enrichment_candidates_can_be_restricted_to_named_papers(tmp_path: Path) -> None:
+    """Select only the named pending papers, and none for an empty selection."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        for index in range(3):
+            corpus.upsert_paper(conn, sample_paper(f'demo:{index}'))
+
+        named = corpus.enrichment_candidates(conn, paper_ids=['demo:2', 'demo:0', 'demo:2'])
+        empty = corpus.enrichment_candidates(conn, paper_ids=[])
+
+    assert [row['paper_id'] for row in named] == ['demo:0', 'demo:2']
+    assert empty == []
+
+
 def test_write_enrichment_fills_only_empty_core_columns(tmp_path: Path) -> None:
     """Fill empty core columns while leaving populated ones untouched."""
     with open_corpus(tmp_path / 'corpus.db') as conn:
@@ -798,6 +811,32 @@ def test_write_enrichment_rolls_back_a_failed_batch(tmp_path: Path) -> None:
 
     assert row['publisher'] is None
     assert row['enrichment_status'] == 'pending'
+
+
+def test_parent_only_enrichment_preserves_all_child_rows(tmp_path: Path) -> None:
+    """Record a failed refresh without deleting or inserting provider child rows."""
+    with open_corpus(tmp_path / 'corpus.db') as conn:
+        corpus.upsert_paper(conn, sample_paper('demo:1'))
+        corpus.write_enrichment(
+            conn, [enrichment_update('demo:1')],
+            authors=[{'paper_id': 'demo:1', 'author_position': 0, 'affiliation_rank': 0,
+                      'display_name': 'A. Author', 'source': 'openalex'}],
+            subjects=[{'paper_id': 'demo:1', 'scheme': 'topic', 'subject_id': 'T1',
+                       'source': 'openalex'}],
+            references=[{'paper_id': 'demo:1', 'source': 'crossref', 'reference_rank': 0,
+                         'referenced_doi': '10.1000/ref'}],
+        )
+        before = [list(conn.execute(f'SELECT * FROM {table}'))
+                  for table in corpus.ENRICHMENT_CHILD_TABLES]
+        assert corpus.write_enrichment(
+            conn, [enrichment_update('demo:1', enrichment_status='failed')],
+            authors=[{'paper_id': 'missing:1'}], sources=[], replace_children=False,
+        ) == 1
+        after = [list(conn.execute(f'SELECT * FROM {table}'))
+                 for table in corpus.ENRICHMENT_CHILD_TABLES]
+
+        assert after == before
+        assert corpus.paper_rows(conn)[0]['enrichment_status'] == 'failed'
 
 
 def test_child_rows_cascade_when_a_paper_is_deleted(tmp_path: Path) -> None:
@@ -940,7 +979,7 @@ def test_corpus_migrates_identifier_columns_without_losing_rows(
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
         rows = corpus.paper_rows(conn)
 
-    assert version == corpus.SCHEMA_VERSION == 12
+    assert version == corpus.SCHEMA_VERSION == 13
     assert set(added_identifiers) <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
@@ -975,6 +1014,59 @@ def test_papers_match_on_a_shared_pubmed_identifier() -> None:
 
     assert corpus._papers_match(existing, incoming)
     assert corpus._papers_match({'pmcid': 'PMC1', 'paper_id': 'a'}, {'pmcid': 'PMC1', 'paper_id': 'b'})
+
+
+@pytest.mark.parametrize('column', ['doi', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi'])
+@pytest.mark.parametrize('presented', [
+    'DOI: 10.1234/EXAMPLE(test)',
+    'doi:https://doi.org/10.1234/EXAMPLE(test)',
+    'DOI: http://dx.doi.org/10.1234/EXAMPLE%28test%29?source=pdf',
+    'http://doi.org/10.1234/EXAMPLE(test)',
+    'https://dx.doi.org/10.1234/EXAMPLE(test)',
+    'http://dx.doi.org/10.1234/EXAMPLE%28test%29?source=pdf#abstract',
+    '10.1234/EXAMPLE(test)).',
+    '10.1234/EXAMPLE\u200b(test)',
+])
+def test_doi_presentations_share_corpus_identity(column: str, presented: str) -> None:
+    """Merge resolver URLs, labels, and extraction artifacts into one paper."""
+    canonical = '10.1234/example(test)'
+    assert corpus.normalize_paper({column: presented})['paper_id'] == f'doi:{canonical}'
+    with contextlib.closing(corpus.connect(':memory:')) as conn:
+        assert corpus.upsert_papers(conn, [
+            {column: presented, 'sources': 'first'},
+            {column: canonical, 'sources': 'second'},
+        ]) == (1, 1)
+        rows = corpus.paper_rows(conn)
+        assert len(rows) == 1
+        assert rows[0]['paper_id'] == f'doi:{canonical}'
+        assert rows[0]['sources'] == 'first;second'
+
+
+@pytest.mark.parametrize('column', ['doi', 'medrxiv_doi', 'biorxiv_doi', 'chemrxiv_doi'])
+def test_canonical_doi_import_preserves_legacy_identity_and_assets(column: str) -> None:
+    """Match legacy URL identifiers without renaming papers or orphaning assets."""
+    legacy_id = 'doi:http://dx.doi.org/10.1234/example'
+    with contextlib.closing(corpus.connect(':memory:')) as conn:
+        corpus.add_asset(
+            conn,
+            {'paper_id': legacy_id, column: 'http://dx.doi.org/10.1234/EXAMPLE'},
+            'original text', role='text', kind='text', mime_type='text/plain', source='legacy',
+        )
+        assert corpus.upsert_papers(conn, [{
+            'paper_id': 'import:new', column: '10.1234/example', 'title': 'New metadata',
+        }]) == (0, 1)
+        rows = corpus.paper_rows(conn)
+        assert len(rows) == 1
+        assert rows[0]['paper_id'] == legacy_id
+        assert rows[0]['title'] == 'New metadata'
+        assert corpus.get_asset(conn, legacy_id, 'text')['content'] == b'original text'
+
+
+@pytest.mark.parametrize('missing', [None, '', '  ', float('nan')])
+def test_missing_dois_do_not_become_identifiers(missing: object) -> None:
+    """Retain the corpus missing-value rules around the shared normalizer."""
+    assert corpus._clean_doi(missing) == ''
+    assert corpus.normalize_paper({'doi': missing})['paper_id'].startswith('paper:')
 
 
 def test_papers_match_on_a_shared_arxiv_identifier() -> None:

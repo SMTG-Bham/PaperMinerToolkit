@@ -251,6 +251,42 @@ def test_recipe_optimise_cli_passes_options(tmp_path: Path, monkeypatch: pytest.
     assert 'no papers' in failed.output
 
 
+def test_recipe_optimise_cli_json_keeps_progress_off_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With --json, stdout holds only the summary and progress goes to stderr.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Temporary directory for the inputs.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the optimiser workflow.
+    """
+    db_path = tmp_path / 'papers.db'
+    db_path.write_bytes(b'')
+    validation = tmp_path / 'validation.csv'
+    validation.write_text('DOI\n', encoding='utf-8')
+    summary = {'best_recipe': 'out/best_recipe.json', 'history': 'out/history.json',
+               'baseline_score': 0.5, 'best_score': 0.75, 'papers': 4, 'holdout_papers': 1}
+
+    def fake_optimise(*args: Any, echo: Any = print, **kwargs: Any) -> dict[str, Any]:
+        """Report progress through both channels and return a summary."""
+        echo('round 1 scored 0.75')
+        print('stray library output')
+        return summary
+
+    monkeypatch.setattr(cli, 'optimise_recipe', fake_optimise)
+    result = CliRunner().invoke(cli.main, ['recipe', 'optimise', str(db_path), 'sse', str(validation),
+                                           '--json'])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == summary
+    assert 'round 1 scored 0.75' in result.stderr
+    assert 'stray library output' in result.stderr
+
+
 def test_optimise_recipe_stops_when_every_scrape_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Abort instead of optimising against a round with no successful scrapes."""
     def broken_scrape(text: str, recipe: dict[str, Any], model_config: Any = None) -> list[dict[str, Any]]:

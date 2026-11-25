@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import importlib
 import math
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Protocol, TypeAlias
 
@@ -38,6 +41,94 @@ class _ModelConfigLike(Protocol):
 
 
 _ModelConfigSource: TypeAlias = _ModelConfigLike | Mapping[str, object]
+
+# Set while a dry run plans requests: token counting must not reach a provider.
+_OFFLINE: ContextVar[bool] = ContextVar('paperminertoolkit_offline_tokens', default=False)
+
+
+@contextmanager
+def offline_token_counting() -> Iterator[None]:
+    """Count tokens without provider requests or tokenizer downloads.
+
+    Inside the block, Anthropic counts use the character estimate instead of
+    the token-counting endpoint, and local models load their Hugging Face
+    tokenizer from local files only, falling back to the estimate when it is
+    not cached. ``tiktoken`` is unchanged: it reads its cached encoding.
+
+    Yields
+    ------
+    None
+        Control returns to the caller with offline counting active.
+    """
+    token = _OFFLINE.set(True)
+    try:
+        yield
+    finally:
+        _OFFLINE.reset(token)
+
+
+def token_count_method(model_config: _ModelConfigSource | None = None,
+                       offline: bool = False) -> str:
+    """Name the token counter used for a model configuration.
+
+    Parameters
+    ----------
+    model_config : _ModelConfigSource or None, optional
+        Model configuration whose provider selects the counter.
+    offline : bool, default=False
+        Describe the counter used under :func:`offline_token_counting`.
+
+    Returns
+    -------
+    str
+        ``tiktoken``, ``transformers``, ``anthropic``, or ``estimate``. A
+        counter that fails at run time still falls back to the estimate.
+    """
+    provider = _provider_name(model_config)
+    if provider in {'', 'openai'}:
+        return 'tiktoken'
+    if provider == 'local':
+        return 'transformers'
+    if provider == 'anthropic' and not offline:
+        return 'anthropic'
+    return 'estimate'
+
+
+def estimated_token_fallbacks() -> set[tuple[str, str]]:
+    """Return the provider and model pairs whose tokenizer fell back to an estimate.
+
+    Returns
+    -------
+    set[tuple[str, str]]
+        A copy of the pairs warned about so far in this process.
+    """
+    return set(_ESTIMATE_WARNINGS)
+
+
+def _config_value(
+    model_config: _ModelConfigSource | None,
+    key: str,
+    default: object = None,
+) -> object:
+    """Read a model setting from a configuration object or mapping.
+
+    Parameters
+    ----------
+    model_config : _ModelConfigSource or None
+        Model configuration object or settings profile mapping.
+    key : str
+        Setting name to read.
+    default : object, optional
+        Value returned when the setting is absent.
+
+    Returns
+    -------
+    object
+        Configured setting, or the supplied default.
+    """
+    if isinstance(model_config, Mapping):
+        return model_config.get(key, default)
+    return getattr(model_config, key, default)
 
 
 class _TokenizerLike(Protocol):
@@ -73,7 +164,7 @@ def _provider_name(model_config: _ModelConfigSource | None = None, provider: str
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Object that may expose a ``provider`` attribute.
+        Object or mapping containing a ``provider`` setting.
     provider : str, optional
         Explicit provider name, which takes precedence over ``model_config``.
 
@@ -82,7 +173,7 @@ def _provider_name(model_config: _ModelConfigSource | None = None, provider: str
     str
         Lowercase provider name with underscores replaced by hyphens.
     """
-    value = provider or getattr(model_config, 'provider', '') or ''
+    value = provider or _config_value(model_config, 'provider', '') or ''
     return str(value).lower().replace('_', '-')
 
 
@@ -92,7 +183,8 @@ def _model_name(model_config: _ModelConfigSource | None = None, model: str | Non
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Object that may expose a ``name`` attribute.
+        Object or mapping containing a ``name`` setting. Settings profiles
+        may use ``model`` instead; ``name`` takes precedence when both exist.
     model : str, optional
         Explicit model name, which takes precedence over ``model_config``.
 
@@ -101,7 +193,10 @@ def _model_name(model_config: _ModelConfigSource | None = None, model: str | Non
     str
         Resolved model name, falling back to the package default.
     """
-    return model or getattr(model_config, 'name', None) or DEFAULT_MODEL
+    if model:
+        return model
+    value = _config_value(model_config, 'name') or _config_value(model_config, 'model')
+    return str(value or DEFAULT_MODEL)
 
 
 def _openai_token_count(text: str, model: str | None = None) -> int:
@@ -128,16 +223,22 @@ def _openai_token_count(text: str, model: str | None = None) -> int:
     return len(encoding.encode(text))
 
 
-def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
+def _anthropic_token_count(
+    text: str,
+    model_config: _ModelConfigSource | None,
+    model: str | None = None,
+) -> int:
     """Count text tokens with Anthropic's Messages API.
 
     Parameters
     ----------
     text : str
         Text to count as a single user message.
-    model_config : _ModelConfigSource
-        Configuration exposing model, API key, and optional base URL
-        attributes.
+    model_config : _ModelConfigSource or None
+        Configuration object or mapping containing the model, API key,
+        and optional base URL.
+    model : str, optional
+        Explicit model name, which takes precedence over ``model_config``.
 
     Returns
     -------
@@ -151,17 +252,17 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     requests.RequestException
         If the token-counting request fails.
     """
-    api_key = getattr(model_config, 'api_key', None)
+    api_key = _config_value(model_config, 'api_key')
     if not api_key:
         raise ValueError('Anthropic token counting requires an API key.')
-    model = _model_name(model_config)
+    model = _model_name(model_config, model)
     payload = {
         'model': model,
         'messages': [{'role': 'user', 'content': text}],
     }
     headers = request_headers(api_key)
     response = requests.post(
-        f'{messages_url(getattr(model_config, "base_url", None))}/count_tokens',
+        f'{messages_url(_config_value(model_config, "base_url"))}/count_tokens',
         headers=headers,
         json=payload,
         timeout=60,
@@ -171,13 +272,15 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
 
 
 @lru_cache(maxsize=16)
-def _auto_tokenizer(model: str) -> _TokenizerLike:
+def _auto_tokenizer(model: str, local_files_only: bool = False) -> _TokenizerLike:
     """Load and cache a Hugging Face tokenizer.
 
     Parameters
     ----------
     model : str
         Hugging Face model identifier or local model path.
+    local_files_only : bool, default=False
+        Load only files already on disk, never from the Hugging Face Hub.
 
     Returns
     -------
@@ -185,6 +288,8 @@ def _auto_tokenizer(model: str) -> _TokenizerLike:
         Loaded tokenizer instance.
     """
     transformers = importlib.import_module('transformers')
+    if local_files_only:
+        return transformers.AutoTokenizer.from_pretrained(model, local_files_only=True)
     return transformers.AutoTokenizer.from_pretrained(model)
 
 
@@ -203,9 +308,38 @@ def _transformers_token_count(text: str, model: str) -> int:
     int
         Number of encoded tokens, excluding special tokens.
     """
-    tokenizer = _auto_tokenizer(model)
+    tokenizer = _auto_tokenizer(model, True) if _OFFLINE.get() else _auto_tokenizer(model)
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
+
+
+_ESTIMATE_WARNINGS: set[tuple[str, str]] = set()
+
+
+def _warn_estimated_tokens(provider: str, model: str, error: Exception) -> None:
+    """Warn once per provider and model that token counts fell back to an estimate.
+
+    The character estimate is a guess, not a bound: digit-heavy text such as
+    spreadsheet tables runs at close to one character per token under some
+    tokenizers, three times what the estimate assumes. Chunks sized with it can
+    overflow the model context, so the fallback must never be silent.
+
+    Parameters
+    ----------
+    provider : str
+        Normalized provider name.
+    model : str
+        Model whose tokenizer could not be used.
+    error : Exception
+        Why tokenization failed.
+    """
+    key = (provider, model)
+    if key in _ESTIMATE_WARNINGS:
+        return
+    _ESTIMATE_WARNINGS.add(key)
+    print(f'Warning: could not count tokens with the {provider} tokenizer for {model!r} '
+          f'({type(error).__name__}: {error}). Using a character estimate instead, which can '
+          'undercount tables and other numeric text and overflow the model context.', file=sys.stderr)
 
 
 def count_text_tokens(
@@ -241,17 +375,22 @@ def count_text_tokens(
     if provider_name in {'', 'openai'}:
         try:
             return _openai_token_count(text, model_name)
-        except Exception:
+        except Exception as error:
+            _warn_estimated_tokens(provider_name or 'openai', model_name, error)
             return _conservative_token_estimate(text)
     if provider_name == 'anthropic':
+        if _OFFLINE.get():
+            return _conservative_token_estimate(text)
         try:
-            return _anthropic_token_count(text, model_config)
-        except Exception:
+            return _anthropic_token_count(text, model_config, model_name)
+        except Exception as error:
+            _warn_estimated_tokens(provider_name, model_name, error)
             return _conservative_token_estimate(text)
     if provider_name == 'local':
         try:
             return _transformers_token_count(text, model_name)
-        except Exception:
+        except Exception as error:
+            _warn_estimated_tokens(provider_name, model_name, error)
             return _conservative_token_estimate(text)
     return _conservative_token_estimate(text)
 
@@ -266,7 +405,7 @@ def usable_input_token_limit(
     Parameters
     ----------
     model_config : _ModelConfigSource or None, optional
-        Configuration that may expose an ``input_token_limit`` attribute.
+        Object or mapping containing an ``input_token_limit`` setting.
     reserve_tokens : int, default=2000
         Tokens reserved for prompts, metadata, and output framing.
     minimum : int, default=1000
@@ -277,7 +416,7 @@ def usable_input_token_limit(
     int
         Usable input token budget.
     """
-    configured = getattr(model_config, 'input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT)
+    configured = _config_value(model_config, 'input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT)
     try:
         configured = int(configured)
     except (TypeError, ValueError):

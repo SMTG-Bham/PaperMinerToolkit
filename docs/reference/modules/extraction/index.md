@@ -5,6 +5,7 @@ Recipe-driven preparation, model execution, structured extraction, entity annota
 ```{toctree}
 :maxdepth: 1
 
+supplements
 recipes
 models
 tokenizer
@@ -12,6 +13,8 @@ compression
 extract
 entities
 scrape
+scrape_plan
+scrape_progress
 merge
 verify
 values

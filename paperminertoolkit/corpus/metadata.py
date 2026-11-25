@@ -14,10 +14,18 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from os import PathLike
 from typing import Any, Literal
-from urllib.parse import unquote
 
 from pypdf import PdfReader
 
+from paperminertoolkit._doi import (
+    DOI_LABEL_PREFIX as DOI_LABEL_PREFIX,
+    DOI_URL_PREFIX as DOI_URL_PREFIX,
+    INVISIBLE_CHARACTERS,
+    TRAILING_DELIMITERS as TRAILING_DELIMITERS,
+    TRAILING_SENTENCE_PUNCTUATION as TRAILING_SENTENCE_PUNCTUATION,
+    UNICODE_PUNCTUATION,
+    clean_doi as canonical_doi,
+)
 from paperminertoolkit.corpus.documents import read_pdf_text
 
 MODERN_DOI_PATTERN = r'10\.\d{4,9}/(?:[-._;()/:A-Z0-9]|%[0-9A-F]{2})+'
@@ -32,29 +40,6 @@ DOI_PATTERN = re.compile(
     DOI_PRESENTATION_PREFIX + '(?:' + '|'.join((*LEGACY_DOI_PATTERNS, MODERN_DOI_PATTERN)) + ')',
     re.IGNORECASE,
 )
-DOI_URL_PREFIX = re.compile(r'^https?://(?:dx\.)?doi\.org/', re.IGNORECASE)
-DOI_LABEL_PREFIX = re.compile(r'^doi\s*:\s*', re.IGNORECASE)
-TRAILING_SENTENCE_PUNCTUATION = '.,;:'
-TRAILING_DELIMITERS = {')': '(', ']': '[', '}': '{', '>': '<'}
-INVISIBLE_CHARACTERS = str.maketrans('', '', '\u200b\u200c\u200d\u2060\ufeff')
-UNICODE_PUNCTUATION = str.maketrans({
-    '\u2010': '-',
-    '\u2011': '-',
-    '\u2012': '-',
-    '\u2013': '-',
-    '\u2014': '-',
-    '\u2015': '-',
-    '\u2212': '-',
-    '\u2018': "'",
-    '\u2019': "'",
-    '\u201a': "'",
-    '\u201b': "'",
-    '\u201c': '"',
-    '\u201d': '"',
-    '\u201e': '"',
-    '\u201f': '"',
-    '\u2026': '...',
-})
 
 
 def clean_doi(value: object) -> str:
@@ -71,28 +56,7 @@ def clean_doi(value: object) -> str:
         Case-folded DOI without presentation prefixes or trailing sentence
         punctuation.
     """
-    doi = unicodedata.normalize('NFKC', html.unescape(str(value or ''))).translate(UNICODE_PUNCTUATION)
-    doi = doi.translate(INVISIBLE_CHARACTERS).strip()
-
-    url_prefix = DOI_URL_PREFIX.match(doi)
-    if url_prefix:
-        doi = unquote(doi[url_prefix.end():])
-        doi = re.split(r'[?#]', doi, maxsplit=1)[0]
-    else:
-        doi = DOI_LABEL_PREFIX.sub('', doi, count=1)
-    doi = doi.strip()
-
-    while doi:
-        final_character = doi[-1]
-        if final_character in TRAILING_SENTENCE_PUNCTUATION or final_character in {'"', "'"}:
-            doi = doi[:-1]
-            continue
-        opening_character = TRAILING_DELIMITERS.get(final_character)
-        if opening_character and doi.count(final_character) > doi.count(opening_character):
-            doi = doi[:-1]
-            continue
-        break
-    return doi.casefold()
+    return canonical_doi(value)
 
 
 def _normalize_metadata_text(value: object) -> str:

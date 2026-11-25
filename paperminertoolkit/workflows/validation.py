@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from paperminertoolkit.extraction.recipes import RECIPES_PATH, canonical_match, load_recipe
+from paperminertoolkit.extraction.recipes import PROVENANCE_FIELDS, RECIPES_PATH, canonical_match, load_recipe
 from paperminertoolkit.workflows.validation_scoring import GAP_FIELDS, score_review
 
 PAGE = Path(__file__).resolve().parents[1] / 'resources' / 'validation.html'
@@ -108,8 +108,11 @@ def _csv_rows(content: str, label: str, recipe: dict[str, Any]) -> list[dict[str
             raw_values = {field: str(raw.get(columns[field]) or '') if field in columns else ''
                           for field in fields}
             values = {field: _structured_cell(value) for field, value in raw_values.items()}
+            provenance = {field: _clean(raw.get(names[field.casefold()]))
+                          for field in PROVENANCE_FIELDS if field.casefold() in names}
             rows.append({'id': f'{label[0].lower()}:{index}', 'line': index,
-                         'meta': metadata, 'values': values, 'raw_values': raw_values})
+                         'meta': metadata, 'values': values, 'raw_values': raw_values,
+                         'provenance': provenance})
         return rows
     except csv.Error as error:
         raise ValueError(f'{label} CSV cannot be read: {error}') from error
@@ -259,6 +262,139 @@ def _atomic_json(path: Path, payload: dict[str, Any], *,
             os.unlink(temp)
 
 
+def review_session(validation_csv: str, scraped_csv: str, recipe_name: str,
+                   recipe_text: str = '', validation_name: str = '', scraped_name: str = '',
+                   validation_sha256: str = '', scraped_sha256: str = '') -> dict[str, Any]:
+    """Build a review session from its three inputs without reading or writing files.
+
+    Parameters
+    ----------
+    validation_csv, scraped_csv : str
+        Contents of the validation and scraped CSV files.
+    recipe_name : str
+        Bundled recipe name or recipe path, used when ``recipe_text`` is empty.
+    recipe_text : str, optional
+        Recipe JSON text, which takes precedence over ``recipe_name``.
+    validation_name, scraped_name : str, optional
+        Display names recorded in the session sources.
+    validation_sha256, scraped_sha256 : str, optional
+        Source file digests; computed from the contents when omitted.
+
+    Returns
+    -------
+    dict[str, Any]
+        Session for :func:`score_review`, with empty ``decisions`` and no
+        ``review_path``. Its ``fingerprint`` identifies the three inputs.
+
+    Raises
+    ------
+    ValueError
+        If a digest is malformed or an input cannot be parsed.
+    """
+    validation_csv = validation_csv.lstrip('\ufeff')
+    scraped_csv = scraped_csv.lstrip('\ufeff')
+    if any(value and not re.fullmatch(r'[0-9a-f]{64}', value)
+           for value in (validation_sha256, scraped_sha256)):
+        raise ValueError('Source SHA-256 values must be 64 lowercase hexadecimal characters.')
+    recipe = _load_recipe_text(recipe_text) if recipe_text else load_recipe(recipe_name)
+    fields = list(recipe['search fields'])
+    identity_fields = recipe['record definition']['identity fields']
+    if not identity_fields:
+        identity_fields = fields[:1]
+    gold = _papers(_csv_rows(validation_csv, 'Validation', recipe), 'v', fields, identity_fields)
+    scraped = _papers(_csv_rows(scraped_csv, 'Scraped', recipe), 's', fields, identity_fields)
+    structure_fields = {}
+    for field in fields:
+        example = recipe['search fields'][field].get('example')
+        kind = ('list' if isinstance(example, list) else
+                'dict' if isinstance(example, dict) else None)
+        if kind is None:
+            for paper in gold + scraped:
+                for row in paper['rows']:
+                    try:
+                        value = json.loads(row['values'][field])
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(value, (list, dict)):
+                        kind = 'list' if isinstance(value, list) else 'dict'
+                        break
+                if kind:
+                    break
+        if kind is None and field in GAP_FIELDS:
+            kind = 'list'
+        if kind:
+            structure_fields[field] = kind
+    list_fields = [field for field, kind in structure_fields.items() if kind == 'list']
+    _paper_suggestions(gold, scraped)
+    by_id = {paper['id']: paper for paper in scraped}
+    for paper in gold:
+        match = by_id.get(paper['suggested'])
+        paper['material_suggestions'] = (
+            _material_suggestions(paper['rows'], match['rows'], identity_fields)
+            if match else {}
+        )
+    digest = hashlib.sha256()
+    for content in (validation_csv, scraped_csv, json.dumps(recipe, sort_keys=True)):
+        data = content.encode('utf-8')
+        digest.update(len(data).to_bytes(8, 'big'))
+        digest.update(data)
+    fingerprint = digest.hexdigest()
+    sources = {'validation': {'name': validation_name or 'selected validation CSV',
+                              'sha256': validation_sha256 or hashlib.sha256(validation_csv.encode('utf-8')).hexdigest()},
+               'scraped': {'name': scraped_name or 'selected scraped CSV',
+                           'sha256': scraped_sha256 or hashlib.sha256(scraped_csv.encode('utf-8')).hexdigest()},
+               'recipe': {'name': recipe_name or 'uploaded recipe',
+                          'sha256': hashlib.sha256(json.dumps(recipe, sort_keys=True).encode('utf-8')).hexdigest()}}
+    return {'fingerprint': fingerprint, 'fields': fields,
+            'identity_fields': identity_fields, 'recipe': recipe_name or 'custom',
+            'list_fields': list_fields, 'structure_fields': structure_fields,
+            'sources': sources,
+            'validation': gold, 'scraped': scraped,
+            'decisions': {}, 'review_path': None}
+
+
+def saved_review(review_path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebuild a saved review's session and decisions without the browser.
+
+    The review JSON written by ``pmt validate gui`` names a copy of its input
+    CSVs in the local review directory; the session is rebuilt from that copy.
+
+    Parameters
+    ----------
+    review_path : str or pathlib.Path
+        Review decisions JSON saved by the review GUI.
+
+    Returns
+    -------
+    tuple[dict[str, Any], dict[str, Any]]
+        The session and the saved decisions, ready for :func:`score_review`.
+
+    Raises
+    ------
+    ValueError
+        If the review has no saved input copy, or the copy no longer matches
+        the review's fingerprint.
+    OSError
+        If a file cannot be read.
+    """
+    saved = json.loads(Path(review_path).read_text(encoding='utf-8'))
+    cache_name = saved.get('input_cache', '')
+    if not cache_name or Path(cache_name).name != cache_name or not (REVIEW_DIR / cache_name).is_file():
+        raise ValueError(f'{review_path} has no saved copy of its input CSVs; pass --validation, '
+                         '--scraped, and --recipe with --decisions instead.')
+    snapshot = json.loads((REVIEW_DIR / cache_name).read_text(encoding='utf-8'))
+    inputs = snapshot.get('inputs', {})
+    session = review_session(
+        snapshot['validation_csv'], snapshot['scraped_csv'], inputs.get('recipe_name', ''),
+        inputs.get('recipe_text', ''), inputs.get('validation_name', ''),
+        inputs.get('scraped_name', ''), inputs.get('validation_sha256', ''),
+        inputs.get('scraped_sha256', ''),
+    )
+    if session['fingerprint'] != saved.get('fingerprint'):
+        raise ValueError(f'The saved inputs of {review_path} no longer match its decisions.')
+    return session, saved.get('decisions', {})
+
+
 class ReviewApp:
     """One localhost review process with an active source selection."""
 
@@ -353,54 +489,11 @@ class ReviewApp:
              scraped_name: str = '', validation_sha256: str = '',
              scraped_sha256: str = '') -> dict[str, Any]:
         """Read the three inputs and resume matching saved decisions."""
+        session = review_session(validation_csv, scraped_csv, recipe_name, recipe_text,
+                                 validation_name, scraped_name, validation_sha256, scraped_sha256)
         validation_csv = validation_csv.lstrip('\ufeff')
         scraped_csv = scraped_csv.lstrip('\ufeff')
-        if any(value and not re.fullmatch(r'[0-9a-f]{64}', value)
-               for value in (validation_sha256, scraped_sha256)):
-            raise ValueError('Source SHA-256 values must be 64 lowercase hexadecimal characters.')
-        recipe = _load_recipe_text(recipe_text) if recipe_text else load_recipe(recipe_name)
-        fields = list(recipe['search fields'])
-        identity_fields = recipe['record definition']['identity fields']
-        if not identity_fields:
-            identity_fields = fields[:1]
-        gold = _papers(_csv_rows(validation_csv, 'Validation', recipe), 'v', fields, identity_fields)
-        scraped = _papers(_csv_rows(scraped_csv, 'Scraped', recipe), 's', fields, identity_fields)
-        structure_fields = {}
-        for field in fields:
-            example = recipe['search fields'][field].get('example')
-            kind = ('list' if isinstance(example, list) else
-                    'dict' if isinstance(example, dict) else None)
-            if kind is None:
-                for paper in gold + scraped:
-                    for row in paper['rows']:
-                        try:
-                            value = json.loads(row['values'][field])
-                        except (ValueError, TypeError):
-                            continue
-                        if isinstance(value, (list, dict)):
-                            kind = 'list' if isinstance(value, list) else 'dict'
-                            break
-                    if kind:
-                        break
-            if kind is None and field in GAP_FIELDS:
-                kind = 'list'
-            if kind:
-                structure_fields[field] = kind
-        list_fields = [field for field, kind in structure_fields.items() if kind == 'list']
-        _paper_suggestions(gold, scraped)
-        by_id = {paper['id']: paper for paper in scraped}
-        for paper in gold:
-            match = by_id.get(paper['suggested'])
-            paper['material_suggestions'] = (
-                _material_suggestions(paper['rows'], match['rows'], identity_fields)
-                if match else {}
-            )
-        digest = hashlib.sha256()
-        for content in (validation_csv, scraped_csv, json.dumps(recipe, sort_keys=True)):
-            data = content.encode('utf-8')
-            digest.update(len(data).to_bytes(8, 'big'))
-            digest.update(data)
-        fingerprint = digest.hexdigest()
+        fingerprint = session['fingerprint']
         if self._resume_path is not None:
             self.review_path = self._resume_path
             self._resume_path = None
@@ -418,18 +511,9 @@ class ReviewApp:
             if saved.get('fingerprint') != fingerprint:
                 raise ValueError(f'Review output {self.review_path} belongs to different inputs.')
             self.decisions = saved.get('decisions', {})
-        sources = {'validation': {'name': validation_name or 'selected validation CSV',
-                                  'sha256': validation_sha256 or hashlib.sha256(validation_csv.encode('utf-8')).hexdigest()},
-                   'scraped': {'name': scraped_name or 'selected scraped CSV',
-                               'sha256': scraped_sha256 or hashlib.sha256(scraped_csv.encode('utf-8')).hexdigest()},
-                   'recipe': {'name': recipe_name or 'uploaded recipe',
-                              'sha256': hashlib.sha256(json.dumps(recipe, sort_keys=True).encode('utf-8')).hexdigest()}}
-        self.session = {'fingerprint': fingerprint, 'fields': fields,
-                        'identity_fields': identity_fields, 'recipe': recipe_name or 'custom',
-                        'list_fields': list_fields, 'structure_fields': structure_fields,
-                        'sources': sources,
-                        'validation': gold, 'scraped': scraped,
-                        'decisions': self.decisions, 'review_path': str(self.review_path)}
+        session['decisions'] = self.decisions
+        session['review_path'] = str(self.review_path)
+        self.session = session
         self.input_snapshot = {
             'fingerprint': fingerprint,
             'validation_csv': validation_csv,

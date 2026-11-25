@@ -41,7 +41,8 @@ ENRICH = 'enrich'
 PDF = 'pdf'
 TEXT = 'text'
 ABSTRACT = 'abstract'
-CAPABILITIES = (SEARCH, ENRICH, PDF, TEXT, ABSTRACT)
+SUPPLEMENT = 'supplement'
+CAPABILITIES = (SEARCH, ENRICH, PDF, TEXT, ABSTRACT, SUPPLEMENT)
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,8 @@ class Source:
         Dotted target implementing abstract download.
     abstract_reachable : str, default=''
         Dotted predicate deciding whether an abstract can be requested for a row.
+    supplement_handler : str, default=''
+        Dotted target discovering supplementary files associated with a paper.
     probe : str, default=''
         Dotted target making the cheapest read-only request this source
         answers, used to report whether it is reachable. Empty for a source
@@ -112,6 +115,7 @@ class Source:
     text_reachable: str = ''
     abstract_handler: str = ''
     abstract_reachable: str = ''
+    supplement_handler: str = ''
     probe: str = ''
 
     def has(self, capability: str) -> bool:
@@ -149,6 +153,7 @@ class Source:
             PDF: 'pdf_handler',
             TEXT: 'text_handler',
             ABSTRACT: 'abstract_handler',
+            SUPPLEMENT: 'supplement_handler',
         }.get(capability)
         if attribute is None:
             raise ValueError(f'capability must be one of: {", ".join(CAPABILITIES)}')
@@ -214,7 +219,7 @@ SOURCES: dict[str, Source] = {
                 credential_required=True, open_access=True,
                 pdf_handler='paperminertoolkit.workflows.download:_download_openalex_cached_pdf',
                 probe='paperminertoolkit.workflows.diagnostics:_probe_openalex_content'),
-        _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT],
+        _source('pubmed', 'PubMed', 'pubmed', [SEARCH, ENRICH, PDF, TEXT, ABSTRACT, SUPPLEMENT],
                 identifier_column='pmid', credential='ncbi_api_key',
                 credential_env='NCBI_API_KEY', setup_command='pmt config ncbi-key',
                 search_handler='paperminertoolkit.workflows.search:pubmed_search',
@@ -224,6 +229,7 @@ SOURCES: dict[str, Source] = {
                 text_reachable='paperminertoolkit.workflows.download:_should_try_pmc_text',
                 abstract_handler='paperminertoolkit.workflows.download:_download_pubmed_abstract',
                 abstract_reachable='paperminertoolkit.workflows.download:_pubmed_abstract_reachable',
+                supplement_handler='paperminertoolkit.providers.supplements:discover_pubmed',
                 probe='paperminertoolkit.workflows.diagnostics:_probe_pubmed'),
         _source('elsevier', 'Elsevier', 'elsevier', [SEARCH, PDF, TEXT, ABSTRACT],
                 identifier_column='elsevier_link', credential='elsevier_api_key',
@@ -279,6 +285,13 @@ SOURCES: dict[str, Source] = {
                 abstract_handler='paperminertoolkit.workflows.download:_download_biorxiv_abstract',
                 abstract_reachable='paperminertoolkit.workflows.download:_biorxiv_identifier',
                 probe='paperminertoolkit.workflows.diagnostics:_probe_biorxiv'),
+        _source('structured', 'Stored article XML', 'supplements', [SUPPLEMENT],
+                supplement_handler='paperminertoolkit.providers.supplements:discover_structured'),
+        _source('figshare', 'Figshare', 'supplements', [SUPPLEMENT],
+                supplement_handler='paperminertoolkit.providers.supplements:discover_figshare',
+                probe='paperminertoolkit.workflows.diagnostics:_probe_figshare'),
+        _source('publisher', 'Publisher supplementary links', 'supplements', [SUPPLEMENT],
+                supplement_handler='paperminertoolkit.providers.supplements:discover_publisher'),
         _source('chemrxiv', 'chemRxiv', 'chemrxiv', [SEARCH, ENRICH, PDF, ABSTRACT],
                 identifier_column='chemrxiv_doi', open_access=True,
                 search_handler='paperminertoolkit.workflows.search:chemrxiv_search',
@@ -311,12 +324,14 @@ PDF_ORDER = ('unpaywall', 'openalex', 'core', 'elsevier', 'pubmed',
 TEXT_ORDER = ('elsevier', 'pubmed', 'medrxiv', 'biorxiv', 'openalex')
 ABSTRACT_ORDER = ('openalex', 'pubmed', 'medrxiv', 'biorxiv', 'chemrxiv',
                   'arxiv', 'core', 'elsevier')
+SUPPLEMENT_ORDER = ('structured', 'pubmed', 'figshare', 'publisher')
 ORDERS: dict[str, tuple[str, ...]] = {
     SEARCH: SEARCH_ORDER,
     ENRICH: ENRICH_ORDER,
     PDF: PDF_ORDER,
     TEXT: TEXT_ORDER,
     ABSTRACT: ABSTRACT_ORDER,
+    SUPPLEMENT: SUPPLEMENT_ORDER,
 }
 # Client modules are imported once, on first use.
 _MODULES: dict[str, ModuleType] = {}

@@ -36,7 +36,8 @@ def test_gather_help_exposes_a_complete_acquisition_workflow() -> None:
     result = runner.invoke(cli.main, ['gather', '--help'])
     assert result.exit_code == 0
     for option in ['--source', '--download-source', '--count', '--format', '--enrich',
-                   '--no-abstract', '--force', '--parallel', '--workers', '--json']:
+                   '--no-abstract', '--no-supplements', '--supplement-source',
+                   '--force', '--parallel', '--workers', '--json']:
         assert option in result.output
 
 
@@ -56,6 +57,7 @@ def test_gather_selects_search_and_download_sources_independently(
         'gather', 'solid electrolyte', 'corpus.db', '--source', 'arxiv',
         '--source', 'openalex', '--count', '4', '--format', 'pdf',
         '--download-source', 'unpaywall', '--download-source', 'arxiv',
+        '--supplement-source', 'pubmed', '--supplement-source', 'figshare',
         '--no-abstract', '--enrich', '--parallel', '--workers', '2', '--force',
     ])
     assert result.exit_code == 0, result.output
@@ -63,9 +65,26 @@ def test_gather_selects_search_and_download_sources_independently(
         'query': 'solid electrolyte', 'db_path': 'corpus.db',
         'source': ('arxiv', 'openalex'), 'count': 4, 'download_format': 'pdf',
         'download_sources': ['unpaywall', 'arxiv'], 'download_abstract': False,
+        'download_supplements': True, 'supplement_sources': ['pubmed', 'figshare'],
         'enrich': True, 'parallel': True, 'workers': 2, 'force': True,
     }
     assert '1 matching papers in corpus.db' in result.output
+
+
+def test_gather_can_disable_supplements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forward an explicit SI opt-out without changing article acquisition."""
+    seen: dict[str, Any] = {}
+
+    def collect(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record SI controls and return a successful search result."""
+        seen.update(kwargs)
+        return _summary()
+
+    monkeypatch.setattr(cli, 'gather_papers', collect)
+    result = CliRunner().invoke(cli.main, ['gather', 'query', '--no-supplements'])
+    assert result.exit_code == 0, result.output
+    assert seen['download_supplements'] is False
+    assert seen['supplement_sources'] == ['all']
 
 
 def test_gather_json_keeps_progress_out_of_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,6 +135,7 @@ def test_gather_no_matches_is_successful(monkeypatch: pytest.MonkeyPatch) -> Non
     [], [''], ['  '], ['query', '--count', '0'], ['query', '--count', '-1'],
     ['query', '--workers', '0'], ['query', '--source', 'unpaywall'],
     ['query', '--download-source', 'invalid'], ['query', '--format', 'invalid'],
+    ['query', '--supplement-source', 'invalid'],
 ])
 def test_gather_invalid_arguments_never_start_work(
     arguments: list[str],

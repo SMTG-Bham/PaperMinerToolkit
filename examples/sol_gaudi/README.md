@@ -315,9 +315,16 @@ to run this:
 - `pmt scrape` skips any stage already marked `succeeded`, so re-submitting the
   same job continues where the last one stopped. Finished papers cost
   milliseconds each.
-- The job now ends with a **Remaining work** section: how many papers are done,
-  how many are left, and the command to continue. Resubmit until it says
-  `Corpus fully scraped.`
+- The job ends with a **Remaining work** section from `scrape_progress.py`. It
+  counts only the papers `pmt scrape` selects (those the active corpus filters
+  include) and splits them into succeeded, without a downloaded document (a
+  resubmission fails these again at once; they need `pmt download`), failed,
+  and not yet attempted, then counts supporting-information files the same
+  way. It prints the command to continue while a resubmission still has work
+  to do, and `Corpus fully scraped` once it has none. Run it by hand with
+  `python scrape_progress.py papers.db text`, or use `pmt scrape-progress
+  papers.db text [--json]`, which reports the same counts plus the IDs of the
+  failed papers.
 
 ```bash
 sbatch scrape_gaudi.sbatch   # repeat until nothing remains
@@ -334,14 +341,23 @@ let successive jobs grow it.
 
 ### Choosing a recipe
 
-Both polymer recipes cover reported biodegradation tests. They keep distinct
+The three polymer recipes cover reported degradation tests. They keep distinct
 samples and separate degradation experiments in separate records; `polymer_db`
-adds more detailed characterization and test metadata.
+adds more detailed characterization and test metadata, and
+`polymer_degradation` covers abiotic as well as biotic tests.
 
-| | `polymer` (default) | `polymer_db` |
-| --- | --- | --- |
-| Fields | 36 | 86 |
-| Unit-bearing fields | 12 | 30 |
+| | `polymer` (default) | `polymer_db` | `polymer_degradation` |
+| --- | --- | --- | --- |
+| Fields | 36 | 86 | 48 |
+| Unit-bearing fields | 12 | 30 | 10 |
+
+`polymer_degradation` is built around the test rather than the material. It
+records whether each test is biotic, abiotic, combined, or an abiotic control,
+along with its conditions (temperature, pH, moisture, light, chemical agent,
+inoculum, enzyme), and the full mass loss and mineralisation curves. When a mass
+loss curve is only plotted, it names the figure so the curve can be digitised
+later. Pair it with `examples/filters/polymer_degradation_text.json` so that only
+papers reporting a measured degradation outcome are scraped.
 
 `polymer` covers the test standard, medium, extent, duration, mechanism,
 degrading organisms, and certification. Structure identifiers are copied only

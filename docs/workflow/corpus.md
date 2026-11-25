@@ -54,7 +54,8 @@ The JSON object contains `search` and `downloads`. `search` includes the search
 ID and status, resolved sources, per-provider outcomes, matching `paper_ids`, and
 counts named `result_count`, `papers_added`, `papers_updated`, and
 `abstracts_stored`. `downloads`
-contains counts for retrieved and skipped text, PDF, and abstract assets, or
+contains counts for retrieved and skipped text, PDF, and abstract assets, plus
+retrieved, skipped, failed, and unavailable supporting information, or
 `null` when there are no matches or every search provider fails. Progress goes to
 standard error, leaving standard output parseable as JSON. A partial or failed
 search exits with code 1 after preserving successful results; a successful search
@@ -365,19 +366,112 @@ pmt import author supervisor.db --orcid 0000-0000-0000-0000 --enrich
 `pmt reset` re-arms the enrichment stage without discarding enrichment data, so a reset corpus can be
 re-enriched without refetching everything.
 
-## Download abstracts, text, and PDFs
+## Download abstracts, text, PDFs, and supporting information
 
 ```bash
 pmt download papers.db --format abstract
 pmt download papers.db --format text
 pmt download papers.db --format pdf
 pmt download papers.db --format both
+pmt download papers.db --format supplement
 ```
+
+Text and PDF runs also attempt supporting information by default. Use
+`--no-supplements` to acquire only the requested article assets. Abstract-only
+runs skip SI. `--format supplement` requests SI only and skips abstracts,
+including when the default `--abstract` option is enabled. This explicit format
+requests SI even if `--no-supplements` is also supplied.
+
+### Supporting information
+
+Supporting information (SI), also called supplementary material, is discovered
+for the paper's DOI and available provider identifiers. Each file is stored as
+a separate `supplement` asset in the same corpus, with its original filename,
+media type, source URL, provider, and discovery metadata. Multiple files can
+belong to one paper; the article PDF and text remain separate assets.
+
+```bash
+# SI acquisition for entries already in the corpus
+pmt download papers.db --format supplement --json
+
+# Select SI discovery independently of article download providers
+pmt download papers.db --format both --source pubmed \
+  --supplement-source structured --supplement-source pubmed
+
+# Search and acquire articles plus SI for only the new search matches
+pmt gather "lithium solid electrolyte" papers.db \
+  --source openalex --count 20 --format both --supplement-source all
+```
+
+The repeatable `--supplement-source` accepts:
+
+| Source | Discovery route |
+| --- | --- |
+| `structured` | Explicit SI references in stored JATS or Elsevier XML, plus supplemental URLs recorded on the paper. |
+| `pubmed` | SI links in the newest available PMC open-access article's JATS, resolved against its cloud files. |
+| `figshare` | Public Figshare records whose parent or resource DOI matches the paper DOI exactly, including publisher collections that use Figshare. |
+| `publisher` | Explicit supplement-labelled links on the paper's DOI landing page; used as a fallback when other routes find no files. |
+| `all` | All supported discovery routes; this is the default. |
+
+Availability depends on what a provider exposes. Publisher layouts differ and
+SI is not available for every paper. Refused or login-protected content is
+reported rather than bypassed. HTML challenge/error responses are rejected;
+downloads are bounded to 100 MiB per file and discovery responses to 8 MiB.
+Archives are stored intact for extraction.
+
+Normal reruns reuse stored file URLs and retry missing candidates. `--force`
+refreshes discovery and downloads successful files again. Download summaries
+add `supplements`, `supplements_skipped`, `supplements_failed`, and
+`supplements_unavailable`, plus `supplement_discovery_failed`.
+`supplements_failed` counts failed file downloads; `supplement_discovery_failed`
+counts papers with discovery errors. `supplements_unavailable` counts papers
+whose completed discovery found no SI, so a provider error is not reported as
+proof that none exists. Unavailable SI does not prevent acquisition of the main
+article. `gather --json` exposes these counts under `downloads`.
+
+Stored SI is included automatically in non-abstract scraping. See
+{doc}`scraping` for supported formats, per-file provenance, and resumable
+extraction. The Python API exposes SI assets through
+`paperminertoolkit.corpus.supplements.get_supplements`.
+
+Inspect all SI files and export one without making provider requests:
+
+```bash
+pmt corpus show papers.db "PAPER_ID" --json
+pmt corpus export papers.db "PAPER_ID" supporting.pdf \
+  --role supplement --asset-id "BLOB_ID_FROM_SHOW"
+```
+
+`--asset-id` is required when a paper has multiple distinct SI files. Local SI
+can also be attached through Python and will participate in the same scraping
+workflow:
+
+```python
+from pathlib import Path
+from paperminertoolkit.corpus.database import connect
+from paperminertoolkit.corpus.supplements import add_supplement
+
+with connect("papers.db") as conn:
+    add_supplement(
+        conn, {"paper_id": "PAPER_ID"}, Path("supporting.pdf"),
+        source="local", original_filename="supporting.pdf",
+        mime_type="application/pdf",
+        metadata={"label": "Supporting information"},
+    )
+```
+
+Stored-XML discovery requires the original article XML to have been downloaded
+already. The `pubmed` route can retrieve PMC JATS directly; this SI workflow
+does not separately fetch native XML from every publisher. Provider reference:
+[PMC Cloud Service](https://pmc.ncbi.nlm.nih.gov/tools/cloud/) and
+[Figshare public API](https://docs.figshare.com/).
 
 ### Default source order
 
 Each capability has its own order, and a source is only asked when every source before it has
-failed or been skipped. A run skips any source it did not select and any the row cannot reach:
+failed or been skipped for article assets. SI combines files from its selected sources,
+with publisher HTML as a fallback when the other sources found none. A run skips any
+source it did not select and any the row cannot reach:
 PubMed is attempted for a row carrying a PMID or a DOI, and each preprint server for a row carrying
 the identifier it issued.
 
@@ -388,6 +482,7 @@ the identifier it issued.
 | PDF | Unpaywall, OpenAlex, CORE, Elsevier, PubMed Central, medRxiv, bioRxiv, chemRxiv, arXiv, **OpenAlex cached PDF** |
 | search | Elsevier, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
 | enrich | Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, chemRxiv |
+| supplement | Structured, PubMed, Figshare, Publisher |
 
 `--source` filters this order rather than replacing it, and applies to abstracts, full text, and
 PDFs alike. Passing `--source openalex --source pubmed` asks PubMed first for text, because that is
@@ -396,6 +491,11 @@ where PubMed sits in the order, whichever way round you type them.
 The orders differ deliberately:
 
 - **Abstracts** lead with the providers that serve one straight from metadata already in hand.
+  Their OpenAlex and PubMed lookups are batched: for each block of 100 papers, OpenAlex works are
+  fetched 100 to a request, and the PubMed records of papers OpenAlex has no abstract for are
+  fetched 200 to a request, so 200 abstracts cost about two OpenAlex requests rather than 200.
+  A paper a batch does not return is still looked up on its own, and the batched OpenAlex records
+  also serve that paper's later OpenAlex PDF or full-text lookups.
 - **Text** puts the native structured sources first and OpenAlex last, because OpenAlex's is GROBID
   TEI derived from a PDF rather than a publisher document, and it is the only metered full-text
   source. It is genuinely a last resort: nothing reaches it unless the other four could not supply
@@ -431,6 +531,14 @@ open-access subset, which needs no credentials:
 ```bash
 pmt download papers.db --format text --source pubmed
 ```
+
+Elsevier is asked for full text or a PDF only when the paper looks like one it holds: a DOI with
+an Elsevier prefix such as `10.1016`, an Elsevier publisher name from enrichment, or a full-text
+article link in the Scopus record. Scopus indexes every
+publisher, so a corpus built from a Scopus search carries an Elsevier link on almost every row,
+and asking Elsevier for an ACS or RSC article only spends a request from the weekly quota to get a
+`404`. A skipped row records `elsevier: no Elsevier route: ...` among its PDF failures instead.
+Abstracts are not affected, because Scopus holds an abstract for every publisher.
 
 Only the PMC open-access subset is redistributable, so a paper with a PMC identifier outside that
 subset reports that no full text is offered rather than failing. An NCBI API key raises the PubMed
@@ -593,6 +701,6 @@ pmt corpus stats papers.db
 pmt status papers.db
 ```
 
-Corpus statistics include paper and asset counts, original and compressed storage sizes, and counts of text or abstract inputs that required chunking. Pipeline status summarizes search, download, scrape, and storage progress.
+Corpus statistics include paper and asset counts, SI file and paper counts, original and compressed storage sizes, and counts of text or abstract inputs that required chunking. Pipeline status summarizes search, download, scrape, and storage progress, including separate SI download and text/image extraction stages.
 
 The database is the durable source of truth. CSV files produced by scraping, prediction, trends, and storage are exports or intermediate artifacts and can be recreated from the corpus and saved models.

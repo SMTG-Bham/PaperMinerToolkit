@@ -17,6 +17,7 @@ from typing import Any
 
 from paperminertoolkit.extraction.compression import CompressionConfig
 from paperminertoolkit.extraction.models import ModelConfig, query_images, query_text
+from paperminertoolkit.extraction.recipes import VALUE_WARNINGS_FIELD
 from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, request_token_budget
 
 
@@ -34,8 +35,12 @@ def token_length(
         Text to measure. Non-string values return an empty list for backward
         compatibility.
     model : str | None, optional
-        Model name used for tokenizer selection. Defaults to the name in
-        ``model_config``, then to the package default model.
+        Model name used for tokenizer selection. By default the name in
+        ``model_config`` is used, falling back to the package default model.
+        An explicit name here overrides the configured one, so it must not
+        default to the package model: a local model's chunk plan would then
+        load the tokenizer of an unrelated model, fail, and silently fall
+        back to a character estimate that undercounts numeric text.
     model_config : _ModelConfigSource or None, optional
         Model configuration used for provider-aware token counting.
     provider : str | None, optional
@@ -66,7 +71,11 @@ def _field_schema(recipe: Mapping[str, Any]) -> str:
     """
     lines = []
     for field, config in recipe['search fields'].items():
-        lines.append(f'- "{field}": {config["prompt"]}')
+        line = f'- "{field}": {config["prompt"]}'
+        if config.get('values'):
+            allowed = ', '.join(f'"{value}"' for value in config['values'])
+            line += f' Allowed values: {allowed}, or "None".'
+        lines.append(line)
     return '\n'.join(lines)
 
 
@@ -87,6 +96,100 @@ def _example_record(recipe: Mapping[str, Any]) -> str:
     for field, config in recipe['search fields'].items():
         record[field] = config['example']
     return json.dumps([record], indent=2, ensure_ascii=False)
+
+
+_EXAMPLE_RULE = ('The example output only shows the shape of a record. Text in angle brackets stands for '
+                 'a reported value, and the other values are illustrations, not evidence: never copy an '
+                 'example value or placeholder into a record. Use "None" when a value is not reported.')
+
+# Recipe examples at least this long are distinctive enough that an extracted
+# value matching one exactly is a copy of the example, not a reported value.
+# Shorter examples ("58 C", "Figure 3") are often genuinely reported, unless
+# they are placeholders such as "<value>%", which no paper reports.
+_COPIED_EXAMPLE_MIN_LENGTH = 25
+_PLACEHOLDER = re.compile(r'<[^<>]+>')
+_MISSING_VALUES = {'', 'none', 'null', 'n/a', 'na', 'not reported'}
+
+
+def _comparable(value: object) -> str:
+    """Fold case, spacing, hyphens and underscores so equivalent spellings compare equal.
+
+    Parameters
+    ----------
+    value : object
+        Value to normalise; non-strings are converted with :func:`str`.
+
+    Returns
+    -------
+    str
+        Lower-case text with separators collapsed to single spaces and
+        surrounding punctuation removed.
+    """
+    return re.sub(r'[\s_-]+', ' ', str(value)).strip(' .;:').casefold()
+
+
+def check_record_values(records: list[dict[str, Any]], recipe: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Enforce recipe vocabularies and drop copied example values, in place.
+
+    A field that defines ``values`` takes only those values. A reported value
+    is matched to one after folding case and separators, or through the
+    field's ``value aliases``; anything else becomes ``"None"``. A field
+    whose value exactly repeats its recipe example also becomes ``"None"``
+    when that example is a placeholder such as ``"<value>%"`` or at least 25
+    characters long, which no paper reports verbatim.
+    Every replacement is recorded in :data:`VALUE_WARNINGS_FIELD` with the
+    original value. Running the check again on its own output changes
+    nothing.
+
+    Parameters
+    ----------
+    records : list[dict[str, Any]]
+        Parsed model records. Non-mapping entries are left untouched.
+    recipe : Mapping[str, Any]
+        Extraction recipe whose ``search fields`` define vocabularies and examples.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The same records, checked.
+    """
+    vocabularies = {}
+    for field, config in recipe['search fields'].items():
+        if config.get('values'):
+            lookup = {_comparable(value): value for value in config['values']}
+            for alias, value in (config.get('value aliases') or {}).items():
+                lookup[_comparable(alias)] = value
+            vocabularies[field] = (lookup, config['values'])
+    examples = {
+        field: _comparable(config['example'])
+        for field, config in recipe['search fields'].items()
+        if field not in vocabularies and isinstance(config.get('example'), str)
+        and (len(config['example']) >= _COPIED_EXAMPLE_MIN_LENGTH or _PLACEHOLDER.search(config['example']))
+    }
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        warnings = [warning for warning in str(record.get(VALUE_WARNINGS_FIELD) or '').split('; ') if warning]
+        for field, (lookup, allowed) in vocabularies.items():
+            value = record.get(field)
+            items = value if isinstance(value, list) else [value]
+            if value is None or all(_comparable(item) in _MISSING_VALUES for item in items):
+                continue
+            matched = {lookup.get(_comparable(item)) for item in items if _comparable(item) not in _MISSING_VALUES}
+            if len(matched) == 1 and None not in matched:
+                record[field] = matched.pop()
+            else:
+                record[field] = 'None'
+                warnings.append(f'{field}: {json.dumps(value, ensure_ascii=False)} is not one of '
+                                f'{", ".join(allowed)}')
+        for field, example in examples.items():
+            value = record.get(field)
+            if isinstance(value, str) and _comparable(value) == example:
+                record[field] = 'None'
+                warnings.append(f'{field}: dropped a copy of the recipe example')
+        if warnings:
+            record[VALUE_WARNINGS_FIELD] = '; '.join(dict.fromkeys(warnings))
+    return records
 
 
 def _base_extraction_prompt(recipe: Mapping[str, Any], source: str, source_rules: str) -> str:
@@ -137,6 +240,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant {plural} are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- {_EXAMPLE_RULE}
 
 Example output shape:
 {_example_record(recipe)}'''
@@ -254,6 +358,7 @@ Rules:
 - If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
 - Keep genuinely distinct {plural} as separate records according to the configured record unit.
 - Do not invent values. If neither source supports a field, use "None".
+- {_EXAMPLE_RULE}
 - Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
 
 Additional recipe instructions:
@@ -340,6 +445,26 @@ def _json_decoder_scan(response: str) -> list[dict[str, Any]]:
     return data
 
 
+def _opens_with_empty_array(response: str) -> bool:
+    """Report whether a response begins with an empty JSON array.
+
+    Parameters
+    ----------
+    response : str
+        Model response with surrounding whitespace and code fences removed.
+
+    Returns
+    -------
+    bool
+        Whether the first JSON value in the response is ``[]``.
+    """
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(response)
+    except JSONDecodeError:
+        return False
+    return parsed == []
+
+
 def _extract_json_objects(response: str) -> list[dict[str, Any]]:
     """Parse model output into JSON object records.
 
@@ -351,12 +476,14 @@ def _extract_json_objects(response: str) -> list[dict[str, Any]]:
     Returns
     -------
     list[dict[str, Any]]
-        Parsed object records.
+        Parsed object records. An empty list when the response is ``[]``,
+        or opens with ``[]`` followed by prose that holds no JSON objects.
 
     Raises
     ------
     ValueError
-        If the response contains no valid JSON objects.
+        If the response contains no valid JSON objects and does not open
+        with an empty array.
     """
     response = _strip_fences(response)
     try:
@@ -381,8 +508,10 @@ def _extract_json_objects(response: str) -> list[dict[str, Any]]:
             continue
     if data:
         return data
-    if response.startswith('[]'):
-        return []  # an empty list followed by an explanation, e.g. '[] The text reports no values.'
+    # Models often answer "no records" with the required `[]` and then
+    # explain themselves. That is an empty result, not an unparseable one.
+    if _opens_with_empty_array(response):
+        return []
     preview = response[:500].replace('\n', ' ')
     raise ValueError(f'Model response did not contain valid JSON objects. Response preview: {preview}')
 
@@ -421,9 +550,10 @@ def scrape_text(
         {'role': 'user', 'content': text},
     ]
     try:
-        return _extract_json_objects(query_model(messages, model_config=model_config))
+        records = _extract_json_objects(query_model(messages, model_config=model_config))
     except ValueError:
-        return _extract_json_objects(query_model(messages, model_config=model_config))
+        records = _extract_json_objects(query_model(messages, model_config=model_config))
+    return check_record_values(records, recipe)
 
 
 def ask_paper_question(text: str, question: str, model_config: ModelConfig | None = None) -> bool | None:
@@ -493,7 +623,7 @@ def scrape_images(
                             max_output_tokens=config.output_token_limit,
                             compression_config=compression_config,
                             image_labels=image_labels)
-    return _extract_json_objects(response)
+    return check_record_values(_extract_json_objects(response), recipe)
 
 
 def combine_material_records(
@@ -530,7 +660,7 @@ def combine_material_records(
         {'role': 'user', 'content': json.dumps(payload, indent=2)},
     ]
     response = query_model(messages, model_config=model_config)
-    return _extract_json_objects(response)
+    return check_record_values(_extract_json_objects(response), recipe)
 
 
 def scrape_pdf(

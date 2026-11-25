@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from contextlib import redirect_stderr, redirect_stdout
@@ -12,6 +11,8 @@ from urllib.parse import quote, quote_plus
 
 import click
 
+from paperminertoolkit import _output_schemas as out
+from paperminertoolkit._agent import agent_meta, emit_json
 from paperminertoolkit.providers import registry
 from paperminertoolkit.workflows import diagnostics
 
@@ -82,8 +83,8 @@ def report_provider_status(no_probe: bool, sources: tuple[str, ...],
     rows = [replace(row, detail=_redact(row.detail, credentials)) for row in rows]
     broken = [row for row in rows if row.is_problem]
     if json_output:
-        click.echo(json.dumps({'providers': [asdict(row) for row in rows],
-                               'ok': not broken}, indent=2))
+        emit_json({'providers': [asdict(row) for row in rows],
+                   'ok': not broken})
     else:
         width = max((len(row.label) for row in rows), default=0)
         for row in rows:
@@ -100,6 +101,7 @@ def report_provider_status(no_probe: bool, sources: tuple[str, ...],
         raise SystemExit(1)
 
 
+@agent_meta(effects={'network'}, output=out.PROVIDERS)
 @click.command('probe')
 @click.option('--source', 'sources', multiple=True,
               type=click.Choice(['all', *registry.SOURCES], case_sensitive=False),

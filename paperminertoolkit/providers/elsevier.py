@@ -392,6 +392,58 @@ def search_url(index: str, query: str, count: int, search_fields: str) -> str:
     return url
 
 
+ELSEVIER_DOI_PREFIXES = ('10.1016/', '10.1006/', '10.1053/', '10.1054/', '10.1067/', '10.1078/')
+"""DOI prefixes that Elsevier and its imprints register.
+
+``10.1016`` covers nearly everything on ScienceDirect, Cell Press and The
+Lancet included. The others belong to imprints Elsevier absorbed (Academic
+Press, W.B. Saunders, Churchill Livingstone, Mosby, Urban & Fischer) whose
+older articles kept their DOIs. The list is evidence, not a definition: an
+article outside it can still be Elsevier's, which is why a row's publisher name
+and full-text link are consulted too.
+"""
+
+ELSEVIER_PUBLISHER_NAMES = ('elsevier', 'cell press', 'academic press', 'pergamon', 'north-holland',
+                            'mosby', 'saunders', 'churchill livingstone', 'the lancet',
+                            'butterworth-heinemann', 'urban & fischer')
+"""Lower-case fragments that mark a publisher name as Elsevier or one of its imprints."""
+
+
+def is_elsevier_doi(doi: str | None) -> bool:
+    """Return whether a DOI carries a prefix Elsevier registers.
+
+    Parameters
+    ----------
+    doi : str or None
+        DOI, bare or as a ``doi.org`` URL.
+
+    Returns
+    -------
+    bool
+        Whether the cleaned DOI starts with one of :data:`ELSEVIER_DOI_PREFIXES`.
+    """
+    cleaned = clean_doi(doi) if doi else ''
+    return bool(cleaned) and cleaned.lower().startswith(ELSEVIER_DOI_PREFIXES)
+
+
+def is_elsevier_publisher(name: str | None) -> bool:
+    """Return whether a publisher name is Elsevier or one of its imprints.
+
+    Parameters
+    ----------
+    name : str or None
+        Publisher name as a metadata source reports it, such as OpenAlex's
+        ``Elsevier BV``.
+
+    Returns
+    -------
+    bool
+        Whether the name contains one of :data:`ELSEVIER_PUBLISHER_NAMES`.
+    """
+    lowered = str(name or '').lower()
+    return any(fragment in lowered for fragment in ELSEVIER_PUBLISHER_NAMES)
+
+
 def article_url_from_doi(doi: str) -> str:
     """Build an Elsevier article retrieval URL.
 
@@ -511,11 +563,10 @@ def request_json(url: str,
         If Elsevier has reported that this key's quota is exhausted, the
         request is rejected, or the body is not a JSON object.
     """
-    check_quota(api_key, url)
-    return provider.request_mapping(url, label='Elsevier', limiter=limiter_for(url), params=params,
-                                    headers=api_headers(api_key), session=session,
-                                    timeout=timeout, attempts=attempts,
-                                    on_response=lambda response: record_quota(response, api_key, url))
+    response = request(url, api_key, params=params, session=session,
+                       timeout=timeout, attempts=attempts)
+    payload = provider.decode_payload(response, label='Elsevier')
+    return provider.require_mapping(payload, label='Elsevier')
 
 
 def next_page_url(payload: Mapping[str, Any] | None) -> str:
