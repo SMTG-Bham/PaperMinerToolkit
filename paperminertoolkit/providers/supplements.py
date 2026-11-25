@@ -211,7 +211,9 @@ def _read_url(
                 if attempt == 2:
                     raise RuntimeError(f'supplementary request failed: {error}') from error
                 time.sleep(2 ** attempt)
-        raise RuntimeError('supplementary request retries exhausted')
+        # Unreachable: the final attempt returns or raises on every path, since its retry
+        # break is disabled, a request error re-raises, and the last redirect hop raises.
+        raise RuntimeError('supplementary request retries exhausted')  # pragma: no cover
     finally:
         if session is None:
             client.close()
