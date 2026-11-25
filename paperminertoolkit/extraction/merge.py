@@ -6,7 +6,9 @@ the same values repeated. Merging is deterministic: records are grouped by
 their recipe identity fields, list items that state the same thing are kept
 once, and other fields keep their first reported value. A record that only
 repeats an earlier one under a qualified name, such as "Cs3Bi2I9 (thin film)"
-after "Cs3Bi2I9 (powder)" with the same values, is dropped.
+after "Cs3Bi2I9 (powder)" with the same values, is dropped. The rule applies
+only when one identity field differs, and only by a bracketed or trailing
+qualifier, so records for different groups or time points are always kept.
 """
 
 from __future__ import annotations
@@ -139,11 +141,60 @@ def field_items(value: object) -> list[object]:
     return [item for item in items if not is_missing(item)]
 
 
-def _base_name(record: Mapping[str, Any], fields: Sequence[str]) -> str:
-    """Return the identity's first word, e.g. ``"cs3bi2i9"`` for ``"Cs3Bi2I9 (thin film)"``."""
-    text = ' '.join(str(record.get(field)) for field in fields if not is_missing(record.get(field)))
-    match = re.match(r'\s*([^\s(\[,;]+)', text)
-    return match.group(1).casefold() if match else ''
+_BRACKETED = re.compile(r'(?<!\S)(?:\([^()]*\)|\[[^\[\]]*\])(?!\w)')
+_TRAILING = re.compile(r'[,;]\s(?![^()\[\]]*[)\]]).*', re.DOTALL)
+
+
+def unqualified_key(value: object) -> str:
+    """Return a value's :func:`text_key` without its qualifiers.
+
+    A qualifier is a bracketed group that stands as its own word, such as
+    ``(thin film)`` or ``[film]``, or a clause after a comma or semicolon
+    outside brackets, such as ``, layered``. Brackets inside a word, as in
+    ``Cs2Sn(I0.88Br0.12)6`` or ``(CH3NH3)PbI3``, and words that follow a
+    space, as in ``Group A`` or ``1 day``, are part of the value.
+
+    Parameters
+    ----------
+    value : object
+        Identity value such as ``"Cs3Bi2I9 (thin film)"``.
+
+    Returns
+    -------
+    str
+        Normalized text, e.g. ``"cs3bi2i9"``, or ``""`` when nothing is left.
+    """
+    return text_key(_TRAILING.sub('', _BRACKETED.sub(' ', str(value))))
+
+
+def qualified_repeat(first: Mapping[str, Any], second: Mapping[str, Any], fields: Sequence[str]) -> bool:
+    """Return whether two identities differ only by a qualifier on one field.
+
+    Both records must report every identity field. Exactly one field may
+    differ, and its values must agree once their qualifiers are removed (see
+    :func:`unqualified_key`). ``"Cs3Bi2I9 (thin film)"`` and ``"Cs3Bi2I9
+    (powder)"`` qualify; ``("Group A", "1 h")`` and ``("Group A", "1 day")``
+    do not.
+
+    Parameters
+    ----------
+    first, second : Mapping[str, Any]
+        Records to compare.
+    fields : Sequence[str]
+        Identity fields.
+
+    Returns
+    -------
+    bool
+        ``True`` when one identity is a qualified form of the other.
+    """
+    if not (record_key(first, fields) and record_key(second, fields)):
+        return False
+    differing = [field for field in fields if text_key(first.get(field)) != text_key(second.get(field))]
+    if len(differing) != 1:
+        return False
+    base = unqualified_key(first.get(differing[0]))
+    return bool(base) and base == unqualified_key(second.get(differing[0]))
 
 
 def same_content(first: Mapping[str, Any], second: Mapping[str, Any], fields: Sequence[str]) -> bool:
@@ -188,10 +239,12 @@ def merge_chunk_records(records: Sequence[Mapping[str, Any]], recipe: Mapping[st
     -------
     list[dict[str, Any]]
         One record per identity, in order of first appearance. Records with
-        no reported identity are kept as they are, with duplicate list items
-        removed. A record whose identity starts with the same word as an
-        earlier record's and whose other fields hold the same items is
-        dropped as a repeat.
+        an incomplete identity are kept as they are, with duplicate list
+        items removed. A record whose identity is a qualified form of a kept
+        record's (see :func:`qualified_repeat`) and whose other fields hold
+        the same items is dropped as a repeat. Records whose identities
+        differ in any other way, such as two groups or two time points that
+        report the same value, are all kept.
     """
     fields = identity_fields(recipe)
     merged: list[dict[str, Any]] = []
@@ -209,9 +262,8 @@ def merge_chunk_records(records: Sequence[Mapping[str, Any]], recipe: Mapping[st
     content = [field for field in recipe['search fields'] if field not in fields]
     kept: list[dict[str, Any]] = []
     for record in merged:
-        base = _base_name(record, fields)
-        if base and any(_base_name(earlier, fields) == base and same_content(earlier, record, content)
-                        for earlier in kept):
+        if any(qualified_repeat(earlier, record, fields) and same_content(earlier, record, content)
+               for earlier in kept):
             continue
         kept.append(record)
     return kept
