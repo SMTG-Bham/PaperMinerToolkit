@@ -626,6 +626,37 @@ def test_topics_emergence_delegates_settings_and_reports_the_map(
     assert 'Spearman 0.41' in result.output
 
 
+def test_topics_emergence_json_prints_the_summary_as_strict_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Print the run summary as JSON, with a skipped backtest as null and chatter on stderr."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Print progress and return a summary without a backtest."""
+        print('Embedding papers')
+        return {
+            'output_dir': str(tmp_path / 'out'), 'report': str(tmp_path / 'out' / 'report.md'),
+            'plots': [], 'papers_read': 10, 'papers_used': 9, 'end_year': 2024, 'areas': 2,
+            'topics': 4, 'niches': 10, 'topic_status': {'emerging': 1, 'stable': 3},
+            'flagged_niches': [{'niche': 3, 'growth_z': float('nan')}],
+            'backtest_rho_score': float('nan'), 'settings': {'backtest_cutoffs': 0},
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.main, ['topics', 'emergence', str(db_path), str(tmp_path / 'out'),
+                                           '--backtest-cutoffs', '0', '--json'])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload['backtest_rho_score'] is None
+    assert payload['flagged_niches'] == [{'niche': 3, 'growth_z': None}]
+    assert payload['report'] == str(tmp_path / 'out' / 'report.md')
+    assert 'Embedding papers' in result.stderr
+    assert 'Spearman' not in result.output
+
+
 def test_topics_emergence_reports_analysis_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Turn a corpus that cannot be analysed into a clean command error."""
     db_path = tmp_path / 'papers.db'

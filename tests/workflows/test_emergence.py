@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 from scipy import sparse
 
+from paperminertoolkit import _output_schemas as out
+from paperminertoolkit._agent import validate_json
 from paperminertoolkit.corpus import database as corpus
 from paperminertoolkit.workflows import emergence
 
@@ -327,6 +329,8 @@ def test_analyze_emergence_maps_known_growth_and_decline(tmp_path: Path) -> None
     assert sorted(summary['plots']) == [str(path) for path in plots]
     assert 'NaN' not in (output / emergence.SUMMARY_FILENAME).read_text()
     assert json.loads((output / emergence.SUMMARY_FILENAME).read_text())['end_year'] == 2025
+    # pmt topics emergence --json prints this summary, so it must match the declared schema.
+    assert validate_json(emergence.json_safe(summary), out.TOPICS_EMERGENCE) == []
 
     def theme_of(label_terms: str) -> str:
         """Name the theme whose words label a cluster."""
