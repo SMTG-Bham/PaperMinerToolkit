@@ -209,6 +209,59 @@ def test_transformers_token_count_uses_auto_tokenizer(monkeypatch: pytest.Monkey
     }
 
 
+def test_offline_transformers_counts_load_tokenizers_from_local_files_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ask Hugging Face for cached files only while offline, and normally otherwise."""
+    loads = []
+
+    class FakeTokenizer:
+        """Encode text as one token per word."""
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            """Return one token identifier per word."""
+            return list(range(len(text.split())))
+
+    class FakeAutoTokenizer:
+        """Record how each pretrained tokenizer is requested."""
+
+        @staticmethod
+        def from_pretrained(model: str, local_files_only: bool = False) -> FakeTokenizer:
+            """Record the model and loading mode, then return a tokenizer."""
+            loads.append((model, local_files_only))
+            return FakeTokenizer()
+
+    monkeypatch.setattr(tokenizer.importlib, 'import_module',
+                        lambda name: types.SimpleNamespace(AutoTokenizer=FakeAutoTokenizer))
+    tokenizer._auto_tokenizer.cache_clear()
+    try:
+        with tokenizer.offline_token_counting():
+            assert tokenizer._transformers_token_count('two words', 'offline/test-model') == 2
+        assert tokenizer._transformers_token_count('three more words', 'offline/test-model') == 3
+    finally:
+        tokenizer._auto_tokenizer.cache_clear()
+
+    assert loads == [('offline/test-model', True), ('offline/test-model', False)]
+
+
+@pytest.mark.parametrize(('model_config', 'offline', 'expected'), [
+    (None, False, 'tiktoken'),
+    (config(provider='openai'), False, 'tiktoken'),
+    ({'provider': 'OpenAI'}, True, 'tiktoken'),
+    (config(provider='local'), True, 'transformers'),
+    (config(provider='anthropic'), False, 'anthropic'),
+    (config(provider='anthropic'), True, 'estimate'),
+    (config(provider='other'), False, 'estimate'),
+])
+def test_token_count_method_names_the_counter_each_provider_uses(
+    model_config: types.SimpleNamespace | dict[str, str] | None,
+    offline: bool,
+    expected: str,
+) -> None:
+    """Name tiktoken for OpenAI and unset providers, and the estimate where nothing better runs."""
+    assert tokenizer.token_count_method(model_config, offline=offline) == expected
+
+
 def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """Route token counts by provider and fall back on failures."""
     monkeypatch.setattr(tokenizer, '_openai_token_count', lambda text, model: 5)
