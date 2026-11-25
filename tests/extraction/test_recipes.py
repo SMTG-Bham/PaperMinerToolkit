@@ -303,7 +303,12 @@ def test_canonical_match_maps_aliases_units_and_rejects_unknown_columns(
     assert recipes.canonical_match('Unknown field', columns, recipe) is None
 
 def test_vocabulary_check_ignores_field_entries_that_are_not_objects() -> None:
-    """Leave non-object field entries to other checks: they carry no vocabulary to validate."""
+    """Skip field entries that are not objects, which carry no vocabulary to check.
+
+    This covers only the vocabulary check. A recipe whose field entry is not an
+    object still passes ``_validate_recipe`` and fails later, which is a known
+    validation gap rather than behaviour this test endorses.
+    """
     assert recipes._validate_field_values('Name', 'Material name.', 'test.json') is None
     with pytest.raises(ValueError, match='"value aliases" without "values"'):
         recipes._validate_field_values('Name', {'value aliases': {'a': 'b'}}, 'test.json')
