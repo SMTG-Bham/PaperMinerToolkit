@@ -7,6 +7,7 @@ import json
 import sys
 import types
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -99,7 +100,7 @@ def add_figure(conn: Any, paper_id: str, figure_id: str, label: str, source: str
 def corpus_db(tmp_path: Path) -> Path:
     """Two papers: one with figures 3 (twice, from two sources) and 4, one with none."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper-1', 'doi': '10.1/one', 'title': 'One'})
         corpus.upsert_paper(conn, {'paper_id': 'paper-2', 'doi': '10.1/two', 'title': 'Two'})
         add_figure(conn, 'paper-1', 'pdf-figure-3', 'Figure 3', source='pdf-layout')
@@ -226,7 +227,7 @@ def test_digitize_writes_points_checkpoints_and_resumes(
     assert first['Record names'] == 'PLA film; PBS film'
     assert (first['Series'], first['Series style'], first['x'], first['y']) == ('1f77b4-solid', 'solid', '1', '2')
     assert (first['X title'], first['Y title']) == ('Time (d)', 'Mass loss (%)')
-    with corpus.connect(corpus_db) as conn:
+    with closing(corpus.connect(corpus_db)) as conn, conn:
         statuses = {asset['metadata']['figure_id']: asset['metadata'].get('digitization_status')
                     for asset in corpus.get_figure_assets(conn, 'paper-1')}
     assert statuses == {'fig3': 'succeeded', 'pdf-figure-3': None, 'fig4': None}
@@ -255,7 +256,7 @@ def test_unreadable_figures_are_marked_failed_with_the_reason(
     assert summary['failed'] == 1
     assert any('x-axis ticks' in message for message in summary['errors'])
     assert read_rows(output) == []
-    with corpus.connect(corpus_db) as conn:
+    with closing(corpus.connect(corpus_db)) as conn, conn:
         figure = next(asset for asset in corpus.get_figure_assets(conn, 'paper-1')
                       if asset['metadata']['figure_id'] == 'fig3')
     assert figure['metadata']['digitization_status'] == 'failed'
@@ -284,7 +285,7 @@ def test_figures_are_detected_from_the_pdf_of_a_paper_with_none(
 ) -> None:
     """Detect a figure-less paper's figures from its PDF, unless detection is off."""
     install([Panel('a')])
-    with corpus.connect(corpus_db) as conn:
+    with closing(corpus.connect(corpus_db)) as conn, conn:
         corpus.add_asset(conn, {'paper_id': 'paper-2'}, b'%PDF-1.7 stand-in', role='pdf', kind='pdf',
                          mime_type='application/pdf', source='pubmed', original_filename='two.pdf')
     detected = []
@@ -349,7 +350,7 @@ def test_a_failed_figure_detection_is_noted_and_the_run_goes_on(
 ) -> None:
     """Note why a paper's PDF gave no figures, and still recover the other papers' figures."""
     install([Panel('a')])
-    with corpus.connect(corpus_db) as conn:
+    with closing(corpus.connect(corpus_db)) as conn, conn:
         corpus.add_asset(conn, {'paper_id': 'paper-2'}, b'%PDF-1.7 stand-in', role='pdf', kind='pdf',
                          mime_type='application/pdf', source='pubmed', original_filename='two.pdf')
 
@@ -412,7 +413,7 @@ def test_preview_draws_recovered_curves(tmp_path: Path, install: Callable[..., t
 
 def test_digitization_status_is_kept_apart_from_extraction_status(tmp_path: Path) -> None:
     """Store digitization progress in its own keys of the figure's metadata."""
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with closing(corpus.connect(tmp_path / 'papers.db')) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper-1'})
         add_figure(conn, 'paper-1', 'fig1', 'Figure 1')
         assert corpus.set_figure_extraction_status(conn, 'paper-1', 'fig1', 'succeeded')

@@ -7,6 +7,7 @@ unit conversion, append behavior, user confirmation, and paper status updates.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +41,10 @@ def test_helpers_reject_empty_ids_and_skip_unscraped_papers(tmp_path: Path) -> N
     with pytest.raises(ValueError, match='non-empty'):
         store._stored_paper_ids(pd.DataFrame({'Paper id': ['', None]}))
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'p', 'title': 'paper'})
     store._mark_stored_papers(db_path, {'p'})
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert corpus.paper_rows(conn)[0]['store_status'] == 'pending'
 
 
@@ -54,7 +55,7 @@ def test_store_preserves_supplement_provenance_and_marks_si_only_rows_stored(
 ) -> None:
     """Retain distinct SI evidence when creating or extending a legacy CSV."""
     db_path, input_path, output_path = tmp_path / 'papers.db', tmp_path / 'scraped.csv', tmp_path / 'materials.csv'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'si-only', 'supplement_text_scrape_status': si_status})
     if existing_output:
         pd.DataFrame([{'Paper id': 'older', 'Name': 'Existing'}]).to_csv(output_path)
@@ -72,13 +73,13 @@ def test_store_preserves_supplement_provenance_and_marks_si_only_rows_stored(
     stored = pd.read_csv(output_path, index_col=0)
     assert stored.loc[stored['Paper id'] == 'si-only'].to_dict('records') == records
     assert not input_path.exists()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert corpus.paper_rows(conn)[0]['store_status'] == 'stored'
 
 
 def write_papers_corpus(path: Path) -> None:
     """Write a minimal paper corpus for store unit tests."""
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         for row in [
             {
                 'paper_id': 'paper-1',

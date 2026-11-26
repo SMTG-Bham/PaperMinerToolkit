@@ -135,7 +135,8 @@ def test_pdf_and_raster_readers_render_full_pages_with_limits(tmp_path: Path, mo
     assert 'Supplementary table: 2.5' in readers.supplement_text(part)
     images = readers.supplement_images(part, str(tmp_path / 'pdf'), dpi=72)
     assert len(images) == 1
-    assert Image.open(images[0]).size == (200, 200)
+    with Image.open(images[0]) as image:
+        assert image.size == (200, 200)
     assert not (tmp_path / 'pdf' / 'source.pdf').exists()
     monkeypatch.setattr(readers, 'MAX_RENDERED_PIXELS', 10)
     with pytest.raises(ValueError, match='pixel limit'):
@@ -146,7 +147,8 @@ def test_pdf_and_raster_readers_render_full_pages_with_limits(tmp_path: Path, mo
     image_part = readers.supplement_parts(asset(stream.getvalue(), 'SI.tiff'))[0]
     assert image_part.supports_images and not image_part.supports_text
     rendered = readers.supplement_images(image_part, str(tmp_path / 'raster'))
-    assert Image.open(rendered[0]).size == (3, 2)
+    with Image.open(rendered[0]) as image:
+        assert image.size == (3, 2)
 
 
 def test_archive_skips_directories_and_refuses_encrypted_or_empty_archives() -> None:
@@ -264,7 +266,7 @@ def test_si_runs_after_article_success_with_file_provenance_and_independent_skip
     """Enable SI after a completed article, process every file, and checkpoint it."""
     db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
     paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         add_supplement(conn, paper, b'LLZO supporting table', original_filename='one.csv',
                        metadata={'label': 'Table S1', 'source_url': 'https://example.org/one.csv'})
         add_supplement(conn, paper, b'LATP method details', original_filename='two.txt')
@@ -287,7 +289,7 @@ def test_si_runs_after_article_success_with_file_provenance_and_independent_skip
     assert set(rows['Supplement filename']) == {'one.csv', 'two.txt'}
     assert rows.loc[rows['Supplement filename'] == 'one.csv', 'Supplement source URL'].item() == 'https://example.org/one.csv'
     assert rows['Source path'].str.startswith('corpus:supplement:').all()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         persisted = corpus.paper_rows(conn)[0]
         assert persisted['text_scrape_status'] == 'succeeded'
         assert persisted['supplement_text_scrape_status'] == 'succeeded'
@@ -304,7 +306,7 @@ def test_si_archive_partial_failure_retries_only_failed_member(
     db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
     paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
     payload = archive_bytes({'good.txt': b'GOOD', 'retry.txt': b'RETRY', 'raw.xyz': b'raw source'})
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         add_supplement(conn, paper, payload, original_filename='SI.zip')
     failures = [True]
     calls = []
@@ -322,7 +324,7 @@ def test_si_archive_partial_failure_retries_only_failed_member(
     options = {'mode': 'text', 'output_path': str(output)}
     scrape.scrape_papers(str(db_path), **options)
     assert pd.read_csv(output)['Name'].tolist() == ['good']
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert corpus.paper_rows(conn)[0]['supplement_text_scrape_status'] == 'partial'
         metadata = get_supplements(conn, paper['paper_id'])[0]['metadata']
         assert metadata['text_extraction_members'] == {'good.txt': 'succeeded', 'retry.txt': 'failed', 'raw.xyz': 'unsupported'}
@@ -335,7 +337,7 @@ def test_si_archive_partial_failure_retries_only_failed_member(
     rows = pd.read_csv(output)
     assert rows['Name'].tolist() == ['good', 'retry']
     assert rows['Source path'].str.contains('!').all()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert get_supplements(conn, paper['paper_id'])[0]['content'] == payload
 
 
@@ -345,7 +347,7 @@ def test_si_needing_too_many_text_requests_is_unsupported_without_model_calls(
     """Refuse a data-dump supplement before it costs one model request per chunk."""
     db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
     paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         add_supplement(conn, paper, b'0123\t4567\n' * 50, original_filename='genome.csv')
     monkeypatch.setattr(scrape, 'MAX_SUPPLEMENT_TEXT_REQUESTS', 3)
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': [text] * 4)
@@ -354,7 +356,7 @@ def test_si_needing_too_many_text_requests_is_unsupported_without_model_calls(
 
     scrape.scrape_papers(str(db_path), mode='text', output_path=str(output))
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         metadata = get_supplements(conn, paper['paper_id'])[0]['metadata']
     assert metadata['text_extraction_status'] == 'unsupported'
     assert 'genome.csv: too large for text extraction (4 requests, limit 3)' in metadata['text_extraction_error']
@@ -367,7 +369,7 @@ def test_si_split_into_overlapping_chunks_merges_repeated_records(
     """Report a record once when the chunk overlap shows it to the model twice."""
     db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
     paper = {'paper_id': 'paper-1', 'text_scrape_status': 'succeeded'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         add_supplement(conn, paper, b'LLZO conducts at 1 mS/cm.\n', original_filename='table.txt')
     monkeypatch.setattr(scrape, '_text_chunks', lambda text, model_config, prompt='': ['part one', 'part two'])
     monkeypatch.setattr(scrape, 'scrape_text', lambda *_args, **_kwargs: [{'Name': 'LLZO'}])
@@ -385,7 +387,7 @@ def test_si_image_mode_supplies_labels_and_preserves_stable_asset_provenance(
     paper = {'paper_id': 'paper-1', 'image_scrape_status': 'succeeded'}
     stream = io.BytesIO()
     Image.new('RGB', (3, 2)).save(stream, format='PNG')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         blob_id = add_supplement(conn, paper, stream.getvalue(), original_filename='figure.png',
                                  metadata={'label': 'Figure S4'})
     captured = []
@@ -413,7 +415,7 @@ def test_abstract_mode_never_loads_supplements(
 ) -> None:
     """Leave supporting information out of abstract-only extraction."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'one', 'abstract_scrape_status': 'succeeded'})
     monkeypatch.setattr(scrape, 'get_supplements', lambda *args, **kwargs: pytest.fail('Abstract scrape loaded SI'))
     scrape.scrape_papers(str(db_path), mode='abstract', output_path=str(tmp_path / 'out.csv'))
@@ -425,7 +427,7 @@ def test_si_duplicate_blobs_are_processed_once_and_force_reprocesses_them(
     """Avoid duplicate output from identical blobs linked with different sources."""
     db_path, output = tmp_path / 'papers.db', tmp_path / 'out.csv'
     paper = {'paper_id': 'one', 'text_scrape_status': 'succeeded'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         blob_id = add_supplement(conn, paper, b'same supplementary content', original_filename='SI.txt')
         corpus.link_asset(conn, paper['paper_id'], blob_id, role='supplement', source='mirror',
                           original_filename='mirror.txt')
@@ -459,7 +461,7 @@ def test_si_text_images_has_independent_stages_and_retains_corrupt_sources(
     with fitz.open() as document:
         document.new_page(width=100, height=100).insert_text((5, 20), 'SI data')
         content = document.tobytes()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         add_supplement(conn, paper, content, original_filename='SI.pdf')
         add_supplement(conn, paper, b'corrupt zip', original_filename='bad.zip')
     monkeypatch.setattr(scrape, 'scrape_text', lambda *args, **kwargs: [{'Name': 'text result'}])
@@ -469,7 +471,7 @@ def test_si_text_images_has_independent_stages_and_retains_corrupt_sources(
                         image_dir=str(tmp_path / 'images'), image_context='paper-text', image_dpi=72)
     rows = pd.read_csv(output)
     assert rows['Source'].tolist() == ['supplement-text', 'supplement-image']
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         stored = {entry['original_filename']: entry for entry in get_supplements(conn, paper['paper_id'])}
         assert stored['bad.zip']['content'] == b'corrupt zip'
         for stage in ('text', 'image'):

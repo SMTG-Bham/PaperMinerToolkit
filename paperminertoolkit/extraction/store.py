@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Collection
+from contextlib import closing
 from typing import Any
 from os import PathLike
 from pathlib import Path
@@ -128,7 +129,7 @@ def _mark_stored_papers(
         If the corpus schema is newer than this package supports.
     """
     marked = 0
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         for paper in paper_rows(conn):
             if paper['paper_id'] not in paper_ids:
                 continue

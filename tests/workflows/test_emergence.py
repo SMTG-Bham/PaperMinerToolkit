@@ -64,7 +64,7 @@ def build_emergence_corpus(db_path: Path, start: int = 2010, end: int = 2025) ->
         Number of papers written.
     """
     written = 0
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         for year in range(start, end + 1):
             total = 30 + 4 * (year - start)
             for theme, share in _theme_shares(year).items():
@@ -438,7 +438,7 @@ def test_analyze_emergence_rejects_corpora_that_cannot_show_change(tmp_path: Pat
 def test_load_emergence_documents_can_keep_title_only_papers(tmp_path: Path) -> None:
     """Drop undated papers and, unless asked, papers without an abstract."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/a', 'title': 'Title only',
                                    'publication_date': '2020'})
         corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/b', 'title': 'Undated'})
@@ -452,7 +452,7 @@ def test_load_emergence_documents_can_keep_title_only_papers(tmp_path: Path) -> 
 def test_load_emergence_documents_drops_dated_papers_without_any_text(tmp_path: Path) -> None:
     """Count a dated paper whose title is only markup and which has no abstract as textless."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'doi:10.1/c', 'title': '<sup></sup>',
                                    'publication_date': '2021'})
     documents, counts = emergence.load_emergence_documents(db_path, require_abstract=False)

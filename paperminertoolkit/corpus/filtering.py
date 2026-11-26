@@ -1281,7 +1281,7 @@ def refresh_topic_filters(
         Matching active filters and the combined filter state are updated in
         the corpus transactionally.
     """
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         filters = [
             item for item in active_filter_stack(conn)
             if item['method'] == 'topic' and item['definition'].get('model_id') == model_id

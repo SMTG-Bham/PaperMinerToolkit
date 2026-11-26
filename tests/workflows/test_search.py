@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, NoReturn, Self
@@ -37,7 +38,7 @@ def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Pa
     assert search.pubmed_search('query', 1).empty
     fake = SimpleNamespace(parse_query=lambda query: (['term'], {}), CORPUS_START='2020-01-01', interval_page=lambda *args, **kwargs: {}, total_results=lambda payload: 1, page_size=lambda payload, default: 1, endpoint=lambda category: ('url', 1), page_cursors=lambda total, step: [0], parse_records=lambda payload: [], matches=lambda entry, terms: False, latest_versions=lambda entries: [])
     assert search._rxiv_search(fake, 'testRxiv', 'term', 1).empty
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with closing(corpus.connect(tmp_path / 'papers.db')) as conn, conn:
         assert search._store_search_abstracts(conn, [{'paper_id': 'p', 'abstract': ' '}]) == 0
 
 
@@ -597,7 +598,7 @@ def test_search_for_papers_limits_provider_workers(
         'query', db_path=str(db_path), source='all', count=1, workers=2,
     )
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         run = corpus.search_history(conn)[0]
     assert configured_workers == [min(2, len(requested))]
     assert run['parallel'] is True
@@ -655,7 +656,7 @@ def test_search_for_papers_merges_and_writes_results(
 
     search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         written = corpus.paper_rows(conn)
         searches = corpus.search_history(conn)
         provenance = corpus.paper_search_history(conn, 'SCOPUS_ID:1')
@@ -683,7 +684,7 @@ def test_search_for_papers_merges_into_existing_corpus(
 ) -> None:
     """Search for papers merges into existing corpus."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'core:old',
             'doi': '10.1234/existing',
@@ -701,7 +702,7 @@ def test_search_for_papers_merges_into_existing_corpus(
 
     search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
     assert len(written) == 1
@@ -731,7 +732,7 @@ def test_search_for_papers_records_a_corpus_write_failure(
     with pytest.raises(RuntimeError, match='database write failed'):
         search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
         papers = corpus.paper_rows(conn)
     assert papers == []
@@ -751,7 +752,7 @@ def test_search_for_papers_stores_search_time_abstract_assets(
 ) -> None:
     """Search for papers stores search time abstract assets."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'existing:paper',
             'doi': '10.1234/existing',
@@ -767,7 +768,7 @@ def test_search_for_papers_stores_search_time_abstract_assets(
 
     search.search_for_papers('query', db_path=str(db_path), source='core', count=1, store_abstract=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         rows = corpus.paper_rows(conn)
         abstract = corpus.get_asset(conn, 'existing:paper', 'abstract')
     output = capsys.readouterr().out
@@ -792,7 +793,7 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(
 
     assert 'Document search found 0 new results.' in capsys.readouterr().out
     assert db_path.exists()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
     assert searches[0]['status'] == 'completed'
     assert searches[0]['result_count'] == 0
@@ -842,7 +843,7 @@ def test_search_for_papers_marks_a_run_failed_when_every_source_fails(
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
     assert searches[0]['status'] == 'failed'
     assert all(

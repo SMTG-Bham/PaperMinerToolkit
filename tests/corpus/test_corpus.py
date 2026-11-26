@@ -47,7 +47,7 @@ def test_defensive_helpers_and_empty_operations(monkeypatch: pytest.MonkeyPatch)
     )
     assert merged['metadata_json'] == '{"source": true}'
     assert merged['last_error'] == 'failed'
-    with corpus.connect(':memory:') as conn:
+    with contextlib.closing(corpus.connect(':memory:')) as conn, conn:
         conn.execute("CREATE TABLE defaults (value TEXT DEFAULT CURRENT_TIMESTAMP)")
         assert corpus._child_column_defaults(conn, 'defaults')['value'] == 'CURRENT_TIMESTAMP'
         assert corpus.write_enrichment(conn, []) == 0
@@ -112,7 +112,7 @@ def test_corpus_stores_deduplicated_compressed_assets_and_reads_them_back(tmp_pa
     db_path = tmp_path / 'corpus.db'
     text = 'Lithium solid electrolyte storage demo. ' * 50
 
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         first_blob = corpus.add_asset(
             conn,
             sample_paper('demo:1'),
@@ -168,7 +168,7 @@ def test_corpus_stores_and_filters_structured_documents(tmp_path: Path) -> None:
     jats = b'<article><body><fig id="fig1"/></body></article>'
     tei = b'<TEI><text><figure xml:id="fig1"/></text></TEI>'
 
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         jats_blob = corpus.add_structured_document(
             conn,
             paper,
@@ -233,7 +233,7 @@ def test_corpus_stores_and_filters_structured_documents(tmp_path: Path) -> None:
 
 def test_structured_documents_require_format_and_source(tmp_path: Path) -> None:
     """Reject structured assets without the provenance needed for reuse."""
-    with corpus.connect(tmp_path / 'structured.db') as conn:
+    with contextlib.closing(corpus.connect(tmp_path / 'structured.db')) as conn, conn:
         with pytest.raises(ValueError, match='document_format must not be empty'):
             corpus.add_structured_document(
                 conn, sample_paper(), '<article/>', document_format=' ', source='pubmed',
@@ -247,7 +247,7 @@ def test_structured_documents_require_format_and_source(tmp_path: Path) -> None:
 def test_corpus_stores_linked_and_deduplicated_figure_assets(tmp_path: Path) -> None:
     """Keep figure provenance on links while deduplicating identical image bytes."""
     image = b'\x89PNG\r\n\x1a\nshared image'
-    with corpus.connect(tmp_path / 'figures.db') as conn:
+    with contextlib.closing(corpus.connect(tmp_path / 'figures.db')) as conn, conn:
         first_blob = corpus.add_figure_asset(
             conn,
             sample_paper('demo:figure'),
@@ -323,7 +323,7 @@ def test_figure_assets_require_image_provenance(
         'mime_type': 'image/png',
         **kwargs,
     }
-    with corpus.connect(tmp_path / 'figures.db') as conn:
+    with contextlib.closing(corpus.connect(tmp_path / 'figures.db')) as conn, conn:
         with pytest.raises(ValueError, match=message):
             corpus.add_figure_asset(conn, sample_paper(), b'image', **arguments)
 
@@ -340,7 +340,7 @@ def test_figure_extraction_status_marks_only_the_named_figure(tmp_path: Path) ->
             'mime_type': 'image/png',
         }
 
-    with corpus.connect(tmp_path / 'status.db') as conn:
+    with contextlib.closing(corpus.connect(tmp_path / 'status.db')) as conn, conn:
         corpus.add_figure_asset(conn, sample_paper(), b'first', **figure('fig-1'))
         corpus.add_figure_asset(conn, sample_paper(), b'second', **figure('fig-2'))
 
@@ -405,7 +405,7 @@ def test_corpus_migrates_version_eleven_asset_metadata(tmp_path: Path) -> None:
             """
         )
 
-    with corpus.connect(db_path) as conn:
+    with contextlib.closing(corpus.connect(db_path)) as conn, conn:
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(paper_assets)')}
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         asset = corpus.get_asset_metadata(conn, 'legacy:1', 'text')

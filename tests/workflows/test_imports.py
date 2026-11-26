@@ -8,6 +8,7 @@ PDFs with existing corpus rows.
 from __future__ import annotations
 
 import shutil
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,7 @@ def test_import_pdfs_writes_imported_rows_with_metadata(
 
     summary = imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         imported = corpus.paper_rows(conn)
         asset = corpus.get_asset(conn, f'external:{FIXTURE_PDF.stem}', 'pdf')
     assert summary == {'files': 1, 'added': 1, 'updated': 0, 'doi_found': 1, 'enriched': 1,
@@ -94,7 +95,7 @@ def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(
     pdf_path = papers_dir / FIXTURE_PDF.name
     shutil.copy(FIXTURE_PDF, pdf_path)
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'scopus:1',
             'doi': FIXTURE_DOI,
@@ -116,7 +117,7 @@ def test_import_pdfs_merges_fixture_pdf_with_existing_corpus_rows(
 
     imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         merged = corpus.paper_rows(conn)
         asset = corpus.get_asset(conn, 'scopus:1', 'pdf')
     output = capsys.readouterr().out
@@ -170,7 +171,7 @@ def test_import_pdfs_writes_publisher_and_work_type_columns(
 
     imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         row = corpus.paper_rows(conn)[0]
         authors = corpus.paper_authors(conn, row['paper_id'])
         references = corpus.paper_references(conn, row['paper_id'])
@@ -205,7 +206,7 @@ def test_import_pdfs_keeps_the_raw_message_out_of_the_paper_row(
 
     imports.import_pdfs(str(papers_dir), db_path=str(db_path), use_crossref=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         row = corpus.paper_rows(conn)[0]
 
     assert 'crossref_message' not in row

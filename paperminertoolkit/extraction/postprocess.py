@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any
@@ -148,7 +149,8 @@ def postprocess_scrape(
     output: list[dict[str, Any]] = []
     audit_rows = 0
     unchecked: list[str] = []
-    with connect(db_path) as conn, tempfile.TemporaryDirectory(prefix='paperminertoolkit-postprocess-') as temp_dir:
+    with closing(connect(db_path)) as conn, conn, \
+            tempfile.TemporaryDirectory(prefix='paperminertoolkit-postprocess-') as temp_dir:
         papers: Mapping[str, Mapping[str, Any]] = {str(row['paper_id']): row for row in paper_rows(conn)}
         texts: dict[tuple[str, bool], str | None] = {}
         for (paper_id, source), group in groups.items():

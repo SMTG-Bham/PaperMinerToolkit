@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import closing
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -1960,7 +1961,7 @@ def test_enrichment_helpers_ignore_blank_and_duplicate_subject_data(
     )
     assert enrichment._fetch_crossref(context) == {}
     assert enrichment._json_text('already-json') == 'already-json'
-    with corpus.connect(tmp_path / 'empty.db') as conn:
+    with closing(corpus.connect(tmp_path / 'empty.db')) as conn, conn:
         assert enrichment._enrich_batch(conn, [], ['crossref'], '')['succeeded'] == 0
         enrichment._enrich_from_crossref_message(conn, '', {})
 

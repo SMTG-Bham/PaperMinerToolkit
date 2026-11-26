@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tomllib
+from contextlib import closing
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -401,7 +402,7 @@ def test_scrape_can_disable_supplements(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
     """Print paper, blob, and storage statistics for a corpus."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_asset(
             conn,
             {'paper_id': 'paper:1', 'title': 'Corpus paper'},
@@ -460,7 +461,7 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
 def test_corpus_searches_prints_recent_queries_and_failures(tmp_path: Path) -> None:
     """Show reproducible search settings, outcomes, and an empty-history message."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         empty_result = CliRunner().invoke(cli.corpus_searches, [str(db_path)])
         search_id = corpus.begin_search_run(conn, 'solid   electrolyte', 'all', ['core'], 10)
         corpus.finish_search_run(
@@ -1346,7 +1347,7 @@ def test_import_author_accepts_a_missing_email_and_forwards_enrich(monkeypatch: 
 def test_corpus_status_prints_enrichment_counts(tmp_path: Path) -> None:
     """Report enrichment progress alongside the storage statistics."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'demo:1', 'title': 'Demo'})
         corpus.write_enrichment(
             conn,

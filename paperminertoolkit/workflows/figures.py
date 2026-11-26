@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path, PurePosixPath
@@ -324,7 +325,7 @@ def download_structured_figures(
     downloaded = 0
     skipped = 0
     failures: list[str] = []
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         paper = next((row for row in database.paper_rows(conn) if row['paper_id'] == paper_id), None)
         if paper is None:
             raise ValueError(f'paper not found in corpus: {paper_id}')

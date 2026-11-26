@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ def test_supplement_only_discovers_stored_jats_and_resumes(
 ) -> None:
     """Acquire SI from retained article XML without fetching article or abstract."""
     path = tmp_path / 'papers.db'
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         corpus.add_structured_document(
             conn, {'paper_id': 'one'},
             '<article xmlns:xlink="http://www.w3.org/1999/xlink"><back>'
@@ -48,7 +49,7 @@ def test_supplement_only_discovers_stored_jats_and_resumes(
     assert second['supplements_skipped'] == 1
     assert calls == ['https://example.org/table.csv']
     assert first['abstracts'] == first['texts'] == first['pdfs'] == 0
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         assert get_supplements(conn, 'one')[0]['content'] == b'sample,value\nA,42\n'
         assert corpus.paper_rows(conn)[0]['supplement_download_status'] == 'succeeded'
 
@@ -63,7 +64,7 @@ def test_si_runs_by_default_for_article_downloads_with_explicit_opt_out(
 ) -> None:
     """Run SI for eligible formats while honoring abstract-only and opt-out runs."""
     path = tmp_path / 'papers.db'
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         paper = {'paper_id': 'one'}
         for role in ('text', 'pdf', 'abstract'):
             corpus.add_asset(conn, paper, role, role, role, 'text/plain')
@@ -91,7 +92,7 @@ def test_si_failure_isolated_and_selected_papers_only(
 ) -> None:
     """Continue subsequent selected papers after an unexpected SI failure."""
     path = tmp_path / 'papers.db'
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         for paper_id in ('one', 'two', 'unrelated'):
             corpus.upsert_paper(conn, {'paper_id': paper_id})
     calls = []
@@ -107,7 +108,7 @@ def test_si_failure_isolated_and_selected_papers_only(
     summary = download.download_papers(path, download_format='supplement', paper_ids=['one', 'two'])
     assert calls == ['one', 'two']
     assert summary['supplement_discovery_failed'] == summary['supplements'] == 1
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         papers = {p['paper_id']: p for p in corpus.paper_rows(conn)}
         assert papers['one']['supplement_download_status'] == 'failed'
         assert papers['unrelated']['supplement_download_status'] == 'pending'
