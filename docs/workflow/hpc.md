@@ -14,47 +14,8 @@ Search and download stages are network and CPU workloads; model serving and scra
 
 Environment variables are preferable to interactive settings in batch jobs. Never print secrets in scheduler logs.
 
-## Intel Gaudi scripts on ASU Sol
-
-The `examples/sol_gaudi/` directory contains:
-
-- `install.sbatch` to build and verify an accelerator-compatible environment.
-- `fetch_corpus.sh` to search and download outside the Gaudi queue.
-- `fetch_corpus.sbatch` to build a larger corpus in an HTC batch job.
-- `scrape_gaudi.sbatch` to serve a model and scrape in one allocation.
-- `serve_gaudi.sbatch` to keep a server warm for several runs.
-
-Run the scripts from their own directory so relative database, CSV, and log paths remain predictable:
-
-```bash
-cd examples/sol_gaudi
-sbatch install.sbatch
-```
-
-The supplied workflow defaults to biodegradable polymers. Override `PMT_RECIPE`, the query, model, context size, and scheduler resources for other projects.
-
-## Comparing models on the same corpus
-
-`examples/sol_gaudi_model_comparison/` runs one corpus through a small/medium/large lineup of models and tabulates how the extracted records differ. It reuses the installer and preflight check above and adds:
-
-- `models.tsv`, the lineup with each model's Hugging Face id and Gaudi card count.
-- `prefetch_weights.sbatch` to download all weights on `htc` before any Gaudi job.
-- `submit_comparison.sh` and `scrape_model.sbatch` to scrape a private copy of the corpus per model, with the papers in the same order for every model and a `run_history.jsonl` recording versions, settings and timing.
-- `summarize_comparison.py` to report coverage, record counts, field fill rates, throughput, and pairwise agreement between models, ready for `pmt validate` against a curated reference.
-
-```bash
-cd examples/sol_gaudi_model_comparison
-sbatch --array=0-3 prefetch_weights.sbatch
-./submit_comparison.sh --corpus /scratch/$USER/corpus/papers.db --count 5
-python summarize_comparison.py
-```
-
-The example defaults to the `band_gap_validation` recipe; its README explains the lineup and how to swap models in.
-
 ## Context and memory sizing
 
 The model server's advertised context limit, its actual memory allocation, and PaperMinerToolkit's configured input limit must agree. A large context can consume substantial accelerator memory before inference begins. Start conservatively, inspect server logs and PaperMinerToolkit's chunk plan, then increase only when the server is stable.
 
 Use a bounded LDA `--batch-size` and a scratch `--cache-dir` for corpora containing tens of thousands of papers. Streaming training is specifically designed to keep memory use proportional to the batch rather than the corpus.
-
-For the full cluster-specific command sequence and troubleshooting notes, see the scripts and their adjacent `examples/sol_gaudi/README.md` in the repository.

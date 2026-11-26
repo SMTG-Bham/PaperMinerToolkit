@@ -35,8 +35,7 @@ python -m pip install -e ".[test]"
 
 `environment.yml` supplies the interpreter only. Every runtime and test
 dependency is declared once in `pyproject.toml`; add new ones there and re-run
-`pip install -e ".[test]"`. See [build_tools/README.md](build_tools/README.md),
-which also covers installing on ASU Sol's Intel Gaudi nodes.
+`pip install -e ".[test]"`. See [build_tools/README.md](build_tools/README.md).
 
 ## Branching and pull requests
 
