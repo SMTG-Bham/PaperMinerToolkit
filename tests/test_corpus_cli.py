@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -18,10 +19,15 @@ from paperminertoolkit.corpus.supplements import add_supplement
 from tests.corpus_helpers import open_corpus
 
 
+#: A corpus name with characters that SQLite URIs treat specially. Windows forbids ``?`` in
+#: file names, so there the URI-significant ``%`` stands in for it.
+CORPUS_NAME = 'corpus %# café.db' if sys.platform == 'win32' else 'corpus ?# café.db'
+
+
 @pytest.fixture
 def corpus_path(tmp_path: Path) -> Path:
     """Seed unsorted papers, compressed assets, and multi-provider provenance."""
-    path = tmp_path / 'corpus ?# café.db'
+    path = tmp_path / CORPUS_NAME
     with open_corpus(path) as conn:
         for suffix in ['z', 'a', 'm']:
             paper = {'paper_id': f'paper:{suffix}', 'title': f'Paper {suffix}',
@@ -283,7 +289,7 @@ def test_export_requires_force_and_valid_asset_before_overwriting(
     overwritten = runner.invoke(cli.corpus_export,
                                 [str(corpus_path), 'paper:a', str(output), '--force'])
     assert overwritten.exit_code == 0, overwritten.output
-    assert output.read_text() == 'Latest text: αβ\nwith another line.\n'
+    assert output.read_text(encoding='utf-8') == 'Latest text: αβ\nwith another line.\n'
     assert 'Exported text' in overwritten.stdout
 
 
@@ -312,6 +318,21 @@ def test_corrupt_compressed_asset_does_not_overwrite_existing_output(
     assert destination.read_bytes() == b'keep existing output'
 
 
+def _alias(link: Path, target: Path, kind: str) -> None:
+    """Make ``link`` a symbolic or hard link to ``target``.
+
+    Windows grants symbolic links only to administrators or under Developer Mode, so the
+    symlink case is skipped where the account cannot create one.
+    """
+    if kind == 'hardlink':
+        link.hardlink_to(target)
+        return
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f'cannot create a symbolic link here: {error}')
+
+
 @pytest.mark.parametrize('alias_kind', ['same', 'symlink', 'hardlink'])
 def test_export_cannot_overwrite_source_database(
     corpus_path: Path, tmp_path: Path, alias_kind: str,
@@ -320,10 +341,7 @@ def test_export_cannot_overwrite_source_database(
     destination = corpus_path
     if alias_kind != 'same':
         destination = tmp_path / 'alias.db'
-        if alias_kind == 'symlink':
-            destination.symlink_to(corpus_path)
-        else:
-            destination.hardlink_to(corpus_path)
+        _alias(destination, corpus_path, alias_kind)
     original = corpus_path.read_bytes()
     result = CliRunner().invoke(cli.corpus_export,
                                [str(corpus_path), 'paper:a', str(destination), '--force', '--json'])
@@ -344,10 +362,7 @@ def test_export_cannot_overwrite_database_companions(
     destination = companion
     if alias_kind != 'same':
         destination = tmp_path / 'companion-alias'
-        if alias_kind == 'symlink':
-            destination.symlink_to(companion)
-        else:
-            destination.hardlink_to(companion)
+        _alias(destination, companion, alias_kind)
     original = corpus_path.read_bytes()
     result = CliRunner().invoke(cli.corpus_export,
                                [str(corpus_path), 'paper:a', str(destination), '--force', '--json'])

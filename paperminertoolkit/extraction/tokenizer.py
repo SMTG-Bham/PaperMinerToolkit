@@ -316,7 +316,7 @@ def _transformers_token_count(text: str, model: str) -> int:
 _ESTIMATE_WARNINGS: set[tuple[str, str]] = set()
 
 
-def _warn_estimated_tokens(provider: str, model: str, error: Exception) -> None:
+def _warn_estimated_tokens(provider: str, model: str, error: Exception | None) -> None:
     """Warn once per provider and model that token counts fell back to an estimate.
 
     The character estimate is a guess, not a bound: digit-heavy text such as
@@ -330,15 +330,20 @@ def _warn_estimated_tokens(provider: str, model: str, error: Exception) -> None:
         Normalized provider name.
     model : str
         Model whose tokenizer could not be used.
-    error : Exception
-        Why tokenization failed.
+    error : Exception or None
+        Why tokenization failed, or ``None`` when the provider, such as
+        ``claude-code``, has no tokenizer to try.
     """
     key = (provider, model)
     if key in _ESTIMATE_WARNINGS:
         return
     _ESTIMATE_WARNINGS.add(key)
-    print(f'Warning: could not count tokens with the {provider} tokenizer for {model!r} '
-          f'({type(error).__name__}: {error}). Using a character estimate instead, which can '
+    if error is None:
+        reason = f'the {provider} provider has no tokenizer for {model!r}'
+    else:
+        reason = (f'could not count tokens with the {provider} tokenizer for {model!r} '
+                  f'({type(error).__name__}: {error})')
+    print(f'Warning: {reason}. Using a character estimate instead, which can '
           'undercount tables and other numeric text and overflow the model context.', file=sys.stderr)
 
 
@@ -392,6 +397,7 @@ def count_text_tokens(
         except Exception as error:
             _warn_estimated_tokens(provider_name, model_name, error)
             return _conservative_token_estimate(text)
+    _warn_estimated_tokens(provider_name, model_name, None)
     return _conservative_token_estimate(text)
 
 

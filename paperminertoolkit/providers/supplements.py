@@ -108,11 +108,19 @@ def safe_filename(value: str, fallback: str = 'supplement.bin') -> str:
 
 
 def _headers(url: str) -> dict[str, str]:
-    """Attach Elsevier credentials only to that provider's object endpoint."""
+    """Attach Elsevier credentials only to that provider's object endpoint.
+
+    Without a configured key the request is sent unauthenticated, so the
+    endpoint's own refusal is recorded like any other failed download instead
+    of stopping the run.
+    """
     headers = {'User-Agent': base.user_agent(), 'Accept': '*/*'}
     parts = urlsplit(url)
     if parts.scheme == 'https' and parts.hostname == 'api.elsevier.com' and parts.path.startswith('/content/object/'):
-        key = elsevier.configured_api_key()
+        try:
+            key = elsevier.configured_api_key()
+        except ValueError:
+            key = ''
         if key:
             headers.update(elsevier.api_headers(key, accept='*/*'))
     return headers

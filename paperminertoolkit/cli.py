@@ -1266,6 +1266,7 @@ def topics_store(model_dir: str, db_path: str, name: str | None, batch_size: int
               help="Draw the report's figures into plots/ in the output directory.")
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace a previous analysis in the output directory.')
+@_progress_option
 @_json_option
 def topics_emergence(db_path: str, output_dir: str, end_year: int | None, growth_window: int,
                      recent_window: int, areas: int, topic_size: int, niche_size: int,
@@ -1273,7 +1274,7 @@ def topics_emergence(db_path: str, output_dir: str, end_year: int | None, growth
                      include_title_only: bool, embedding_model: str,
                      embedding_cache: str | None, batch_size: int, stopwords_file: str | None,
                      watch_terms: tuple[str, ...], top: int, plots: bool, overwrite: bool,
-                     json_output: bool) -> None:
+                     progress_display: str, json_output: bool) -> None:
     """Map the corpus into areas, topics, and niches and rank emerging niches."""
     settings = EmergenceSettings(
         growth_window=growth_window, recent_window=recent_window, areas=areas,
@@ -1281,7 +1282,7 @@ def topics_emergence(db_path: str, output_dir: str, end_year: int | None, growth
         backtest_cutoffs=backtest_cutoffs, timeline_years=timeline_years,
     )
     try:
-        with _quiet(json_output):
+        with _quiet(json_output), progress_mode(progress_display, 'topics emergence'):
             summary = analyze_emergence(
                 db_path, output_dir, settings=settings, end_year=end_year,
                 require_abstract=not include_title_only, embedding_model=embedding_model,

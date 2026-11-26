@@ -278,11 +278,11 @@ def _invocations() -> list[Invocation]:
     """
     found: list[Invocation] = []
     for path in DOC_FILES:
-        found.extend(_markdown_invocations(str(path.relative_to(ROOT)),
+        found.extend(_markdown_invocations(path.relative_to(ROOT).as_posix(),
                                            path.read_text(encoding='utf-8')))
     for path in NOTEBOOKS:
         cells = json.loads(path.read_text(encoding='utf-8'))['cells']
-        found.extend(_notebook_invocations(str(path.relative_to(ROOT)), cells))
+        found.extend(_notebook_invocations(path.relative_to(ROOT).as_posix(), cells))
     return found
 
 

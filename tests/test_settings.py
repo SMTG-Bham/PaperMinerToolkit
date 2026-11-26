@@ -9,6 +9,7 @@ when explicitly requested.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -161,7 +162,7 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file: Path)
     """Report invalid JSON with the config file path."""
     isolated_settings_file.write_text('{not-json')
 
-    with pytest.raises(RuntimeError, match=str(isolated_settings_file)):
+    with pytest.raises(RuntimeError, match=re.escape(str(isolated_settings_file))):
         settings.load_settings()
 
 

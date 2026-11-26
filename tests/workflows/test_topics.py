@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import contextlib
 import csv
 import json
 import sqlite3
@@ -62,6 +61,32 @@ def train_small_model(db_path: Path, model_dir: Path) -> dict[str, Any]:
         representative_papers=2,
         streaming=False,
     )
+
+
+def test_topic_document_batches_close_their_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close the corpus connection when reading ends or stops early, so the file can be deleted."""
+    db_path = tmp_path / 'papers.db'
+    build_topic_corpus(db_path, papers_per_theme=2)
+    opened: list[sqlite3.Connection] = []
+    real_connect = topics.connect
+
+    def recording_connect(path: Any) -> sqlite3.Connection:
+        """Open the corpus as usual and keep the connection for inspection."""
+        opened.append(real_connect(path))
+        return opened[-1]
+
+    monkeypatch.setattr(topics, 'connect', recording_connect)
+    assert sum(len(batch) for batch in topics.iter_topic_document_batches(db_path, batch_size=3)) > 3
+    batches = topics.iter_topic_document_batches(db_path, batch_size=1)
+    next(batches)
+    batches.close()
+
+    assert len(opened) == 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            conn.execute('SELECT 1')
 
 
 def test_topic_helpers_validate_fields_batches_and_corpus_shape(tmp_path: Path) -> None:
@@ -874,11 +899,18 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(
             rolled_back.append(True)
             self.connection.rollback()
 
-    @contextlib.contextmanager
-    def failing_connect(path: Any) -> Any:
-        """Wrap the normal corpus connection in the failure proxy."""
-        with original_connect(path) as connection:
-            yield FailingConnection(connection)
+        def __enter__(self) -> FailingConnection:
+            """Enter the real connection's transaction, keeping the proxy as the handle."""
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *exc_info: Any) -> Any:
+            """Commit or roll back through the real connection."""
+            return self.connection.__exit__(*exc_info)
+
+    def failing_connect(path: Any) -> FailingConnection:
+        """Wrap the normal corpus connection in the failure proxy, as connect() returns one."""
+        return FailingConnection(original_connect(path))
 
     monkeypatch.setattr(topics, 'connect', failing_connect)
     with pytest.raises(sqlite3.OperationalError, match='disk full'):

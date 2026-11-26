@@ -283,8 +283,9 @@ def test_analysis_commands_emit_their_workflow_results_as_json(
     monkeypatch.setattr(cli, target, workflow)
     result = CliRunner().invoke(cli.main, [argument.format(**paths) for argument in arguments])
     assert result.exit_code == 0, result.output
+    # Substitute the path JSON-escaped, so Windows backslashes stay valid JSON.
     wanted = returned if expected is None else json.loads(json.dumps(expected).replace(
-        '{model}', paths['model']))
+        '{model}', json.dumps(paths['model'])[1:-1]))
     assert json.loads(result.stdout) == wanted
     assert result.stderr == 'Workflow progress\n'
 

@@ -747,8 +747,9 @@ def test_review_session_builds_the_gui_session_without_writing(tmp_path: Path) -
 def test_validate_score_matches_the_gui_for_saved_and_direct_inputs(tmp_path: Path) -> None:
     """Score a saved review, or its files plus decisions, exactly as the GUI does."""
     gold, scraped = tmp_path / 'gold.csv', tmp_path / 'scraped.csv'
-    gold.write_text(_gold(), encoding='utf-8')
-    scraped.write_text(_scraped(), encoding='utf-8')
+    # Write the exact bytes the GUI loads; text mode would turn \r\n into \r\r\n on Windows.
+    gold.write_bytes(_gold().encode('utf-8'))
+    scraped.write_bytes(_scraped().encode('utf-8'))
     app = ReviewApp(output=tmp_path / 'review.json')
     app.load(_gold(), _scraped(), 'band_gap_validation')
     app.save(_complete_decisions(app.session))

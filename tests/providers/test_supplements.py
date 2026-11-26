@@ -349,6 +349,23 @@ def test_elsevier_objects_carry_key_and_stop_at_exhausted_quota(monkeypatch: pyt
     assert len(session.calls) == 1
 
 
+def test_elsevier_objects_are_requested_without_a_key_when_none_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Send an unauthenticated request rather than stop the run when no Elsevier key is set."""
+    def no_key() -> str:
+        """Fail as the settings lookup does when no key is stored or exported."""
+        raise ValueError('Elsevier API key is not configured.')
+
+    monkeypatch.setattr(supplements.elsevier, 'configured_api_key', no_key)
+    url = 'https://api.elsevier.com/content/object/eid/1-s2.0-S456-mmc2.pdf'
+    assert 'X-ELS-APIKey' not in supplements._headers(url)
+    candidate = supplements.SupplementCandidate(url, 'structured', 'mmc2.pdf')
+    session = StreamSession([StreamResponse(b'%PDF-1.7')])
+    assert supplements.download_supplement(candidate, session).content == b'%PDF-1.7'
+    assert 'X-ELS-APIKey' not in session.calls[0]['headers']
+
+
 def test_owned_session_ignores_environment_proxies_and_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A read without a caller session disables proxy trust and always closes it."""
     owned = [ClosingSession([StreamResponse(b'{"ok": true}')]), ClosingSession([StreamResponse(status_code=404)])]

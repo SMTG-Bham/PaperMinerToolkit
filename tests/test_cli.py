@@ -10,6 +10,7 @@ from typing import Any, NoReturn
 import pytest
 from click.testing import CliRunner
 
+import paperminertoolkit._progress as progress
 import paperminertoolkit.cli as cli
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.settings as settings
@@ -655,6 +656,34 @@ def test_topics_emergence_json_prints_the_summary_as_strict_json(
     assert payload['report'] == str(tmp_path / 'out' / 'report.md')
     assert 'Embedding papers' in result.stderr
     assert 'Spearman' not in result.output
+
+
+def test_topics_emergence_streams_progress_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Under --progress jsonl, write the analysis's events to stderr and keep the JSON on stdout."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Report one embedding batch and return a minimal summary."""
+        progress.emit('batch_done', stage='embedding', papers=2, done=1, total=1)
+        return {
+            'output_dir': str(tmp_path / 'out'), 'report': str(tmp_path / 'out' / 'report.md'),
+            'plots': [], 'papers_read': 2, 'papers_used': 2, 'end_year': 2024, 'areas': 2,
+            'topics': 2, 'niches': 2, 'topic_status': {'stable': 2}, 'flagged_niches': [],
+            'backtest_rho_score': float('nan'), 'settings': {'backtest_cutoffs': 0},
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.main, ['topics', 'emergence', str(db_path), str(tmp_path / 'out'),
+                                           '--progress', 'jsonl', '--json'])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)['papers_used'] == 2
+    events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
+    assert [(event['event'], event['command'], event['done']) for event in events] == [
+        ('batch_done', 'topics emergence', 1)]
 
 
 def test_topics_emergence_reports_analysis_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

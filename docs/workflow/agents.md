@@ -280,7 +280,8 @@ it; it reports the mismatch instead.
 
 ### Follow long runs with --progress jsonl
 
-`scrape`, `download`, `enrich`, and `gather` accept `--progress auto|none|jsonl`.
+`scrape`, `download`, `enrich`, `gather`, and `topics emergence` accept
+`--progress auto|none|jsonl`.
 `auto` (the default) shows tqdm progress bars, `none` hides them, and `jsonl`
 hides them and writes one JSON event per line to stderr while the final result
 stays on stdout:
@@ -299,6 +300,7 @@ Every event has `event`, `command`, and `elapsed_s`.
 | `paper_done` | `scrape` | `paper_id`, `done`, `total`, `status` (`succeeded`, `failed`, or `skipped`), `materials` |
 | `paper_done` | `download` | `paper_id`, `done`, `total`, `status` (`fetched` or `nothing_new`), and `fetched` counts |
 | `batch_done` | `enrich` | `papers` in the batch, `done`, `total` (the `--limit`, or null), and status `counts` |
+| `batch_done` | `topics emergence` | `stage` (`embedding`), `papers` in the batch, `done` and `total` batches; papers already in the embedding cache are not re-embedded and report no events |
 | `search_done` | `gather` (and `search` within it) | `search_id`, `status`, `result_count`, `papers_added`, `papers_updated` |
 | `run_end` | `scrape`, `download`, `enrich` | The run's summary counts |
 | `error` | any | `message` and `error_class` of the exception that ended the command |

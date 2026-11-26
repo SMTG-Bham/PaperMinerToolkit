@@ -20,6 +20,7 @@ import pytest
 from scipy import sparse
 
 from paperminertoolkit import _output_schemas as out
+from paperminertoolkit import _progress as progress
 from paperminertoolkit._agent import validate_json
 from paperminertoolkit.corpus import database as corpus
 from paperminertoolkit.workflows import emergence
@@ -573,6 +574,42 @@ def test_transformer_embedder_encodes_length_sorted_batches_in_input_order(
     assert loaded == ['fake/model', 'fake/model'] and model.device == 'cpu'
     assert batches == [['a', 'bb'], ['ccc']]
     assert vectors.tolist() == [[3.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0]]
+
+
+def test_transformer_embedder_follows_the_progress_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Hide the embedding bar and report each batch as a JSON event under --progress jsonl."""
+    torch = ModuleType('torch')
+    torch.cuda = SimpleNamespace(is_available=lambda: False)
+    torch.inference_mode = contextlib.nullcontext
+    transformers = ModuleType('transformers')
+    transformers.AutoTokenizer = SimpleNamespace(from_pretrained=lambda name: (
+        lambda texts, **options: _FakeBatch(lengths=[len(text) for text in texts])))
+    transformers.AutoModel = SimpleNamespace(from_pretrained=lambda name: _FakeEncoder())
+    monkeypatch.setitem(sys.modules, 'torch', torch)
+    monkeypatch.setitem(sys.modules, 'transformers', transformers)
+    hidden: list[bool] = []
+    real_tqdm = emergence.tqdm
+
+    def recording_tqdm(iterable: Any, **options: Any) -> Any:
+        """Record whether the bar is hidden, then draw it as usual."""
+        hidden.append(options['disable'])
+        return real_tqdm(iterable, **options)
+
+    monkeypatch.setattr(emergence, 'tqdm', recording_tqdm)
+    embed = emergence.transformer_embedder('fake/model', batch_size=2)
+    with progress.progress_mode('jsonl', 'topics emergence'):
+        embed(['ccc', 'a', 'bb'])
+    embed(['a'])
+
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.startswith('{')]
+    assert hidden == [True, False]
+    assert [(event['command'], event['event'], event['stage'], event['papers'], event['done'],
+             event['total']) for event in events] == [
+        ('topics emergence', 'batch_done', 'embedding', 2, 1, 2),
+        ('topics emergence', 'batch_done', 'embedding', 1, 2, 2),
+    ]
 
 
 def test_fits_give_up_when_every_paper_falls_in_one_year() -> None:

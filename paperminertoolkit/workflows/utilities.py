@@ -38,7 +38,7 @@ def reset(db_path: str | PathLike[str] = 'papers.db') -> dict[str, Any]:
         If the corpus schema is newer than this package supports.
     """
     papers = supplement_stages = 0
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         for paper in paper_rows(conn):
             for column, default in PIPELINE_COLUMNS.items():
                 paper[column] = default

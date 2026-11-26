@@ -318,6 +318,20 @@ def test_count_text_tokens_warns_once_per_model_when_it_estimates(
     assert "tokenizer for 'Qwen/Qwen3'" in capsys.readouterr().err
 
 
+def test_count_text_tokens_warns_once_when_the_provider_has_no_tokenizer(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Say that a claude-code profile's counts are estimates, once, and record the fallback."""
+    monkeypatch.setattr(tokenizer, '_ESTIMATE_WARNINGS', set())
+    for _ in range(3):
+        assert tokenizer.count_text_tokens('abcdef', config(provider='claude-code', name='opus')) == 2
+    err = capsys.readouterr().err
+    assert err.count("Warning: the claude-code provider has no tokenizer for 'opus'") == 1
+    assert 'character estimate' in err
+    assert tokenizer.estimated_token_fallbacks() == {('claude-code', 'opus')}
+
+
 @pytest.mark.parametrize('provider', ['openai', 'local'])
 @pytest.mark.parametrize(('model_fields', 'expected_model'), [
     ({'name': 'configured-model'}, 'configured-model'),
