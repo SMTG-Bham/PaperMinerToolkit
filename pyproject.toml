@@ -30,6 +30,7 @@ dependencies = [
   "headroom-ai[image,ml]>=0.35,<0.36",
   "openai",
   "numpy",
+  "opencv-python",
   "pandas",
   "pillow",
   "plottracer[ocr]>=0.2; python_version >= '3.14' and sys_platform == 'linux'",
