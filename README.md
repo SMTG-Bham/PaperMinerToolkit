@@ -61,7 +61,7 @@ pmt store papers.db \
   --assume-yes
 ```
 
-To recover the curves of the figures that records name, such as a recipe's `Mass loss figure`, use `pmt digitize` with the optional [figrecover](https://github.com/SMTG-Bham/figrecover) package; see [recovering curves from figures](https://paperminertoolkit.readthedocs.io/en/latest/workflow/digitizing.html).
+To recover the curves of the figures that records name, such as a recipe's `Mass loss figure`, use `pmt digitize`, which uses [plottracer](https://github.com/SMTG-Bham/plottracer) (installed with PaperMinerToolkit on Python 3.14 or later on Linux); see [recovering curves from figures](https://paperminertoolkit.readthedocs.io/en/latest/workflow/digitizing.html).
 
 Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
 

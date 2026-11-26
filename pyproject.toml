@@ -32,6 +32,7 @@ dependencies = [
   "numpy",
   "pandas",
   "pillow",
+  "plottracer[ocr]>=0.2; python_version >= '3.14' and sys_platform == 'linux'",
   "pymupdf",
   "pypdf",
   "requests",

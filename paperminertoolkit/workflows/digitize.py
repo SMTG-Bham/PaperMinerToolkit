@@ -4,7 +4,7 @@ A recipe can ask for the figure that plots a result, such as the
 ``Mass loss figure`` of ``polymer_degradation``, when the paper gives the
 values only as a curve. This stage reads those references from a scraped or
 stored CSV, finds each figure in the corpus, and recovers its curves with
-figrecover (https://github.com/SMTG-Bham/figrecover). figrecover reads each
+plottracer (https://github.com/SMTG-Bham/plottracer). plottracer reads each
 panel's axes from its tick labels by OCR and tells curves apart by colour,
 line style and markers; it does not read legends, so a curve is named by how
 it is drawn, such as ``1f77b4-solid``, and matching it to a sample is left to
@@ -16,11 +16,8 @@ detected from its PDF and stored for later runs. Progress is checkpointed per
 figure in the figure asset's metadata, so a rerun skips figures already
 recovered; ``force`` recovers them again.
 
-figrecover is optional and is not published on PyPI (the PyPI package named
-figrecover is an unrelated project). Install release 0.1.0 with its OCR
-extra::
-
-    pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
+plottracer is installed with PaperMinerToolkit, with its OCR extra, wherever it can
+run: Python 3.14 or later on Linux. Elsewhere this stage is unavailable.
 """
 
 from __future__ import annotations
@@ -51,7 +48,7 @@ from paperminertoolkit.corpus.database import (
 )
 from paperminertoolkit.workflows.figures import PDF_LAYOUT_SOURCE, store_pdf_layout_figures
 
-FIGRECOVER_INSTALL = 'pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"'
+PLOTTRACER_INSTALL = 'pip install "plottracer[ocr]"'
 OUTPUT_COLUMNS = [
     'Paper id', 'doi', 'Figure id', 'Figure label', 'Figure source', 'Referenced as',
     'Record rows', 'Record names', 'Panel', 'Series', 'Series style', 'X title', 'Y title', 'x', 'y',
@@ -288,26 +285,27 @@ def figure_requests(
     return list(requests.values())
 
 
-def _figrecover() -> ModuleType:
-    """Import figrecover, explaining how to install it when it is missing.
+def _plottracer() -> ModuleType:
+    """Import plottracer, explaining how to install it when it is missing.
 
     Returns
     -------
     types.ModuleType
-        The figrecover package.
+        The plottracer package.
 
     Raises
     ------
     RuntimeError
-        If figrecover or its OCR extra is not installed.
+        If plottracer or its OCR extra is not installed.
     """
     try:
-        module = importlib.import_module('figrecover')
-        # figrecover reads axes by OCR only when its ocr extra is installed.
+        module = importlib.import_module('plottracer')
+        # plottracer reads axes by OCR only when its ocr extra is installed.
         importlib.import_module('rapidocr')
     except ImportError as error:
         raise RuntimeError(
-            f'pmt digitize needs figrecover with its OCR extra, which is not on PyPI: {FIGRECOVER_INSTALL}'
+            f'pmt digitize needs plottracer with its OCR extra (Python 3.14 or later, Linux only): '
+            f'{PLOTTRACER_INSTALL}'
         ) from error
     return module
 
@@ -339,7 +337,7 @@ def digitize_image(
     *,
     preview: str | PathLike[str] | None = None,
 ) -> tuple[list[_PanelData], list[str]]:
-    """Recover every curve in a figure image with figrecover.
+    """Recover every curve in a figure image with plottracer.
 
     The image is levelled, split into panels whose axes are read from their
     tick labels, and each panel's curves are traced and mapped to data.
@@ -349,7 +347,7 @@ def digitize_image(
     path : str or os.PathLike[str]
         Figure image.
     panels : Iterable[str], optional
-        Panel letters to keep. When figrecover reads no panel labels, every
+        Panel letters to keep. When plottracer reads no panel labels, every
         panel is kept and a note says so.
     preview : str or os.PathLike[str] or None, optional
         Where to save a faded copy of the figure with the recovered curves.
@@ -362,14 +360,14 @@ def digitize_image(
     Raises
     ------
     RuntimeError
-        If figrecover is not installed.
+        If plottracer is not installed.
     ValueError
         If no panel's axes could be read.
     """
-    figrecover = _figrecover()
-    image = figrecover.load_image(path)
-    image, _ = figrecover.level_image(image)
-    found = list(figrecover.read_panels(image))
+    plottracer = _plottracer()
+    image = plottracer.load_image(path)
+    image, _ = plottracer.level_image(image)
+    found = list(plottracer.read_panels(image))
     wanted = {panel.lower() for panel in panels}
     notes: list[str] = []
     labelled = {str(panel.label).lower() for panel in found if panel.label}
@@ -390,7 +388,7 @@ def digitize_image(
         name = (panel.label.lower() if panel.label else
                 'inset' if panel.inset_of is not None else str(index))
         series = []
-        for curve in figrecover.find_series(panel.image, calibration.origin):
+        for curve in plottracer.find_series(panel.image, calibration.origin):
             points = calibration.to_data(curve.points)
             pixels = [(float(x) + panel.offset[0], height - (float(y) + panel.offset[1]))
                       for x, y in curve.points]
@@ -511,11 +509,11 @@ def digitize_figures(
     Raises
     ------
     RuntimeError
-        If figrecover is not installed.
+        If plottracer is not installed.
     KeyError
         If the records lack a required column.
     """
-    _figrecover()
+    _plottracer()
     records = pd.read_csv(records_path, index_col=0, low_memory=False)
     requests = figure_requests(records, figure_field, missing_field=missing_field)
     summary: dict[str, Any] = {
@@ -571,7 +569,7 @@ def digitize_figures(
                     wanted = () if request.whole else sorted(request.panels)
                     try:
                         panels, notes = digitize_image(image_path, wanted, preview=preview)
-                    except Exception as error:  # figrecover raises several kinds for unreadable plots
+                    except Exception as error:  # plottracer raises several kinds for unreadable plots
                         message = f'{type(error).__name__}: {error}'
                         set_figure_digitization_status(conn, paper_id, figure_id, 'failed', error=message)
                         summary['failed'] += 1
