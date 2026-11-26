@@ -168,11 +168,13 @@ def test_review_rejects_unusable_csv_and_reads_current_band_gap_data(tmp_path: P
     with pytest.raises(ValueError, match='no fields'):
         app.load('DOI,Other\n10.1/a,value\n', _scraped(), 'band_gap_validation')
     repo = Path(__file__).parents[2]
-    validation = (repo / 'tests/data/verification_data/band_gaps.csv').read_text()
+    validation = (repo / 'tests/data/verification_data/band_gaps.csv').read_text(encoding='utf-8')
     session = app.load(validation, _scraped(), 'band_gap_validation')
+    # The corrected 113-paper set used for the band-gap benchmark: 334 material records, and
+    # 45 papers whose explicit zero-record rows say they report no qualifying band gap.
     assert len(session['validation']) == 113
-    assert sum(len(p['rows']) for p in session['validation']) >= 200
-    assert sum(not p['rows'] for p in session['validation']) >= 40
+    assert sum(len(p['rows']) for p in session['validation']) == 334
+    assert sum(not p['rows'] for p in session['validation']) == 45
 
 
 def test_validate_cli_preloads_inputs_and_opens_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
