@@ -12,7 +12,7 @@ plottracer is a dependency of PaperMinerToolkit on Python 3.14 or later on Linux
 pip install "plottracer[ocr]"
 ```
 
-plottracer depends on `opencv-python`. An environment that already has `opencv-python-headless` ends up with both builds; uninstall one of them if OpenCV imports fail.
+PaperMinerToolkit and plottracer depend on `opencv-python`. An environment that already has `opencv-python-headless` ends up with both builds; uninstall the headless one if OpenCV imports fail.
 
 ## Usage
 
