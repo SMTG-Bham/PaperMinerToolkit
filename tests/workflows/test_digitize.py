@@ -1,4 +1,4 @@
-"""Recover figure curves offline, through a stand-in for figrecover."""
+"""Recover figure curves offline, through a stand-in for plottracer."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class Calibration:
 
 
 class Series:
-    """A recovered curve, as figrecover returns one."""
+    """A recovered curve, as plottracer returns one."""
 
     def __init__(self, name: str, style: str, points: Sequence[tuple[float, float]]) -> None:
         """Store the curve's name, style and pixel positions."""
@@ -43,7 +43,7 @@ class Series:
 
 
 class Panel:
-    """A plot of a figure, as figrecover's read_panels returns one."""
+    """A plot of a figure, as plottracer's read_panels returns one."""
 
     def __init__(self, label: str | None, offset: tuple[float, float] = (0.0, 0.0),
                  inset_of: Panel | None = None) -> None:
@@ -56,8 +56,8 @@ class Panel:
 
 
 def stand_in(panels: Sequence[Panel], error: Exception | None = None) -> types.ModuleType:
-    """Build a figrecover stand-in that finds two curves in every panel."""
-    module = types.ModuleType('figrecover')
+    """Build a plottracer stand-in that finds two curves in every panel."""
+    module = types.ModuleType('plottracer')
 
     def read_panels(image: npt.NDArray[np.uint8]) -> list[Panel]:
         """Return the panels, or fail as an unreadable plot does."""
@@ -77,11 +77,11 @@ def stand_in(panels: Sequence[Panel], error: Exception | None = None) -> types.M
 
 @pytest.fixture
 def install(monkeypatch: pytest.MonkeyPatch) -> Callable[..., types.ModuleType]:
-    """Return a function that puts a figrecover stand-in in place for one test."""
+    """Return a function that puts a plottracer stand-in in place for one test."""
     def setup(panels: Sequence[Panel], error: Exception | None = None) -> types.ModuleType:
         """Install the stand-in and return it."""
         module = stand_in(panels, error)
-        monkeypatch.setattr(digitize, '_figrecover', lambda: module)
+        monkeypatch.setattr(digitize, '_plottracer', lambda: module)
         return module
     return setup
 
@@ -246,7 +246,7 @@ def test_digitize_writes_points_checkpoints_and_resumes(
 def test_unreadable_figures_are_marked_failed_with_the_reason(
     corpus_db: Path, records: Path, tmp_path: Path, install: Callable[..., types.ModuleType],
 ) -> None:
-    """Record why figrecover could not read a plot, and write no points for it."""
+    """Record why plottracer could not read a plot, and write no points for it."""
     install([], error=ValueError('found no row of 3 or more numbers to read as x-axis ticks'))
     output = tmp_path / 'digitized.csv'
 
@@ -319,29 +319,29 @@ def test_limit_stops_after_the_given_number_of_figures(
     assert summary['digitized'] + summary['failed'] == 1
 
 
-def test_missing_figrecover_explains_how_to_install_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Name the install command when figrecover or its OCR extra is absent."""
+def test_missing_plottracer_explains_how_to_install_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Name the install command when plottracer or its OCR extra is absent."""
     def refuse(name: str) -> types.ModuleType:
         """Fail to import optional packages."""
         raise ImportError(f'No module named {name!r}')
 
     monkeypatch.setattr(digitize.importlib, 'import_module', refuse)
-    with pytest.raises(RuntimeError, match='figrecover with its OCR extra'):
-        digitize._figrecover()
+    with pytest.raises(RuntimeError, match='plottracer with its OCR extra'):
+        digitize._plottracer()
 
 
-def test_figrecover_is_used_only_with_its_ocr_extra(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Return the installed figrecover, and refuse it while its OCR extra is missing."""
+def test_plottracer_is_used_only_with_its_ocr_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return the installed plottracer, and refuse it while its OCR extra is missing."""
     module = stand_in([])
-    monkeypatch.setitem(sys.modules, 'figrecover', module)
+    monkeypatch.setitem(sys.modules, 'plottracer', module)
     monkeypatch.setitem(sys.modules, 'rapidocr', types.ModuleType('rapidocr'))
-    assert digitize._figrecover() is module
+    assert digitize._plottracer() is module
 
     monkeypatch.setitem(sys.modules, 'rapidocr', None)
-    with pytest.raises(RuntimeError, match='figrecover with its OCR extra') as raised:
-        digitize._figrecover()
+    with pytest.raises(RuntimeError, match='plottracer with its OCR extra') as raised:
+        digitize._plottracer()
     assert isinstance(raised.value.__cause__, ImportError)
-    assert digitize.FIGRECOVER_INSTALL in str(raised.value)
+    assert digitize.PLOTTRACER_INSTALL in str(raised.value)
 
 
 def test_a_failed_figure_detection_is_noted_and_the_run_goes_on(

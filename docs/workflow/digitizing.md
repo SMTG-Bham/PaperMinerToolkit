@@ -1,22 +1,18 @@
 # Recovering curves from figures
 
-Papers often report a result only as a plotted curve: a mass loss followed over weeks, a conductivity against temperature. A recipe can ask for the figure that plots a record's result, as the `polymer_degradation` recipe's `Mass loss figure` field does, and `pmt digitize` then recovers that figure's curves as numbers with [figrecover](https://github.com/SMTG-Bham/figrecover).
+Papers often report a result only as a plotted curve: a mass loss followed over weeks, a conductivity against temperature. A recipe can ask for the figure that plots a record's result, as the `polymer_degradation` recipe's `Mass loss figure` field does, and `pmt digitize` then recovers that figure's curves as numbers with [plottracer](https://github.com/SMTG-Bham/plottracer).
 
-figrecover reads each panel's axes from its tick labels and titles by OCR, and traces every curve, telling curves apart by colour, line style and markers. It does not read legends, so each curve is named by how it is drawn, such as `1f77b4-solid` (its colour in hexadecimal, then its style), not by the sample it belongs to. Matching curves to samples is left to the reader, helped by the figure caption, the preview images, and the records that cite the figure, which every output row lists.
+plottracer reads each panel's axes from its tick labels and titles by OCR, and traces every curve, telling curves apart by colour, line style and markers. It does not read legends, so each curve is named by how it is drawn, such as `1f77b4-solid` (its colour in hexadecimal, then its style), not by the sample it belongs to. Matching curves to samples is left to the reader, helped by the figure caption, the preview images, and the records that cite the figure, which every output row lists.
 
 ## Installation
 
-figrecover is optional and is not published on PyPI; the PyPI package named `figrecover` is an unrelated project, so do not `pip install figrecover`. Install release 0.1.0 from GitHub with its OCR extra, in the same environment as PaperMinerToolkit:
+plottracer is a dependency of PaperMinerToolkit on Python 3.14 or later on Linux, the only platform it supports, and is installed with it, including the OCR extra that reads axis labels. On other Python versions or operating systems it is not installed and `pmt digitize` reports that it is unavailable. To add it to an existing Linux environment on Python 3.14:
 
 ```bash
-pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
+pip install "plottracer[ocr]"
 ```
 
-figrecover needs Python 3.14 and runs on Linux. Its OCR extra pins `opencv-python` and `rapidocr<3.10` only for its interactive click window, which `pmt digitize` never opens. In an environment that already has `opencv-python-headless` and a newer RapidOCR, install figrecover without its dependencies so that a second OpenCV build does not replace the first:
-
-```bash
-pip install --no-deps "figrecover @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
-```
+plottracer depends on `opencv-python`. An environment that already has `opencv-python-headless` ends up with both builds; uninstall one of them if OpenCV imports fail.
 
 ## Usage
 
@@ -72,6 +68,6 @@ Rows are appended, so a resumed run adds to the same file. Use `--force` with a 
 
 ## Checkpoints and failures
 
-Each figure's outcome is stored in its corpus asset as `digitization_status` and `digitization_error`, separately from image-extraction progress, so a rerun skips figures already recovered and retries the rest. A figure fails, with figrecover's reason recorded, when its axes cannot be read: fewer than three tick labels in line on an axis, labels drawn as outlines, or a second y-axis on the right. A cited panel letter that figrecover cannot read keeps every panel of the figure, and the run says so.
+Each figure's outcome is stored in its corpus asset as `digitization_status` and `digitization_error`, separately from image-extraction progress, so a rerun skips figures already recovered and retries the rest. A figure fails, with plottracer's reason recorded, when its axes cannot be read: fewer than three tick labels in line on an axis, labels drawn as outlines, or a second y-axis on the right. A cited panel letter that plottracer cannot read keeps every panel of the figure, and the run says so.
 
-Check the previews before relying on the numbers. Curves that touch or cross can swap where they meet, legends without a frame in a curve's colour are traced as curves, and bitmap figures carry the resolution they were rendered at. Series drawn in one colour and told apart only by marker shape, as in a black-and-white scatter plot of several samples, come back as one series of markers and pieces of line: figrecover separates them only when given each series' legend marker, which `pmt digitize` does not supply. See figrecover's [limitations](https://github.com/SMTG-Bham/figrecover#limitations).
+Check the previews before relying on the numbers. Curves that touch or cross can swap where they meet, legends without a frame in a curve's colour are traced as curves, and bitmap figures carry the resolution they were rendered at. Series drawn in one colour and told apart only by marker shape, as in a black-and-white scatter plot of several samples, come back as one series of markers and pieces of line: plottracer separates them only when given each series' legend marker, which `pmt digitize` does not supply. See plottracer's [limitations](https://github.com/SMTG-Bham/plottracer#limitations).

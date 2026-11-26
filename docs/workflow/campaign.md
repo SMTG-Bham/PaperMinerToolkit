@@ -172,7 +172,7 @@ pmt digitize papers.db scraped_raw.csv \
 ```
 
 Try a handful first. A five-figure trial on this corpus recovered none: four cited figures were bar charts of
-mass loss per sample rather than curves, which figrecover does not read; they suit an image
+mass loss per sample rather than curves, which plottracer does not read; they suit an image
 scrape with a vision model instead. `pmt figures list papers.db --json` shows which figures were
 detected and their digitising status.
 

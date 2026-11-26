@@ -451,13 +451,14 @@ def digitize(
         force: bool,
         json_output: bool,
 ) -> None:
-    """Recover the curves of the figures that extracted records name, with figrecover.
+    """Recover the curves of the figures that extracted records name, with plottracer.
 
     Reads each record's figure reference, such as "Figure 4a", finds that
     figure in the corpus (detecting figures from the PDF when the paper has
     none), reads its axes by OCR, and writes every curve's points. Curves
-    are named by colour and line style, as figrecover does not read legends.
-    Needs figrecover 0.1.0 with its OCR extra, installed from GitHub.
+    are named by colour and line style, as plottracer does not read legends.
+    Needs plottracer with its OCR extra, installed with PaperMinerToolkit on
+    Python 3.14 or later on Linux.
     """
     try:
         with redirect_stdout(sys.stderr) if json_output else nullcontext():
