@@ -1,0 +1,435 @@
+"""Machine-readable command metadata for agents that drive the ``pmt`` CLI.
+
+Each leaf command declares its side effects with :func:`agent_meta`. The
+``pmt schema`` output carries them, so a caller can tell which commands make
+network requests, call a language model, or change the corpus before running
+them.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from pathlib import PurePath
+from typing import Any
+
+import click
+import requests
+
+#: Side-effect vocabulary. Each command lists the effects it can have with its
+#: default options; flags such as ``--no-probe`` or ``--dry-run`` can remove some.
+EFFECTS: dict[str, str] = {
+    'read_only': 'Reads local files or the corpus without changing anything.',
+    'migrates_corpus': ('Opens the corpus normally, which upgrades an older corpus schema '
+                        'in place but changes no paper data.'),
+    'network': 'Makes requests to external providers or model hubs.',
+    'paid_model': ('Calls the configured language model; hosted providers bill these '
+                   'requests.'),
+    'writes_corpus': 'Changes papers, assets, statuses, or filters in the corpus database.',
+    'writes_files': ('Writes files outside the corpus, such as CSV, JSON, images, or model '
+                     'artifacts.'),
+    'writes_config': 'Changes the saved PaperMinerToolkit settings file.',
+    'prompts': 'Can wait for input on stdin unless the documented options are supplied.',
+    'starts_server': 'Runs a local server until it is interrupted.',
+}
+
+# These effects describe a change; ``read_only`` cannot accompany them.
+_WRITING_EFFECTS = frozenset({'migrates_corpus', 'writes_corpus', 'writes_files',
+                              'writes_config'})
+
+
+def agent_meta(*, effects: Iterable[str],
+               output: Mapping[str, Any] | None = None) -> Callable[[click.Command], click.Command]:
+    """Record a command's side effects and JSON output shape for ``pmt schema``.
+
+    Apply it above ``@click.command`` so that it receives the built command.
+
+    Parameters
+    ----------
+    effects : Iterable[str]
+        Names from :data:`EFFECTS`. ``read_only`` excludes every writing effect.
+    output : Mapping[str, Any] or None, optional
+        JSON Schema of the command's JSON result, using only the keywords
+        :func:`validate_json` supports.
+
+    Returns
+    -------
+    Callable[[click.Command], click.Command]
+        Decorator that stores the sorted effects on the command and returns it.
+
+    Raises
+    ------
+    ValueError
+        If an effect is unknown, none is given, ``read_only`` is combined with
+        a writing effect, or the output schema uses an unsupported keyword.
+    """
+    declared = frozenset(effects)
+    unknown = declared - EFFECTS.keys()
+    if unknown:
+        raise ValueError(f'Unknown command effects: {", ".join(sorted(unknown))}')
+    if not declared:
+        raise ValueError('A command must declare at least one effect.')
+    if 'read_only' in declared and declared & _WRITING_EFFECTS:
+        raise ValueError('read_only cannot be combined with a writing effect.')
+    if output is not None:
+        check_schema(output)
+
+    def decorate(command: click.Command) -> click.Command:
+        """Attach the validated effects and output schema to ``command``."""
+        command.pmt_effects = tuple(sorted(declared))  # type: ignore[attr-defined]
+        command.pmt_output = output  # type: ignore[attr-defined]
+        return command
+
+    return decorate
+
+
+def command_effects(command: click.Command) -> list[str]:
+    """Return the effects declared for ``command``, or an empty list.
+
+    Parameters
+    ----------
+    command : click.Command
+        Command to inspect. Groups declare no effects of their own.
+
+    Returns
+    -------
+    list[str]
+        Sorted effect names.
+    """
+    return list(getattr(command, 'pmt_effects', ()))
+
+
+def command_output_schema(command: click.Command) -> Mapping[str, Any] | None:
+    """Return the JSON Schema declared for ``command``'s JSON result, if any.
+
+    Parameters
+    ----------
+    command : click.Command
+        Command to inspect.
+
+    Returns
+    -------
+    Mapping[str, Any] or None
+        The declared schema, or ``None`` for commands without JSON output.
+    """
+    return getattr(command, 'pmt_output', None)
+
+
+#: JSON Schema keywords :func:`validate_json` understands. Others are rejected
+#: when a schema is declared, so a schema can never promise more than is checked.
+SCHEMA_KEYWORDS = frozenset({'type', 'properties', 'required', 'items', 'additionalProperties',
+                             'enum', 'anyOf', 'description', 'title', '$schema'})
+_JSON_TYPES = {
+    'object': lambda value: isinstance(value, dict),
+    'array': lambda value: isinstance(value, list),
+    'string': lambda value: isinstance(value, str),
+    'boolean': lambda value: isinstance(value, bool),
+    'integer': lambda value: isinstance(value, int) and not isinstance(value, bool),
+    'number': lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+    'null': lambda value: value is None,
+}
+
+
+def check_schema(schema: Mapping[str, Any], path: str = '#') -> None:
+    """Reject schemas that use keywords :func:`validate_json` would ignore.
+
+    Parameters
+    ----------
+    schema : Mapping[str, Any]
+        JSON Schema to check, recursively.
+    path : str, optional
+        Location used in error messages.
+
+    Raises
+    ------
+    ValueError
+        If a keyword or type name is unsupported.
+    """
+    unknown = set(schema) - SCHEMA_KEYWORDS
+    if unknown:
+        raise ValueError(f'Unsupported JSON Schema keywords at {path}: {", ".join(sorted(unknown))}')
+    types = schema.get('type', [])
+    for name in [types] if isinstance(types, str) else types:
+        if name not in _JSON_TYPES:
+            raise ValueError(f'Unsupported JSON type at {path}: {name}')
+    for key, child in schema.get('properties', {}).items():
+        check_schema(child, f'{path}/properties/{key}')
+    for key in ('items', 'additionalProperties'):
+        if isinstance(schema.get(key), Mapping):
+            check_schema(schema[key], f'{path}/{key}')
+    for index, child in enumerate(schema.get('anyOf', [])):
+        check_schema(child, f'{path}/anyOf/{index}')
+
+
+def validate_json(instance: Any, schema: Mapping[str, Any], path: str = '$') -> list[str]:
+    """Check a decoded JSON value against a schema in the supported subset.
+
+    Parameters
+    ----------
+    instance : Any
+        Value decoded from JSON.
+    schema : Mapping[str, Any]
+        Schema using :data:`SCHEMA_KEYWORDS`.
+    path : str, optional
+        Location of ``instance``, used in messages.
+
+    Returns
+    -------
+    list[str]
+        One message per violation; empty when the value conforms.
+    """
+    if 'anyOf' in schema:
+        branches = [validate_json(instance, branch, path) for branch in schema['anyOf']]
+        if all(branches):
+            best = min(branches, key=len)
+            return [f'{path}: matches no allowed shape; closest: {best[0]}'] if best else []
+    types = schema.get('type')
+    if types is not None:
+        names = [types] if isinstance(types, str) else list(types)
+        if not any(_JSON_TYPES[name](instance) for name in names):
+            return [f'{path}: expected {" or ".join(names)}, got {type(instance).__name__}']
+    errors = []
+    if 'enum' in schema and instance not in schema['enum']:
+        errors.append(f'{path}: {instance!r} is not one of {schema["enum"]!r}')
+    if isinstance(instance, dict):
+        for key in schema.get('required', []):
+            if key not in instance:
+                errors.append(f'{path}: missing required key {key!r}')
+        properties = schema.get('properties', {})
+        extra = schema.get('additionalProperties', True)
+        for key, value in instance.items():
+            if key in properties:
+                errors.extend(validate_json(value, properties[key], f'{path}.{key}'))
+            elif extra is False:
+                errors.append(f'{path}: unexpected key {key!r}')
+            elif isinstance(extra, Mapping):
+                errors.extend(validate_json(value, extra, f'{path}.{key}'))
+    if isinstance(instance, list) and isinstance(schema.get('items'), Mapping):
+        for index, item in enumerate(instance):
+            errors.extend(validate_json(item, schema['items'], f'{path}[{index}]'))
+    return errors
+
+
+#: Set by the test suite: emit_json then checks every result against its schema.
+VALIDATE_OUTPUT_ENV = 'PAPERMINERTOOLKIT_VALIDATE_OUTPUT'
+
+
+def _json_default(value: Any) -> Any:
+    """Convert values that workflow summaries hold but JSON cannot encode.
+
+    NumPy scalars become Python numbers, paths become strings, and sets
+    become sorted lists; anything else falls back to its string form.
+    """
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    item = getattr(value, 'item', None)
+    if callable(item):
+        try:
+            return item()
+        except (TypeError, ValueError):
+            pass
+    tolist = getattr(value, 'tolist', None)
+    if callable(tolist):
+        return tolist()
+    return str(value)
+
+
+def emit_json(payload: Any) -> None:
+    """Write one command result to stdout as a single JSON value.
+
+    Parameters
+    ----------
+    payload : Any
+        JSON-compatible result. NumPy scalars and arrays, paths, and sets
+        are converted rather than rejected.
+
+    Raises
+    ------
+    AssertionError
+        If :data:`VALIDATE_OUTPUT_ENV` is set and the result does not match
+        the running command's declared output schema.
+    """
+    text = json.dumps(payload, indent=2, default=_json_default)
+    context = click.get_current_context(silent=True)
+    if context is not None:
+        schema = command_output_schema(context.command)
+        if os.environ.get(VALIDATE_OUTPUT_ENV) and schema is not None:
+            errors = validate_json(json.loads(text), schema)
+            if errors:
+                raise AssertionError(f'{context.command_path} JSON does not match its output '
+                                     f'schema: {"; ".join(errors[:5])}')
+    click.echo(text)
+    if context is not None:
+        # Marked only once printed: an error after this must not add a second value.
+        context.find_root().meta['pmt_json_emitted'] = True
+
+
+#: Error types reported in the ``--json`` error object.
+ERROR_TYPES: dict[str, str] = {
+    'usage': 'Invalid command, option, or argument; correct the invocation.',
+    'not_found': 'A named file, corpus, paper, asset, recipe, or model does not exist.',
+    'io': 'A file or the corpus database could not be read or written.',
+    'provider': 'An external provider or model service failed or could not be reached.',
+    'operational': 'The command ran but could not complete with these inputs or settings.',
+    'internal': 'An unexpected error; please report it with the traceback.',
+}
+
+_HINTS = {
+    'usage': 'Run {schema} for the accepted parameters.',
+    'provider': 'Check provider readiness with pmt probe --no-probe, then pmt probe.',
+}
+
+
+class AgentError(click.ClickException):
+    """A command error with an explicit ``--json`` error type.
+
+    Parameters
+    ----------
+    message : str
+        Error message shown to the user.
+    error_type : str, default='operational'
+        Key of :data:`ERROR_TYPES`.
+    """
+
+    def __init__(self, message: str, error_type: str = 'operational') -> None:
+        """Store the message and error type."""
+        super().__init__(message)
+        self.error_type = error_type
+
+
+def error_type(error: BaseException) -> str:
+    """Classify an error raised by a command for the ``--json`` error object.
+
+    Commands wrap library failures as ``click.ClickException(...) from
+    error``, so the wrapped cause decides the type, never the message text.
+
+    Parameters
+    ----------
+    error : BaseException
+        The exception that ended the command.
+
+    Returns
+    -------
+    str
+        A key of :data:`ERROR_TYPES`.
+    """
+    if isinstance(error, click.UsageError):
+        return 'usage'
+    if isinstance(error, AgentError):
+        return error.error_type
+    if not isinstance(error, click.ClickException):
+        return 'internal'
+    cause = error.__cause__
+    if isinstance(cause, (FileNotFoundError, NotADirectoryError, KeyError, LookupError)):
+        return 'not_found'
+    if isinstance(cause, requests.RequestException):
+        return 'provider'
+    if isinstance(cause, (sqlite3.Error, OSError, UnicodeError)):
+        return 'io'
+    return 'operational'
+
+
+def _redaction_values() -> list[str]:
+    """Collect configured credentials so error text never repeats them."""
+    try:
+        from paperminertoolkit.probe_cli import _credential_values
+        from paperminertoolkit.workflows import diagnostics
+
+        return _credential_values(diagnostics.load_settings())
+    except Exception:
+        # The original error matters more than a failed settings read.
+        return []
+
+
+def error_payload(error: BaseException, command_path: str = 'pmt') -> dict[str, Any]:
+    """Build the ``--json`` error object for an exception.
+
+    Parameters
+    ----------
+    error : BaseException
+        The exception that ended the command.
+    command_path : str, optional
+        Path of the command that failed, used in the hint.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"error": {"type", "message", "hint", "exit_code"}}`` with
+        configured credentials redacted from the message.
+    """
+    kind = error_type(error)
+    if isinstance(error, click.ClickException):
+        message, exit_code = error.format_message(), error.exit_code
+    else:
+        message, exit_code = f'{type(error).__name__}: {error}', 1
+    hint = _HINTS.get(kind)
+    if hint is not None:
+        hint = hint.format(schema=' '.join(['pmt', 'schema', *command_path.split()[1:]]))
+    for value in _redaction_values():
+        message = message.replace(value, '[redacted]')
+    return {'error': {'type': kind, 'message': message, 'hint': hint, 'exit_code': exit_code}}
+
+
+def _wants_json(arguments: Sequence[str]) -> bool:
+    """Whether the raw command line asks for JSON before any ``--`` separator."""
+    for argument in arguments:
+        if argument == '--':
+            return False
+        if argument == '--json':
+            return True
+    return False
+
+
+class AgentGroup(click.Group):
+    """Root ``pmt`` group that reports failures as JSON when ``--json`` is given.
+
+    The error object goes to stdout, where the result would have been, and
+    Click's usual message still goes to stderr with the usual exit code. It
+    is skipped when the command already printed its JSON result, such as a
+    partial search that exits 1.
+    """
+
+    def make_context(self, info_name: str | None, args: list[str],
+                     parent: click.Context | None = None, **extra: Any) -> click.Context:
+        """Remember the raw arguments, before parsing consumes them."""
+        raw = list(args)
+        context = super().make_context(info_name, args, parent=parent, **extra)
+        context.meta['pmt_raw_args'] = raw
+        return context
+
+    def _path_of(self, arguments: Sequence[str]) -> str:
+        """Return the command path that the leading arguments name, such as ``pmt corpus list``."""
+        command: click.Command = self
+        path = [self.name or 'pmt']
+        for argument in arguments:
+            if not isinstance(command, click.Group) or argument not in command.commands:
+                break
+            command = command.commands[argument]
+            path.append(argument)
+        return ' '.join(path)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Run the command and emit a JSON error object when it fails."""
+        try:
+            return super().invoke(ctx)
+        except (click.exceptions.Exit, click.Abort, SystemExit):
+            raise
+        except Exception as error:
+            if not _wants_json(ctx.meta.get('pmt_raw_args', ())) or ctx.meta.get('pmt_json_emitted'):
+                raise
+            if not isinstance(error, click.ClickException) and os.environ.get(VALIDATE_OUTPUT_ENV):
+                # In tests an unexpected error, such as a schema mismatch, must stay visible.
+                raise
+            payload = error_payload(error, self._path_of(ctx.meta.get('pmt_raw_args', ())))
+            if os.environ.get(VALIDATE_OUTPUT_ENV):
+                from paperminertoolkit._output_schemas import ERROR
+
+                problems = validate_json(payload, ERROR)
+                if problems:
+                    raise AssertionError(f'Error JSON does not match its schema: {problems}') from error
+            click.echo(json.dumps(payload, indent=2))
+            raise

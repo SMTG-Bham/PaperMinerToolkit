@@ -1,0 +1,475 @@
+"""Test provider-aware token counting and budget calculations."""
+
+from __future__ import annotations
+
+import os
+import types
+from typing import Any
+
+import pytest
+
+import paperminertoolkit.settings as settings
+import paperminertoolkit.extraction.tokenizer as tokenizer
+from tests.doubles import FakeResponse
+
+
+def config(
+    provider: str = 'openai',
+    name: str | None = 'test-model',
+    api_key: str | None = 'test-key',
+    base_url: str | None = None,
+    input_token_limit: int | str = 32000,
+) -> types.SimpleNamespace:
+    """Return a minimal model config for tokenizer tests."""
+    return types.SimpleNamespace(
+        provider=provider,
+        name=name,
+        api_key=api_key,
+        base_url=base_url,
+        input_token_limit=input_token_limit,
+    )
+
+
+def live_anthropic_config() -> types.SimpleNamespace:
+    """Build an Anthropic model config from the user's real PaperMinerToolkit settings."""
+    loaded = settings.load_settings()
+    profiles = loaded.get('model_profiles', {})
+    anthropic_profile = next(
+        (profile for profile in profiles.values() if str(profile.get('provider', '')).lower() == 'anthropic'),
+        {},
+    )
+    api_key = anthropic_profile.get('api_key') or loaded.get('anthropic_api_key')
+    model = os.environ.get('PAPERMINERTOOLKIT_ANTHROPIC_TEST_MODEL') or anthropic_profile.get('model')
+    base_url = anthropic_profile.get('base_url')
+    return config(provider='anthropic', name=model, api_key=api_key, base_url=base_url)
+
+
+def test_conservative_token_estimate_handles_missing_and_text_values() -> None:
+    """Estimate text conservatively and map missing values to zero."""
+    assert tokenizer._conservative_token_estimate(None) == 0
+    assert tokenizer._conservative_token_estimate('') == 0
+    assert tokenizer._conservative_token_estimate('abcdefghij') == 4
+
+
+def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Select the model encoding and fall back for unknown OpenAI models."""
+    calls = {}
+
+    class FakeEncoding:
+        """Encode text by splitting it on a configured separator."""
+
+        def __init__(self, separator: str = ' ') -> None:
+            """Store the token separator."""
+            self.separator = separator
+
+        def encode(self, text: str) -> list[str]:
+            """Split text into fake tokens."""
+            return text.split(self.separator)
+
+    def fake_encoding_for_model(model: str) -> FakeEncoding:
+        """Record the model and return its fake encoding."""
+        calls['model'] = model
+        return FakeEncoding()
+
+    monkeypatch.setattr(tokenizer.tiktoken, 'encoding_for_model', fake_encoding_for_model)
+    assert tokenizer._openai_token_count('one two three', 'gpt-test') == 3
+    assert calls['model'] == 'gpt-test'
+
+    monkeypatch.setattr(
+        tokenizer.tiktoken,
+        'encoding_for_model',
+        lambda _: (_ for _ in ()).throw(KeyError('unknown model')),
+    )
+    fallback_calls = {}
+
+    def fake_get_encoding(name: str) -> FakeEncoding:
+        """Record and return the fallback encoding."""
+        fallback_calls['name'] = name
+        return FakeEncoding(separator='|')
+
+    monkeypatch.setattr(tokenizer.tiktoken, 'get_encoding', fake_get_encoding)
+    assert tokenizer._openai_token_count('one|two', 'unknown-model') == 2
+    assert fallback_calls['name'] == 'o200k_base'
+
+
+@pytest.mark.parametrize(('base_url', 'expected_url'), [
+    (None, 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('', 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('https://anthropic.local', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/proxy/v1/', 'https://anthropic.local/proxy/v1/messages/count_tokens'),
+])
+def test_anthropic_token_count_uses_count_tokens_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    expected_url: str,
+) -> None:
+    """Use the Messages base convention without duplicating its API version."""
+    calls = {}
+
+    class FakeResponse:
+        """Provide a successful Anthropic token-count response."""
+
+        def raise_for_status(self) -> None:
+            """Record that the response status was checked."""
+            calls['raised'] = True
+
+        def json(self) -> dict[str, int]:
+            """Return the fake input token count."""
+            return {'input_tokens': 12}
+
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        """Record an Anthropic request and return the fake response."""
+        calls['url'] = url
+        calls['headers'] = headers
+        calls['json'] = json
+        calls['timeout'] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(tokenizer.requests, 'post', fake_post)
+
+    count = tokenizer._anthropic_token_count(
+        'paper text',
+        config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url=base_url),
+    )
+
+    assert count == 12
+    assert calls['url'] == expected_url
+    assert calls['headers']['x-api-key'] == 'anthropic-key'
+    assert calls['headers']['anthropic-version'] == tokenizer.ANTHROPIC_VERSION
+    assert calls['json'] == {
+        'model': 'claude-test',
+        'messages': [{'role': 'user', 'content': 'paper text'}],
+    }
+    assert calls['timeout'] == 60
+    assert calls['raised'] is True
+
+
+def test_anthropic_token_count_requires_api_key() -> None:
+    """Require an API key for Anthropic token counting."""
+    with pytest.raises(ValueError, match='requires an API key'):
+        tokenizer._anthropic_token_count('paper text', config(provider='anthropic', api_key=None))
+
+
+@pytest.mark.network
+def test_anthropic_token_count_uses_real_count_tokens_api() -> None:
+    """Count tokens with the live Anthropic API and configured credentials."""
+    model_config = live_anthropic_config()
+
+    assert model_config.api_key, (
+        'Set anthropic_api_key in ~/.config/.paperminertoolkitrc.json or ANTHROPIC_API_KEY before running network tests.'
+    )
+    assert model_config.name, (
+        'Configure an Anthropic model profile or set PAPERMINERTOOLKIT_ANTHROPIC_TEST_MODEL before running network tests.'
+    )
+    count = tokenizer._anthropic_token_count('Count these paper-scraping tokens.', model_config)
+
+    assert isinstance(count, int)
+    assert count > 0
+
+
+def test_transformers_token_count_uses_auto_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count local-model tokens with a Hugging Face tokenizer."""
+    calls = {}
+    tokenizer._auto_tokenizer.cache_clear()
+
+    class FakeTokenizer:
+        """Provide deterministic encoded tokens."""
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            """Record encoding arguments and return three tokens."""
+            calls['text'] = text
+            calls['add_special_tokens'] = add_special_tokens
+            return [1, 2, 3]
+
+    class FakeAutoTokenizer:
+        """Provide a fake pretrained tokenizer factory."""
+
+        @staticmethod
+        def from_pretrained(model: str) -> FakeTokenizer:
+            """Record the model and return a fake tokenizer."""
+            calls['model'] = model
+            return FakeTokenizer()
+
+    fake_transformers = types.SimpleNamespace(AutoTokenizer=FakeAutoTokenizer)
+    monkeypatch.setattr(tokenizer.importlib, 'import_module', lambda name: fake_transformers)
+
+    assert tokenizer._transformers_token_count('local text', 'Qwen/Qwen3') == 3
+    assert calls == {
+        'model': 'Qwen/Qwen3',
+        'text': 'local text',
+        'add_special_tokens': False,
+    }
+
+
+def test_offline_transformers_counts_load_tokenizers_from_local_files_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ask Hugging Face for cached files only while offline, and normally otherwise."""
+    loads = []
+
+    class FakeTokenizer:
+        """Encode text as one token per word."""
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            """Return one token identifier per word."""
+            return list(range(len(text.split())))
+
+    class FakeAutoTokenizer:
+        """Record how each pretrained tokenizer is requested."""
+
+        @staticmethod
+        def from_pretrained(model: str, local_files_only: bool = False) -> FakeTokenizer:
+            """Record the model and loading mode, then return a tokenizer."""
+            loads.append((model, local_files_only))
+            return FakeTokenizer()
+
+    monkeypatch.setattr(tokenizer.importlib, 'import_module',
+                        lambda name: types.SimpleNamespace(AutoTokenizer=FakeAutoTokenizer))
+    tokenizer._auto_tokenizer.cache_clear()
+    try:
+        with tokenizer.offline_token_counting():
+            assert tokenizer._transformers_token_count('two words', 'offline/test-model') == 2
+        assert tokenizer._transformers_token_count('three more words', 'offline/test-model') == 3
+    finally:
+        tokenizer._auto_tokenizer.cache_clear()
+
+    assert loads == [('offline/test-model', True), ('offline/test-model', False)]
+
+
+@pytest.mark.parametrize(('model_config', 'offline', 'expected'), [
+    (None, False, 'tiktoken'),
+    (config(provider='openai'), False, 'tiktoken'),
+    ({'provider': 'OpenAI'}, True, 'tiktoken'),
+    (config(provider='local'), True, 'transformers'),
+    (config(provider='anthropic'), False, 'anthropic'),
+    (config(provider='anthropic'), True, 'estimate'),
+    (config(provider='other'), False, 'estimate'),
+])
+def test_token_count_method_names_the_counter_each_provider_uses(
+    model_config: types.SimpleNamespace | dict[str, str] | None,
+    offline: bool,
+    expected: str,
+) -> None:
+    """Name tiktoken for OpenAI and unset providers, and the estimate where nothing better runs."""
+    assert tokenizer.token_count_method(model_config, offline=offline) == expected
+
+
+def test_count_text_tokens_routes_by_provider_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route token counts by provider and fall back on failures."""
+    monkeypatch.setattr(tokenizer, '_openai_token_count', lambda text, model: 5)
+    monkeypatch.setattr(tokenizer, '_anthropic_token_count', lambda text, model_config, model: 6)
+    monkeypatch.setattr(tokenizer, '_transformers_token_count', lambda text, model: 7)
+
+    assert tokenizer.count_text_tokens('text', config(provider='openai')) == 5
+    assert tokenizer.count_text_tokens('text', config(provider='anthropic')) == 6
+    assert tokenizer.count_text_tokens('text', config(provider='local')) == 7
+    assert tokenizer.count_text_tokens('abcdef', config(provider='other')) == 2
+    assert tokenizer.count_text_tokens(None, config(provider='openai')) == 0
+
+    monkeypatch.setattr(
+        tokenizer,
+        '_transformers_token_count',
+        lambda *_: (_ for _ in ()).throw(ImportError('missing transformers')),
+    )
+    assert tokenizer.count_text_tokens('abcdefghij', config(provider='local')) == 4
+
+    monkeypatch.setattr(
+        tokenizer,
+        '_openai_token_count',
+        lambda *_: (_ for _ in ()).throw(KeyError('unknown model')),
+    )
+    assert tokenizer.count_text_tokens('abcdefghij', config(provider='openai')) == 4
+
+    monkeypatch.setattr(
+        tokenizer,
+        '_anthropic_token_count',
+        lambda *_: (_ for _ in ()).throw(ValueError('missing key')),
+    )
+    assert tokenizer.count_text_tokens('abcdefghij', config(provider='anthropic')) == 4
+
+
+def test_count_text_tokens_warns_once_per_model_when_it_estimates(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Name the tokenizer that failed, once per model, whenever counts become estimates."""
+    monkeypatch.setattr(tokenizer, '_ESTIMATE_WARNINGS', set())
+    monkeypatch.setattr(
+        tokenizer,
+        '_transformers_token_count',
+        lambda *_: (_ for _ in ()).throw(OSError('gpt-5.4-mini is not a local folder')),
+    )
+
+    for _ in range(3):
+        assert tokenizer.count_text_tokens('abcdef', config(provider='local', name='gpt-5.4-mini')) == 2
+    err = capsys.readouterr().err
+    assert err.count('Warning: could not count tokens') == 1
+    assert "local tokenizer for 'gpt-5.4-mini' (OSError" in err
+
+    tokenizer.count_text_tokens('abcdef', config(provider='local', name='Qwen/Qwen3'))
+    assert "tokenizer for 'Qwen/Qwen3'" in capsys.readouterr().err
+
+
+def test_count_text_tokens_warns_once_when_the_provider_has_no_tokenizer(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Say that a claude-code profile's counts are estimates, once, and record the fallback."""
+    monkeypatch.setattr(tokenizer, '_ESTIMATE_WARNINGS', set())
+    for _ in range(3):
+        assert tokenizer.count_text_tokens('abcdef', config(provider='claude-code', name='opus')) == 2
+    err = capsys.readouterr().err
+    assert err.count("Warning: the claude-code provider has no tokenizer for 'opus'") == 1
+    assert 'character estimate' in err
+    assert tokenizer.estimated_token_fallbacks() == {('claude-code', 'opus')}
+
+
+@pytest.mark.parametrize('provider', ['openai', 'local'])
+@pytest.mark.parametrize(('model_fields', 'expected_model'), [
+    ({'name': 'configured-model'}, 'configured-model'),
+    ({'model': 'profile-model'}, 'profile-model'),
+    ({'name': 'configured-model', 'model': 'profile-model'}, 'configured-model'),
+    ({'name': None, 'model': 'profile-model'}, 'profile-model'),
+])
+def test_mapping_configs_select_tokenizers_and_bound_request_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    model_fields: dict[str, str | None],
+    expected_model: str,
+) -> None:
+    """Honor mapping models, provider overrides, and limits throughout budgeting."""
+    calls = []
+    monkeypatch.setattr(tokenizer, '_openai_token_count',
+                        lambda text, model: calls.append(('openai', model)) or 3)
+    monkeypatch.setattr(tokenizer, '_transformers_token_count',
+                        lambda text, model: calls.append(('local', model)) or 7)
+    values = {'provider': provider.upper(), 'input_token_limit': '4096', **model_fields}
+    model_config = types.MappingProxyType(values)
+    expected_count = 3 if provider == 'openai' else 7
+
+    assert tokenizer.count_text_tokens('paper text', model_config) == expected_count
+    assert tokenizer.request_token_budget('instructions', model_config) == 4096 - expected_count - 500
+    assert calls == [(provider, expected_model)] * 2
+
+    override_provider = 'local' if provider == 'openai' else 'openai'
+    override_count = 7 if override_provider == 'local' else 3
+    assert tokenizer.count_text_tokens(
+        'paper text', model_config, provider=override_provider, model='explicit-model',
+    ) == override_count
+    assert calls[-1] == (override_provider, 'explicit-model')
+    assert values == {'provider': provider.upper(), 'input_token_limit': '4096', **model_fields}
+
+
+@pytest.mark.parametrize('source', ['object', 'mapping', 'profile'])
+@pytest.mark.parametrize('override_model', [None, 'explicit-model'])
+def test_anthropic_token_counts_read_configurations_and_explicit_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    override_model: str | None,
+) -> None:
+    """Use configured credentials and profile names without losing explicit overrides."""
+    calls = []
+
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        """Capture a token-count request without contacting the provider."""
+        calls.append({'url': url, 'headers': headers, 'json': json, 'timeout': timeout})
+        return FakeResponse(payload={'input_tokens': 23})
+
+    monkeypatch.setattr(tokenizer.requests, 'post', fake_post)
+    configured = config(
+        provider='local' if override_model else 'anthropic',
+        name='configured-model',
+        api_key='configured-key',
+        base_url='https://anthropic.example/proxy/v1/',
+    )
+    model_config = configured
+    if source != 'object':
+        values = vars(configured).copy()
+        if source == 'profile':
+            values['model'] = values.pop('name')
+        model_config = types.MappingProxyType(values)
+
+    assert tokenizer.count_text_tokens(
+        'paper text', model_config, model=override_model,
+        provider='ANTHROPIC' if override_model else None,
+    ) == 23
+    assert len(calls) == 1
+    assert calls[0]['url'] == 'https://anthropic.example/proxy/v1/messages/count_tokens'
+    assert calls[0]['headers']['x-api-key'] == 'configured-key'
+    assert calls[0]['json'] == {
+        'model': override_model or 'configured-model',
+        'messages': [{'role': 'user', 'content': 'paper text'}],
+    }
+    assert calls[0]['timeout'] == 60
+
+
+@pytest.mark.parametrize('model_config', [{}, {'input_token_limit': None}, {'input_token_limit': 'bad'}])
+def test_mapping_configs_preserve_missing_or_invalid_limit_fallbacks(model_config: dict[str, object]) -> None:
+    """Keep the default budget when a mapping omits or misconfigures its limit."""
+    assert tokenizer.usable_input_token_limit(model_config) == tokenizer.DEFAULT_INPUT_TOKEN_LIMIT - 2000
+
+
+def test_usable_input_token_limit_uses_configured_limit_with_reserve_and_fallback() -> None:
+    """Reserve tokens from valid, invalid, and minimal input budgets."""
+    assert tokenizer.usable_input_token_limit(config(input_token_limit=64000), reserve_tokens=2000) == 62000
+    assert tokenizer.usable_input_token_limit(config(input_token_limit='bad'), reserve_tokens=2000) == (
+        tokenizer.DEFAULT_INPUT_TOKEN_LIMIT - 2000
+    )
+    assert tokenizer.usable_input_token_limit(config(input_token_limit=1200), reserve_tokens=1000, minimum=500) == 500
+
+
+def test_prompt_token_reserve_counts_prompt_and_adds_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Add a safety buffer to prompt tokens while respecting a minimum."""
+    calls = []
+
+    def fake_count(
+        text: str,
+        model_config: types.SimpleNamespace | None = None,
+    ) -> int:
+        """Record the model config and count whitespace-delimited words."""
+        calls.append((text, model_config))
+        return len(text.split())
+
+    model_config = config(provider='openai')
+    monkeypatch.setattr(tokenizer, 'count_text_tokens', fake_count)
+
+    assert tokenizer.prompt_token_reserve('one two three', model_config=model_config, buffer_tokens=7, minimum=0) == 10
+    assert tokenizer.prompt_token_reserve('one', model_config=model_config, buffer_tokens=0, minimum=5) == 5
+    assert calls == [('one two three', model_config), ('one', model_config)]
+
+
+def test_request_token_budget_reserves_prompt_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that request budgets reserve prompt tokens."""
+    calls = {}
+    cfg = config()
+    monkeypatch.setattr(tokenizer, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: calls.update({
+        'prompt': prompt,
+        'reserve_model_config': model_config,
+        'buffer_tokens': buffer_tokens,
+    }) or 25)
+    monkeypatch.setattr(tokenizer, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: calls.update({
+        'limit_model_config': model_config,
+        'reserve_tokens': reserve_tokens,
+    }) or 75)
+
+    assert tokenizer.request_token_budget('extract prompt', cfg) == 75
+    assert calls == {
+        'prompt': 'extract prompt',
+        'reserve_model_config': cfg,
+        'buffer_tokens': 500,
+        'limit_model_config': cfg,
+        'reserve_tokens': 25,
+    }

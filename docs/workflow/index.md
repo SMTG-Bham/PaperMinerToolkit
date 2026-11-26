@@ -1,6 +1,6 @@
 # Workflow
 
-PaperMinerToolkit keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
+PaperMinerToolkit keeps literature discovery, downloaded content, filter decisions, extraction state, and model results in one SQLite corpus. Article downloads include available supporting information by default, and text/image extraction processes stored SI with separate provenance and checkpoints. A typical run follows the stages below; each stage is resumable and already stored content is skipped by default.
 
 ```{mermaid}
 :alt: PaperMinerToolkit workflow arranged around a central SQLite corpus. Search enters from above, enrichment and downloading form return loops below it, LDA topic analysis descends on the left, and LLM extraction descends on the right.
@@ -10,13 +10,14 @@ PaperMinerToolkit keeps literature discovery, downloaded content, filter decisio
 flowchart TB
     A("1 · Search<br/>or import")
     C("2 · Enrich<br/>metadata<br/>(optional)")
-    D("3 · Download<br/>content")
+    D("3 · Download<br/>articles and SI")
     B[("SQLite corpus")]
     E("4 · LDA topic<br/>model<br/>(optional)")
     F("5 · Topics<br/>and trends")
     L("6 · Regex or<br/>topic filtering<br/>(optional)")
     G("7 · LLM recipe<br/>scrape")
     I("8 · Convert units<br/>and store records")
+    J("9 · Recover figure<br/>curves<br/>(optional)")
 
     A --> B
     C --> B
@@ -29,6 +30,7 @@ flowchart TB
     L --> G
     G --> I
     E --> L
+    G --> J
 
     classDef search fill:#bfc0c1,stroke:#7f8081,stroke-width:2px,color:#202124,font-weight:600
     classDef enrich fill:#e7c08f,stroke:#b47b38,stroke-width:2px,color:#202124,font-weight:600
@@ -39,7 +41,7 @@ flowchart TB
     class A search
     class C enrich
     class D download
-    class L,G,I llm
+    class L,G,I,J llm
     class E,F lda
     class B corpus
 
@@ -47,20 +49,27 @@ flowchart TB
     linkStyle 1,2 stroke:#b47b38,stroke-width:3px
     linkStyle 3,4 stroke:#729986,stroke-width:3px
     linkStyle 5,6,10 stroke:#728e9d,stroke-width:3px
-    linkStyle 7,8,9 stroke:#a97065,stroke-width:3px
+    linkStyle 7,8,9,11 stroke:#a97065,stroke-width:3px
 ```
 
-For a first run, follow the quickstart. The remaining pages explain each production stage, model and credential configuration, and cluster execution in more detail.
+For a first run, follow the quickstart. The remaining pages explain each production stage, model and credential configuration, and cluster execution in more detail, and {doc}`campaign` follows one complete production run.
 
 ```{toctree}
 :maxdepth: 1
 
 quickstart
+agents
 configuration
 corpus
 topics
+emergence
 filtering
 recipes
 scraping
+validation
+optimisation
+digitizing
+entities
 hpc
+campaign
 ```

@@ -16,9 +16,9 @@
 
 # PaperMinerToolkit
 
-PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, and PDFs; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
+PaperMinerToolkit builds scientific-paper corpora and extracts structured, recipe-defined data with configurable text and vision models. It searches Elsevier/Scopus, CORE, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv; supplements paper metadata from Crossref, OpenAlex, PubMed, arXiv, medRxiv, bioRxiv, and chemRxiv, and imports an author's works from Crossref; downloads abstracts, full text, PDFs, and supporting information; supports persistent regex and LDA topic filters; and stores source content and pipeline state in SQLite.
 
-The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation source](https://paperminertoolkit.readthedocs.io/). The repository is ready for Read the Docs; a hosted link will be added after the project is imported.
+The complete user guide, CLI reference, Python API, HPC instructions, and rendered notebooks live in the [documentation](https://paperminertoolkit.readthedocs.io/).
 
 ## Installation
 
@@ -28,17 +28,27 @@ PaperMinerToolkit requires Python 3.11 or newer:
 pip install paperminertoolkit
 ```
 
+For local entity extraction with fine-tuned BERT checkpoints, install
+`pip install 'paperminertoolkit[bert]'`.
+
 ## Quickstart
 
-Configure a text model and any search/download credentials you need, then run a small workflow:
+Probe a public source, then gather a small corpus of abstracts. These steps need no model or API key:
+
+```bash
+pmt probe --source arxiv
+
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv
+pmt corpus stats papers.db
+```
+
+`pmt gather` combines search and download, merging duplicate records and downloading only papers matched by that search. Repeat `--source` to search several providers and `--download-source` to select content providers separately. Configure only the [provider credentials](https://paperminertoolkit.readthedocs.io/en/latest/workflow/configuration.html) you need. Use `--json` on `probe` or `gather` for scriptable summaries.
+
+To extract structured records from those abstracts, configure a text model:
 
 ```bash
 pmt config model text --provider openai --model YOUR_TEXT_MODEL
-
-pmt search "lithium solid electrolyte" papers.db \
-  --source openalex --count 25
-pmt enrich papers.db
-pmt download papers.db --format abstract
 
 pmt scrape papers.db sse \
   --mode abstract \
@@ -51,7 +61,63 @@ pmt store papers.db \
   --assume-yes
 ```
 
-Use `pmt corpus stats papers.db` to inspect stored content and `pmt status papers.db` to inspect pipeline progress.
+To recover the curves of the figures that records name, such as a recipe's `Mass loss figure`, use `pmt digitize` with the optional [figrecover](https://github.com/SMTG-Bham/figrecover) package; see [recovering curves from figures](https://paperminertoolkit.readthedocs.io/en/latest/workflow/digitizing.html).
+
+Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
+
+Text and PDF acquisition also attempts supporting information (SI), and text/image scraping includes stored SI by default. Use `--no-supplements` on `gather`, `download`, or `scrape` to opt out. Abstract-only runs skip SI. To acquire SI for existing entries without redownloading the article or fetching abstracts:
+
+```bash
+pmt download papers.db --format supplement
+```
+
+Discovery uses stored article links, PMC, public Figshare records tied to the paper DOI, and publisher supplement links. Each file retains its source and separate extraction status; see the [supporting-information workflow](https://paperminertoolkit.readthedocs.io/en/latest/workflow/corpus.html#supporting-information) for coverage and limits.
+
+## CLI automation and AI agents
+
+Discover the installed interface and inspect corpus records without parsing tables:
+
+```bash
+pmt --version
+pmt schema corpus export
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv --json
+pmt corpus list papers.db --limit 5 --json
+pmt status papers.db --json
+```
+
+`python -m paperminertoolkit` exposes the same commands. JSON is available on
+selected commands through their local `--json` option; progress and errors use
+stderr. Preserve JSON even when a search exits with code 1: successful papers
+from a partial search remain in the corpus. Use `corpus show` to inspect a paper
+and `corpus export` to retrieve a stored abstract, text, or PDF.
+
+The [agent CLI guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/agents.html)
+documents discovery, credentials, JSON shapes, exit codes, and resumable
+extraction. The [standard-library subprocess example](examples/agent_cli.py)
+closes stdin and handles partial results; run it with `--help` before supplying
+a query and explicit corpus path.
+
+## BERT entity extraction
+
+Annotate stored abstracts with a fine-tuned token-classification checkpoint:
+
+```bash
+pmt entities corpus papers.db entities.jsonl \
+  --model ./models/matscibert-ner --field abstract
+```
+
+Replace the example path with your trained checkpoint directory or Hugging Face
+model ID. Use `pmt entities text paper.txt entities.jsonl --model CHECKPOINT` for
+a UTF-8 file. Results include entity labels, confidence scores, exact text,
+character offsets, and source metadata; long documents use overlapping windows.
+
+The published [MatSciBERT](https://huggingface.co/m3rg-iitd/matscibert) base model
+requires entity fine-tuning. The published
+[polyBERT](https://huggingface.co/HAYDERphd/polyBERT) produces polymer PSMILES
+fingerprints and is not a prose entity tagger. Supply a compatible fine-tuned
+token classifier; training is not part of this workflow. See the
+[entity extraction guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/entities.html).
 
 ## Documentation
 

@@ -35,8 +35,7 @@ python -m pip install -e ".[test]"
 
 `environment.yml` supplies the interpreter only. Every runtime and test
 dependency is declared once in `pyproject.toml`; add new ones there and re-run
-`pip install -e ".[test]"`. See [build_tools/README.md](build_tools/README.md),
-which also covers installing on ASU Sol's Intel Gaudi nodes.
+`pip install -e ".[test]"`. See [build_tools/README.md](build_tools/README.md).
 
 ## Branching and pull requests
 
@@ -48,26 +47,27 @@ restructuring work.
 
 ## Checks before opening a pull request
 
-These are the same steps CI runs, in order:
+CI runs lint, tests, documentation, and distribution checks in parallel. To
+run them locally, install the test and documentation dependencies and build tools:
 
 ```bash
-pytest
+python -m pip install -e '.[test,docs]' build twine
 ```
 
 ```bash
 ruff check paperminertoolkit tests
-```
-
-```bash
-python -m compileall paperminertoolkit examples
-```
-
-```bash
+python -m pytest --cov=paperminertoolkit --cov-report=term-missing --cov-report=xml
+python -m compileall -q paperminertoolkit examples
 make -C docs html
+python -m build
+python -m twine check --strict dist/*
 ```
 
-The test job runs on Python 3.11 and 3.14 (the ends of the supported range)
-and uploads coverage to Codecov; the docs job builds Sphinx on 3.13.
+The test job runs on Python 3.11 and 3.14 (the oldest supported version and the
+development interpreter) and uploads coverage to Codecov. Ruff runs once on
+3.14, and the docs job builds Sphinx on 3.13. Pull requests and releases share
+the same distribution build and metadata checks on 3.14. Coverage and
+distribution artifacts are retained for seven days.
 
 ## Tests
 
@@ -111,6 +111,29 @@ Test files are held to the same docstring and annotation rules as the package.
 - Single quotes and four-space indentation, matching the surrounding code.
 - Comments explain why a decision was made, not what the line does.
 
+## Adding a command
+
+Agents drive `pmt` through `pmt schema` and `--json`, and
+[tests/test_cli_coverage.py](tests/test_cli_coverage.py) keeps every command
+usable that way. A new command needs:
+
+1. `@agent_meta(effects={...})` above `@click.command`, naming its side effects
+   from the vocabulary in
+   [paperminertoolkit/_agent.py](paperminertoolkit/_agent.py);
+2. a `--json` flag whose result is printed with `emit_json`, as one JSON value
+   on stdout, with progress on stderr; or an entry in the test's `EXEMPT`
+   mapping with the reason it has none;
+3. for a JSON command, an output schema in
+   [paperminertoolkit/_output_schemas.py](paperminertoolkit/_output_schemas.py)
+   passed as `agent_meta(..., output=...)`. The test suite validates every
+   JSON result against it, and a command without JSON must not declare one;
+4. a row in the JSON table of
+   [docs/workflow/agents.md](docs/workflow/agents.md).
+
+Errors raised as `click.ClickException(...) from error` become typed JSON error
+objects under `--json`. The wrapped exception decides the type, so keep the
+`from error`.
+
 ## Adding a data source
 
 The registry in
@@ -125,7 +148,7 @@ is the single place a source is declared. To add one:
    covers exactly the sources carrying that capability.
 3. Add its dotted path to `PUBLIC_MODULES` in
    [tests/test_package_layout.py](tests/test_package_layout.py).
-4. Add a `tests/test_<source>.py` built on the shared doubles.
+4. Add a `tests/providers/test_<source>.py` built on the shared doubles.
 5. Add `docs/reference/modules/providers/<source>.rst` as an `automodule` stub
    and list it in that directory's `index.md` toctree.
 
@@ -150,9 +173,10 @@ installs the package with `--no-deps` and uses that file.
 
 Maintainers bump `__version__` in
 [paperminertoolkit/_version.py](paperminertoolkit/_version.py) and publish a
-GitHub release. That triggers `.github/workflows/publish.yml`, which builds the
-wheel and source distribution, validates them with `twine check`, and uploads
-to PyPI through trusted publishing.
+GitHub release. That triggers `.github/workflows/publish.yml`, which calls the
+same `.github/workflows/build.yml` used by pull-request CI to build and validate
+the release tag's wheel and source distribution. A separate publish job uploads
+those artifacts to PyPI through trusted publishing.
 
 ## License
 

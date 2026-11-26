@@ -9,41 +9,20 @@ when explicitly requested.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 
 import paperminertoolkit.settings as settings
 
 
-API_ENV_KEYS = [
-    'ELSEVIER_API_KEY',
-    'OPENAI_API_KEY',
-    'ANTHROPIC_API_KEY',
-    'CORE_API_KEY',
-    'UNPAYWALL_EMAIL',
-    'OPENALEX_API_KEY',
-    'CROSSREF_EMAIL',
-    'NCBI_API_KEY',
-    'NCBI_EMAIL',
-]
-
+API_ENV_KEYS = list(settings.SETTING_ENV_VARS.values())
 MODEL_ENV_KEYS = [
-    'PAPERMINERTOOLKIT_MODEL_PROVIDER',
-    'PAPERMINERTOOLKIT_MODEL_NAME',
-    'PAPERMINERTOOLKIT_MODEL_BASE_URL',
-    'PAPERMINERTOOLKIT_MODEL_API_KEY',
-    'PAPERMINERTOOLKIT_MODEL_CAPABILITIES',
-    'PAPERMINERTOOLKIT_MODEL_TEMPERATURE',
-    'PAPERMINERTOOLKIT_MODEL_TOP_P',
-    'PAPERMINERTOOLKIT_VISION_MODEL_PROVIDER',
-    'PAPERMINERTOOLKIT_VISION_MODEL_NAME',
-    'PAPERMINERTOOLKIT_VISION_MODEL_BASE_URL',
-    'PAPERMINERTOOLKIT_VISION_MODEL_API_KEY',
-    'PAPERMINERTOOLKIT_VISION_MODEL_CAPABILITIES',
-    'PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE',
-    'PAPERMINERTOOLKIT_VISION_MODEL_TOP_P',
+    f'{prefix}{suffix}'
+    for prefix in settings.MODEL_ENV_PREFIXES.values()
+    for suffix in settings.MODEL_ENV_FIELDS.values()
 ]
 
 
@@ -82,6 +61,10 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
             'temperature': '0.2',
             'top_p': '0.9',
             'input_token_limit': '64000',
+            'output_token_limit': '20000',
+            'request_timeout': '1800',
+            'reasoning_effort': ' low ',
+            'thinking': 'false',
         },
     )
 
@@ -91,16 +74,38 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
     assert merged['temperature'] == 0.2
     assert merged['top_p'] == 0.9
     assert merged['input_token_limit'] == 64000
+    assert merged['output_token_limit'] == 20000
+    assert merged['request_timeout'] == 1800.0
+    assert merged['reasoning_effort'] == 'low'
+    assert merged['thinking'] is False
 
 
 def test_merge_profile_defaults_missing_input_token_limit() -> None:
     """Default an empty model input token limit."""
     merged = settings._merge_profile(
         settings.DEFAULT_MODEL_PROFILE,
-        {'input_token_limit': ''},
+        {'input_token_limit': '', 'output_token_limit': '', 'request_timeout': ''},
     )
 
     assert merged['input_token_limit'] == settings.DEFAULT_INPUT_TOKEN_LIMIT
+    assert merged['output_token_limit'] == settings.DEFAULT_OUTPUT_TOKEN_LIMIT
+    assert merged['request_timeout'] == settings.DEFAULT_REQUEST_TIMEOUT
+    assert merged['reasoning_effort'] is None
+    assert merged['thinking'] is None
+
+
+def test_reasoning_settings_normalise_blank_and_on_off_values() -> None:
+    """Treat blank values as the model default and parse thinking switches."""
+    assert settings.reasoning_effort_setting(None) is None
+    assert settings.reasoning_effort_setting('  ') is None
+    assert settings.reasoning_effort_setting(' xhigh ') == 'xhigh'
+    assert settings.thinking_setting(None) is None
+    assert settings.thinking_setting('') is None
+    assert settings.thinking_setting(True) is True
+    assert settings.thinking_setting('On') is True
+    assert settings.thinking_setting('0') is False
+    with pytest.raises(ValueError, match='thinking must be on or off'):
+        settings.thinking_setting('sometimes')
 
 
 def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,10 +113,13 @@ def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'qwen')
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_INPUT_TOKEN_LIMIT', '120000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_REASONING_EFFORT', 'medium')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_THINKING', 'off')
 
     profile = settings._env_profile('PAPERMINERTOOLKIT_MODEL_')
 
-    assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000'}
+    assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000',
+                       'reasoning_effort': 'medium', 'thinking': 'off'}
 
 
 def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file: Path) -> None:
@@ -154,8 +162,23 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file: Path)
     """Report invalid JSON with the config file path."""
     isolated_settings_file.write_text('{not-json')
 
-    with pytest.raises(RuntimeError, match=str(isolated_settings_file)):
+    with pytest.raises(RuntimeError, match=re.escape(str(isolated_settings_file))):
         settings.load_settings()
+
+
+@pytest.mark.parametrize(('content', 'problem'), [
+    ('{not-json', 'Error loading'),
+    ('["not", "an", "object"]', 'expected a JSON object'),
+])
+def test_saved_settings_rejects_an_unreadable_or_non_object_file(
+    isolated_settings_file: Path, content: str, problem: str,
+) -> None:
+    """Refuse to read a damaged settings file as empty, so a setter cannot overwrite it."""
+    isolated_settings_file.write_text(content, encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=problem) as error:
+        settings._saved_settings()
+    assert str(isolated_settings_file) in str(error.value)
 
 
 def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,6 +188,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
         'openai_api_key': 'file-openai',
         'anthropic_api_key': 'file-anthropic',
         'core_api_key': 'file-core',
+        'core_min_interval': 2.0,
         'unpaywall_email': 'file@example.com',
         'openalex_api_key': 'file-openalex',
         'crossref_email': 'file-crossref@example.com',
@@ -175,6 +199,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     monkeypatch.setenv('OPENAI_API_KEY', 'env-openai')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-anthropic')
     monkeypatch.setenv('CORE_API_KEY', 'env-core')
+    monkeypatch.setenv('CORE_MIN_INTERVAL', '0.25')
     monkeypatch.setenv('UNPAYWALL_EMAIL', 'env@example.com')
     monkeypatch.setenv('OPENALEX_API_KEY', 'env-openalex')
     monkeypatch.setenv('CROSSREF_EMAIL', 'env-crossref@example.com')
@@ -187,6 +212,7 @@ def test_load_settings_applies_all_api_environment_overrides(isolated_settings_f
     assert loaded['openai_api_key'] == 'env-openai'
     assert loaded['anthropic_api_key'] == 'env-anthropic'
     assert loaded['core_api_key'] == 'env-core'
+    assert loaded['core_min_interval'] == '0.25'
     assert loaded['unpaywall_email'] == 'env@example.com'
     assert loaded['openalex_api_key'] == 'env-openalex'
     assert loaded['crossref_email'] == 'env-crossref@example.com'
@@ -204,6 +230,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE', '0.4')
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_TOP_P', '0.7')
     monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_INPUT_TOKEN_LIMIT', '96000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_VISION_MODEL_OUTPUT_TOKEN_LIMIT', '24000')
 
     profile = settings.load_settings()['model_profiles']['vision']
 
@@ -215,6 +242,7 @@ def test_load_settings_applies_vision_model_environment_overrides(isolated_setti
     assert profile['temperature'] == 0.4
     assert profile['top_p'] == 0.7
     assert profile['input_token_limit'] == 96000
+    assert profile['output_token_limit'] == 24000
 
 
 def test_save_settings_writes_json_to_config_file(isolated_settings_file: Path) -> None:
@@ -252,6 +280,10 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
         temperature=0.3,
         top_p=0.8,
         input_token_limit=120000,
+        output_token_limit=16000,
+        request_timeout=1800,
+        reasoning_effort='medium',
+        thinking=False,
     )
 
     loaded = settings.load_settings()
@@ -265,18 +297,93 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
     assert profile['temperature'] == 0.3
     assert profile['top_p'] == 0.8
     assert profile['input_token_limit'] == 120000
+    assert profile['output_token_limit'] == 16000
+    assert profile['request_timeout'] == 1800.0
+    assert profile['reasoning_effort'] == 'medium'
+    assert profile['thinking'] is False
 
 
-def test_update_anthropic_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Prompt for and save an Anthropic API key."""
-    settings._save_settings({'anthropic_api_key': 'old-anthropic-key'})
-    monkeypatch.setattr('builtins.input', lambda _: 'anthropic-key')
+@pytest.mark.parametrize('provider,label', [
+    ('openai', 'OpenAI'), ('anthropic', 'Anthropic'), ('elsevier', 'Elsevier'),
+    ('core', 'CORE'), ('ncbi', 'NCBI'), ('openalex', 'OpenAlex'),
+])
+@pytest.mark.parametrize('selection', ['default', 'empty', 'populated'])
+def test_api_key_updates_preserve_prompts_validation_and_settings_selection(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    provider: str,
+    label: str,
+    selection: str,
+) -> None:
+    """Update the selected mapping while preserving provider prompt behavior."""
+    key = f'{provider}_api_key'
+    settings._save_settings({key: 'old-provider-key', 'ncbi_email': 'retained@example.org'})
+    supplied: dict[str, Any] = (
+        {key: 'supplied-provider-key', 'core_min_interval': 0.75}
+        if selection == 'populated' else {}
+    )
+    expected = dict(supplied)
+    expected_key = 'revised-key' if provider == 'openalex' else '  revised-key  '
+    expected[key] = expected_key
+    prompts: list[str] = []
+    validated: list[str] = []
 
-    settings.update_anthropic_key()
+    def answer(prompt: str) -> str:
+        """Record the prompt and return a key with surrounding whitespace."""
+        prompts.append(prompt)
+        return '  revised-key  '
 
-    output = capsys.readouterr().out
-    assert 'Current Anthropic API key: old-...-key' in output
-    assert settings.load_settings()['anthropic_api_key'] == 'anthropic-key'
+    if provider in {'openai', 'elsevier', 'openalex'}:
+        monkeypatch.setattr(settings, f'_check_{provider}_api_key',
+                            lambda value: validated.append(value) or value == expected_key)
+    monkeypatch.setattr('builtins.input', answer)
+    update = getattr(settings, f'update_{provider}_key')
+    if selection == 'default':
+        update()
+    else:
+        update(supplied)
+
+    assert prompts == [f'Enter {label} API key: ']
+    current = {'default': 'old-...-key', 'empty': 'not set', 'populated': 'supp...-key'}[selection]
+    assert capsys.readouterr().out == f'Current {label} API key: {current}\n'
+    assert validated == ([expected_key] if provider in {'openai', 'elsevier', 'openalex'} else [])
+    persisted = json.loads(isolated_settings_file.read_text())
+    assert persisted[key] == expected_key
+    if selection == 'default':
+        assert supplied == {}
+        assert persisted['ncbi_email'] == 'retained@example.org'
+    else:
+        assert supplied == persisted == expected
+
+
+@pytest.mark.parametrize('provider,label', [
+    ('openai', 'OpenAI'), ('elsevier', 'Elsevier'), ('openalex', 'OpenAlex'),
+])
+@pytest.mark.parametrize('selection', ['empty', 'populated'])
+def test_api_key_rejection_does_not_save(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    label: str,
+    selection: str,
+) -> None:
+    """Reject credentials without changing the saved key or caller's mapping."""
+    settings._save_settings({f'{provider}_api_key': 'retained-key'})
+    before = isolated_settings_file.read_bytes()
+    supplied: dict[str, Any] = (
+        {f'{provider}_api_key': 'supplied-key', 'ncbi_email': 'supplied@example.org'}
+        if selection == 'populated' else {}
+    )
+    original = dict(supplied)
+    monkeypatch.setattr('builtins.input', lambda _: 'invalid')
+    monkeypatch.setattr(settings, f'_check_{provider}_api_key', lambda _: False)
+
+    with pytest.raises(ValueError, match=rf'^{label} API key is invalid\.$'):
+        getattr(settings, f'update_{provider}_key')(supplied)
+
+    assert supplied == original
+    assert isolated_settings_file.read_bytes() == before
 
 
 def test_check_openai_api_key_returns_true_for_valid_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,40 +438,97 @@ def test_check_openai_api_key_returns_false_for_invalid_key(monkeypatch: pytest.
     assert settings._check_openai_api_key('placeholder-openai-key') is False
 
 
-def test_update_openai_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Prompt for, validate, and save an OpenAI API key."""
-    settings._save_settings({'openai_api_key': 'old-openai-key'})
-    monkeypatch.setattr('builtins.input', lambda _: 'openai-key')
-    monkeypatch.setattr(settings, '_check_openai_api_key', lambda api_key: api_key == 'openai-key')
+@pytest.mark.parametrize('selection', ['default', 'empty', 'populated'])
+def test_update_core_rate_saves_a_granted_pace(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    selection: str,
+) -> None:
+    """Save the seconds CORE granted between requests, and show the default.
 
-    settings.update_openai_key()
-
-    output = capsys.readouterr().out
-    assert 'Current OpenAI API key: old-...-key' in output
-    assert settings.load_settings()['openai_api_key'] == 'openai-key'
-
-
-def test_update_openai_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject and avoid saving an invalid OpenAI API key."""
-    monkeypatch.setattr('builtins.input', lambda _: 'bad-openai-key')
-    monkeypatch.setattr(settings, '_check_openai_api_key', lambda _: False)
-
-    with pytest.raises(ValueError, match='OpenAI API key is invalid'):
-        settings.update_openai_key()
-
-    assert 'openai_api_key' not in settings.load_settings()
-
-
-def test_update_core_key_prompts_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Prompt for and save a CORE API key."""
-    settings._save_settings({'core_api_key': 'old-core-key'})
-    monkeypatch.setattr('builtins.input', lambda _: 'core-key')
-
-    settings.update_core_key()
+    CORE publishes no figure for the faster paces it grants, so the pace is
+    entered directly and the prompt states the free allowance it replaces.
+    """
+    settings._save_settings({'core_min_interval': 2.0, 'core_api_key': 'stored-key'})
+    supplied: dict[str, Any] = (
+        {'core_min_interval': 0.5, 'core_api_key': 'supplied-key'}
+        if selection == 'populated' else {}
+    )
+    expected = {**supplied, 'core_min_interval': 0.2}
+    monkeypatch.setattr('builtins.input', lambda _: '0.2')
+    if selection == 'default':
+        settings.update_core_rate()
+    else:
+        settings.update_core_rate(supplied)
 
     output = capsys.readouterr().out
-    assert 'Current CORE API key: old-...-key' in output
-    assert settings.load_settings()['core_api_key'] == 'core-key'
+    persisted = json.loads(isolated_settings_file.read_text())
+    assert persisted['core_min_interval'] == 0.2
+    if selection == 'default':
+        assert supplied == {}
+        assert persisted['core_api_key'] == 'stored-key'
+    else:
+        assert supplied == persisted == expected
+    current = {'default': '2.0', 'empty': 'not set', 'populated': '0.5'}[selection]
+    assert f'Current CORE seconds between requests: {current}\n' in output
+    assert '5 requests per 10 seconds' in output
+    assert '2.0 seconds between requests' in output
+
+
+@pytest.mark.parametrize('selection', ['default', 'empty', 'populated'])
+def test_update_core_rate_clears_the_pace(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    """Reset only the selected mapping's pace while retaining unrelated values."""
+    settings._save_settings({'core_min_interval': 0.2, 'core_api_key': 'stored-key'})
+    supplied: dict[str, Any] = (
+        {'core_min_interval': 0.5, 'core_api_key': 'supplied-key'}
+        if selection == 'populated' else {}
+    )
+    expected = {'core_api_key': 'supplied-key'} if selection == 'populated' else {}
+    monkeypatch.setattr('builtins.input', lambda _: '')
+    if selection == 'default':
+        settings.update_core_rate()
+    else:
+        settings.update_core_rate(supplied)
+    persisted = json.loads(isolated_settings_file.read_text())
+    assert 'core_min_interval' not in persisted
+    if selection == 'default':
+        assert supplied == {}
+        assert persisted['core_api_key'] == 'stored-key'
+    else:
+        assert supplied == persisted == expected
+
+
+@pytest.mark.parametrize(('entered', 'message'), [
+    ('quickly', 'must be a number of seconds'), ('0', 'greater than zero'),
+])
+@pytest.mark.parametrize('selection', ['empty', 'populated'])
+def test_update_core_rate_rejects_bad_values_without_saving(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entered: str,
+    message: str,
+    selection: str,
+) -> None:
+    """Reject invalid input without changing a supplied mapping or disk."""
+    settings._save_settings({'core_min_interval': 0.2, 'core_api_key': 'stored-key'})
+    before = isolated_settings_file.read_bytes()
+    supplied: dict[str, Any] = (
+        {'core_min_interval': 0.5, 'core_api_key': 'supplied-key'}
+        if selection == 'populated' else {}
+    )
+    original = dict(supplied)
+    monkeypatch.setattr('builtins.input', lambda _: entered)
+
+    with pytest.raises(ValueError, match=message):
+        settings.update_core_rate(supplied)
+
+    assert supplied == original
+    assert isolated_settings_file.read_bytes() == before
 
 
 def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
@@ -386,30 +550,6 @@ def test_check_elsevier_api_key_delegates_to_the_elsevier_client(
 
     monkeypatch.setattr(elsevier, 'check_api_key', lambda *_, **__: False)
     assert settings._check_elsevier_api_key('bad-key') is False
-
-
-def test_update_elsevier_key_prompts_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Prompt for, validate, and save an Elsevier API key."""
-    settings._save_settings({'elsevier_api_key': 'old-elsevier-key'})
-    monkeypatch.setattr('builtins.input', lambda _: 'elsevier-key')
-    monkeypatch.setattr(settings, '_check_elsevier_api_key', lambda api_key: api_key == 'elsevier-key')
-
-    settings.update_elsevier_key()
-
-    output = capsys.readouterr().out
-    assert 'Current Elsevier API key: old-...-key' in output
-    assert settings.load_settings()['elsevier_api_key'] == 'elsevier-key'
-
-
-def test_update_elsevier_key_rejects_invalid_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject and avoid saving an invalid Elsevier API key."""
-    monkeypatch.setattr('builtins.input', lambda _: 'bad-elsevier-key')
-    monkeypatch.setattr(settings, '_check_elsevier_api_key', lambda _: False)
-
-    with pytest.raises(ValueError, match='Elsevier API key is invalid'):
-        settings.update_elsevier_key()
-
-    assert 'elsevier_api_key' not in settings.load_settings()
 
 
 def test_update_unpaywall_email_validates_and_saves_email(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -445,23 +585,6 @@ def test_load_settings_reads_crossref_email_from_the_settings_file(isolated_sett
     isolated_settings_file.write_text(json.dumps({'crossref_email': 'file@example.com'}))
 
     assert settings.load_settings()['crossref_email'] == 'file@example.com'
-
-
-def test_update_openalex_key_validates_and_saves_key(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Save a valid OpenAlex key and reject an invalid one."""
-    settings._save_settings({'openalex_api_key': 'old-openalex-key'})
-    monkeypatch.setattr('builtins.input', lambda _: 'openalex-key')
-    monkeypatch.setattr(settings, '_check_openalex_api_key', lambda api_key: api_key == 'openalex-key')
-
-    settings.update_openalex_key()
-
-    output = capsys.readouterr().out
-    assert 'Current OpenAlex API key: old-...-key' in output
-    assert settings.load_settings()['openalex_api_key'] == 'openalex-key'
-
-    monkeypatch.setattr('builtins.input', lambda _: 'wrong-key')
-    with pytest.raises(ValueError):
-        settings.update_openalex_key()
 
 
 def test_check_openalex_api_key_only_rejects_an_explicit_401(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -501,7 +624,7 @@ def test_display_helpers_and_ncbi_updates_cover_optional_values(
     assert email_settings['ncbi_email'] == 'person@example.org'
 
     loaded: dict[str, object] = {}
-    monkeypatch.setattr(settings, 'load_settings', lambda: loaded)
+    monkeypatch.setattr(settings, '_saved_settings', lambda: loaded)
     monkeypatch.setattr('builtins.input', lambda _: 'loaded-key')
     settings.update_ncbi_key()
     assert loaded['ncbi_api_key'] == 'loaded-key'
@@ -539,3 +662,138 @@ def test_check_elsevier_api_key_validates_configured_key() -> None:
 
     assert api_key, 'Set elsevier_api_key in ~/.config/.paperminertoolkitrc.json or ELSEVIER_API_KEY before running network tests.'
     assert settings._check_elsevier_api_key(api_key) is True
+
+
+@pytest.mark.parametrize('provider,label', [
+    ('unpaywall', 'Unpaywall'), ('crossref', 'Crossref'), ('ncbi', 'NCBI'),
+])
+@pytest.mark.parametrize('selection', ['default', 'empty', 'populated'])
+def test_contact_email_updates_preserve_prompt_and_settings_selection(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    provider: str,
+    label: str,
+    selection: str,
+) -> None:
+    """Trim addresses and update the supplied mapping or loaded settings."""
+    key = f'{provider}_email'
+    settings._save_settings({key: 'stored@example.org', 'core_api_key': 'retained'})
+    supplied: dict[str, Any] = (
+        {key: 'supplied@example.org', 'core_api_key': 'supplied-key'}
+        if selection == 'populated' else {}
+    )
+    expected = {**supplied, key: 'revised@example.org'}
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        """Record the exact interactive prompt and return a padded address."""
+        prompts.append(prompt)
+        return '  revised@example.org  '
+
+    monkeypatch.setattr('builtins.input', answer)
+    update = getattr(settings, f'update_{provider}_email')
+    if selection == 'default':
+        update()
+    else:
+        update(supplied)
+
+    assert prompts == [f'Enter {label} email: ']
+    current = {'default': 'stored@example.org', 'empty': 'not set',
+               'populated': 'supplied@example.org'}[selection]
+    assert capsys.readouterr().out == f'Current {label} email: {current}\n'
+    persisted = json.loads(isolated_settings_file.read_text())
+    assert persisted[key] == 'revised@example.org'
+    if selection == 'default':
+        assert supplied == {}
+        assert persisted['core_api_key'] == 'retained'
+    else:
+        assert supplied == persisted == expected
+
+
+@pytest.mark.parametrize('provider,label', [
+    ('unpaywall', 'Unpaywall'), ('crossref', 'Crossref'), ('ncbi', 'NCBI'),
+])
+@pytest.mark.parametrize('selection', ['empty', 'populated'])
+def test_contact_email_rejection_does_not_save(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    label: str,
+    selection: str,
+) -> None:
+    """Reject an address without an at-sign without mutating disk or the caller."""
+    settings._save_settings({f'{provider}_email': 'stored@example.org'})
+    before = isolated_settings_file.read_bytes()
+    supplied: dict[str, Any] = (
+        {f'{provider}_email': 'supplied@example.org', 'core_api_key': 'supplied-key'}
+        if selection == 'populated' else {}
+    )
+    original = dict(supplied)
+    monkeypatch.setattr('builtins.input', lambda _: ' invalid ')
+
+    with pytest.raises(ValueError, match=rf'^{label} email must be a valid email address\.$'):
+        getattr(settings, f'update_{provider}_email')(supplied)
+
+    assert supplied == original
+    assert isolated_settings_file.read_bytes() == before
+
+
+def test_empty_environment_values_leave_stored_settings_and_profiles_intact(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ignore empty environment variables without leaking unsupported file keys."""
+    isolated_settings_file.write_text(json.dumps({
+        'core_min_interval': 2.5,
+        'ncbi_email': 'stored@example.org',
+        'unknown': 'discard',
+        'model_profiles': {
+            'text': {'model': 'text-model', 'temperature': '0.2'},
+            'vision': {'model': 'vision-model', 'temperature': '0.7'},
+        },
+    }))
+    for key in API_ENV_KEYS + MODEL_ENV_KEYS:
+        monkeypatch.setenv(key, '')
+
+    loaded = settings.load_settings()
+
+    assert loaded['core_min_interval'] == 2.5
+    assert loaded['ncbi_email'] == 'stored@example.org'
+    assert 'unknown' not in loaded
+    assert loaded['model_profiles']['text']['model'] == 'text-model'
+    assert loaded['model_profiles']['text']['temperature'] == 0.2
+    assert loaded['model_profiles']['vision']['model'] == 'vision-model'
+    assert loaded['model_profiles']['vision']['temperature'] == 0.7
+
+
+def test_invalid_stored_profile_is_rejected_before_environment_override(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain validation of stored numeric values even when an override exists."""
+    isolated_settings_file.write_text(json.dumps({
+        'model_profiles': {'text': {'temperature': 'invalid'}},
+    }))
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_TEMPERATURE', '0.5')
+
+    with pytest.raises(ValueError, match='invalid'):
+        settings.load_settings()
+
+
+def test_setters_never_copy_environment_credentials_into_the_file(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Save only the edited setting, not keys that came from the environment."""
+    monkeypatch.setenv('ELSEVIER_API_KEY', 'env-only-elsevier-key')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'env-model')
+    isolated_settings_file.write_text(json.dumps({'core_api_key': 'kept'}), encoding='utf-8')
+
+    settings.update_crossref_email(value='me@example.org')
+    settings.set_model_profile('text', 'local', 'file-model', None, None, ['text'])
+
+    saved = json.loads(isolated_settings_file.read_text(encoding='utf-8'))
+    assert 'env-only-elsevier-key' not in isolated_settings_file.read_text(encoding='utf-8')
+    assert saved['core_api_key'] == 'kept'
+    assert saved['crossref_email'] == 'me@example.org'
+    assert saved['model_profiles']['text']['model'] == 'file-model'
+    assert 'elsevier_api_key' not in saved
+    assert settings.load_settings()['elsevier_api_key'] == 'env-only-elsevier-key'

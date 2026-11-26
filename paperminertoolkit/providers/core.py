@@ -11,9 +11,11 @@ none is better off not asking. Store one with ``pmt config core-key`` or in
 ``CORE_API_KEY``; it travels as a bearer token rather than as a query
 parameter, which is what separates this source from OpenAlex and PubMed.
 
-The published rate limit depends on the plan a key belongs to, so requests are
-paced at a rate chosen to be unobtrusive rather than to satisfy a documented
-rule, in the same way as the preprint servers.
+Requests are paced at CORE's documented free allowance of five single requests
+per ten seconds, with batch methods five times slower again. Registered
+organisations and members are granted faster rates individually, and CORE
+publishes no figure for any of them, so a granted pace is configured with
+``pmt config core-rate`` or ``CORE_MIN_INTERVAL`` rather than inferred.
 
 Search is offset-paged and reports a total, so a walk stops at whichever comes
 first: the caller's count, the reported total, or a short page. CORE caps a
@@ -33,7 +35,19 @@ from paperminertoolkit.corpus.metadata import clean_doi
 BASE_URL = 'https://api.core.ac.uk/v3'
 SEARCH_URL = f'{BASE_URL}/search/works'
 WORKS_URL = f'{BASE_URL}/works'
-CORE_MIN_INTERVAL = 1.0
+# CORE documents one allowance for unregistered clients: five single requests
+# or one batch request per ten seconds, so two seconds apart and ten
+# respectively. Registered organisations and members are granted faster rates,
+# but CORE agrees each individually and publishes no figure for any of them --
+# not even in its membership documentation, which describes what kind of access
+# each level brings rather than at what rate. The granted pace is therefore
+# configured directly; there is nothing to infer it from.
+CORE_FREE_SINGLE_PER_WINDOW = 5
+CORE_FREE_BATCH_PER_WINDOW = 1
+CORE_WINDOW_SECONDS = 10.0
+CORE_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_SINGLE_PER_WINDOW
+CORE_BATCH_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_BATCH_PER_WINDOW
+CORE_BATCH_PENALTY = CORE_FREE_SINGLE_PER_WINDOW / CORE_FREE_BATCH_PER_WINDOW
 PAGE_SIZE = 100
 _CoreRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(CORE_MIN_INTERVAL)
@@ -55,6 +69,57 @@ def configured_api_key(settings: Mapping[str, str] | None = None) -> str | None:
     from paperminertoolkit.settings import load_settings
     settings = settings if settings is not None else load_settings()
     return settings.get('core_api_key') or os.environ.get('CORE_API_KEY') or None
+
+
+def configured_min_interval(settings: Mapping[str, str] | None = None) -> float:
+    """Return the configured seconds between CORE requests.
+
+    CORE agrees a faster pace with registered organisations and members case
+    by case and publishes no figure for any level, so the granted pace is read
+    from configuration rather than inferred from a membership.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping to inspect before the environment.
+
+    Returns
+    -------
+    float
+        Configured seconds between single requests, or CORE's documented
+        free-tier pace when none is configured or the value is unusable.
+    """
+    from paperminertoolkit.settings import load_settings
+    settings = settings if settings is not None else load_settings()
+    value = settings.get('core_min_interval') or os.environ.get('CORE_MIN_INTERVAL')
+    try:
+        interval = float(str(value).strip())
+    except (TypeError, ValueError):
+        return CORE_MIN_INTERVAL
+    return interval if interval > 0 else CORE_MIN_INTERVAL
+
+
+def min_interval(
+    settings: Mapping[str, str] | None = None,
+    batch: bool = False,
+) -> float:
+    """Return the minimum seconds between CORE requests.
+
+    Parameters
+    ----------
+    settings : Mapping[str, str] or None, optional
+        Settings mapping supplying any granted pace.
+    batch : bool, default=False
+        Whether the request uses a batch method, which CORE allows five times
+        less often than a single one.
+
+    Returns
+    -------
+    float
+        Delay honoring the configured pace, or CORE's free-tier pace.
+    """
+    interval = configured_min_interval(settings)
+    return interval * CORE_BATCH_PENALTY if batch else interval
 
 
 def request_headers(api_key: str | None = None) -> dict[str, str]:
@@ -150,7 +215,8 @@ def request_json(url: str,
     """
     return provider.request_mapping(url, label='CORE', limiter=LIMITER, params=params,
                                     headers=request_headers(api_key), session=session,
-                                    timeout=timeout, attempts=attempts)
+                                    timeout=timeout, attempts=attempts,
+                                    interval=min_interval())
 
 
 def get_work(core_id: object,

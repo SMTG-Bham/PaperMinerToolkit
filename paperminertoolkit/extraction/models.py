@@ -8,14 +8,23 @@ OpenAI-compatible local chat servers.
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import openai
+import os
 import requests
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Self, TypedDict, Unpack
+from typing import Any, Literal, Self, TypedDict, Unpack
 
+from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
-from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
+from paperminertoolkit.settings import (DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, DEFAULT_OUTPUT_TOKEN_LIMIT,
+                                        DEFAULT_REQUEST_TIMEOUT, get_model_profile, load_settings,
+                                        reasoning_effort_setting, thinking_setting)
 
 OPENAI_FIXED_SAMPLING_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -32,6 +41,10 @@ class _ModelOverrides(TypedDict, total=False):
     temperature: float | int | str
     top_p: float | int | str
     input_token_limit: int | str
+    output_token_limit: int | str
+    request_timeout: float | int | str
+    reasoning_effort: str | None
+    thinking: bool | str | None
 
 
 class ModelCapabilityError(ValueError):
@@ -62,6 +75,16 @@ class ModelConfig:
         Nucleus sampling probability.
     input_token_limit : int
         Maximum model input size in tokens.
+    output_token_limit : int
+        Maximum tokens generated per extraction request.
+    request_timeout : float
+        Seconds to wait for one request to an OpenAI-compatible server.
+    reasoning_effort : str | None
+        Reasoning effort sent with each request, or ``None`` for the model's
+        default.
+    thinking : bool | None
+        Whether a hybrid model thinks before answering (OpenAI-compatible
+        servers only), or ``None`` for the model's default.
     """
 
     provider: str = 'openai'
@@ -72,6 +95,10 @@ class ModelConfig:
     temperature: float = 0
     top_p: float = 1
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT
+    output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    reasoning_effort: str | None = None
+    thinking: bool | None = None
 
     @classmethod
     def from_profile(cls, profile: str = 'text', **overrides: Unpack[_ModelOverrides]) -> Self:
@@ -109,6 +136,10 @@ class ModelConfig:
         provider_key = f'{provider.lower()}_api_key'
         profile_api_key = None if provider_changed else configured.get('api_key')
         profile_base_url = None if provider_changed else configured.get('base_url')
+        # Reasoning settings are provider-specific too: a profile's effort or thinking switch
+        # for one provider must not be sent to another (e.g. a separate recipe-optimiser model).
+        profile_effort = None if provider_changed else configured.get('reasoning_effort')
+        profile_thinking = None if provider_changed else configured.get('thinking')
         return cls(
             provider=provider,
             name=name or configured.get('model') or DEFAULT_MODEL,
@@ -120,6 +151,14 @@ class ModelConfig:
             input_token_limit=int(
                 overrides.get('input_token_limit', configured.get('input_token_limit', DEFAULT_INPUT_TOKEN_LIMIT))
             ),
+            output_token_limit=int(
+                overrides.get('output_token_limit', configured.get('output_token_limit', DEFAULT_OUTPUT_TOKEN_LIMIT))
+            ),
+            request_timeout=float(
+                overrides.get('request_timeout', configured.get('request_timeout', DEFAULT_REQUEST_TIMEOUT))
+            ),
+            reasoning_effort=reasoning_effort_setting(overrides.get('reasoning_effort', profile_effort)),
+            thinking=thinking_setting(overrides.get('thinking', profile_thinking)),
         )
 
     def generation_args(self) -> dict[str, float]:
@@ -139,6 +178,40 @@ class ModelConfig:
         if provider == 'anthropic':
             args.pop('top_p')
         return args
+
+    def reasoning_args(self) -> dict[str, Any]:
+        """Build provider-specific reasoning parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            Request arguments that set the reasoning effort and thinking
+            switch, or an empty dict when both use the model's default.
+            OpenAI-compatible servers get ``reasoning_effort`` and, for
+            ``thinking``, ``chat_template_kwargs.enable_thinking``; OpenAI's
+            Responses API gets ``reasoning.effort``.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support a configured setting.
+        """
+        provider = self.provider.lower().replace('_', '-')
+        if self.reasoning_effort is None and self.thinking is None:
+            return {}
+        if provider == 'local':
+            args: dict[str, Any] = {}
+            if self.reasoning_effort is not None:
+                args['reasoning_effort'] = self.reasoning_effort
+            if self.thinking is not None:
+                args['extra_body'] = {'chat_template_kwargs': {'enable_thinking': self.thinking}}
+            return args
+        if provider == 'openai':
+            if self.thinking is not None:
+                raise ValueError('thinking is only supported for local OpenAI-compatible servers; '
+                                 'set reasoning_effort for OpenAI models.')
+            return {'reasoning': {'effort': self.reasoning_effort}}
+        raise ValueError(f'Reasoning settings are not supported for provider "{self.provider}".')
 
     def require(self, capability: str) -> None:
         """Require a model input capability.
@@ -179,6 +252,89 @@ def _image_to_data_url(path: str) -> str:
     return f'data:{mime_type};base64,{encoded}'
 
 
+def _image_label(image_labels: Sequence[str] | None, index: int) -> str:
+    """Return the label describing one image in a vision request.
+
+    Parameters
+    ----------
+    image_labels : Sequence[str] or None
+        Per-image descriptions aligned with the request's image order.
+    index : int
+        Position of the image within the request.
+
+    Returns
+    -------
+    str
+        Label text, or an empty string when the image has no description.
+    """
+    if image_labels is None or index >= len(image_labels):
+        return ''
+    return str(image_labels[index]).strip()
+
+
+def _image_messages(
+    prompt: str,
+    image_paths: list[str],
+    context: str | None,
+    config: ModelConfig,
+    compression_config: CompressionConfig | None,
+    image_labels: Sequence[str] | None,
+    api: Literal['responses', 'anthropic', 'chat'],
+) -> list[dict[str, Any]]:
+    """Build and optionally compress a provider's vision messages.
+
+    Parameters
+    ----------
+    prompt : str
+        Instructions preceding the image content.
+    image_paths : list[str]
+        Local images in request order.
+    context : str or None
+        Optional paper text following the instructions.
+    config : ModelConfig
+        Model configuration used by compression.
+    compression_config : CompressionConfig or None
+        Compression policy for the completed payload.
+    image_labels : Sequence[str] or None
+        Descriptions placed immediately before their images.
+    api : {'responses', 'anthropic', 'chat'}
+        Provider wire format for text and image content blocks.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Provider-formatted user messages, after optional compression.
+    """
+    text_type = 'input_text' if api == 'responses' else 'text'
+    content = [{'type': text_type, 'text': prompt}]
+    if context:
+        content.append({'type': text_type, 'text': context})
+    for index, image_path in enumerate(image_paths):
+        label = _image_label(image_labels, index)
+        if label:
+            content.append({'type': text_type, 'text': label})
+        if api == 'anthropic':
+            mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
+            with open(image_path, 'rb') as image_file:
+                encoded = base64.b64encode(image_file.read()).decode('ascii')
+            content.append({
+                'type': 'image',
+                'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
+            })
+        elif api == 'responses':
+            content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
+        else:
+            content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
+    return maybe_compress_image_messages(
+        [{'role': 'user', 'content': content}],
+        image_paths,
+        prompt,
+        context,
+        config,
+        compression_config,
+    )
+
+
 class BaseModelClient:
     """Abstract interface implemented by concrete model provider clients."""
 
@@ -189,8 +345,15 @@ class BaseModelClient:
         ----------
         config : ModelConfig
             Configuration used for provider requests.
+
+        Raises
+        ------
+        ValueError
+            If the provider does not support the configured reasoning
+            settings.
         """
         self.config = config
+        config.reasoning_args()
 
     def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
         """Send a text-only request.
@@ -219,7 +382,8 @@ class BaseModelClient:
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send a vision request with local images.
 
         Parameters
@@ -234,6 +398,10 @@ class BaseModelClient:
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions, such as a figure label and caption, sent
+            immediately before their image so the model can attribute
+            findings to a specific figure.
 
         Returns
         -------
@@ -260,7 +428,7 @@ class OpenAIResponsesClient(BaseModelClient):
             OpenAI model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {}
+        kwargs: dict[str, Any] = {'timeout': config.request_timeout}
         if config.api_key:
             kwargs['api_key'] = config.api_key
         if config.base_url:
@@ -317,23 +485,15 @@ class OpenAIResponsesClient(BaseModelClient):
             If the OpenAI request fails or returns no text.
         """
         self.config.require('text')
-        try:
-            response = self.client.responses.create(
-                model=self.config.name,
-                input=messages,
-                max_output_tokens=max_output_tokens,
-                **self.config.generation_args(),
-            )
-        except openai.OpenAIError as e:
-            raise RuntimeError(f'OpenAI request failed: {e}') from e
-        return self._response_text(response)
+        return self._request(messages, max_output_tokens, 'OpenAI request failed')
 
     def query_with_images(self,
                           prompt: str,
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through OpenAI Responses.
 
         Parameters
@@ -348,6 +508,8 @@ class OpenAIResponsesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -362,29 +524,43 @@ class OpenAIResponsesClient(BaseModelClient):
             If the OpenAI request fails or returns no text.
         """
         self.config.require('vision')
-        content = [{'type': 'input_text', 'text': prompt}]
-        if context:
-            content.append({'type': 'input_text', 'text': context})
-        for image_path in image_paths:
-            content.append({'type': 'input_image', 'image_url': _image_to_data_url(image_path)})
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'responses',
         )
+        return self._request(messages, max_output_tokens, 'OpenAI vision request failed')
+
+    def _request(self, messages: list[dict[str, Any]], max_output_tokens: int, error_prefix: str) -> str:
+        """Send a prepared Responses request and extract its text.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Responses API input messages.
+        max_output_tokens : int
+            Maximum number of tokens to generate.
+        error_prefix : str
+            Context identifying a failed text or vision request.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        RuntimeError
+            If the request fails or returns no text.
+        """
         try:
             response = self.client.responses.create(
                 model=self.config.name,
                 input=messages,
                 max_output_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
-            raise RuntimeError(f'OpenAI vision request failed: {e}') from e
+            raise RuntimeError(f'{error_prefix}: {e}') from e
         return self._response_text(response)
 
 
@@ -435,7 +611,8 @@ class AnthropicMessagesClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send an image request through Anthropic Messages.
 
         Parameters
@@ -450,6 +627,8 @@ class AnthropicMessagesClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -466,25 +645,8 @@ class AnthropicMessagesClient(BaseModelClient):
             If the provider request fails.
         """
         self.config.require('vision')
-        content = [{'type': 'text', 'text': prompt}]
-        if context:
-            content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
-            mime_type = mimetypes.guess_type(image_path)[0] or 'image/png'
-            with open(image_path, 'rb') as image_file:
-                encoded = base64.b64encode(image_file.read()).decode('ascii')
-            content.append({
-                'type': 'image',
-                'source': {'type': 'base64', 'media_type': mime_type, 'data': encoded},
-            })
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'anthropic',
         )
         return self._request('', messages, max_output_tokens)
 
@@ -527,13 +689,8 @@ class AnthropicMessagesClient(BaseModelClient):
         }
         if system:
             payload['system'] = system
-        headers = {
-            'x-api-key': self.config.api_key,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        }
-        base_url = (self.config.base_url or 'https://api.anthropic.com').rstrip('/')
-        endpoint = f'{base_url}/messages' if base_url.endswith('/v1') else f'{base_url}/v1/messages'
+        headers = request_headers(self.config.api_key)
+        endpoint = messages_url(self.config.base_url)
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
             response.raise_for_status()
@@ -586,7 +743,7 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Model and connection configuration.
         """
         super().__init__(config)
-        kwargs = {'api_key': config.api_key or 'not-needed'}
+        kwargs: dict[str, Any] = {'api_key': config.api_key or 'not-needed', 'timeout': config.request_timeout}
         if config.base_url:
             kwargs['base_url'] = config.base_url
         self.client = openai.OpenAI(**kwargs)
@@ -621,7 +778,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
                           image_paths: list[str],
                           context: str | None = None,
                           max_output_tokens: int = 10000,
-                          compression_config: CompressionConfig | None = None) -> str:
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
         """Send images as OpenAI-compatible chat content.
 
         Parameters
@@ -636,6 +794,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
             Maximum number of tokens to generate.
         compression_config : CompressionConfig | None, optional
             Compression policy for the provider payload.
+        image_labels : Sequence[str] or None, optional
+            Per-image descriptions sent immediately before their image.
 
         Returns
         -------
@@ -650,19 +810,8 @@ class OpenAICompatibleChatClient(BaseModelClient):
             If the provider request fails.
         """
         self.config.require('vision')
-        content = [{'type': 'text', 'text': prompt}]
-        if context:
-            content.append({'type': 'text', 'text': context})
-        for image_path in image_paths:
-            content.append({'type': 'image_url', 'image_url': {'url': _image_to_data_url(image_path)}})
-        messages = [{'role': 'user', 'content': content}]
-        messages = maybe_compress_image_messages(
-            messages,
-            image_paths,
-            prompt,
-            context,
-            self.config,
-            compression_config,
+        messages = _image_messages(
+            prompt, image_paths, context, self.config, compression_config, image_labels, 'chat',
         )
         return self._chat(messages, max_output_tokens)
 
@@ -692,10 +841,98 @@ class OpenAICompatibleChatClient(BaseModelClient):
                 messages=messages,
                 max_tokens=max_output_tokens,
                 **self.config.generation_args(),
+                **self.config.reasoning_args(),
             )
         except openai.OpenAIError as e:
             raise RuntimeError(f'Local model request failed: {e}') from e
         return response.choices[0].message.content or ''
+
+
+class ClaudeCodeClient(BaseModelClient):
+    """Client that sends text requests through a logged-in Claude Code CLI.
+
+    This uses ``claude -p`` with every tool disabled, so requests are billed to
+    the Claude Code login rather than an API key. The executable is read from
+    ``PAPERMINERTOOLKIT_CLAUDE_CODE_BIN`` or found on ``PATH`` as ``claude``.
+    Each request may run for at most the configured ``request_timeout``.
+    """
+
+    def _executable(self) -> str:
+        """Locate the Claude Code executable.
+
+        Returns
+        -------
+        str
+            Path to the ``claude`` executable.
+
+        Raises
+        ------
+        ValueError
+            If no executable can be found.
+        """
+        executable = os.environ.get('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN') or shutil.which('claude')
+        if not executable:
+            raise ValueError('Provider "claude-code" needs the claude CLI on PATH or '
+                             'PAPERMINERTOOLKIT_CLAUDE_CODE_BIN set to its path.')
+        return executable
+
+    def query(self, messages: list[dict[str, Any]], max_output_tokens: int = 10000) -> str:
+        """Send a text-only request through ``claude -p``.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Provider-neutral chat messages. System messages become the system
+            prompt and the remaining messages are sent as the user prompt.
+        max_output_tokens : int, optional
+            Unused; Claude Code applies its own output limit.
+
+        Returns
+        -------
+        str
+            Model response text.
+
+        Raises
+        ------
+        RuntimeError
+            If the CLI fails, times out, or reports an error result.
+        """
+        system = '\n\n'.join(str(m['content']) for m in messages if m.get('role') == 'system')
+        prompt = '\n\n'.join(str(m['content']) for m in messages if m.get('role') != 'system')
+        command = [self._executable(), '-p', '--output-format', 'json', '--tools', '',
+                   '--strict-mcp-config', '--no-session-persistence', '--model', self.config.name]
+        if system:
+            command += ['--system-prompt', system]
+        with tempfile.TemporaryDirectory(prefix='paperminertoolkit-claude-') as cwd:
+            try:
+                completed = subprocess.run(command, input=prompt, capture_output=True, text=True,
+                                           encoding='utf-8', cwd=cwd, timeout=self.config.request_timeout)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('Claude Code request timed out.') from error
+        try:
+            result = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            detail = (completed.stderr or completed.stdout).strip()[:500]
+            raise RuntimeError(f'Claude Code returned no JSON result (exit {completed.returncode}): {detail}') from error
+        if result.get('is_error') or completed.returncode:
+            raise RuntimeError(f'Claude Code request failed: {str(result.get("result"))[:500]}')
+        return str(result.get('result') or '')
+
+    def query_with_images(self,
+                          prompt: str,
+                          image_paths: list[str],
+                          context: str | None = None,
+                          max_output_tokens: int = 10000,
+                          compression_config: CompressionConfig | None = None,
+                          image_labels: Sequence[str] | None = None) -> str:
+        """Reject image requests, which this client does not support.
+
+        Raises
+        ------
+        ModelCapabilityError
+            Always.
+        """
+        raise ModelCapabilityError('Provider "claude-code" supports text requests only.')
 
 
 def get_model_client(config: ModelConfig | None = None) -> BaseModelClient:
@@ -726,6 +963,8 @@ def get_model_client(config: ModelConfig | None = None) -> BaseModelClient:
         if not config.base_url:
             raise ValueError(f'Provider "{config.provider}" requires a base URL.')
         return OpenAICompatibleChatClient(config)
+    if provider == 'claude-code':
+        return ClaudeCodeClient(config)
     raise ValueError(f'Unknown model provider: {config.provider}')
 
 
@@ -756,7 +995,8 @@ def query_images(prompt: str,
                  config: ModelConfig | None = None,
                  context: str | None = None,
                  max_output_tokens: int = 10000,
-                 compression_config: CompressionConfig | None = None) -> str:
+                 compression_config: CompressionConfig | None = None,
+                 image_labels: Sequence[str] | None = None) -> str:
     """Send an image request through a configured provider.
 
     Parameters
@@ -773,6 +1013,8 @@ def query_images(prompt: str,
         Maximum number of tokens to generate.
     compression_config : CompressionConfig | None, optional
         Compression policy for the provider payload.
+    image_labels : Sequence[str] or None, optional
+        Per-image descriptions sent immediately before their image.
 
     Returns
     -------
@@ -781,4 +1023,5 @@ def query_images(prompt: str,
     """
     return get_model_client(config).query_with_images(prompt, image_paths, context=context,
                                                       max_output_tokens=max_output_tokens,
-                                                      compression_config=compression_config)
+                                                      compression_config=compression_config,
+                                                      image_labels=image_labels)

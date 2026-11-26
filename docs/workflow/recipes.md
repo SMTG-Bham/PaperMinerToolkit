@@ -126,7 +126,13 @@ Each field can define:
 : Required for scraping. Describes what evidence and value belong in the field. Field-specific requirements should live here rather than being repeated in the general prompt.
 
 `example`
-: Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one.
+: Required for scraping. Supplies the value used in the generated example record. Its JSON type matters: use a list or object when that is the required output type, not a string that merely looks like one. Models copy plausible example values into records for papers that resemble the example, so write measurements and specific facts as placeholders in angle brackets, such as `"<value>% at <time> d"`, and keep concrete examples for vocabulary terms. A value that exactly repeats its field's example is replaced with `"None"` when the example is a placeholder or at least 25 characters long.
+
+`values`
+: Optional closed vocabulary: the only values the field may take. The schema line lists them, and each extracted value is folded onto one of them ignoring case, hyphens, underscores, spacing, and surrounding punctuation. Anything else becomes `"None"`. A list of values that all fold onto the same entry becomes that entry.
+
+`value aliases`
+: Optional, with `values`: a mapping from other spellings a model returns onto entries of `values`, such as `{"enzymatic": "biotic"}`. Aliases are matched the same tolerant way.
 
 `aliases`
 : Optional alternative headings accepted by `pmt store`. Aliases do not change the extraction prompt. Keep aliases unique across fields to avoid ambiguous storage matches.
@@ -179,10 +185,12 @@ PaperMinerToolkit constructs a system prompt in a fixed order:
 2. **Record definition.** `unit`, `singular`, and `plural` define record granularity and provide natural terminology.
 3. **General evidence rules.** These require source-supported values, preserve relevant methods and conditions, use the general missing value `"None"`, and prohibit invented values.
 4. **Source rules.** Text prompts distinguish this paper's results from citations and background. Image prompts cover captions, tables, plots, labels, readable values, and optional text context.
-5. **Schema.** Each `search fields` key and its `prompt` are rendered in recipe order.
+5. **Schema.** Each `search fields` key and its `prompt` are rendered in recipe order, followed by its allowed `values` when it has them.
 6. **Additional recipe instructions.** The complete `additional prompts` string is inserted without template substitution.
-7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist.
+7. **Output contract.** The model is required to return only a JSON array, include every schema key, and return `[]` when no relevant records exist. A response that opens with `[]` and then adds an explanation is read as no records; a response with no JSON at all is recorded as a failure. The contract also says that example values and placeholders only show a record's shape and must never be copied into a record.
 8. **Example output.** The `example` value from every field is combined into one example JSON object.
+
+Every parsed reply, from text, images, or reconciliation, is then checked against the recipe: values are folded onto each field's `values`, and copies of long or placeholder examples are dropped. Each replacement is recorded with the original value in a `Value warnings` column, which `pmt store` carries into the final CSV, so nothing is discarded silently.
 
 The paper text itself is sent as the user message; it is not interpolated into the system prompt. For image extraction, images and optional context are supplied through the configured vision provider.
 
@@ -266,6 +274,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -318,6 +327,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -370,6 +380,7 @@ Output contract:
 - Return a JSON array of objects. Return [] if no relevant experiments are present.
 - Every object must contain every schema key exactly once.
 - Return only JSON. Do not include markdown fences, comments, explanations, or prose.
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 
 Example output shape:
 [
@@ -410,6 +421,7 @@ Rules:
 - If text and image records conflict, keep the value that is more specific or better supported; if the conflict cannot be resolved, keep both values as a list.
 - Keep genuinely distinct experiments as separate records according to the configured record unit.
 - Do not invent values. If neither source supports a field, use "None".
+- The example output only shows the shape of a record. Text in angle brackets stands for a reported value, and the other values are illustrations, not evidence: never copy an example value or placeholder into a record. Use "None" when a value is not reported.
 - Return a JSON array of reconciled records only. Do not include markdown, comments, or prose.
 
 Additional recipe instructions:
@@ -473,6 +485,42 @@ Missing inputs are removed before the request and restored as missing values aft
 
 </details>
 
+## Checks
+
+A recipe can declare checks that remove or correct extracted items after the model replies. They run only with `pmt scrape --verify` or `pmt postprocess`. Every change is written to an audit CSV. The `band_gap_validation` recipe uses all of them:
+
+```json
+"checks": {
+  "fields": ["Band gap", "All band gaps", "Cited literature band gaps"],
+  "value key": "value",
+  "values in source": true,
+  "unit": "eV",
+  "exclude terms": ["work function", "Fermi level", "PL peak"],
+  "exclude terms keys": ["value", "gap_type"],
+  "unsupported terms": {"SOC": ["spin-orbit", "spin orbit"]},
+  "drop empty": true
+}
+```
+
+| Key | Effect |
+|---|---|
+| `fields` | Fields to check. Defaults to every field that is not an identity field. |
+| `value key` | Key holding the value in list-of-object items. Defaults to `value`. |
+| `values in source` | Drop an item whose numbers are not printed in the paper's text or tables, within `tolerance` (relative, default `0.005`). |
+| `unit` | Drop a value whose first unit is not the given unit, or not one of a list of units, such as `3.64 V` when the unit is `eV`. Use a list such as `["eV", "meV"]` to accept several. Values with no unit are kept. |
+| `exclude terms` | Drop an item whose parts mention any of these terms (whole words, case-insensitive). |
+| `exclude terms keys` | Item keys searched for `exclude terms`. Defaults to every key. Leave out descriptions such as the method, which may name an excluded quantity only as context. |
+| `unsupported terms` | Remove a term, such as `SOC`, from an item's descriptive parts when the paper never mentions it or any of its listed phrases. |
+| `drop empty` | Drop items without a value, and records left with no checked field reported. |
+| `local words` | `{"key": "gap_type", "words": [...], "fields": [...], "window": 300}`. Remove each listed word from an item's `key` part unless the paper prints the word within `window` characters of the item's value, or in the same table. Use it for descriptive words a model adds by habit, such as a gap type the paper does not state for that value. `fields` defaults to every checked field. |
+| `paper question` | `{"question": "...", "if no": {"move": {"<field>": "<target field>" or null}}}`. During `pmt scrape --verify`, each paper that produced records is put to the model as one yes/no question; on a no, the listed fields' items move to the target field (or are cleared for `null`) before the other checks run. This costs one extra request per paper. `pmt postprocess` skips it because it calls no model. |
+
+Unknown keys, wrong value types and unknown field names are rejected when the recipe is loaded.
+
+Use `paper question` for a distinction a model makes more reliably about a whole paper than about each value. In `band_gap_validation` it asks whether the authors report any band gap of their own; papers that only quote other work, such as reviews, then have their values moved to `Cited literature band gaps`. On the validation set this raised the cited-value F1 from 0.35 to 0.51 with Qwen2.5-72B, while Qwen3-30B-A3B answered the question unreliably, so check the answers in the audit file for the model you use.
+
+Examples are shown to the model as the shape of a record, so write them as placeholders (`"<number> eV"`, `"<method as stated>"`) rather than realistic values, which models tend to copy into unrelated papers.
+
 Optional context compression does not construct another recipe-specific LLM prompt. It uses the selected extraction prompt to preserve relevant content before the normal request is made.
 
 ## Text and image reconciliation
@@ -488,7 +536,7 @@ The reconciliation prompt uses:
 
 It merges complementary fields only when records refer to the same configured record unit. Conflicting identity fields keep records separate. An unresolved conflict in a non-identity value is retained as a list rather than silently discarded.
 
-Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are not currently reconciled, so use a suitable model context limit when record duplication across chunks would be costly.
+Reconciliation occurs between text and image results from the same paper. Records produced by separate text chunks are merged without a model call, by their identity fields (see [Scraping](scraping.md), under "Context limits and compression"), so use a suitable model context limit when a record split across chunks would be costly.
 
 ## Validation and common errors
 
@@ -503,7 +551,18 @@ Common failures include:
 - placing paper-specific facts in the recipe rather than extraction rules; and
 - sharing one final CSV between recipes with unrelated schemas.
 
-Before a large scrape, inspect the prompt and run a small representative batch. The Python prompt builders can be used without calling a model:
+Before a large scrape, inspect the exact prompt without calling a model:
+
+```bash
+pmt recipe prompt ./cycling_recipe.json
+pmt recipe prompt ./cycling_recipe.json --kind image-context
+pmt recipe prompt band_gap_validation --kind reconciliation --outfile reconciliation.txt
+```
+
+The available prompt kinds are `text`, `image`, `image-context`, and `reconciliation`. The text
+prompt is shown by default. Prompts are printed to standard output unless `--outfile` is supplied.
+
+The same prompt builders are also available from Python:
 
 ```python
 from paperminertoolkit.extraction.extract import build_image_extraction_prompt, build_text_extraction_prompt

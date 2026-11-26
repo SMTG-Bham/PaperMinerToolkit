@@ -27,6 +27,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
+from paperminertoolkit._xml import element_text as _element_text
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 
@@ -302,27 +303,6 @@ def arxiv_version(value: object) -> str:
         return ''
     match = _ARXIV_ID.search(str(value))
     return match.group('version') or '' if match else ''
-
-
-def _element_text(element: ET.Element | None) -> str:
-    """Flatten an element's text and inline markup into one plain string.
-
-    arXiv wraps titles and abstracts to a fixed width, so the newlines and
-    runs of indentation they arrive with are collapsed to single spaces.
-
-    Parameters
-    ----------
-    element : xml.etree.ElementTree.Element or None
-        Element to flatten.
-
-    Returns
-    -------
-    str
-        Whitespace-collapsed text, or an empty string for a missing element.
-    """
-    if element is None:
-        return ''
-    return re.sub(r'\s+', ' ', ''.join(element.itertext())).strip()
 
 
 def _title_key(value: object) -> str:

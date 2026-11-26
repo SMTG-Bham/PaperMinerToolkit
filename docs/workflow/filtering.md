@@ -36,7 +36,7 @@ Operators are evaluated from left to right, so this stack becomes `((band-gap-ma
 
 Stored text is searched before falling back to PDF extraction, and reference sections are ignored. A paper is `unavailable` when selected content is missing or unreadable, or when matching times out without another field proving a positive match.
 
-Example title filters are available in `examples/filters/`.
+Example title filters are available in `examples/filters/`, together with `polymer_degradation_text.json`, a full-text filter that keeps papers reporting both a degradation experiment and a measured outcome such as mass loss or mineralisation.
 
 ## Topic definitions
 
