@@ -77,6 +77,20 @@ def test_progress_reports_a_finished_corpus_and_rejects_unknown_modes(scraped_co
         progress.scrape_progress(scraped_corpus, 'everything')
 
 
+def test_progress_report_says_when_no_filters_are_active() -> None:
+    """Report the whole corpus as in scope, and the rerun command, when nothing is filtered."""
+    result = {
+        'scope': 2, 'out_of_scope': 0, 'filtered': False,
+        'stages': {'text': {'succeeded': 1, 'no_asset': 0, 'failed': 1, 'not_attempted': 0}},
+        'supplements': {'text': {}}, 'remaining': {'papers': 1, 'supplement_files': 0},
+    }
+    text = progress.report(result, rerun='sbatch scrape.sbatch')
+    assert text.startswith('2 papers; no corpus filters are active.')
+    assert 'text_scrape_status: 1 succeeded, 0 without a downloaded document, 1 failed' in text
+    assert 'A rerun would retry 1 paper and 0 supporting-information files.' in text
+    assert text.endswith('  sbatch scrape.sbatch')
+
+
 def test_scrape_progress_command_prints_json_and_text(scraped_corpus: Path) -> None:
     """Expose the report and its paper IDs through pmt scrape-progress."""
     runner = CliRunner()
