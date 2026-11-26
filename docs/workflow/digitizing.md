@@ -12,7 +12,7 @@ figrecover is optional and is not published on PyPI; the PyPI package named `fig
 pip install "figrecover[ocr] @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
 ```
 
-figrecover needs Python 3.14 and runs on Linux. Its OCR extra pins `opencv-python` and `rapidocr<3.10` only for its interactive click window, which `pmt digitize` never opens. In an environment that already has `opencv-python-headless` and a newer RapidOCR, as the Sol `paperminertoolkit` environment does, install figrecover without its dependencies so that a second OpenCV build does not replace the first:
+figrecover needs Python 3.14 and runs on Linux. Its OCR extra pins `opencv-python` and `rapidocr<3.10` only for its interactive click window, which `pmt digitize` never opens. In an environment that already has `opencv-python-headless` and a newer RapidOCR, install figrecover without its dependencies so that a second OpenCV build does not replace the first:
 
 ```bash
 pip install --no-deps "figrecover @ git+https://github.com/SMTG-Bham/figrecover@v0.1.0"
