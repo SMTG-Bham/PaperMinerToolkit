@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from os import PathLike
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -711,7 +712,7 @@ def import_author_works(db_path: str | PathLike[str],
         review_path = Path(review_csv)
         review_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(papers, columns=REVIEW_COLUMNS).to_csv(review_path, index=False)
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         added, updated = upsert_papers(conn, papers)
         for paper in papers:
             matched = find_paper(conn, paper)

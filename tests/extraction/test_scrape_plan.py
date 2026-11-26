@@ -209,7 +209,7 @@ def test_plan_refuses_an_unmigrated_corpus(tmp_path: Path) -> None:
     """Ask for a migration instead of writing to an old corpus."""
     db_path = tmp_path / 'old.db'
     import sqlite3
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute('PRAGMA user_version = 1')
     with pytest.raises(RuntimeError, match='does not match the supported version'):
         scrape_plan.plan_scrape(str(db_path))

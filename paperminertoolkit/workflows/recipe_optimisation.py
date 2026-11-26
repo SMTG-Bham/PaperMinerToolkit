@@ -21,6 +21,7 @@ import random
 import re
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from difflib import SequenceMatcher
 from os import PathLike
 from pathlib import Path
@@ -601,7 +602,7 @@ def optimise_recipe(db_path: str | PathLike[str],
     output.mkdir(parents=True, exist_ok=True)
 
     papers = _load_validation_papers(validation_path, current)
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn:
         matches = _match_corpus(papers, paper_rows(conn))
         unmatched = [paper for paper in papers if paper['id'] not in matches]
         for paper in unmatched:

@@ -6,6 +6,7 @@ command-line interface to reset pipeline state and print progress.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from paperminertoolkit.corpus.database import PIPELINE_COLUMNS
 def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path: Path) -> None:
     """Test resetting pipeline columns in a corpus database."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'paper-1',
             'title': 'Lithium solid electrolyte',
@@ -32,7 +33,7 @@ def test_reset_restores_pipeline_defaults_and_marks_metadata_retrieved(tmp_path:
 
     summary = utilities.reset(str(db_path))
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         row = corpus.paper_rows(conn)[0]
     assert summary['papers_reset'] == 1
     assert summary['supplement_stages_reset'] == 0
@@ -53,7 +54,7 @@ def test_status_prints_pipeline_progress_summary(
 ) -> None:
     """Test printing a progress summary for a corpus database."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'paper-1',
             'metadata_status': 'retrieved',
@@ -103,7 +104,7 @@ def test_status_reports_enriched_papers(
 ) -> None:
     """Count enriched papers in the pipeline progress summary."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper-1'})
         corpus.write_enrichment(conn, [{
             **{field: '' for field in corpus.enrichment_update_fields()},

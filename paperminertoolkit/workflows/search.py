@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from types import ModuleType
 from typing import Any
 import pandas as pd
@@ -1076,7 +1077,7 @@ def search_for_papers(query: str,
         raise ValueError('workers must be at least 1')
     parallel = parallel or workers is not None
     worker_count = min(workers or len(requested), len(requested)) if parallel else 1
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         search_id = begin_search_run(
             conn,
             query,
@@ -1115,7 +1116,7 @@ def search_for_papers(query: str,
                     print(f'{sources.SOURCES[name].label} search skipped: {error}')
 
     if len(requested) == 1 and provider_errors:
-        with connect(db_path) as conn:
+        with closing(connect(db_path)) as conn, conn:
             finish_search_run(conn, search_id, 'failed', source_results)
         raise provider_errors[requested[0]]
 
@@ -1145,7 +1146,7 @@ def search_for_papers(query: str,
     else:
         final_status = 'completed'
     try:
-        with connect(db_path) as conn:
+        with closing(connect(db_path)) as conn, conn:
             if records:
                 # Index the corpus once rather than scanning it for every record, and
                 # write the papers and abstracts in one transaction, not row by row.
@@ -1183,7 +1184,7 @@ def search_for_papers(query: str,
             'error_type': type(error).__name__,
             'error': str(error),
         }
-        with connect(db_path) as conn:
+        with closing(connect(db_path)) as conn, conn:
             finish_search_run(conn, search_id, 'failed', source_results)
         raise
 

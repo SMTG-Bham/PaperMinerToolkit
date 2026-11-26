@@ -92,6 +92,13 @@ addopts = [
   "-m",
   "not network and not slow",
 ]
+# An unclosed SQLite connection or file is an error: on Windows it keeps the file
+# locked. Python reports one found by the garbage collector as an unraisable
+# exception, so that warning is an error too.
+filterwarnings = [
+  "error::ResourceWarning",
+  "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.ruff.lint]
 select = ["D", "F"]

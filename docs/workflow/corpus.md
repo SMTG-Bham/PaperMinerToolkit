@@ -447,11 +447,13 @@ can also be attached through Python and will participate in the same scraping
 workflow:
 
 ```python
+from contextlib import closing
 from pathlib import Path
 from paperminertoolkit.corpus.database import connect
 from paperminertoolkit.corpus.supplements import add_supplement
 
-with connect("papers.db") as conn:
+# closing() releases the database file; `conn` itself commits the change.
+with closing(connect("papers.db")) as conn, conn:
     add_supplement(
         conn, {"paper_id": "PAPER_ID"}, Path("supporting.pdf"),
         source="local", original_filename="supporting.pdf",
@@ -657,10 +659,11 @@ detects them from PDF geometry and stores them as figure assets alongside the do
 recording `pdf-layout` as the source so both origins stay distinguishable:
 
 ```python
+from contextlib import closing
 from paperminertoolkit.corpus.database import connect
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
-with connect("papers.db") as conn:
+with closing(connect("papers.db")) as conn, conn:
     summary = store_pdf_layout_figures(conn, paper_row, "paper.pdf")
 ```
 

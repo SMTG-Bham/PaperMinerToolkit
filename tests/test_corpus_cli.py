@@ -459,7 +459,7 @@ def test_invalid_database_fails_without_migration_or_writes(
     if kind == 'corrupt':
         path.write_bytes(b'This is not a SQLite database.')
     elif kind == 'unrelated':
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.execute('CREATE TABLE unrelated (id INTEGER)')
         conn.close()
     else:

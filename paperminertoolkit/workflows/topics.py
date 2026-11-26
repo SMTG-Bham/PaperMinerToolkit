@@ -1883,7 +1883,7 @@ def store_topic_model_scores(
                     missing_count += 1
             staging.commit()
 
-        with connect(db_path) as conn, closing(sqlite3.connect(staging_path)) as staging:
+        with closing(connect(db_path)) as conn, conn, closing(sqlite3.connect(staging_path)) as staging:
             existing_name = conn.execute(
                 'SELECT model_id FROM topic_models WHERE name = ?', (resolved_name,)
             ).fetchone()
@@ -1990,7 +1990,7 @@ def stored_topic_models(
         Stored model rows augmented with topic count, prediction coverage,
         text fields, and current/stale state.
     """
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn:
         models = [dict(row) for row in conn.execute(
             'SELECT * FROM topic_models ORDER BY name'
         ).fetchall()]
