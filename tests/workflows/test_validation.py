@@ -12,6 +12,8 @@ from pathlib import Path
 import queue
 import re
 import threading
+import tomllib
+from fnmatch import fnmatch
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -634,6 +636,18 @@ def test_review_server_requires_its_token_and_serves_uncached_assets(
     assert (status, headers['content-type']) == (200, 'image/svg+xml; charset=utf-8')
     assert logo == validation_workflow.BRAND_LOGO.read_bytes()
     assert _api(address, '/missing') == (404, {'error': 'Not found.'})
+
+
+def test_review_page_files_ship_inside_the_package() -> None:
+    """Serve only files the wheel includes, so an installed review GUI finds its page, script and logo."""
+    resources = Path(validation_workflow.__file__).resolve().parents[1] / 'resources'
+    pyproject = Path(__file__).resolve().parents[2] / 'pyproject.toml'
+    package_data = tomllib.loads(pyproject.read_text(encoding='utf-8'))['tool']['setuptools'][
+        'package-data']['paperminertoolkit']
+    for served in (validation_workflow.SCRIPT, validation_workflow.BRAND_LOGO):
+        assert served.is_file()
+        assert served.parent == resources
+        assert any(fnmatch(f'resources/{served.name}', pattern) for pattern in package_data)
 
 
 def test_review_server_loads_saves_scores_exports_and_resumes(

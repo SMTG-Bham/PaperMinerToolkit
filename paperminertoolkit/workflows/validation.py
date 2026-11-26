@@ -24,7 +24,8 @@ from paperminertoolkit.workflows.validation_scoring import GAP_FIELDS, score_rev
 
 PAGE = Path(__file__).resolve().parents[1] / 'resources' / 'validation.html'
 SCRIPT = Path(__file__).resolve().parents[1] / 'resources' / 'validation.js'
-BRAND_LOGO = Path(__file__).resolve().parents[2] / 'assets' / 'Paper_Miner_Toolkit_acronym_light.svg'
+# Packaged with the review page, so an installed wheel can serve it too.
+BRAND_LOGO = Path(__file__).resolve().parents[1] / 'resources' / 'Paper_Miner_Toolkit_acronym_light.svg'
 REVIEW_DIR = Path.home() / '.config' / 'paperminertoolkit' / 'validation-reviews'
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 META = {

@@ -82,7 +82,7 @@ where = ["."]
 include = ["paperminertoolkit*"]
 
 [tool.setuptools.package-data]
-"paperminertoolkit" = ["resources/*.json", "resources/*.html", "resources/*.js"]
+"paperminertoolkit" = ["resources/*.json", "resources/*.html", "resources/*.js", "resources/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
