@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import zipfile
 from collections.abc import Mapping
 from contextlib import closing
@@ -52,7 +53,13 @@ def test_archive_members_preserve_names_and_leave_nested_archives_unsupported() 
     assert not parts[3].supports_text
 
 
-@pytest.mark.parametrize('name', ['../escaped.txt', '/absolute.txt', 'C:/drive.txt', 'dir\\file.txt'])
+@pytest.mark.parametrize('name', [
+    '../escaped.txt', '/absolute.txt', 'C:/drive.txt',
+    # On Windows, zipfile turns a backslash in a member name into "/" both when writing and
+    # when reading, so the member is an ordinary "dir/file.txt" there and nothing is ambiguous.
+    pytest.param('dir\\file.txt', marks=pytest.mark.skipif(
+        sys.platform == 'win32', reason='zipfile normalises backslashes to "/" on Windows')),
+])
 def test_archive_rejects_unsafe_member_names(name: str) -> None:
     """Reject path traversal and ambiguous archive paths before reading files."""
     with pytest.raises(ValueError, match='Unsafe'):

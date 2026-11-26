@@ -54,6 +54,7 @@ from scipy.stats import rankdata, spearmanr
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer
 from tqdm import tqdm
 
+from paperminertoolkit._progress import bars_disabled, emit
 from paperminertoolkit.corpus.database import connect, get_asset, utc_now
 from paperminertoolkit.workflows.topics import load_domain_stopwords
 
@@ -431,15 +432,18 @@ def transformer_embedder(
         """
         order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
         vectors = np.zeros((len(texts), model.config.hidden_size))
+        starts = range(0, len(order), batch_size)
         with torch.inference_mode():
-            for start in tqdm(range(0, len(order), batch_size), desc='Embedding papers',
-                              unit='batch'):
+            for done, start in enumerate(tqdm(starts, desc='Embedding papers', unit='batch',
+                                              disable=bars_disabled()), start=1):
                 chunk = order[start:start + batch_size]
                 batch = tokenizer([texts[index] for index in chunk], padding=True,
                                   truncation=True, max_length=512,
                                   return_tensors='pt').to(resolved_device)
                 output = model(**batch).last_hidden_state[:, 0]
                 vectors[chunk] = output.float().cpu().numpy()
+                emit('batch_done', stage='embedding', papers=len(chunk), done=done,
+                     total=len(starts))
         return vectors
 
     return embed

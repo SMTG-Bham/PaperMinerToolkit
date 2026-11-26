@@ -388,7 +388,8 @@ def _openalex_sample_by_year(words: str, scope: Mapping[str, str], count: int,
           f'{sum(targets.values())}, {fraction:.1%} of each year.')
     works: list[Mapping[str, Any]] = []
     seen: set[str] = set()
-    with tqdm(total=sum(targets.values()), desc='Sampling OpenAlex', colour='green') as pbar:
+    with tqdm(total=sum(targets.values()), desc='Sampling OpenAlex', colour='green',
+              disable=bars_disabled()) as pbar:
         for year, target in targets.items():
             if not target:
                 continue
