@@ -1780,3 +1780,58 @@ def test_search_for_papers_skips_failed_chemrxiv_for_all_but_raises_for_chemrxiv
         search.search_for_papers(
             'query', db_path=str(tmp_path / 'failed.db'), source='chemrxiv', count=1
         )
+
+
+def test_openalex_search_field_selects_search_or_field_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PMT_OPENALEX_SEARCH_FIELD`` moves the query from ``search=`` into a field-restricted filter."""
+    monkeypatch.delenv('PMT_OPENALEX_SEARCH_FIELD', raising=False)
+    assert search.openalex_search_params('a AND b') == {'search': 'a AND b'}
+    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'Title_and_Abstract')
+    assert search.openalex_search_params('a AND b') == {'filter': 'title_and_abstract.search:a AND b'}
+    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'authors')
+    with pytest.raises(ValueError, match='PMT_OPENALEX_SEARCH_FIELD'):
+        search.openalex_search_params('a')
+
+    sent: list[dict[str, Any]] = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any], **_: object) -> dict[str, Any]:
+        sent.append(dict(params))
+        return {'results': [{'id': 'W1', 'title': 'one'}], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'title_and_abstract')
+    search.openalex_search('polymer AND "mass loss"', 5)
+    assert sent[0]['filter'] == 'title_and_abstract.search:polymer AND "mass loss"'
+    assert 'search' not in sent[0] and sent[0]['cursor'] == '*'
+
+
+def test_core_search_retries_a_failed_page_smaller_then_raises_at_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed CORE page is asked for again at half the size; at the floor the error propagates."""
+    monkeypatch.setattr(search.core, 'configured_api_key', lambda: 'key')
+    calls: list[tuple[int, int]] = []
+    fail_at = {(100, 0)}
+
+    def fake_page(query: str, limit: int, offset: int, api_key: str) -> dict[str, Any]:
+        calls.append((limit, offset))
+        if (limit, offset) in fail_at:
+            raise RuntimeError('CORE request failed after 4 attempts: Read timed out.')
+        return {'totalHits': 120, 'results': [{'id': offset + k, 'title': f't{offset + k}'} for k in range(limit)]}
+
+    monkeypatch.setattr(search.core, 'search_page', fake_page)
+    monkeypatch.setattr(search, '_core_rows', lambda works: works)
+    works = search.core_search('q', count=120)
+    assert calls == [(100, 0), (50, 0), (50, 50), (20, 100)]
+    assert len(works) == 120
+
+    calls.clear()
+
+    def always_fails(query: str, limit: int, offset: int, api_key: str) -> NoReturn:
+        calls.append((limit, offset))
+        raise RuntimeError('timed out')
+
+    monkeypatch.setattr(search.core, 'search_page', always_fails)
+    with pytest.raises(RuntimeError, match='timed out'):
+        search.core_search('q', count=200)
+    assert [limit for limit, _ in calls] == [100, 50, 25]

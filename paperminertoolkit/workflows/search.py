@@ -8,6 +8,7 @@ that appear in multiple sources.
 from __future__ import annotations
 
 import datetime
+import os
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -215,11 +216,17 @@ def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return _paper_rows(core.work_to_paper(work) for work in works)
 
 
+CORE_MIN_PAGE = 25
+"""Smallest CORE page :func:`core_search` falls back to after a failed request."""
+
+
 def core_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search CORE works.
 
     CORE pages by offset and reports a total, so the walk stops at whichever
-    comes first: the caller's count, the reported total, or a short page.
+    comes first: the caller's count, the reported total, or a short page. A
+    page that fails is asked for again at half the size, down to
+    ``CORE_MIN_PAGE`` records, before the error is raised.
 
     Parameters
     ----------
@@ -241,10 +248,20 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
     api_key = core.configured_api_key()
     works: list[Mapping[str, Any]] = []
     offset = 0
+    limit = core.PAGE_SIZE
     with tqdm(total=count, desc='Searching CORE', colour='cyan', disable=bars_disabled()) as pbar:
         while len(works) < count:
-            payload = core.search_page(query, limit=min(core.PAGE_SIZE, count - len(works)),
-                                       offset=offset, api_key=api_key)
+            want = min(limit, count - len(works))
+            try:
+                payload = core.search_page(query, limit=want, offset=offset, api_key=api_key)
+            except RuntimeError as error:
+                # CORE sometimes stalls on large pages; ask again for a smaller one at the same offset
+                # before giving up, so one slow page does not lose the whole search.
+                if limit <= CORE_MIN_PAGE:
+                    raise
+                limit = max(CORE_MIN_PAGE, limit // 2)
+                print(f'CORE page at offset {offset} failed ({error}); retrying with {limit} records per page')
+                continue
             results = core.parse_records(payload)
             if not results:
                 break
@@ -254,7 +271,7 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
             total = core.total_results(payload)
             if total and offset >= total:
                 break
-            if len(results) < min(core.PAGE_SIZE, count - len(works) + len(results)):
+            if len(results) < want:
                 break
     return _core_rows(works)
 
@@ -264,8 +281,46 @@ def _openalex_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return _paper_rows(openalex.work_to_paper(work) for work in works)
 
 
+OPENALEX_SEARCH_FIELDS = ('all', 'title_and_abstract', 'title', 'abstract', 'fulltext')
+"""Values of ``PMT_OPENALEX_SEARCH_FIELD``: ``all`` sends ``search=``, which OpenAlex also matches against
+full text and n-grams; the others send ``filter=<field>.search:``, which accepts the same boolean syntax."""
+
+
+def openalex_search_params(query: str) -> dict[str, str]:
+    """Return the OpenAlex parameters that carry a search query.
+
+    ``PMT_OPENALEX_SEARCH_FIELD`` chooses the fields searched. Unset or ``all`` keeps OpenAlex's
+    default ``search=``, which also matches full text, so a query naming common words can match tens
+    of thousands of works whose title and abstract never mention them; ``title_and_abstract`` restricts
+    the match.
+
+    Parameters
+    ----------
+    query : str
+        Search expression.
+
+    Returns
+    -------
+    dict[str, str]
+        ``{'search': query}`` or ``{'filter': '<field>.search:<query>'}``.
+
+    Raises
+    ------
+    ValueError
+        If ``PMT_OPENALEX_SEARCH_FIELD`` names a field OpenAlex cannot search.
+    """
+    field = (os.environ.get('PMT_OPENALEX_SEARCH_FIELD') or 'all').strip().lower()
+    if field not in OPENALEX_SEARCH_FIELDS:
+        raise ValueError(f'PMT_OPENALEX_SEARCH_FIELD must be one of: {", ".join(OPENALEX_SEARCH_FIELDS)}')
+    if field == 'all':
+        return {'search': query}
+    return {'filter': f'{field}.search:{query}'}
+
+
 def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     """Search OpenAlex works.
+
+    The fields searched follow ``PMT_OPENALEX_SEARCH_FIELD`` (see :func:`openalex_search_params`).
 
     Parameters
     ----------
@@ -286,7 +341,7 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
     """
     api_key = openalex.configured_api_key()
     per_page = min(max(int(count), 1), 200)
-    params = {'search': query, 'per-page': per_page, 'cursor': '*'}
+    params: dict[str, Any] = {**openalex_search_params(query), 'per-page': per_page, 'cursor': '*'}
     works = []
     with tqdm(total=count, desc='Searching OpenAlex', colour='green', disable=bars_disabled()) as pbar:
         while len(works) < count:

@@ -100,6 +100,22 @@ pmt search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
 pmt search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
+OpenAlex's default `search=` also matches full text, so a boolean query over common words can return
+tens of thousands of works whose title and abstract never mention them (a polymer degradation query
+matched 39,782 works this way and 1,574 by title and abstract). Set `PMT_OPENALEX_SEARCH_FIELD` to
+search fewer fields; the value is sent as `filter=<field>.search:<query>`, which takes the same
+boolean syntax:
+
+```bash
+PMT_OPENALEX_SEARCH_FIELD=title_and_abstract pmt search "polymer AND \"mass loss\"" papers.db --source openalex
+```
+
+Accepted values are `all` (the default), `title_and_abstract`, `title`, `abstract` and `fulltext`.
+Each OpenAlex search page costs 10 credits for up to 200 works.
+
+CORE search pages that fail are asked for again at half the size, down to 25 records, before the
+search gives up; a cold 100-record page has taken over a minute.
+
 Repeat `--source` to search a subset of providers in one recorded invocation:
 
 ```bash

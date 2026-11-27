@@ -49,6 +49,8 @@ CORE_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_SINGLE_PER_WINDOW
 CORE_BATCH_MIN_INTERVAL = CORE_WINDOW_SECONDS / CORE_FREE_BATCH_PER_WINDOW
 CORE_BATCH_PENALTY = CORE_FREE_SINGLE_PER_WINDOW / CORE_FREE_BATCH_PER_WINDOW
 PAGE_SIZE = 100
+SEARCH_TIMEOUT = 120.0
+"""Seconds allowed for one search page: CORE has taken over 60 s for a cold 100-record page."""
 _CoreRecord: TypeAlias = dict[str, Any]
 LIMITER = provider.RateLimiter(CORE_MIN_INTERVAL)
 
@@ -253,7 +255,8 @@ def search_page(query: str,
                 limit: int = PAGE_SIZE,
                 offset: int = 0,
                 api_key: str | None = None,
-                session: provider.HTTPClient | None = None) -> _CoreRecord | None:
+                session: provider.HTTPClient | None = None,
+                timeout: float = SEARCH_TIMEOUT) -> _CoreRecord | None:
     """Fetch one page of CORE search results.
 
     Parameters
@@ -268,6 +271,8 @@ def search_page(query: str,
         API key to send.
     session : provider.HTTPClient or None, optional
         HTTP client exposing a ``get`` method.
+    timeout : float, default=SEARCH_TIMEOUT
+        Request timeout in seconds.
 
     Returns
     -------
@@ -280,7 +285,7 @@ def search_page(query: str,
         If the request cannot be completed.
     """
     params = {'q': query, 'limit': min(max(int(limit), 1), PAGE_SIZE), 'offset': max(int(offset), 0)}
-    return request_json(SEARCH_URL, params=params, api_key=api_key, session=session)
+    return request_json(SEARCH_URL, params=params, api_key=api_key, session=session, timeout=timeout)
 
 
 def parse_records(payload: Mapping[str, Any] | None) -> list[_CoreRecord]:
