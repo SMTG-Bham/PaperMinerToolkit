@@ -1795,6 +1795,7 @@ def test_openalex_search_field_selects_search_or_field_filter(monkeypatch: pytes
     sent: list[dict[str, Any]] = []
 
     def fake_request_json(url: str, params: Mapping[str, Any], **_: object) -> dict[str, Any]:
+        """Record the parameters OpenAlex would receive and return one work."""
         sent.append(dict(params))
         return {'results': [{'id': 'W1', 'title': 'one'}], 'meta': {}}
 
@@ -1814,6 +1815,7 @@ def test_core_search_retries_a_failed_page_smaller_then_raises_at_the_floor(
     fail_at = {(100, 0)}
 
     def fake_page(query: str, limit: int, offset: int, api_key: str) -> dict[str, Any]:
+        """Fail the first 100-record page, then serve the requested records."""
         calls.append((limit, offset))
         if (limit, offset) in fail_at:
             raise RuntimeError('CORE request failed after 4 attempts: Read timed out.')
@@ -1828,6 +1830,7 @@ def test_core_search_retries_a_failed_page_smaller_then_raises_at_the_floor(
     calls.clear()
 
     def always_fails(query: str, limit: int, offset: int, api_key: str) -> NoReturn:
+        """Fail every page, whatever its size."""
         calls.append((limit, offset))
         raise RuntimeError('timed out')
 
