@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import closing
 from functools import partial
 from os import PathLike
 from pathlib import Path
@@ -1199,7 +1200,7 @@ def apply_regex_filter(db_path: str | PathLike[str],
     definition = load_regex_definition(rules_path, fields=fields, timeout_ms=timeout_ms)
     compiled = compile_regex_definition(definition)
     join_operator = _normalize_join_operator(join_operator)
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         return _apply_filter(
             conn, definition, 'regex', join_operator, replace,
             partial(evaluate_regex_paper, conn, definition=definition, compiled=compiled),
@@ -1239,7 +1240,7 @@ def apply_topic_filter(
         invalid or stale.
     """
     join_operator = _normalize_join_operator(join_operator)
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         definition = load_topic_definition(conn, rules_path)
         model = conn.execute(
             'SELECT prediction_corpus_fingerprint, text_fields_json FROM topic_models '
@@ -1280,7 +1281,7 @@ def refresh_topic_filters(
         Matching active filters and the combined filter state are updated in
         the corpus transactionally.
     """
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         filters = [
             item for item in active_filter_stack(conn)
             if item['method'] == 'topic' and item['definition'].get('model_id') == model_id
@@ -1330,7 +1331,7 @@ def reset_filters(
     """
     if bool(name) == bool(all_filters):
         raise ValueError('Choose exactly one of a filter name or all filters.')
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         try:
             conn.execute('BEGIN')
             if all_filters:

@@ -7,6 +7,7 @@ existing paper rows so local PDFs can join the same corpus as searched papers.
 
 from __future__ import annotations
 
+from contextlib import closing
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -105,7 +106,7 @@ def import_pdfs(
 
     paper_rows = [normalize_paper(paper_fields(row)) for row in rows]
     paper_ids = []
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         added, updated = upsert_papers(conn, paper_rows)
         for row in rows:
             paper = paper_fields(row)

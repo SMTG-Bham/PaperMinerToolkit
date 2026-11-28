@@ -280,7 +280,8 @@ it; it reports the mismatch instead.
 
 ### Follow long runs with --progress jsonl
 
-`scrape`, `download`, `enrich`, and `gather` accept `--progress auto|none|jsonl`.
+`scrape`, `download`, `enrich`, `gather`, and `topics emergence` accept
+`--progress auto|none|jsonl`.
 `auto` (the default) shows tqdm progress bars, `none` hides them, and `jsonl`
 hides them and writes one JSON event per line to stderr while the final result
 stays on stdout:
@@ -299,6 +300,7 @@ Every event has `event`, `command`, and `elapsed_s`.
 | `paper_done` | `scrape` | `paper_id`, `done`, `total`, `status` (`succeeded`, `failed`, or `skipped`), `materials` |
 | `paper_done` | `download` | `paper_id`, `done`, `total`, `status` (`fetched` or `nothing_new`), and `fetched` counts |
 | `batch_done` | `enrich` | `papers` in the batch, `done`, `total` (the `--limit`, or null), and status `counts` |
+| `batch_done` | `topics emergence` | `stage` (`embedding`), `papers` in the batch, `done` and `total` batches; papers already in the embedding cache are not re-embedded and report no events |
 | `search_done` | `gather` (and `search` within it) | `search_id`, `status`, `result_count`, `papers_added`, `papers_updated` |
 | `run_end` | `scrape`, `download`, `enrich` | The run's summary counts |
 | `error` | any | `message` and `error_class` of the exception that ended the command |
@@ -460,6 +462,7 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `topics trends --json` | `output_dir`, `trends_csv`, `report_json`, `windows`, `papers_missing_or_invalid_date`, and `plot_path` (or `null`). |
 | `topics store --json` | `model_id`, `name`, `papers_predicted`, `papers_without_vocabulary_terms`, and `prediction_corpus_fingerprint`. |
 | `topics models --json` | `models`, each with `name`, `model_id`, `is_current`, `num_topics`, `papers_predicted`, `papers_without_vocabulary_terms`, and `text_fields`. |
+| `topics emergence --json` | The run summary also saved as `summary.json`: `output_dir`, `report`, `plots`, `papers_read`, `papers_used`, `dropped`, `end_year`, `settings`, the `areas`, `topics`, and `niches` counts, `topic_status`, `flagged_niches`, and `backtest_rho_score` (`null` without a backtest). |
 | `entities corpus --json`, `entities text --json` | `entities` and `documents` counts and the JSONL `output` path; the corpus form also counts `papers`. |
 | `figures download --json` | `papers`, `papers_without_structured_documents` (named papers that have none, else null), `papers_filtered_out`, `downloaded`, `skipped`, `failed`, `pdf_layout_replaced`, and `failures` (`paper_id`, `message`). |
 | `figures detect --json` | `papers`, `papers_filtered_out`, `statuses` (`detected`, `none_found`, `skipped_structured`, `skipped_existing`, `no_pdf`, `failed`), `figures_stored`, `figures_replaced`, and `failures`. |
@@ -468,7 +471,7 @@ without the flag, report failures on stderr only unless `--json` is also given.
 | `figures render --json` | `pdf`, `strategy`, `outdir`, `count`, `images` (`path`; for `layout` also `figure_id`, `label`, `caption`, `page_numbers`, `region_detected`), and `tables_detected` (null except for `layout`). |
 | `validate score --json` | The full score: `fingerprint`, `sources`, `recipe`, `run`, `papers_evaluated`, `pending_pairs`, `missing_metadata`, `complete`, and per-field `fields` with `tp`, `fp`, `fn`, `pending`, `precision`, `recall`, `f1` (null when undefined), `type`, and `parts`. |
 | `validate template --json` | `recipe`, the `outfile` path, and the header `columns` written. |
-| `config model --json` | `profile`, `provider`, `model`, `base_url`, `capabilities`, `temperature`, `top_p`, `input_token_limit`, and `api_key_set` (never the key). |
+| `config model --json` | `profile`, `provider`, `model`, `base_url`, `capabilities`, `temperature`, `top_p`, `input_token_limit`, `reasoning_effort` and `thinking` (`null` for the model's default), and `api_key_set` (never the key). |
 | `config elsevier-key --json`, `config core-key --json`, `config core-rate --json`, `config unpaywall-email --json`, `config crossref-email --json`, `config openalex-key --json`, `config ncbi-key --json`, `config ncbi-email --json`, `config openai-key --json`, `config anthropic-key --json` | `setting` (the settings key), `secret`, and `source` (`env`, `stdin`, or `prompt`); non-secret settings also report the saved `value`. Keys are never printed. |
 | `config status --json` | `text` and `vision` model profiles, excluding API keys. |
 | `recipe list --json` | An array of bundled recipe names. |

@@ -22,6 +22,7 @@ import requests
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
+from contextlib import closing
 from os import PathLike
 from pathlib import Path
 from tqdm import tqdm
@@ -2102,7 +2103,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     }
     if selected_ids == set():
         return summary
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         papers = paper_rows(conn)
         if selected_ids is not None:
             papers = [paper for paper in papers if paper['paper_id'] in selected_ids]

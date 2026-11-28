@@ -16,6 +16,7 @@ entities
 imports
 recipe_optimisation
 topics
+emergence
 validation
 validation_scoring
 diagnostics

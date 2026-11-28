@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +102,7 @@ def test_paper_tables_prefer_structured_documents_and_fall_back_to_the_pdf(
                         lambda path, skip_regions=(): f'pdf tables from {path} skipping {list(skip_regions)}')
     monkeypatch.setattr(scrape, 'figure_regions', lambda path: ['fig-1'])
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         papers = [{'paper_id': name} for name in ('xml', 'empty-xml', 'html', 'none')]
         for paper in papers:
             corpus.upsert_paper(conn, paper)
@@ -130,7 +131,7 @@ def test_scrape_papers_appends_tables_merges_chunks_and_verifies(
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
     write_corpus(db_path, [{'paper_id': 'paper-1', 'doi': '10.1/one'}])
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_structured_document(conn, {'paper_id': 'paper-1'}, JATS.encode(), document_format='jats',
                                        source='pubmed')
     recipe = {**sample_recipe(), 'checks': {'values in source': True, 'drop empty': True}}

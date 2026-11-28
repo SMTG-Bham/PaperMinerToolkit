@@ -62,6 +62,7 @@ agents
 configuration
 corpus
 topics
+emergence
 filtering
 recipes
 scraping

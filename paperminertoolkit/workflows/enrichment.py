@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from os import PathLike
@@ -1878,7 +1879,7 @@ def enrich_corpus(db_path: str | PathLike[str] = 'papers.db',
                ('succeeded', 'partial', 'not_found', 'unresolved', 'failed')}
     summary.update({'authors': 0, 'subjects': 0, 'references': 0, 'batches': 0})
 
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         remaining = limit
         after_rowid = 0
         enriched = 0
@@ -1941,7 +1942,7 @@ def resolve_reference_dois(db_path: str | PathLike[str] = 'papers.db',
     """
     api_key = api_key if api_key is not None else openalex.configured_api_key()
     updated = 0
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         pending = [row[0] for row in conn.execute(
             "SELECT DISTINCT referenced_openalex_id FROM paper_references "
             "WHERE referenced_openalex_id <> '' AND referenced_doi = ''"

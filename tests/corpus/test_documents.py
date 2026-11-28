@@ -126,7 +126,7 @@ def test_extract_embedded_pdf_images_saves_unique_images(tmp_path: Path) -> None
         'paper_page-1_image-2.bin',
         'paper_page-2_image-2.bin',
     ]
-    assert [open(path, 'rb').read() for path in saved] == [b'image-1', b'image-2', b'image-3']
+    assert [Path(path).read_bytes() for path in saved] == [b'image-1', b'image-2', b'image-3']
 
 
 def test_render_pdf_pages_saves_rendered_pages(tmp_path: Path) -> None:

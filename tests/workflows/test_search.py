@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, NoReturn, Self
@@ -37,7 +38,7 @@ def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Pa
     assert search.pubmed_search('query', 1).empty
     fake = SimpleNamespace(parse_query=lambda query: (['term'], {}), CORPUS_START='2020-01-01', interval_page=lambda *args, **kwargs: {}, total_results=lambda payload: 1, page_size=lambda payload, default: 1, endpoint=lambda category: ('url', 1), page_cursors=lambda total, step: [0], parse_records=lambda payload: [], matches=lambda entry, terms: False, latest_versions=lambda entries: [])
     assert search._rxiv_search(fake, 'testRxiv', 'term', 1).empty
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with closing(corpus.connect(tmp_path / 'papers.db')) as conn, conn:
         assert search._store_search_abstracts(conn, [{'paper_id': 'p', 'abstract': ' '}]) == 0
 
 
@@ -383,7 +384,9 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
     rows = search.openalex_search('solid electrolyte', count=201)
 
     assert calls[0]['url'] == search.openalex.WORKS_URL
-    assert calls[0]['params']['search'] == 'solid electrolyte'
+    assert calls[0]['params']['filter'] == 'title_and_abstract.search:solid electrolyte'
+    assert calls[0]['params']['sort'] == 'relevance_score:desc'
+    assert 'search' not in calls[0]['params']
     assert calls[0]['params']['per-page'] == 200
     assert calls[0]['params']['cursor'] == '*'
     assert calls[0]['api_key'] == 'oa-key'
@@ -419,6 +422,142 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
     assert 'api_key' not in calls[0]['params']
     assert calls[0]['api_key'] is None
     assert rows['paper_id'].tolist() == ['openalex:W1']
+
+
+def test_openalex_query_scope_lifts_dates_sampling_and_fields() -> None:
+    """Separate from:, to:, sample:, and in: terms from the OpenAlex search words."""
+    words, scope = search.openalex_query_scope('"solid electrolyte" from:2010 to:2025-06-30 sample:per-year')
+    assert words == '"solid electrolyte"'
+    assert scope == {'from': '2010', 'to': '2025-06-30', 'sample': 'per-year', 'in': 'title-abstract'}
+    assert search.openalex_query_scope('garnet') == ('garnet', {'in': 'title-abstract'})
+    assert search.openalex_query_scope('garnet In:ALL') == ('garnet', {'in': 'all'})
+    with pytest.raises(ValueError, match='in: must be one of title, abstract'):
+        search.openalex_query_scope('garnet in:body')
+    with pytest.raises(ValueError, match='from: must be a year'):
+        search.openalex_query_scope('garnet from:2010s')
+    with pytest.raises(ValueError, match='accepts only per-year'):
+        search.openalex_query_scope('garnet from:2010 to:2020 sample:random')
+    with pytest.raises(ValueError, match='needs from: and to:'):
+        search.openalex_query_scope('garnet sample:per-year')
+
+
+def test_openalex_search_bounds_dates_and_chooses_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send the search and dates as filters, or the search parameter for in:all."""
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Record the request and return one work."""
+        calls.append(dict(params))
+        return {'results': [{'id': 'https://openalex.org/W1', 'title': 'one'}], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    search.openalex_search('garnet, llzo from:2010 to:2020-06-30', count=5)
+    search.openalex_search('garnet in:title', count=5)
+    search.openalex_search('garnet, llzo from:2010 in:all', count=5)
+
+    assert calls[0]['filter'] == ('title_and_abstract.search:garnet llzo,'
+                                  'from_publication_date:2010-01-01,to_publication_date:2020-06-30')
+    assert calls[0]['sort'] == 'relevance_score:desc' and 'search' not in calls[0]
+    assert calls[1]['filter'] == 'title.search:garnet'
+    assert calls[2]['search'] == 'garnet, llzo'
+    assert calls[2]['filter'] == 'from_publication_date:2010-01-01' and 'sort' not in calls[2]
+    with pytest.raises(ValueError, match='needs search words'):
+        search.openalex_search('from:2010 to:2020', count=5)
+
+
+def test_openalex_search_samples_every_year_at_the_same_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count each year, then draw one seeded fraction of every year's matches."""
+    matches = {2020: 300, 2021: 100}
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Answer count requests from ``matches`` and sample requests with that many works."""
+        params = dict(params)
+        calls.append(params)
+        year = int(params['filter'].rsplit(':', 1)[1])
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': matches[year]}}
+        start = (params['page'] - 1) * params['per-page']
+        size = max(0, min(params['per-page'], params['sample'] - start))
+        return {'results': [{'id': f'https://openalex.org/W{year}{start + index}', 'title': 't'}
+                            for index in range(size)], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2020 to:2021 sample:per-year', count=200)
+
+    samples = [call for call in calls if 'sample' in call]
+    assert {call['sample'] for call in samples} == {150, 50}
+    assert all(call['seed'] == search.OPENALEX_SAMPLE_SEED for call in samples)
+    assert samples[0]['filter'] == 'title_and_abstract.search:garnet,publication_year:2020'
+    assert len(rows) == 200
+
+
+def test_openalex_search_fetches_everything_when_the_sample_would_cover_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Page through every match with a cursor when count exceeds the total."""
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Report two matches a year and return them on one cursor page."""
+        params = dict(params)
+        calls.append(params)
+        year = params['filter'].rsplit(':', 1)[1]
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': 2}}
+        return {'results': [{'id': f'https://openalex.org/W{year}{index}', 'title': 't'}
+                            for index in range(2)], 'meta': {'next_cursor': None}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2020 to:2021 sample:per-year', count=100)
+
+    assert len(rows) == 4
+    assert all(call.get('cursor') == '*' for call in calls if call.get('select') != 'id')
+    calls.clear()
+    search.openalex_search('garnet, llzo from:2020 to:2021 sample:per-year in:all', count=100)
+    assert calls[0]['filter'] == 'default.search:garnet llzo,publication_year:2020'
+    with pytest.raises(ValueError, match='not be later'):
+        search.openalex_search('garnet from:2021 to:2020 sample:per-year', count=100)
+
+
+def test_openalex_sample_skips_empty_years_repeated_works_and_short_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip a year without matches, keep one copy of a repeated work, and stop at an empty page."""
+    matches = {2019: 0, 2020: 4, 2021: 4, 2022: 4}
+    # 2021's sample repeats a work already fetched for 2020, and 2022's comes back empty.
+    samples = {2020: ['W1', 'W2'], 2021: ['W2', 'W3'], 2022: []}
+    calls = []
+
+    def fake_request_json(url: str, params: Mapping[str, Any] | None = None, **_: object) -> dict[str, Any]:
+        """Answer count requests from ``matches`` and sample requests from ``samples``."""
+        params = dict(params)
+        calls.append(params)
+        year = int(params['filter'].rsplit(':', 1)[1])
+        if params.get('select') == 'id':
+            return {'results': [], 'meta': {'count': matches[year]}}
+        return {'results': [{'id': f'https://openalex.org/{work}', 'title': work}
+                            for work in samples[year]], 'meta': {}}
+
+    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
+    monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
+
+    rows = search.openalex_search('garnet from:2019 to:2022 sample:per-year', count=6)
+
+    sampled = [call for call in calls if 'sample' in call]
+    assert [call['filter'].rsplit(':', 1)[1] for call in sampled] == ['2020', '2021', '2022']
+    assert all(call['sample'] == 2 and call['page'] == 1 for call in sampled)
+    assert rows['paper_id'].tolist() == ['openalex:W1', 'openalex:W2', 'openalex:W3']
 
 
 def test_search_for_papers_rejects_invalid_source() -> None:
@@ -459,7 +598,7 @@ def test_search_for_papers_limits_provider_workers(
         'query', db_path=str(db_path), source='all', count=1, workers=2,
     )
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         run = corpus.search_history(conn)[0]
     assert configured_workers == [min(2, len(requested))]
     assert run['parallel'] is True
@@ -517,7 +656,7 @@ def test_search_for_papers_merges_and_writes_results(
 
     search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         written = corpus.paper_rows(conn)
         searches = corpus.search_history(conn)
         provenance = corpus.paper_search_history(conn, 'SCOPUS_ID:1')
@@ -545,7 +684,7 @@ def test_search_for_papers_merges_into_existing_corpus(
 ) -> None:
     """Search for papers merges into existing corpus."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'core:old',
             'doi': '10.1234/existing',
@@ -563,7 +702,7 @@ def test_search_for_papers_merges_into_existing_corpus(
 
     search.search_for_papers('query', db_path=str(db_path), source='core', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         written = corpus.paper_rows(conn)
     output = capsys.readouterr().out
     assert len(written) == 1
@@ -593,7 +732,7 @@ def test_search_for_papers_records_a_corpus_write_failure(
     with pytest.raises(RuntimeError, match='database write failed'):
         search.search_for_papers('query', db_path=str(db_path), source='elsevier', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
         papers = corpus.paper_rows(conn)
     assert papers == []
@@ -613,7 +752,7 @@ def test_search_for_papers_stores_search_time_abstract_assets(
 ) -> None:
     """Search for papers stores search time abstract assets."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {
             'paper_id': 'existing:paper',
             'doi': '10.1234/existing',
@@ -629,7 +768,7 @@ def test_search_for_papers_stores_search_time_abstract_assets(
 
     search.search_for_papers('query', db_path=str(db_path), source='core', count=1, store_abstract=True)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         rows = corpus.paper_rows(conn)
         abstract = corpus.get_asset(conn, 'existing:paper', 'abstract')
     output = capsys.readouterr().out
@@ -654,7 +793,7 @@ def test_search_for_papers_reports_zero_results_when_sources_are_empty(
 
     assert 'Document search found 0 new results.' in capsys.readouterr().out
     assert db_path.exists()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
     assert searches[0]['status'] == 'completed'
     assert searches[0]['result_count'] == 0
@@ -704,7 +843,7 @@ def test_search_for_papers_marks_a_run_failed_when_every_source_fails(
 
     search.search_for_papers('query', db_path=str(db_path), source='all', count=1)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         searches = corpus.search_history(conn)
     assert searches[0]['status'] == 'failed'
     assert all(
@@ -1780,30 +1919,6 @@ def test_search_for_papers_skips_failed_chemrxiv_for_all_but_raises_for_chemrxiv
         search.search_for_papers(
             'query', db_path=str(tmp_path / 'failed.db'), source='chemrxiv', count=1
         )
-
-
-def test_openalex_search_field_selects_search_or_field_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``PMT_OPENALEX_SEARCH_FIELD`` moves the query from ``search=`` into a field-restricted filter."""
-    monkeypatch.delenv('PMT_OPENALEX_SEARCH_FIELD', raising=False)
-    assert search.openalex_search_params('a AND b') == {'search': 'a AND b'}
-    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'Title_and_Abstract')
-    assert search.openalex_search_params('a AND b') == {'filter': 'title_and_abstract.search:a AND b'}
-    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'authors')
-    with pytest.raises(ValueError, match='PMT_OPENALEX_SEARCH_FIELD'):
-        search.openalex_search_params('a')
-
-    sent: list[dict[str, Any]] = []
-
-    def fake_request_json(url: str, params: Mapping[str, Any], **_: object) -> dict[str, Any]:
-        """Record the parameters OpenAlex would receive and return one work."""
-        sent.append(dict(params))
-        return {'results': [{'id': 'W1', 'title': 'one'}], 'meta': {}}
-
-    monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
-    monkeypatch.setenv('PMT_OPENALEX_SEARCH_FIELD', 'title_and_abstract')
-    search.openalex_search('polymer AND "mass loss"', 5)
-    assert sent[0]['filter'] == 'title_and_abstract.search:polymer AND "mass loss"'
-    assert 'search' not in sent[0] and sent[0]['cursor'] == '*'
 
 
 def test_core_search_retries_a_failed_page_smaller_then_raises_at_the_floor(

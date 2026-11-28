@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import asdict
 import hashlib
 import json
@@ -70,7 +71,7 @@ def test_corpus_preserves_raw_fields_latest_assets_and_provenance(
     abstract = 'PSMILES: *CC(=O)O*\nFe₂O₃ improves.'
     full_text = '  Ni\r\nMixed CASE and spaces.\n'
     paper = {'paper_id': 'a', 'doi': '10.1000/a', 'title': title}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_asset(conn, paper, 'Obsolete abstract', 'abstract', 'text', 'text/plain', source='old')
         abstract_blob = corpus.add_asset(
             conn, paper, abstract, 'abstract', 'text', 'text/plain', source='publisher',
@@ -178,7 +179,7 @@ def test_empty_corpus_skips_inference_and_exports_an_empty_file(
     """Skip papers with absent or blank selected fields without calling inference."""
     db_path = tmp_path / 'papers.db'
     output = tmp_path / 'entities.jsonl'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'missing'})
         corpus.add_asset(conn, {'paper_id': 'blank'}, ' \n\t', 'abstract', 'text', 'text/plain')
 
@@ -219,7 +220,7 @@ def test_inference_failure_never_publishes_partial_output(
     """Clean temporary files and preserve previous output after a later batch fails."""
     db_path = tmp_path / 'papers.db'
     output = tmp_path / 'entities.jsonl'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'a', 'title': 'Ni'})
         corpus.upsert_paper(conn, {'paper_id': 'b', 'title': 'Fe'})
     if existing_output:
@@ -248,7 +249,7 @@ def test_prediction_count_mismatch_never_publishes_output(
     """Refuse to pair entities with documents when the model drops a result."""
     db_path = tmp_path / 'papers.db'
     output = tmp_path / 'entities.jsonl'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'a', 'title': 'Ni'})
     monkeypatch.setattr(extractor, 'extract', lambda self, texts: [])
 
@@ -272,7 +273,7 @@ def test_input_cannot_be_replaced_even_through_a_hardlink(
     """Reject output aliases of both text files and corpus databases before inference."""
     source = tmp_path / 'input'
     if as_corpus:
-        with corpus.connect(source) as conn:
+        with closing(corpus.connect(source)) as conn, conn:
             corpus.upsert_paper(conn, {'paper_id': 'a', 'title': 'Ni'})
     else:
         source.write_text('Ni')
@@ -297,8 +298,7 @@ def test_invalid_corpus_fields_fail_before_inference(
 ) -> None:
     """Reject empty selections, unknown fields, and accidental string sequences."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path):
-        pass
+    corpus.connect(db_path).close()
     output = tmp_path / 'entities.jsonl'
 
     with pytest.raises(ValueError, match='field'):

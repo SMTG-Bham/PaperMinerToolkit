@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,7 @@ def build_corpus(tmp_path: Path) -> Path:
     document.close()
     text_path = tmp_path / 'paper-1.txt'
     text_path.write_text('ZrTaN3 has an indirect gap. Abstract-free body.', encoding='utf-8')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         papers = [{'paper_id': f'paper-{index}', 'doi': f'10.1/paper-{index}'} for index in range(1, 4)]
         for paper in papers:
             corpus.upsert_paper(conn, paper)

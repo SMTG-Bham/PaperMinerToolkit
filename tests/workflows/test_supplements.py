@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ def test_resume_skips_successful_files_and_retries_failed_files(tmp_path: Path, 
         return downloaded(item)
 
     monkeypatch.setattr(supplements.provider, 'download_supplement', fetch)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper', 'doi': '10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         first = supplements.download_paper_supplements(conn, paper, ['structured'])
@@ -60,7 +61,7 @@ def test_duplicate_content_keeps_one_asset_and_all_source_urls(tmp_path: Path, m
     items = [candidate(), candidate('mirror.pdf', 'https://mirror.example/si.pdf')]
     monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult(items))
     monkeypatch.setattr(supplements.provider, 'download_supplement', lambda item: DownloadedSupplement(b'%PDF-1.7 same', item.filename, 'application/pdf', item.url))
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         result = supplements.download_paper_supplements(conn, paper, ['structured'])
@@ -74,7 +75,7 @@ def test_duplicate_content_keeps_one_asset_and_all_source_urls(tmp_path: Path, m
 def test_discovery_error_is_failed_not_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No downloaded files after a discovery failure does not mean no SI exists."""
     monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult(errors=['figshare: HTTP 503']))
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         result = supplements.download_paper_supplements(conn, paper, ['figshare'])
@@ -95,7 +96,7 @@ def test_unavailable_is_cached_until_inputs_change_or_force(tmp_path: Path, monk
         return DiscoveryResult()
 
     monkeypatch.setattr(supplements.provider, 'discover_supplements', discover)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'paper:1'}
         corpus.upsert_paper(conn, paper)
         assert supplements.download_paper_supplements(conn, paper, ['structured'])['supplements_unavailable'] == 1
@@ -117,7 +118,7 @@ def test_success_keeps_article_error_and_force_refreshes_bytes(tmp_path: Path, m
     item = candidate()
     monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult([item]))
     monkeypatch.setattr(supplements.provider, 'download_supplement', downloaded)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper', 'last_error': 'article PDF refused', 'pdf_download_status': 'failed'}
         corpus.upsert_paper(conn, paper)
         supplements.download_paper_supplements(conn, paper, ['structured'])
@@ -140,7 +141,7 @@ def test_missing_old_candidate_is_retried_after_discovery_outage(tmp_path: Path,
         raise RuntimeError('offline')
 
     monkeypatch.setattr(supplements.provider, 'download_supplement', fail)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         supplements.download_paper_supplements(conn, paper, ['structured'])
@@ -149,6 +150,48 @@ def test_missing_old_candidate_is_retried_after_discovery_outage(tmp_path: Path,
         summary = supplements.download_paper_supplements(conn, paper, ['structured'])
         assert summary['supplements'] == 1
         assert paper['supplement_download_status'] == 'partial'
+
+
+def test_malformed_imported_metadata_is_read_as_empty_and_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata that is not JSON is treated as empty, and valid metadata is stored after the run."""
+    assert supplements._metadata({'metadata': '{not json'}) == {}
+    assert supplements._metadata({'metadata_json': '{"source": "scopus"}'}) == {'source': 'scopus'}
+    assert supplements._metadata({'metadata': '["a list"]'}) == {}
+    monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult())
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
+        paper = {'paper_id': 'paper:1', 'metadata': '{not json'}
+        result = supplements.download_paper_supplements(conn, paper, ['structured'])
+        stored = json.loads(conn.execute('SELECT metadata_json FROM papers').fetchone()[0])
+    assert result['supplements_unavailable'] == 1
+    assert paper['supplement_download_status'] == 'unavailable'
+    assert stored['supplement_discovery']['candidates'] == []
+    assert stored['supplement_download_error'] == ''
+
+
+def test_a_supplement_the_corpus_did_not_keep_is_a_failed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count a file as failed, not stored, when its asset cannot be found after writing it."""
+    item = candidate()
+    monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult([item]))
+    monkeypatch.setattr(supplements.provider, 'download_supplement', downloaded)
+
+    def lost(*_: object, **__: object) -> str:
+        """Report a blob identifier without storing anything, as a lost write would."""
+        return 'sha256:' + '0' * 64
+
+    monkeypatch.setattr(supplements, 'add_supplement', lost)
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
+        paper = {'paper_id': 'doi:10.1234/paper'}
+        corpus.upsert_paper(conn, paper)
+        result = supplements.download_paper_supplements(conn, paper, ['structured'])
+        assert get_supplements(conn, paper['paper_id']) == []
+    assert (result['supplements'], result['supplements_failed']) == (0, 1)
+    assert paper['supplement_download_status'] == 'failed'
+    error = paper['metadata']['supplement_download_error']
+    assert error.startswith('structured ') and error.endswith(': supplement asset was not persisted')
 
 
 def test_source_normalization_validates_and_preserves_registry_order() -> None:
@@ -166,7 +209,7 @@ def test_force_refresh_merges_into_existing_content_and_removes_stale_link(tmp_p
     items = [candidate('a.pdf'), candidate('b.pdf')]
     monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult(items))
     monkeypatch.setattr(supplements.provider, 'download_supplement', downloaded)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         supplements.download_paper_supplements(conn, paper, ['structured'])
@@ -187,7 +230,7 @@ def test_same_url_discovered_under_new_provider_updates_existing_asset(tmp_path:
     item = candidate()
     monkeypatch.setattr(supplements.provider, 'discover_supplements', lambda *_args: DiscoveryResult([item]))
     monkeypatch.setattr(supplements.provider, 'download_supplement', downloaded)
-    with corpus.connect(tmp_path / 'corpus.db') as conn:
+    with closing(corpus.connect(tmp_path / 'corpus.db')) as conn, conn:
         paper = {'paper_id': 'doi:10.1234/paper'}
         corpus.upsert_paper(conn, paper)
         supplements.download_paper_supplements(conn, paper, ['structured'])

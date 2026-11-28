@@ -87,3 +87,26 @@ def test_config_model_reads_the_key_from_the_environment(monkeypatch: pytest.Mon
     assert payload['api_key_set'] is True
     assert 'model-secret' not in result.output
     assert settings._saved_settings()['model_profiles']['text']['api_key'] == 'model-secret'
+
+
+def test_config_model_saves_and_reports_reasoning_settings() -> None:
+    """Save a local profile's reasoning effort and thinking switch and echo them as JSON."""
+    result = CliRunner().invoke(cli.main, [
+        'config', 'model', 'text', '--provider', 'local', '--model', 'Qwen/Qwen3-8B',
+        '--base-url', 'http://localhost:8000/v1', '--reasoning-effort', 'low', '--no-thinking',
+        '--json'])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert (payload['reasoning_effort'], payload['thinking']) == ('low', False)
+    profile = settings._saved_settings()['model_profiles']['text']
+    assert (profile['reasoning_effort'], profile['thinking']) == ('low', False)
+
+
+def test_config_model_checks_reasoning_settings_before_reading_the_key() -> None:
+    """Reject a reasoning setting the provider cannot take without saving anything."""
+    result = CliRunner().invoke(cli.main, [
+        'config', 'model', 'text', '--provider', 'claude-code', '--model', 'sonnet',
+        '--reasoning-effort', 'high', '--api-key-from-env', 'PMT_UNSET_MODEL_KEY'])
+    assert result.exit_code == 2
+    assert 'not supported for provider "claude-code"' in result.stderr
+    assert 'model_profiles' not in settings._saved_settings()

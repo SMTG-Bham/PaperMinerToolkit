@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import tomllib
+from contextlib import closing
 from pathlib import Path
 from typing import Any, NoReturn
 
 import pytest
 from click.testing import CliRunner
 
+import paperminertoolkit._progress as progress
 import paperminertoolkit.cli as cli
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.settings as settings
@@ -43,7 +45,7 @@ def test_main_command_exposes_discoverable_nested_groups() -> None:
     assert all(command in filter_help.output for command in cli.filter_group.commands)
     assert topics_help.exit_code == 0
     assert set(cli.topics_group.commands) == {
-        'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models',
+        'train', 'compare', 'show', 'name', 'predict', 'trends', 'store', 'models', 'emergence',
     }
     assert recipe_help.exit_code == 0
     assert entities_help.exit_code == 0
@@ -400,7 +402,7 @@ def test_scrape_can_disable_supplements(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> None:
     """Print paper, blob, and storage statistics for a corpus."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_asset(
             conn,
             {'paper_id': 'paper:1', 'title': 'Corpus paper'},
@@ -459,7 +461,7 @@ def test_corpus_status_prints_database_storage_statistics(tmp_path: Path) -> Non
 def test_corpus_searches_prints_recent_queries_and_failures(tmp_path: Path) -> None:
     """Show reproducible search settings, outcomes, and an empty-history message."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         empty_result = CliRunner().invoke(cli.corpus_searches, [str(db_path)])
         search_id = corpus.begin_search_run(conn, 'solid   electrolyte', 'all', ['core'], 10)
         corpus.finish_search_run(
@@ -582,6 +584,122 @@ def test_topics_models_reports_an_empty_corpus(monkeypatch: pytest.MonkeyPatch, 
     result = CliRunner().invoke(cli.topics_models, [str(db_path)])
     assert result.exit_code == 0
     assert 'No topic models' in result.output
+
+
+def test_topics_emergence_delegates_settings_and_reports_the_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Pass windows and granularity through and summarise the field map."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+    calls = {}
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Record the analysis arguments and return a summary."""
+        calls['args'] = args
+        calls['kwargs'] = kwargs
+        return {
+            'papers_used': 900, 'papers_read': 1000, 'end_year': 2024, 'areas': 6,
+            'topics': 20, 'niches': 90,
+            'topic_status': {'emerging': 2, 'growing': 3, 'stable': 15, 'declining': 0,
+                             'too small': 0},
+            'flagged_niches': [{'niche': 4}], 'backtest_rho_score': 0.41,
+            'report': str(tmp_path / 'out' / 'report.md'),
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.topics_emergence, [
+        str(db_path), str(tmp_path / 'out'), '--end-year', '2024', '--areas', '6',
+        '--topic-size', '150', '--niche-size', '30', '--backtest-cutoffs', '0', '--timeline-years', '2',
+        '--include-title-only', '--watch', 'halide', '--watch', 'garnet', '--overwrite', '--no-plots',
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls['args'] == (str(db_path), str(tmp_path / 'out'))
+    settings = calls['kwargs']['settings']
+    assert (settings.areas, settings.topic_size, settings.niche_size) == (6, 150, 30)
+    assert (settings.backtest_cutoffs, settings.timeline_years) == (0, 2)
+    assert calls['kwargs']['end_year'] == 2024
+    assert calls['kwargs']['require_abstract'] is False
+    assert calls['kwargs']['watch_terms'] == ('halide', 'garnet')
+    assert calls['kwargs']['overwrite'] is True
+    assert calls['kwargs']['plots'] is False
+    assert '6 areas, 20 topics (2 emerging, 3 growing, 15 stable), 90 niches, 1 flagged' in result.output
+    assert 'Spearman 0.41' in result.output
+
+
+def test_topics_emergence_json_prints_the_summary_as_strict_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Print the run summary as JSON, with a skipped backtest as null and chatter on stderr."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Print progress and return a summary without a backtest."""
+        print('Embedding papers')
+        return {
+            'output_dir': str(tmp_path / 'out'), 'report': str(tmp_path / 'out' / 'report.md'),
+            'plots': [], 'papers_read': 10, 'papers_used': 9, 'end_year': 2024, 'areas': 2,
+            'topics': 4, 'niches': 10, 'topic_status': {'emerging': 1, 'stable': 3},
+            'flagged_niches': [{'niche': 3, 'growth_z': float('nan')}],
+            'backtest_rho_score': float('nan'), 'settings': {'backtest_cutoffs': 0},
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.main, ['topics', 'emergence', str(db_path), str(tmp_path / 'out'),
+                                           '--backtest-cutoffs', '0', '--json'])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload['backtest_rho_score'] is None
+    assert payload['flagged_niches'] == [{'niche': 3, 'growth_z': None}]
+    assert payload['report'] == str(tmp_path / 'out' / 'report.md')
+    assert 'Embedding papers' in result.stderr
+    assert 'Spearman' not in result.output
+
+
+def test_topics_emergence_streams_progress_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Under --progress jsonl, write the analysis's events to stderr and keep the JSON on stdout."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def fake_analyze(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Report one embedding batch and return a minimal summary."""
+        progress.emit('batch_done', stage='embedding', papers=2, done=1, total=1)
+        return {
+            'output_dir': str(tmp_path / 'out'), 'report': str(tmp_path / 'out' / 'report.md'),
+            'plots': [], 'papers_read': 2, 'papers_used': 2, 'end_year': 2024, 'areas': 2,
+            'topics': 2, 'niches': 2, 'topic_status': {'stable': 2}, 'flagged_niches': [],
+            'backtest_rho_score': float('nan'), 'settings': {'backtest_cutoffs': 0},
+        }
+
+    monkeypatch.setattr(cli, 'analyze_emergence', fake_analyze)
+    result = CliRunner().invoke(cli.main, ['topics', 'emergence', str(db_path), str(tmp_path / 'out'),
+                                           '--progress', 'jsonl', '--json'])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)['papers_used'] == 2
+    events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
+    assert [(event['event'], event['command'], event['done']) for event in events] == [
+        ('batch_done', 'topics emergence', 1)]
+
+
+def test_topics_emergence_reports_analysis_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Turn a corpus that cannot be analysed into a clean command error."""
+    db_path = tmp_path / 'papers.db'
+    db_path.write_text('')
+
+    def refuse(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Reject the corpus as too short."""
+        raise ValueError('The corpus spans 1 publication years')
+
+    monkeypatch.setattr(cli, 'analyze_emergence', refuse)
+    result = CliRunner().invoke(cli.topics_emergence, [str(db_path), str(tmp_path / 'out')])
+    assert result.exit_code != 0
+    assert 'spans 1 publication years' in result.output
 
 
 def test_topics_train_delegates_options_and_reports_diagnostics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -983,7 +1101,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         cli,
         'set_model_profile',
         lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit,
-               output_token_limit, request_timeout: calls.update({
+               output_token_limit, request_timeout, reasoning_effort, thinking: calls.update({
             'profile': profile,
             'provider': provider,
             'model': model,
@@ -995,6 +1113,8 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
             'input_token_limit': input_token_limit,
             'output_token_limit': output_token_limit,
             'request_timeout': request_timeout,
+            'reasoning_effort': reasoning_effort,
+            'thinking': thinking,
         }),
     )
 
@@ -1007,6 +1127,7 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         '--input-token-limit', '64000',
         '--output-token-limit', '20000',
         '--request-timeout', '1800',
+        '--reasoning-effort', 'high',
     ])
 
     assert result.exit_code == 0
@@ -1022,9 +1143,22 @@ def test_model_config_infers_capabilities_saves_profile_and_prints_summary(monke
         'input_token_limit': 64000,
         'output_token_limit': 20000,
         'request_timeout': 1800.0,
+        'reasoning_effort': 'high',
+        'thinking': None,
     }
     assert ('Updated text model profile: openai/gpt-test [text] temperature=0.2 top_p=0.9 input_token_limit=64000 '
-            'output_token_limit=20000 request_timeout=1800.0') in result.output
+            'output_token_limit=20000 request_timeout=1800.0 reasoning_effort=high thinking=None') in result.output
+
+
+def test_model_config_rejects_reasoning_settings_the_provider_cannot_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse a thinking switch for OpenAI's API before saving the profile."""
+    monkeypatch.setattr(cli, 'set_model_profile', lambda *args, **kwargs: pytest.fail('profile must not be saved'))
+
+    result = CliRunner().invoke(cli.model_config, ['text', '--provider', 'openai', '--model', 'gpt-test',
+                                                   '--no-thinking'])
+
+    assert result.exit_code != 0
+    assert 'thinking is only supported for local' in result.output
 
 
 def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1039,11 +1173,13 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: 
         cli,
         'set_model_profile',
         lambda profile, provider, model, base_url, api_key, capabilities, temperature, top_p, input_token_limit,
-               output_token_limit, request_timeout: calls.update({
+               output_token_limit, request_timeout, reasoning_effort, thinking: calls.update({
             'capabilities': capabilities,
             'input_token_limit': input_token_limit,
             'output_token_limit': output_token_limit,
             'request_timeout': request_timeout,
+            'reasoning_effort': reasoning_effort,
+            'thinking': thinking,
         }),
     )
 
@@ -1055,10 +1191,14 @@ def test_model_config_uses_explicit_capabilities_without_inference(monkeypatch: 
         '--api-key', 'test-key',
         '--capability', 'text',
         '--capability', 'vision',
+        '--reasoning-effort', 'medium',
+        '--no-thinking',
     ])
 
     assert result.exit_code == 0
     assert calls['capabilities'] == ['text', 'vision']
+    assert calls['reasoning_effort'] == 'medium'
+    assert calls['thinking'] is False
     assert calls['input_token_limit'] == cli.DEFAULT_INPUT_TOKEN_LIMIT
     assert calls['output_token_limit'] == cli.DEFAULT_OUTPUT_TOKEN_LIMIT
     assert calls['request_timeout'] == cli.DEFAULT_REQUEST_TIMEOUT
@@ -1087,6 +1227,8 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.Monkey
             'input_token_limit': 120000,
             'output_token_limit': 20000,
             'request_timeout': 1800.0,
+            'reasoning_effort': 'low',
+            'thinking': False,
             'base_url': 'http://localhost:8000/v1',
         },
     }
@@ -1096,9 +1238,9 @@ def test_model_status_prints_text_and_vision_profiles(monkeypatch: pytest.Monkey
 
     assert result.exit_code == 0
     assert ('text: openai/gpt-test capabilities=[text] temperature=0.0 top_p=1.0 input_token_limit=32000 output_token_limit=10000 '
-            'request_timeout=600.0 base_url=None') in result.output
+            'request_timeout=600.0 reasoning_effort=None thinking=None base_url=None') in result.output
     assert ('vision: local/vision-test capabilities=[text, vision] temperature=0.1 top_p=0.8 input_token_limit=120000 output_token_limit=20000 '
-            'request_timeout=1800.0') in result.output
+            'request_timeout=1800.0 reasoning_effort=low thinking=False') in result.output
 
 
 def test_utility_commands_delegate_to_maintenance_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1205,7 +1347,7 @@ def test_import_author_accepts_a_missing_email_and_forwards_enrich(monkeypatch: 
 def test_corpus_status_prints_enrichment_counts(tmp_path: Path) -> None:
     """Report enrichment progress alongside the storage statistics."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'demo:1', 'title': 'Demo'})
         corpus.write_enrichment(
             conn,

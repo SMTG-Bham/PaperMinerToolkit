@@ -46,6 +46,7 @@ PUBLIC_MODULES = (
     'paperminertoolkit.workflows.supplements',
     'paperminertoolkit.workflows.diagnostics',
     'paperminertoolkit.workflows.download',
+    'paperminertoolkit.workflows.emergence',
     'paperminertoolkit.workflows.enrichment',
     'paperminertoolkit.workflows.entities',
     'paperminertoolkit.workflows.figures',

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 import json
+from contextlib import closing
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -266,7 +267,7 @@ def test_import_author_works_writes_review_csv_and_corpus(tmp_path: Path) -> Non
         session=session,
     )
 
-    with corpus.connect(db_path) as connection:
+    with closing(corpus.connect(db_path)) as connection, connection:
         papers = corpus.paper_rows(connection)
     review = pd.read_csv(review_path)
     assert summary == {'found': 1, 'added': 1, 'updated': 0, 'enriched': 0}

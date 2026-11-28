@@ -105,10 +105,8 @@ pmt scrape papers.db polymer_degradation --mode text --count 1 --output scraped.
 pmt scrape papers.db polymer_degradation --mode text --output scraped.csv --progress jsonl
 ```
 
-On Sol the scrape runs inside one Gaudi allocation that serves the model with vLLM;
-`examples/sol_gaudi/scrape_gaudi.sbatch` does both (see {doc}`hpc`). Set its `PMT_RECIPE`,
-`PMT_DB` and output paths, and resubmit the same command to continue: completed papers are
-skipped. Do not use `--count` to pace a long run, because it slices the ordered work list.
+On a cluster, run the scrape inside the same allocation that serves the model (see
+{doc}`hpc`), and resubmit the same command to continue: completed papers are skipped. Do not use `--count` to pace a long run, because it slices the ordered work list.
 
 Plan the wall time from a measured rate, not a guess. With Qwen3-30B-A3B serving four cards,
 this recipe took about 95 to 180 s per paper, because its replies run to many records and

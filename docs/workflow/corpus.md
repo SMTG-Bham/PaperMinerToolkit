@@ -100,19 +100,6 @@ pmt search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
 pmt search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
 ```
 
-OpenAlex's default `search=` also matches full text, so a boolean query over common words can return
-tens of thousands of works whose title and abstract never mention them (a polymer degradation query
-matched 39,782 works this way and 1,574 by title and abstract). Set `PMT_OPENALEX_SEARCH_FIELD` to
-search fewer fields; the value is sent as `filter=<field>.search:<query>`, which takes the same
-boolean syntax:
-
-```bash
-PMT_OPENALEX_SEARCH_FIELD=title_and_abstract pmt search "polymer AND \"mass loss\"" papers.db --source openalex
-```
-
-Accepted values are `all` (the default), `title_and_abstract`, `title`, `abstract` and `fulltext`.
-Each OpenAlex search page costs 10 credits for up to 200 works.
-
 CORE search pages that fail are asked for again at half the size, down to 25 records, before the
 search gives up; a cold 100-record page has taken over a minute.
 
@@ -143,6 +130,26 @@ pmt search 'ti:garnet ANDNOT au:Smith' papers.db --source arxiv
 ```
 
 The available prefixes are `ti:`, `au:`, `abs:`, `co:`, `jr:`, `cat:`, `rn:`, `id:`, and `all:`.
+
+OpenAlex ranks matches by relevance and matches the query against titles and abstracts. Its
+queries accept `from:` and `to:`, each a year or an ISO date, to bound the publication date, and
+`sample:per-year` to draw the same seeded fraction of every year's matches instead of the most
+relevant ones. That keeps each year's share of the field intact, which {doc}`emergence` relies on:
+
+```bash
+pmt search 'garnet electrolyte from:2015 to:2025' papers.db --source openalex
+pmt search '"solid electrolyte" from:2010 to:2025 sample:per-year' papers.db \
+  --source openalex --count 20000 --store-abstract
+```
+
+`sample:per-year` needs both a `from:` and a `to:` year.
+
+`in:` chooses the fields that must match: `title`, `abstract`, `title-abstract` (the default),
+`fulltext`, or `all`, which adds full text to the title and abstract. Full text widens a search a
+long way: in a 20,000-paper sample of solid-electrolyte work taken with `in:all`, only 37% of the
+papers mentioned the phrase in their title or abstract. OpenAlex reads commas in the query as filter
+separators, so they are sent as spaces, except with `in:all` outside `sample:per-year`, which uses
+OpenAlex's own search parameter.
 
 arXiv is a preprint server, so its records often describe a paper the corpus already holds.
 When the submitting author deposited a DOI, the arXiv row merges into the published row, which
@@ -443,11 +450,13 @@ can also be attached through Python and will participate in the same scraping
 workflow:
 
 ```python
+from contextlib import closing
 from pathlib import Path
 from paperminertoolkit.corpus.database import connect
 from paperminertoolkit.corpus.supplements import add_supplement
 
-with connect("papers.db") as conn:
+# closing() releases the database file; `conn` itself commits the change.
+with closing(connect("papers.db")) as conn, conn:
     add_supplement(
         conn, {"paper_id": "PAPER_ID"}, Path("supporting.pdf"),
         source="local", original_filename="supporting.pdf",
@@ -653,10 +662,11 @@ detects them from PDF geometry and stores them as figure assets alongside the do
 recording `pdf-layout` as the source so both origins stay distinguishable:
 
 ```python
+from contextlib import closing
 from paperminertoolkit.corpus.database import connect
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
-with connect("papers.db") as conn:
+with closing(connect("papers.db")) as conn, conn:
     summary = store_pdf_layout_figures(conn, paper_row, "paper.pdf")
 ```
 

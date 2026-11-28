@@ -101,6 +101,7 @@ MODEL_STATUS = obj({'text': OBJECT, 'vision': OBJECT})
 CONFIG_MODEL = obj({'profile': STRING, 'provider': STRING, 'model': STRING,
                     'base_url': OPTIONAL_STRING, 'capabilities': array(STRING),
                     'temperature': NUMBER, 'top_p': NUMBER, 'input_token_limit': INTEGER,
+                    'reasoning_effort': OPTIONAL_STRING, 'thinking': {'type': ['boolean', 'null']},
                     'api_key_set': BOOLEAN})
 CONFIG_SETTING = obj({'setting': STRING, 'secret': BOOLEAN,
                       'source': {'type': 'string', 'enum': ['env', 'stdin', 'prompt']}},
@@ -129,6 +130,11 @@ TOPICS_STORE = obj({'model_id': STRING, 'name': STRING, 'papers_predicted': INTE
                     'papers_without_vocabulary_terms': INTEGER,
                     'prediction_corpus_fingerprint': STRING})
 TOPICS_MODELS = obj({'models': array(obj({'name': STRING, 'model_id': STRING}))})
+TOPICS_EMERGENCE = obj({'output_dir': STRING, 'report': STRING, 'plots': array(STRING),
+                        'papers_read': INTEGER, 'papers_used': INTEGER, 'end_year': INTEGER,
+                        'areas': INTEGER, 'topics': INTEGER, 'niches': INTEGER,
+                        'topic_status': OBJECT, 'flagged_niches': array(OBJECT),
+                        'backtest_rho_score': OPTIONAL_NUMBER, 'settings': OBJECT})
 
 ENTITIES = obj({'entities': INTEGER, 'documents': INTEGER, 'output': STRING},
                {'papers': INTEGER})

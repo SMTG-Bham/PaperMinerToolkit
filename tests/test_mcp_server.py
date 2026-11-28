@@ -5,15 +5,18 @@ from __future__ import annotations
 import io
 import json
 import re
+import subprocess
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 from click.testing import CliRunner
 
 import paperminertoolkit.corpus.database as corpus
 from paperminertoolkit import cli, mcp_server
+from paperminertoolkit._agent import agent_meta
 
 
 @pytest.fixture
@@ -141,3 +144,105 @@ def test_mcp_command_prints_a_client_config() -> None:
     assert result.exit_code == 0, result.output
     entry = json.loads(result.stdout)['mcpServers']['paperminertoolkit']
     assert entry['args'] == ['-m', 'paperminertoolkit', 'mcp', '--allow', 'network']
+
+
+def test_input_schemas_describe_flags_floats_and_list_defaults() -> None:
+    """Map flags to booleans, float ranges to numbers, and tuple defaults to JSON lists."""
+    tools = mcp_server.exposed_commands(cli.main, allow=['network', 'writes_corpus'])
+    path, command = tools['download']
+    properties = mcp_server.tool_definition('download', path, command,
+                                            '2025-06-18')['inputSchema']['properties']
+    assert (properties['force']['type'], properties['force']['default']) == ('boolean', False)
+    assert properties['sources']['type'] == 'array'
+    assert properties['sources']['default'] == ['all']
+    path, command = tools['figures_detect']
+    properties = mcp_server.tool_definition('figures_detect', path, command,
+                                            '2025-06-18')['inputSchema']['properties']
+    assert (properties['padding']['type'], properties['padding']['default']) == ('number', 12.0)
+    assert 'minimum' not in properties['padding']
+    assert properties['minimum_confidence']['type'] == 'number'
+    assert properties['ignore_filters']['type'] == 'boolean'
+
+
+def test_input_schema_and_argv_treat_a_value_taking_boolean_as_a_value() -> None:
+    """Describe a ``type=bool`` parameter as a boolean but pass it as a value, not a flag."""
+    @agent_meta(effects={'read_only'}, output={'type': 'object'})
+    @click.command('toggle')
+    @click.argument('enabled', type=bool)
+    @click.option('--strict', type=bool, default=True, help='Fail on warnings.')
+    @click.option('--json', 'json_output', is_flag=True, default=False)
+    def toggle(enabled: bool, strict: bool, json_output: bool) -> None:
+        """Do nothing; only the parameters are described."""
+
+    definition = mcp_server.tool_definition('toggle', ('toggle',), toggle, '2025-06-18')
+    assert definition['inputSchema'] == {
+        'type': 'object',
+        'properties': {'enabled': {'type': 'boolean'},
+                       'strict': {'type': 'boolean', 'description': 'Fail on warnings.',
+                                  'default': True}},
+        'required': ['enabled'], 'additionalProperties': False}
+    assert mcp_server.build_argv(('toggle',), toggle, {'enabled': False, 'strict': False}) == [
+        'toggle', '--json', '--strict', 'False', '--', 'False']
+
+
+def test_build_argv_needs_earlier_positionals_and_required_options() -> None:
+    """Refuse a later positional without the earlier one, and a missing required option."""
+    tools = mcp_server.exposed_commands(cli.main, allow=['writes_corpus', 'writes_files'])
+    path, command = tools['figures_export']
+    with pytest.raises(ValueError, match='Give db_path as well'):
+        mcp_server.build_argv(path, command, {'outdir': 'figures'})
+    assert mcp_server.build_argv(path, command, {'db_path': 'c.db', 'outdir': 'figures'}) == [
+        'figures', 'export', '--json', '--', 'c.db', 'figures']
+    path, command = tools['digitize']
+    with pytest.raises(ValueError, match='Missing required argument: figure_field'):
+        mcp_server.build_argv(path, command, {'db_path': 'c.db', 'records_csv': 'r.csv'})
+    assert mcp_server.build_argv(path, command, {
+        'db_path': 'c.db', 'records_csv': 'r.csv', 'figure_field': 'Mass loss figure'}) == [
+        'digitize', '--json', '--figure-field', 'Mass loss figure', '--', 'c.db', 'r.csv']
+
+
+def test_tool_calls_report_timeouts_and_output_that_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turn a timeout, non-JSON stdout, a stderr tail, or silence into error results."""
+    stderr = '\n'.join(f'line {number}' for number in range(25))
+    outcomes: list[subprocess.CompletedProcess[str] | subprocess.TimeoutExpired] = [
+        subprocess.TimeoutExpired(['pmt'], 5),
+        subprocess.CompletedProcess(['pmt'], 1, stdout='Traceback: not JSON\n', stderr='ignored'),
+        subprocess.CompletedProcess(['pmt'], 2, stdout='', stderr=stderr),
+        subprocess.CompletedProcess(['pmt'], 3, stdout='  ', stderr=''),
+    ]
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(argv: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
+        """Record the command line and give the next prepared outcome."""
+        calls.append((argv, options))
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, subprocess.TimeoutExpired):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(mcp_server.subprocess, 'run', run)
+    call = {'name': 'corpus_list', 'arguments': {'db_path': 'c.db'}}
+    responses = _session([
+        '',
+        {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': call},
+        '   ',
+        {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': call},
+        {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': call},
+        {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call', 'params': call},
+    ], timeout=5, python='python-under-test')
+
+    assert [response['id'] for response in responses] == [1, 2, 3, 4]
+    results = [response['result'] for response in responses]
+    assert all(result['isError'] is True and 'structuredContent' not in result for result in results)
+    texts = [result['content'][0]['text'] for result in results]
+    assert json.loads(texts[0]) == {'error': {'type': 'operational', 'exit_code': 1, 'hint': None,
+                                              'message': 'corpus_list exceeded 5 s'}}
+    assert texts[1] == 'Traceback: not JSON'
+    assert texts[2] == '\n'.join(f'line {number}' for number in range(5, 25))
+    assert texts[3] == 'exit 3 without output'
+    argv, options = calls[0]
+    assert argv == ['python-under-test', '-m', 'paperminertoolkit', 'corpus', 'list', '--json',
+                    '--', 'c.db']
+    assert options['stdin'] == subprocess.DEVNULL and options['timeout'] == 5

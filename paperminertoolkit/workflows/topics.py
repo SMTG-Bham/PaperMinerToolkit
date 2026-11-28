@@ -21,6 +21,7 @@ import unicodedata
 import warnings
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import closing
 from itertools import combinations, groupby
 from os import PathLike
 from pathlib import Path
@@ -313,7 +314,9 @@ def iter_topic_document_batches(
     if batch_size < 1:
         raise ValueError('batch_size must be positive.')
     asset_roles = [field for field in fields if field in {'abstract', 'text'}]
-    with connect(db_path) as conn:
+    # Close the connection, not just end its transaction: on Windows an open handle stops a
+    # temporary corpus copy (as used by --dry-run) from being deleted.
+    with closing(connect(db_path)) as conn:
         last_paper_id = ''
         while True:
             rows = conn.execute(
@@ -878,7 +881,7 @@ def _prepare_streaming_corpus(
     token_counts = []
     document_count = 0
 
-    with sqlite3.connect(counts_path) as vocab_conn:
+    with closing(sqlite3.connect(counts_path)) as vocab_conn:
         vocab_conn.execute(
             'CREATE TABLE term_counts ('
             'term TEXT PRIMARY KEY, term_frequency INTEGER NOT NULL, '
@@ -1843,7 +1846,7 @@ def store_topic_model_scores(
 
     with tempfile.TemporaryDirectory(prefix='paperminertoolkit-topic-store-') as temporary_dir:
         staging_path = Path(temporary_dir) / 'predictions.db'
-        with sqlite3.connect(staging_path) as staging:
+        with closing(sqlite3.connect(staging_path)) as staging:
             staging.executescript(
                 """
                 CREATE TABLE predictions (
@@ -1880,7 +1883,7 @@ def store_topic_model_scores(
                     missing_count += 1
             staging.commit()
 
-        with connect(db_path) as conn, sqlite3.connect(staging_path) as staging:
+        with closing(connect(db_path)) as conn, conn, closing(sqlite3.connect(staging_path)) as staging:
             existing_name = conn.execute(
                 'SELECT model_id FROM topic_models WHERE name = ?', (resolved_name,)
             ).fetchone()
@@ -1987,7 +1990,7 @@ def stored_topic_models(
         Stored model rows augmented with topic count, prediction coverage,
         text fields, and current/stale state.
     """
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn:
         models = [dict(row) for row in conn.execute(
             'SELECT * FROM topic_models ORDER BY name'
         ).fetchall()]

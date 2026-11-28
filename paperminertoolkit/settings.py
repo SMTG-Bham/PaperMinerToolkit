@@ -33,6 +33,8 @@ DEFAULT_MODEL_PROFILE = {
     'input_token_limit': DEFAULT_INPUT_TOKEN_LIMIT,
     'output_token_limit': DEFAULT_OUTPUT_TOKEN_LIMIT,
     'request_timeout': DEFAULT_REQUEST_TIMEOUT,
+    'reasoning_effort': None,
+    'thinking': None,
 }
 DEFAULT_SETTINGS = {
     'model_profiles': {
@@ -73,6 +75,12 @@ MODEL_ENV_FIELDS = {
     'input_token_limit': 'INPUT_TOKEN_LIMIT',
     'output_token_limit': 'OUTPUT_TOKEN_LIMIT',
     'request_timeout': 'REQUEST_TIMEOUT',
+    'reasoning_effort': 'REASONING_EFFORT',
+    'thinking': 'THINKING',
+}
+_THINKING_VALUES = {
+    'true': True, '1': True, 'yes': True, 'on': True,
+    'false': False, '0': False, 'no': False, 'off': False,
 }
 
 
@@ -99,6 +107,56 @@ def _float_setting(value: float | int | str | None, default: float) -> float:
     if value is None or value == '':
         return default
     return float(value)
+
+
+def reasoning_effort_setting(value: str | None) -> str | None:
+    """Normalize an optional reasoning-effort setting.
+
+    Parameters
+    ----------
+    value : str | None
+        Configured effort, such as ``"low"`` or ``"high"``. Levels differ
+        between models, so any non-empty value is accepted.
+
+    Returns
+    -------
+    str | None
+        The stripped effort, or ``None`` (use the model's default) when the
+        value is missing or blank.
+    """
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
+def thinking_setting(value: bool | str | None) -> bool | None:
+    """Normalize an optional thinking on/off setting.
+
+    Parameters
+    ----------
+    value : bool | str | None
+        ``True``/``False`` or a string such as ``"on"``, ``"off"``,
+        ``"true"`` or ``"0"``.
+
+    Returns
+    -------
+    bool | None
+        Whether thinking is switched on, or ``None`` (use the model's
+        default) when the value is missing or blank.
+
+    Raises
+    ------
+    ValueError
+        If a string is not a recognised on/off value.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text not in _THINKING_VALUES:
+        raise ValueError(f'thinking must be on or off, not {value!r}')
+    return _THINKING_VALUES[text]
 
 
 def _capabilities(value: str | list[str] | None, default: list[str] | None = None) -> list[str]:
@@ -141,7 +199,7 @@ def _merge_profile(
     -------
     dict[str, Any]
         Merged profile with normalized capabilities, sampling values, and
-        input and output token limits and request timeout.
+        input and output token limits, request timeout and reasoning settings.
     """
     profile = default.copy()
     profile.update(configured or {})
@@ -160,6 +218,8 @@ def _merge_profile(
     if request_timeout is None or request_timeout == '':
         request_timeout = DEFAULT_REQUEST_TIMEOUT
     profile['request_timeout'] = float(request_timeout)
+    profile['reasoning_effort'] = reasoning_effort_setting(profile.get('reasoning_effort'))
+    profile['thinking'] = thinking_setting(profile.get('thinking'))
     return profile
 
 
@@ -344,6 +404,8 @@ def set_model_profile(
     input_token_limit: int = DEFAULT_INPUT_TOKEN_LIMIT,
     output_token_limit: int = DEFAULT_OUTPUT_TOKEN_LIMIT,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    reasoning_effort: str | None = None,
+    thinking: bool | None = None,
 ) -> None:
     """Store a model profile for extraction runs.
 
@@ -372,6 +434,12 @@ def set_model_profile(
         including any reasoning a server counts against it.
     request_timeout : float, default=DEFAULT_REQUEST_TIMEOUT
         Seconds to wait for one request to an OpenAI-compatible server.
+    reasoning_effort : str | None, optional
+        Reasoning effort sent with each request (e.g. ``"low"``, ``"medium"``,
+        ``"high"``). ``None`` leaves the model's default.
+    thinking : bool | None, optional
+        Switch a hybrid model's thinking on or off through its chat template
+        (OpenAI-compatible servers only). ``None`` leaves the model's default.
     """
     settings = _saved_settings()
     capabilities = _capabilities(capabilities, infer_model_capabilities(profile, model))
@@ -386,6 +454,8 @@ def set_model_profile(
         'input_token_limit': int(input_token_limit),
         'output_token_limit': int(output_token_limit),
         'request_timeout': float(request_timeout),
+        'reasoning_effort': reasoning_effort_setting(reasoning_effort),
+        'thinking': thinking_setting(thinking),
     }
     _save_settings(settings)
 

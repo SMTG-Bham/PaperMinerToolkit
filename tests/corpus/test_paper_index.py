@@ -37,6 +37,8 @@ TRICKY_ROWS: list[dict[str, Any]] = [
     {'paper_id': 'k', 'core_id': 'core-9', 'medrxiv_doi': '10.1101/2020.01.01.1'},
     {'paper_id': 'l', 'biorxiv_doi': '10.1101/2020.01.01.1', 'chemrxiv_doi': '10.26434/x'},
     {'paper_id': 'core-9', 'chemrxiv_doi': '10.26434/X'},
+    {'paper_id': 'u', 'medrxiv_doi': 'https://doi.org/10.1101/2020.01.01.1.', 'biorxiv_doi': '   '},
+    {'paper_id': 'v', 'biorxiv_doi': 'DOI:10.1101/2020.01.01.1'},
     {'paper_id': 'm', 'title': 'Lithium–ion: Batteries!', 'publication_date': '2020-05-01'},
     {'paper_id': 'n', 'title': 'lithium ion batteries', 'publication_date': '2020'},
     {'paper_id': 'o', 'title': 'Lithium ion batteries', 'publication_date': '2021'},

@@ -9,6 +9,7 @@ when explicitly requested.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -62,6 +63,8 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
             'input_token_limit': '64000',
             'output_token_limit': '20000',
             'request_timeout': '1800',
+            'reasoning_effort': ' low ',
+            'thinking': 'false',
         },
     )
 
@@ -73,6 +76,8 @@ def test_merge_profile_applies_defaults_and_coerces_types() -> None:
     assert merged['input_token_limit'] == 64000
     assert merged['output_token_limit'] == 20000
     assert merged['request_timeout'] == 1800.0
+    assert merged['reasoning_effort'] == 'low'
+    assert merged['thinking'] is False
 
 
 def test_merge_profile_defaults_missing_input_token_limit() -> None:
@@ -85,6 +90,22 @@ def test_merge_profile_defaults_missing_input_token_limit() -> None:
     assert merged['input_token_limit'] == settings.DEFAULT_INPUT_TOKEN_LIMIT
     assert merged['output_token_limit'] == settings.DEFAULT_OUTPUT_TOKEN_LIMIT
     assert merged['request_timeout'] == settings.DEFAULT_REQUEST_TIMEOUT
+    assert merged['reasoning_effort'] is None
+    assert merged['thinking'] is None
+
+
+def test_reasoning_settings_normalise_blank_and_on_off_values() -> None:
+    """Treat blank values as the model default and parse thinking switches."""
+    assert settings.reasoning_effort_setting(None) is None
+    assert settings.reasoning_effort_setting('  ') is None
+    assert settings.reasoning_effort_setting(' xhigh ') == 'xhigh'
+    assert settings.thinking_setting(None) is None
+    assert settings.thinking_setting('') is None
+    assert settings.thinking_setting(True) is True
+    assert settings.thinking_setting('On') is True
+    assert settings.thinking_setting('0') is False
+    with pytest.raises(ValueError, match='thinking must be on or off'):
+        settings.thinking_setting('sometimes')
 
 
 def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,10 +113,13 @@ def test_env_profile_collects_only_defined_values(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_PROVIDER', 'local')
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_NAME', 'qwen')
     monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_INPUT_TOKEN_LIMIT', '120000')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_REASONING_EFFORT', 'medium')
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_THINKING', 'off')
 
     profile = settings._env_profile('PAPERMINERTOOLKIT_MODEL_')
 
-    assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000'}
+    assert profile == {'provider': 'local', 'model': 'qwen', 'input_token_limit': '120000',
+                       'reasoning_effort': 'medium', 'thinking': 'off'}
 
 
 def test_load_settings_returns_defaults_when_config_file_is_missing(isolated_settings_file: Path) -> None:
@@ -138,8 +162,23 @@ def test_load_settings_reports_invalid_config_file(isolated_settings_file: Path)
     """Report invalid JSON with the config file path."""
     isolated_settings_file.write_text('{not-json')
 
-    with pytest.raises(RuntimeError, match=str(isolated_settings_file)):
+    with pytest.raises(RuntimeError, match=re.escape(str(isolated_settings_file))):
         settings.load_settings()
+
+
+@pytest.mark.parametrize(('content', 'problem'), [
+    ('{not-json', 'Error loading'),
+    ('["not", "an", "object"]', 'expected a JSON object'),
+])
+def test_saved_settings_rejects_an_unreadable_or_non_object_file(
+    isolated_settings_file: Path, content: str, problem: str,
+) -> None:
+    """Refuse to read a damaged settings file as empty, so a setter cannot overwrite it."""
+    isolated_settings_file.write_text(content, encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=problem) as error:
+        settings._saved_settings()
+    assert str(isolated_settings_file) in str(error.value)
 
 
 def test_load_settings_applies_all_api_environment_overrides(isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,6 +282,8 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
         input_token_limit=120000,
         output_token_limit=16000,
         request_timeout=1800,
+        reasoning_effort='medium',
+        thinking=False,
     )
 
     loaded = settings.load_settings()
@@ -258,6 +299,8 @@ def test_set_model_profile_persists_profile_values(isolated_settings_file: Path)
     assert profile['input_token_limit'] == 120000
     assert profile['output_token_limit'] == 16000
     assert profile['request_timeout'] == 1800.0
+    assert profile['reasoning_effort'] == 'medium'
+    assert profile['thinking'] is False
 
 
 @pytest.mark.parametrize('provider,label', [

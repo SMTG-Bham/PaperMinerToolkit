@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 import requests
@@ -86,7 +87,7 @@ def _paper(paper_id: str = 'paper:figures') -> dict[str, object]:
 
 def _add_jats(db_path: Path, content: bytes, *, document_format: str = 'jats') -> None:
     """Create a corpus paper and attach one structured document."""
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         database.add_structured_document(
             conn,
             _paper(),
@@ -128,7 +129,7 @@ def test_downloads_redirects_deduplicates_resumes_and_forces(tmp_path: Path) -> 
     assert session.calls[0]['url'] == 'https://repo.example/images/first'
     assert session.calls[0]['params'] == {}
     assert session.calls[0]['headers']['Accept'] == 'image/*'
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         assets = database.get_figure_assets(conn, 'paper:figures', include_content=True)
         blobs = conn.execute(
             'SELECT COUNT(*) FROM blobs WHERE kind = ?', ('image',),
@@ -178,7 +179,7 @@ def test_shared_graphic_url_keeps_both_figure_assets(tmp_path: Path) -> None:
     summary = figures.download_structured_figures(db_path, 'paper:figures', session=session)
 
     assert summary == figures.FigureDownloadSummary(2, 0, 0)
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         assets = database.get_figure_assets(conn, 'paper:figures')
     assert len(assets) == 2
     assert {asset['metadata']['figure_id'] for asset in assets} == {'fig-1', 'fig-2'}
@@ -200,7 +201,7 @@ def test_reports_document_url_and_payload_failures_without_stopping(tmp_path: Pa
         <fig id="large"><graphic xlink:href="images/large"/></fig>
         </body></article>''',
     )
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         database.add_structured_document(
             conn,
             _paper(),
@@ -236,14 +237,14 @@ def test_reports_document_url_and_payload_failures_without_stopping(tmp_path: Pa
     assert any('not a supported image' in item for item in summary.failures)
     assert any('response is empty' in item for item in summary.failures)
     assert any('exceeds the 100-byte limit' in item for item in summary.failures)
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         assert database.get_figure_assets(conn, 'paper:figures') == []
 
 
 def test_download_rejects_invalid_arguments_and_handles_no_documents(tmp_path: Path) -> None:
     """Validate run arguments and make an empty existing paper a no-op."""
     db_path = tmp_path / 'empty.db'
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         database.upsert_paper(conn, _paper())
     assert figures.download_structured_figures(
         db_path, 'paper:figures', session=ImageSession([]),
@@ -400,7 +401,7 @@ def test_store_pdf_layout_figures_persists_resumes_and_refreshes(tmp_path: Path)
         'license': 'CC BY 4.0',
     }
 
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         database.upsert_paper(conn, paper)
         stored = figures.store_pdf_layout_figures(conn, paper, pdf_path)
         resumed = figures.store_pdf_layout_figures(conn, paper, pdf_path)
@@ -435,7 +436,7 @@ def test_store_pdf_layout_figures_validates_input_and_reports_no_figures(tmp_pat
     document.save(empty_path)
     document.close()
 
-    with database.connect(tmp_path / 'empty.db') as conn:
+    with closing(database.connect(tmp_path / 'empty.db')) as conn, conn:
         with pytest.raises(ValueError, match='paper must carry a paper_id'):
             figures.store_pdf_layout_figures(conn, {'paper_id': ' '}, empty_path)
         assert figures.store_pdf_layout_figures(
@@ -458,13 +459,73 @@ def test_store_pdf_layout_figures_records_unreadable_render_output(
 
     monkeypatch.setattr(figures, 'render_pdf_figures', missing_render)
 
-    with database.connect(tmp_path / 'unreadable.db') as conn:
+    with closing(database.connect(tmp_path / 'unreadable.db')) as conn, conn:
         database.upsert_paper(conn, paper)
         summary = figures.store_pdf_layout_figures(conn, paper, pdf_path)
 
     assert summary.downloaded == 0
     assert summary.failed == 1
     assert 'Figure 1' in summary.failures[0]
+
+
+def _paper_with_pdf(conn: Any, paper: dict[str, object], pdf_path: Path) -> None:
+    """Store a paper row and its PDF asset."""
+    database.upsert_paper(conn, paper)
+    database.add_asset(conn, paper, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
+
+
+def test_detect_paper_figures_reports_pdfs_without_figures_and_unreadable_pdfs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call a PDF without captions none found, and one that cannot be read failed."""
+    fitz = pytest.importorskip('fitz')
+    blank = tmp_path / 'blank.pdf'
+    document = fitz.open()
+    document.new_page(width=600, height=800)
+    document.save(blank)
+    document.close()
+    paper = _paper('paper:blank')
+
+    with closing(database.connect(tmp_path / 'detect.db')) as conn, conn:
+        _paper_with_pdf(conn, paper, blank)
+        found = figures.detect_paper_figures(conn, paper)
+
+        def unreadable(*_: object, **__: object) -> NoReturn:
+            """Fail as a PDF that MuPDF cannot open does."""
+            raise RuntimeError('cannot open the stored PDF')
+
+        monkeypatch.setattr(figures, 'store_pdf_layout_figures', unreadable)
+        failed = figures.detect_paper_figures(conn, paper)
+
+    assert found == {'paper_id': 'paper:blank', 'status': 'none_found', 'stored': 0, 'replaced': 0,
+                     'failures': []}
+    assert failed == {'paper_id': 'paper:blank', 'status': 'failed', 'stored': 0, 'replaced': 0,
+                      'failures': ['cannot open the stored PDF']}
+
+
+def test_detect_paper_figures_fails_a_paper_whose_found_figures_were_not_stored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call a paper failed, with the reasons, when figures were found but none could be stored."""
+    pdf_path = tmp_path / 'layout.pdf'
+    _write_figure_pdf(pdf_path)
+
+    def missing_render(*_: object, **__: object) -> list[str]:
+        """Report a rendered file that does not exist."""
+        return [str(tmp_path / 'absent.png')]
+
+    monkeypatch.setattr(figures, 'render_pdf_figures', missing_render)
+    paper = _paper('paper:unrendered')
+    with closing(database.connect(tmp_path / 'unrendered.db')) as conn, conn:
+        _paper_with_pdf(conn, paper, pdf_path)
+        result = figures.detect_paper_figures(conn, paper)
+        assert database.get_figure_assets(conn, 'paper:unrendered') == []
+
+    assert (result['status'], result['stored']) == ('failed', 0)
+    assert len(result['failures']) == 1
+    assert result['failures'][0].startswith('Figure 1: ')
 
 
 def test_download_structured_figures_records_reference_sentences(tmp_path: Path) -> None:
@@ -482,7 +543,7 @@ def test_download_structured_figures_records_reference_sentences(tmp_path: Path)
 
     figures.download_structured_figures(db_path, 'paper:figures', session=session)
 
-    with database.connect(db_path) as conn:
+    with closing(database.connect(db_path)) as conn, conn:
         asset = database.get_figure_assets(conn, 'paper:figures')[0]
     assert asset['metadata']['reference_sentences'] == [
         'Conductivity rose sharply, as Figure 1 shows.',

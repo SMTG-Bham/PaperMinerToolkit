@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -54,7 +55,7 @@ def _store_fake_topic_scores(db_path: Path) -> None:
     """Insert one current two-topic model for filter tests."""
     fingerprint = topics.topic_corpus_fingerprint(db_path, ('title',))['sha256']
     now = corpus.utc_now()
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         conn.execute(
             'INSERT INTO topic_models VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (
@@ -98,7 +99,7 @@ def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp
         {'paper_id': 'paper:excluded', 'title': 'Unrelated title'},
         {'paper_id': 'paper:vetoed', 'title': 'Target review'},
     ]
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper in papers:
             corpus.upsert_paper(conn, paper)
         _add_text(conn, papers[2], 'No relevant terms.', role='abstract')
@@ -118,7 +119,7 @@ def test_regex_filter_classifies_matches_vetoes_missing_content_and_evidence(tmp
 
     assert overview['expression'] == 'target'
     assert overview['counts'] == {'excluded': 2, 'included': 1, 'unavailable': 1}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         statuses = filtering.current_filter_statuses(conn)
         evidence = {
             row['paper_id']: json.loads(row['evidence_json'])
@@ -140,7 +141,7 @@ def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path: Path, monk
     """PDF-only papers are searchable, but matches in their references are ignored."""
     db_path = tmp_path / 'papers.db'
     paper = {'paper_id': 'paper:pdf', 'title': 'PDF paper'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_asset(
             conn, paper, b'not-a-real-pdf', role='pdf', kind='pdf', mime_type='application/pdf'
         )
@@ -161,7 +162,7 @@ def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path: Path, monk
     overview = filtering.apply_regex_filter(db_path, rules_path)
 
     assert overview['counts']['included'] == 1
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         evidence = json.loads(conn.execute(
             'SELECT evidence_json FROM paper_filter_results'
         ).fetchone()[0])
@@ -172,7 +173,7 @@ def test_full_text_uses_pdf_fallback_and_ignores_references(tmp_path: Path, monk
 def test_filters_combine_left_to_right_and_named_reset_recomputes_state(tmp_path: Path) -> None:
     """Successive operators form an explicit left-associative expression."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id, title in [
             ('paper:1', 'alpha'),
             ('paper:2', 'beta gamma'),
@@ -203,7 +204,7 @@ def test_filters_combine_left_to_right_and_named_reset_recomputes_state(tmp_path
 def test_duplicate_requires_replace_and_invalid_pattern_is_atomic(tmp_path: Path) -> None:
     """Definitions are compiled before existing persisted state can be changed."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:1', 'title': 'alpha'})
     rules_path = _write_rules(tmp_path / 'alpha.json', 'alpha', r'\balpha\b')
     filtering.apply_regex_filter(db_path, rules_path)
@@ -213,7 +214,7 @@ def test_duplicate_requires_replace_and_invalid_pattern_is_atomic(tmp_path: Path
     _write_rules(rules_path, 'alpha', '[')
     with pytest.raises(ValueError, match='Invalid regex'):
         filtering.apply_regex_filter(db_path, rules_path, replace=True)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         overview = filtering.filter_overview(conn)
     assert overview['expression'] == 'alpha'
     assert overview['counts']['included'] == 1
@@ -286,7 +287,7 @@ def test_all_mode_case_sensitivity_and_timeout_classification() -> None:
 def test_filter_cli_applies_reports_and_resets(tmp_path: Path) -> None:
     """The three CLI entry points expose the persisted filter lifecycle."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:1', 'title': 'alpha'})
     rules_path = _write_rules(tmp_path / 'alpha.json', 'alpha', 'alpha')
     runner = CliRunner()
@@ -309,7 +310,7 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path: Path
         {'paper_id': 'paper:included', 'title': 'alpha study'},
         {'paper_id': 'paper:excluded', 'title': 'beta study'},
     ]
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper in papers:
             _add_text(conn, paper, f'text for {paper["paper_id"]}')
     rules_path = _write_rules(tmp_path / 'alpha.json', 'alpha', r'\balpha\b')
@@ -356,7 +357,7 @@ def test_scrape_enforces_filter_gate_and_supports_explicit_bypass(tmp_path: Path
     )
 
     scrape.scrape_papers(db_path, output_path=str(tmp_path / 'filtered.csv'))
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         statuses = {
             row['paper_id']: row['text_scrape_status'] for row in corpus.paper_rows(conn)
         }
@@ -380,7 +381,7 @@ def test_topic_filters_support_probability_dominance_hybrid_and_stale_scores(
 ) -> None:
     """Use stored topic scores alone or with regex and fail closed after corpus changes."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha material'})
         corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta material'})
     _store_fake_topic_scores(db_path)
@@ -410,9 +411,9 @@ def test_topic_filters_support_probability_dominance_hybrid_and_stale_scores(
     assert overview['expression'] == '(topic-relevance AND alpha-title)'
     assert overview['counts']['included'] == 1
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:new', 'title': 'new material'})
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         with pytest.raises(ValueError, match='stale scores'):
             filtering.current_filter_statuses(conn)
         overview = filtering.filter_overview(conn)
@@ -469,7 +470,7 @@ def test_filter_definition_loaders_report_invalid_json(tmp_path: Path) -> None:
     path.write_text('{')
     with pytest.raises(ValueError, match='Invalid filter JSON'):
         filtering.load_regex_definition(path)
-    with corpus.connect(tmp_path / 'papers.db') as conn:
+    with closing(corpus.connect(tmp_path / 'papers.db')) as conn, conn:
         with pytest.raises(ValueError, match='Invalid filter JSON'):
             filtering.load_topic_definition(conn, path)
 
@@ -494,7 +495,7 @@ def test_topic_rule_rejects_invalid_conditions(rule: object, message: str) -> No
 def test_topic_definition_rejects_invalid_structure(tmp_path: Path) -> None:
     """Validate topic-filter names, models, modes, rules, and descriptions."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
         corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
         corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
@@ -515,7 +516,7 @@ def test_topic_definition_rejects_invalid_structure(tmp_path: Path) -> None:
                                'min_probability': 0.5}]}, 'unique'),
         ({**base, 'description': 1}, 'description'),
     ]
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for definition, message in cases:
             with pytest.raises(ValueError, match=message):
                 filtering.normalize_topic_definition(conn, definition)
@@ -589,7 +590,7 @@ def test_match_rule_caps_evidence_and_records_timeouts() -> None:
 def test_topic_evaluation_reports_missing_and_incomplete_predictions(tmp_path: Path) -> None:
     """Fail closed when a paper lacks a prediction or a required topic score."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
         corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
     _store_fake_topic_scores(db_path)
@@ -603,7 +604,7 @@ def test_topic_evaluation_reports_missing_and_incomplete_predictions(tmp_path: P
         ],
         'exclude': [],
     }
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         status, _, reason = filtering.evaluate_topic_paper(
             conn, {'paper_id': 'paper:missing'}, definition
         )
@@ -634,7 +635,7 @@ def test_status_combination_rejects_unknown_inputs() -> None:
 def test_regex_filter_validates_join_and_exercises_replacement(tmp_path: Path) -> None:
     """Reject misplaced joins and transactionally replace an existing regex filter."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'p', 'title': 'alpha'})
     rules = _write_rules(tmp_path / 'rules.json', 'same', 'alpha')
     with pytest.raises(ValueError, match='join_operator'):
@@ -652,7 +653,7 @@ def test_regex_filter_validates_join_and_exercises_replacement(tmp_path: Path) -
 def test_topic_filter_validates_join_duplicate_and_replacement(tmp_path: Path) -> None:
     """Validate topic joins and replace a stored topic filter in place."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id in ('paper:alpha', 'paper:beta'):
             corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
     _store_fake_topic_scores(db_path)
@@ -679,13 +680,13 @@ def test_topic_filter_validates_join_duplicate_and_replacement(tmp_path: Path) -
     second['include'][0]['name'] = 'alpha-second'
     rules.write_text(json.dumps(second))
     filtering.apply_topic_filter(db_path, rules, join_operator='and')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert filtering.topic_filter_staleness(conn) == {'lda:test': False}
 
 
 def test_topic_filter_staleness_fails_closed_without_a_database_path() -> None:
     """Treat active topic filters on anonymous connections as stale."""
-    with corpus.connect(':memory:') as conn:
+    with closing(corpus.connect(':memory:')) as conn, conn:
         now = corpus.utc_now()
         conn.execute(
             'INSERT INTO corpus_filters '
@@ -699,7 +700,7 @@ def test_topic_filter_staleness_fails_closed_without_a_database_path() -> None:
 def test_filter_method_collisions_and_reset_validation(tmp_path: Path) -> None:
     """Reject cross-method replacement and invalid filter removal requests."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id in ('paper:alpha', 'paper:beta'):
             corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
     _store_fake_topic_scores(db_path)
@@ -732,7 +733,7 @@ def test_refresh_topic_filters_rolls_back_failed_reevaluation(
 ) -> None:
     """Leave stored topic-filter results intact when reevaluation fails."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:alpha', 'title': 'alpha'})
         corpus.upsert_paper(conn, {'paper_id': 'paper:beta', 'title': 'beta'})
     _store_fake_topic_scores(db_path)
@@ -751,13 +752,13 @@ def test_refresh_topic_filters_rolls_back_failed_reevaluation(
     monkeypatch.setattr(filtering, 'evaluate_topic_paper', fail)
     with pytest.raises(RuntimeError, match='evaluation failed'):
         filtering.refresh_topic_filters(db_path, 'lda:test')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert conn.execute('SELECT COUNT(*) FROM paper_filter_results').fetchone()[0] == 2
 
 
 def _filter_snapshot(db_path: Path) -> dict[str, list[tuple[Any, ...]]]:
     """Read complete filter state for transaction rollback comparisons."""
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         return {
             table: [tuple(row) for row in conn.execute(f'SELECT * FROM {table} ORDER BY rowid')]
             for table in ('corpus_filters', 'paper_filter_results', 'paper_filter_state')
@@ -766,7 +767,7 @@ def _filter_snapshot(db_path: Path) -> dict[str, list[tuple[Any, ...]]]:
 
 def _filter_fixture(db_path: Path, rules_path: Path, method: str, name: str) -> None:
     """Prepare two papers and a definition for either persistent filter method."""
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id in ('paper:alpha', 'paper:beta'):
             corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
     if method == 'regex':
@@ -799,7 +800,7 @@ def test_apply_filter_rolls_back_partial_result_insertion(
     definition = json.loads(rules_path.read_text())
     definition['description'] = 'replacement description'
     rules_path.write_text(json.dumps(definition))
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         conn.executescript("""
             CREATE TRIGGER reject_second_filter_result BEFORE INSERT ON paper_filter_results
             WHEN NEW.paper_id = 'paper:beta'
@@ -828,7 +829,7 @@ def test_filter_replacement_preserves_identity_position_and_default_join(
     filtering.apply_regex_filter(db_path, first)
     apply = filtering.apply_regex_filter if method == 'regex' else filtering.apply_topic_filter
     apply(db_path, rules_path, join_operator='or')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         before = filtering.active_filter_stack(conn)[1]
 
     overview = apply(db_path, rules_path, replace=True)
@@ -857,7 +858,7 @@ def test_refresh_topic_filters_rolls_back_all_filters_after_later_insert_failure
     overview = filtering.apply_topic_filter(db_path, rules_path)
     second_id = overview['filters'][1]['filter_id']
     before = _filter_snapshot(db_path)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         conn.executescript(f"""
             CREATE TRIGGER reject_second_filter_result BEFORE INSERT ON paper_filter_results
             WHEN NEW.filter_id = {int(second_id)} AND NEW.paper_id = 'paper:beta'

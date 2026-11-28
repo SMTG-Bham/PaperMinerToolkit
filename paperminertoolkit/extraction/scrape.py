@@ -20,7 +20,7 @@ import textwrap
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from tqdm import tqdm
@@ -1398,7 +1398,7 @@ def scrape_papers(db_path: str = 'papers.db',
         'supplement_materials': 0,
         'dropped': 0,
     }
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         filters = active_filter_stack(conn)
         papers = paper_rows(conn)
         if paper_ids is not None:

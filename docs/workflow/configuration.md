@@ -240,6 +240,19 @@ pmt config status
 
 Use model identifiers available to your provider account. PaperMinerToolkit infers ordinary capabilities from the provider and model name; `--capability` is an override for unusual or locally served models.
 
+## Claude Code login
+
+The `claude-code` provider sends text requests through a logged-in Claude Code CLI
+(`claude -p` with every tool disabled), so they use that login rather than an API key.
+The model name is any Claude Code model name or alias, such as `opus`. The CLI is found
+as `claude` on `PATH`; set `PAPERMINERTOOLKIT_CLAUDE_CODE_BIN` to use another path.
+Image requests are not supported, and each request may run for at most the profile's
+request timeout.
+
+```bash
+pmt config model text --provider claude-code --model opus
+```
+
 ## Local OpenAI-compatible servers
 
 Point both profiles at the local endpoint when a model supports text and images:
@@ -257,6 +270,23 @@ pmt config model vision \
 ```
 
 Requests default to `temperature=0` and `top_p=1` for repeatable extraction. `--input-token-limit` (default 32000) sets how much paper text is sent per request before it is split into chunks, and `--output-token-limit` (default 10000) caps how many tokens the model may generate per extraction request. Raise the output limit for reasoning models whose server counts their thinking against it (for example GLM or gpt-oss under vLLM), and keep the input plus output limits within the server's context length (`--max-model-len` for vLLM). `--request-timeout` (default 600 seconds) is how long one request to an OpenAI-compatible server may take; a reasoning model that thinks at length on long papers, especially with `pmt scrape --workers`, can need more. Environment variables prefixed with `PAPERMINERTOOLKIT_MODEL_` configure the text profile; `PAPERMINERTOOLKIT_VISION_MODEL_` configures vision.
+
+### Reasoning level
+
+Many models can be told how much to think before answering. By default nothing is sent, so each model uses its own default, which is often its highest level. Two settings change it:
+
+- `--reasoning-effort LEVEL` sends `reasoning_effort` with every request (`reasoning.effort` for OpenAI's API). The levels differ by model, for example `low`/`medium`/`high` for gpt-oss, `low`/`medium`/`xhigh` for Qwen3.8 and `none`/`high` for Mistral Small 4; check the model card. vLLM passes the level to the model's chat template, and a template may reject a level it doesn't know (Qwen3.8 refuses `high`), which fails every request.
+- `--thinking` / `--no-thinking` switches a hybrid model's thinking on or off through its chat template (`chat_template_kwargs.enable_thinking`), as Qwen3, Gemma 4, GLM and Nemotron expect. It applies to local OpenAI-compatible servers only.
+
+```bash
+pmt config model text \
+  --provider local \
+  --model Qwen/Qwen3.8-27B \
+  --base-url http://127.0.0.1:8000/v1 \
+  --reasoning-effort medium
+```
+
+Leave both unset to keep the model's default. In jobs, set `PAPERMINERTOOLKIT_MODEL_REASONING_EFFORT` and `PAPERMINERTOOLKIT_MODEL_THINKING` (`on` or `off`) instead. A model that thinks less answers sooner and is less likely to run out of output tokens on long papers, but may extract less accurately, so compare levels on a validation set. Anthropic profiles reject both settings.
 
 :::{warning}
 Never put real keys in notebooks, recipe files, shell scripts, or committed configuration. Prefer your scheduler's secret mechanism or environment variables for unattended jobs.

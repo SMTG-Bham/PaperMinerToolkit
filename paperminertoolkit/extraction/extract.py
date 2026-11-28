@@ -34,9 +34,9 @@ def token_length(
     prompt : object
         Text to measure. Non-string values return an empty list for backward
         compatibility.
-    model : str, optional
+    model : str | None, optional
         Model name used for tokenizer selection. By default the name in
-        `model_config` is used, falling back to the package default model.
+        ``model_config`` is used, falling back to the package default model.
         An explicit name here overrides the configured one, so it must not
         default to the package model: a local model's chunk plan would then
         load the tokenizer of an unrelated model, fail, and silently fall

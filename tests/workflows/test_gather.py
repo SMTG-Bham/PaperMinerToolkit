@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 import json
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,7 @@ def test_gather_deduplicates_search_matches_and_reuses_existing_assets(
 ) -> None:
     """Resolve provider aliases to canonical IDs and leave unrelated rows untouched."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'canonical:old', 'doi': '10.1234/old'})
         corpus.upsert_paper(conn, {'paper_id': 'unrelated', 'doi': '10.1234/other'})
         unrelated_before = corpus.find_paper(conn, {'paper_id': 'unrelated'})
@@ -101,7 +102,7 @@ def test_gather_deduplicates_search_matches_and_reuses_existing_assets(
     assert pdfs == ['canonical:old', 'core:new']
     assert first['downloads']['pdfs'] == 2
     assert first['downloads']['abstracts_skipped'] == 2
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         links = conn.execute(
             'SELECT paper_id, source FROM paper_search_results WHERE search_id = ?',
             (summary['search_id'],),
@@ -142,7 +143,7 @@ def test_gather_abstract_format_overrides_disabled_abstract_option(
         'materials', db_path, source='core', download_format=format_name,
         download_sources=['core'], download_abstract=False, download_supplements=False,
     )
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         asset = corpus.get_asset(conn, 'core:one', 'abstract')
     assert (asset is not None) is store_abstract
     assert result['search']['abstracts_stored'] == int(store_abstract)
@@ -157,7 +158,7 @@ def test_gather_reports_search_outcomes_without_downloading_unrelated_papers(
 ) -> None:
     """Distinguish empty, partial, and failed searches without a corpus-wide download."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'unrelated'})
     empty = _frame('core', [])
     match = _frame('core', [{'paper_id': 'core:one'}])
@@ -177,7 +178,7 @@ def test_gather_reports_search_outcomes_without_downloading_unrelated_papers(
     assert pdfs == (['core:one'] if status == 'partial' else [])
     if status != 'partial':
         assert result['downloads'] is None
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert corpus.search_history(conn)[0]['status'] == status
         assert corpus.get_asset(conn, 'unrelated', 'pdf') is None
 
@@ -212,7 +213,7 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
 ) -> None:
     """Skip excluded, unevaluated, unknown, and unselected rows in scoped downloads."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id, title in [('included', 'Keep'), ('unselected', 'Keep'), ('excluded', 'Drop')]:
             corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': title})
     rules = tmp_path / 'rules.json'
@@ -221,7 +222,7 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
         'include': [{'name': 'keep', 'pattern': 'Keep'}],
     }), encoding='utf-8')
     filtering.apply_regex_filter(db_path, rules)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'unevaluated', 'title': 'Keep'})
     calls = _stub_pdfs(monkeypatch)
 
@@ -244,7 +245,7 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
     )
     assert not any(filtered_out.values())
     assert calls == ['included']
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert corpus.get_asset(conn, 'excluded', 'pdf') is None
         assert corpus.get_asset(conn, 'unselected', 'pdf') is None
         assert corpus.get_asset(conn, 'unevaluated', 'pdf') is None
@@ -287,5 +288,5 @@ def test_gather_forwards_supplement_controls_and_suppresses_si_only_abstracts(
     assert seen['download_abstract'] is want_abstract
     assert result['search']['abstracts_stored'] == int(want_abstract)
     assert result['downloads'] == {'supplements': 1}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert (corpus.get_asset(conn, 'core:one', 'abstract') is not None) is want_abstract

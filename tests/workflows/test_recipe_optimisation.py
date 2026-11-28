@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,7 @@ def test_parse_proposal_accepts_fenced_and_bare_recipes() -> None:
 def _corpus(tmp_path: Path) -> Path:
     """Build a corpus with two papers that have downloaded text."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for paper_id, doi, text in [('demo:1', '10.1/a', 'ZnO has a gap of 3.3 eV.'),
                                     ('demo:2', '10.1/b', 'TiO2 has a gap of 3.2 eV.')]:
             paper = {'paper_id': paper_id, 'doi': doi, 'title': f'Paper {paper_id}', 'sources': 'demo'}

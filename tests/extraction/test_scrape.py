@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import math
 import os
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Self
 
@@ -46,7 +47,7 @@ def sample_recipe() -> dict[str, Any]:
 def write_corpus(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     """Write paper rows and matching local files to a corpus database for scrape unit tests."""
     papers_dir = path.parent / 'papers'
-    with corpus.connect(path) as conn:
+    with closing(corpus.connect(path)) as conn, conn:
         for row in rows:
             corpus.upsert_paper(conn, row)
             paper_id = row.get('paper_id')
@@ -1052,7 +1053,7 @@ def _add_figure(
     source: str = 'pubmed',
 ) -> None:
     """Attach one stored figure asset to a corpus paper for layout-mode tests."""
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.add_figure_asset(
             conn,
             paper,
@@ -1109,7 +1110,7 @@ def test_scrape_papers_layout_mode_sends_captions_and_records_figure_provenance(
 
     materials = pd.read_csv(output_path, index_col=0)
     papers = read_corpus(db_path)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         statuses = {
             asset['metadata']['figure_id']: asset['metadata'].get('extraction_status')
             for asset in corpus.get_figure_assets(conn, 'paper-1')
@@ -1200,7 +1201,7 @@ def test_scrape_papers_layout_mode_resumes_completed_figures_and_forces_reruns(
     write_corpus(db_path, [paper])
     _add_figure(db_path, paper, 'fig-1', caption='Done already.', label='Figure 1')
     _add_figure(db_path, paper, 'fig-2', caption='Still pending.', label='Figure 2')
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.set_figure_extraction_status(conn, 'paper-1', 'fig-1', 'succeeded')
     calls = []
 
@@ -1281,7 +1282,7 @@ def test_scrape_papers_layout_mode_marks_figures_failed_when_the_model_errors(
                          image_extraction='layout', image_dir=str(tmp_path / 'images'))
 
     papers = read_corpus(db_path)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         metadata = corpus.get_figure_assets(conn, 'paper-1')[0]['metadata']
     assert papers.loc[0, 'image_scrape_status'] == 'failed'
     assert metadata['extraction_status'] == 'failed'
@@ -1397,7 +1398,7 @@ def test_layout_figure_packages_detect_pdf_figures_and_skip_unusable_assets(
 
     monkeypatch.setattr(scrape, 'store_pdf_layout_figures', fake_store)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, paper)
         packages = scrape._layout_figure_packages(
             conn, paper, 'paper.pdf', tmp_path / 'images', force=False, required=False,
@@ -1426,7 +1427,7 @@ def test_layout_figure_packages_raise_for_an_explicit_layout_request(
 
     monkeypatch.setattr(scrape, 'store_pdf_layout_figures', failing_store)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, paper)
         with pytest.raises(RuntimeError, match='could not open the PDF'):
             scrape._layout_figure_packages(
@@ -1507,7 +1508,7 @@ def test_later_text_chunk_failure_keeps_partial_records_and_image_context(
     db_path = tmp_path / 'papers.db'
     output_path = tmp_path / 'scraped.csv'
     paper = {'paper_id': 'paper-partial'}
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for role, content, kind, mime_type in [
             ('abstract', 'raw evidence', 'text', 'text/plain'),
             ('text', 'raw evidence', 'text', 'text/plain'),

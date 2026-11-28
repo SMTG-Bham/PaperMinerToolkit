@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import builtins
-import contextlib
 import csv
 import json
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ THEME_TEXTS = [
 
 def build_topic_corpus(db_path: Path, papers_per_theme: int = 8) -> None:
     """Create a small corpus with three deliberately distinct themes."""
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         for theme_id, theme_text in enumerate(THEME_TEXTS):
             for index in range(papers_per_theme):
                 paper = {
@@ -62,6 +62,32 @@ def train_small_model(db_path: Path, model_dir: Path) -> dict[str, Any]:
         representative_papers=2,
         streaming=False,
     )
+
+
+def test_topic_document_batches_close_their_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close the corpus connection when reading ends or stops early, so the file can be deleted."""
+    db_path = tmp_path / 'papers.db'
+    build_topic_corpus(db_path, papers_per_theme=2)
+    opened: list[sqlite3.Connection] = []
+    real_connect = topics.connect
+
+    def recording_connect(path: Any) -> sqlite3.Connection:
+        """Open the corpus as usual and keep the connection for inspection."""
+        opened.append(real_connect(path))
+        return opened[-1]
+
+    monkeypatch.setattr(topics, 'connect', recording_connect)
+    assert sum(len(batch) for batch in topics.iter_topic_document_batches(db_path, batch_size=3)) > 3
+    batches = topics.iter_topic_document_batches(db_path, batch_size=1)
+    next(batches)
+    batches.close()
+
+    assert len(opened) == 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            conn.execute('SELECT 1')
 
 
 def test_topic_helpers_validate_fields_batches_and_corpus_shape(tmp_path: Path) -> None:
@@ -117,7 +143,8 @@ def test_topic_artifact_helpers_handle_absent_names_and_skipped_documents(tmp_pa
           'publication_date': '2020', 'text': '', 'token_count': 0}],
         [], {}, [],
     )
-    assert list(csv.DictReader(output.open()))[0]['status'] == 'no_vocabulary_terms'
+    with output.open(encoding='utf-8', newline='') as handle:
+        assert list(csv.DictReader(handle))[0]['status'] == 'no_vocabulary_terms'
 
 
 def test_streaming_report_covers_errors_and_all_quality_warnings() -> None:
@@ -183,7 +210,9 @@ def test_streaming_preparation_handles_empty_filtered_and_zero_sample_corpora(
         _prepared_streaming=prepared, emit_warnings=False,
     )
     assert result['report']['perplexity'] is None
-    rows = list(csv.DictReader((tmp_path / 'streamed' / topics.PREDICTIONS_FILENAME).open()))
+    predictions = tmp_path / 'streamed' / topics.PREDICTIONS_FILENAME
+    with predictions.open(encoding='utf-8', newline='') as handle:
+        rows = list(csv.DictReader(handle))
     assert any(row['status'] == 'no_vocabulary_terms' for row in rows)
 
 
@@ -471,7 +500,7 @@ def test_domain_stopwords_require_one_word_per_line(tmp_path: Path) -> None:
 def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path: Path) -> None:
     """Build one normalized document from a title and its latest abstract asset."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         paper = {'paper_id': 'paper:1', 'title': 'Solid Electrolyte', 'publication_date': '2024'}
         corpus.add_asset(conn, paper, 'Lithium conductivity', role='abstract', kind='text', mime_type='text/plain')
         corpus.add_asset(conn, paper, 'Full text words', role='text', kind='text', mime_type='text/plain')
@@ -487,7 +516,7 @@ def test_load_topic_documents_combines_selected_metadata_and_assets(tmp_path: Pa
 def test_topic_iterables_accept_single_pass_field_inputs(tmp_path: Path) -> None:
     """Preserve validated text fields when callers supply a generator."""
     db_path = tmp_path / 'papers.db'
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'paper:1', 'title': 'Solid electrolyte'})
 
     batches = list(topics.iter_topic_document_batches(
@@ -583,7 +612,7 @@ def test_predict_topic_model_marks_documents_without_known_vocabulary(tmp_path: 
     build_topic_corpus(training_db)
     with pytest.warns(UserWarning):
         train_small_model(training_db, model_dir)
-    with corpus.connect(prediction_db) as conn:
+    with closing(corpus.connect(prediction_db)) as conn, conn:
         corpus.add_asset(
             conn,
             {'paper_id': 'known', 'title': 'Lithium electrolyte'},
@@ -874,11 +903,18 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(
             rolled_back.append(True)
             self.connection.rollback()
 
-    @contextlib.contextmanager
-    def failing_connect(path: Any) -> Any:
-        """Wrap the normal corpus connection in the failure proxy."""
-        with original_connect(path) as connection:
-            yield FailingConnection(connection)
+        def __enter__(self) -> FailingConnection:
+            """Enter the real connection's transaction, keeping the proxy as the handle."""
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *exc_info: Any) -> Any:
+            """Commit or roll back through the real connection."""
+            return self.connection.__exit__(*exc_info)
+
+    def failing_connect(path: Any) -> FailingConnection:
+        """Wrap the normal corpus connection in the failure proxy, as connect() returns one."""
+        return FailingConnection(original_connect(path))
 
     monkeypatch.setattr(topics, 'connect', failing_connect)
     with pytest.raises(sqlite3.OperationalError, match='disk full'):
@@ -887,7 +923,7 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(
     monkeypatch.setattr(topics, 'connect', original_connect)
 
     assert summary['papers_predicted'] == 9
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         assert conn.execute('SELECT COUNT(*) FROM topic_models').fetchone()[0] == 1
         assert conn.execute('SELECT COUNT(*) FROM topic_definitions').fetchone()[0] == 3
         assert conn.execute('SELECT COUNT(*) FROM paper_topic_predictions').fetchone()[0] == 9
@@ -903,11 +939,11 @@ def test_topic_store_predicts_fresh_scores_and_reports_staleness(
     }))
     filtering.apply_topic_filter(db_path, rules_path)
 
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         corpus.upsert_paper(conn, {'paper_id': 'new', 'title': 'unseen quasar terminology'})
     assert topics.stored_topic_models(db_path)[0]['is_current'] is False
     topics.store_topic_model_scores(model_dir, db_path, name='demo-model', batch_size=2)
-    with corpus.connect(db_path) as conn:
+    with closing(corpus.connect(db_path)) as conn, conn:
         overview = filtering.filter_overview(conn)
     assert overview['stale_topic_filters'] == []
     assert sum(overview['counts'].values()) == 10

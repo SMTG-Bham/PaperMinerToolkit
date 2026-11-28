@@ -7,6 +7,8 @@ clients, and public query helpers without calling live model APIs.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import types
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -63,6 +65,8 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
         'input_token_limit': '64000',
         'output_token_limit': '24000',
         'request_timeout': '1800',
+        'reasoning_effort': 'high',
+        'thinking': 'off',
     })
     monkeypatch.setattr(models, 'load_settings', lambda: {'anthropic_api_key': 'settings-key'})
 
@@ -80,6 +84,11 @@ def test_model_config_from_profile_merges_settings_and_overrides(monkeypatch: py
     assert models.ModelConfig.from_profile('vision', output_token_limit='30000').output_token_limit == 30000
     assert config.request_timeout == 1800.0
     assert models.ModelConfig.from_profile('vision', request_timeout='60').request_timeout == 60.0
+    assert config.reasoning_effort == 'high'
+    assert config.thinking is False
+    overridden = models.ModelConfig.from_profile('vision', reasoning_effort='low', thinking='on')
+    assert overridden.reasoning_effort == 'low'
+    assert overridden.thinking is True
 
 
 def test_model_config_provider_override_drops_profile_specific_connection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,6 +120,27 @@ def test_model_config_provider_override_drops_profile_specific_connection(monkey
         models.ModelConfig.from_profile('text', provider='anthropic')
 
 
+def test_model_config_provider_override_drops_profile_reasoning_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local profile's reasoning effort and thinking switch are not sent to another provider."""
+    monkeypatch.setattr(models, 'get_model_profile', lambda profile: {
+        'provider': 'local',
+        'model': 'openai/gpt-oss-120b',
+        'base_url': 'http://127.0.0.1:8000/v1',
+        'reasoning_effort': 'medium',
+        'thinking': 'on',
+    })
+    monkeypatch.setattr(models, 'load_settings', lambda: {})
+
+    same = models.ModelConfig.from_profile('text')
+    other = models.ModelConfig.from_profile('text', provider='claude-code', model='opus')
+    explicit = models.ModelConfig.from_profile('text', provider='openai', model='gpt-test', reasoning_effort='low')
+
+    assert (same.reasoning_effort, same.thinking) == ('medium', True)
+    assert (other.reasoning_effort, other.thinking) == (None, None)
+    assert isinstance(models.get_model_client(other), models.ClaudeCodeClient)
+    assert explicit.reasoning_effort == 'low'
+
+
 def test_model_config_generation_args_and_require() -> None:
     """Test generation arguments and capability validation."""
     config = text_config()
@@ -125,6 +155,58 @@ def test_model_config_generation_args_and_require() -> None:
     config.require('text')
     with pytest.raises(models.ModelCapabilityError, match='cannot handle vision inputs'):
         config.require('vision')
+
+
+def test_model_config_reasoning_args_follow_each_provider() -> None:
+    """Send reasoning settings in each provider's own form, and reject unsupported ones."""
+    for provider in ['openai', 'anthropic', 'local']:
+        assert text_config(provider=provider).reasoning_args() == {}
+    assert text_config(provider='local', reasoning_effort='medium', thinking=False).reasoning_args() == {
+        'reasoning_effort': 'medium',
+        'extra_body': {'chat_template_kwargs': {'enable_thinking': False}},
+    }
+    assert text_config(provider='local', thinking=True).reasoning_args() == {
+        'extra_body': {'chat_template_kwargs': {'enable_thinking': True}},
+    }
+    assert text_config(provider='openai', reasoning_effort='high').reasoning_args() == {
+        'reasoning': {'effort': 'high'},
+    }
+    with pytest.raises(ValueError, match='thinking is only supported for local'):
+        text_config(provider='openai', thinking=True).reasoning_args()
+    with pytest.raises(ValueError, match='not supported for provider "anthropic"'):
+        models.AnthropicMessagesClient(text_config(provider='anthropic', reasoning_effort='high'))
+
+
+def test_clients_send_reasoning_settings_with_each_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Add the reasoning arguments to Responses and chat completion requests."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> types.SimpleNamespace:
+        """Record a request and return a response both APIs can read."""
+        calls.append(kwargs)
+        message = types.SimpleNamespace(content='chat text')
+        return types.SimpleNamespace(output_text='model text',
+                                     choices=[types.SimpleNamespace(message=message)])
+
+    class FakeOpenAI:
+        """Expose fake Responses and chat completions resources."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            """Attach the recording create function to both APIs."""
+            self.responses = types.SimpleNamespace(create=create)
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+
+    monkeypatch.setattr(models.openai, 'OpenAI', FakeOpenAI)
+    messages = [{'role': 'user', 'content': 'hello'}]
+
+    models.OpenAIResponsesClient(text_config(reasoning_effort='low')).query(messages)
+    local = text_config(provider='local', base_url='http://127.0.0.1:8000/v1', reasoning_effort='medium',
+                        thinking=True)
+    models.OpenAICompatibleChatClient(local).query(messages)
+
+    assert calls[0]['reasoning'] == {'effort': 'low'}
+    assert calls[1]['reasoning_effort'] == 'medium'
+    assert calls[1]['extra_body'] == {'chat_template_kwargs': {'enable_thinking': True}}
 
 
 def test_image_to_data_url_encodes_file_with_guessed_mime_type(tmp_path: Path) -> None:
@@ -624,3 +706,66 @@ def test_image_label_helper_tolerates_short_and_missing_label_sequences() -> Non
     assert models._image_label(None, 0) == ''
     assert models._image_label(['first'], 1) == ''
     assert models._image_label(['  spaced  '], 0) == 'spaced'
+
+
+def test_claude_code_client_runs_the_cli_without_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send system and user text through ``claude -p`` and read its JSON result."""
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        """Record the CLI call and return a successful JSON result."""
+        calls.append({'command': command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({'is_error': False, 'result': '[]'}),
+                                           stderr='')
+
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', fake_run)
+    client = models.get_model_client(models.ModelConfig(provider='claude-code', name='haiku'))
+
+    response = client.query([{'role': 'system', 'content': 'rules'}, {'role': 'user', 'content': 'paper'}])
+
+    assert response == '[]'
+    command = calls[0]['command']
+    assert command[:2] == ['claude-bin', '-p']
+    assert command[command.index('--tools') + 1] == ''
+    assert command[command.index('--model') + 1] == 'haiku'
+    assert command[command.index('--system-prompt') + 1] == 'rules'
+    assert calls[0]['input'] == 'paper'
+    assert calls[0]['timeout'] == models.DEFAULT_REQUEST_TIMEOUT
+
+
+def test_claude_code_client_reports_cli_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raise a readable error for failed or non-JSON CLI output."""
+    results = iter([
+        subprocess.CompletedProcess([], 1, stdout=json.dumps({'is_error': True, 'result': 'Not logged in'}), stderr=''),
+        subprocess.CompletedProcess([], 1, stdout='', stderr='boom'),
+    ])
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', lambda *args, **kwargs: next(results))
+    client = models.ClaudeCodeClient(models.ModelConfig(provider='claude-code', name='haiku'))
+
+    with pytest.raises(RuntimeError, match='Not logged in'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+    with pytest.raises(RuntimeError, match='boom'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+
+
+def test_claude_code_client_needs_the_cli_and_text_only_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explain a missing CLI, a timed-out request, and refuse images."""
+    client = models.ClaudeCodeClient(models.ModelConfig(provider='claude-code', name='haiku',
+                                                        request_timeout=5))
+    monkeypatch.delenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', raising=False)
+    monkeypatch.setattr(models.shutil, 'which', lambda name: None)
+    with pytest.raises(ValueError, match='needs the claude CLI'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+
+    def time_out(command: list[str], **kwargs: Any) -> NoReturn:
+        """Fail as a request that outlives its timeout."""
+        raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+
+    monkeypatch.setenv('PAPERMINERTOOLKIT_CLAUDE_CODE_BIN', 'claude-bin')
+    monkeypatch.setattr(models.subprocess, 'run', time_out)
+    with pytest.raises(RuntimeError, match='timed out'):
+        client.query([{'role': 'user', 'content': 'paper'}])
+    with pytest.raises(models.ModelCapabilityError, match='text requests only'):
+        client.query_with_images('Describe.', ['figure.png'])
